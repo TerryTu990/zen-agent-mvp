@@ -14,6 +14,7 @@ function requireEnv(name: string): string {
 }
 
 const jwtSecret = requireEnv('ZA_JWT_SECRET');
+const signingSecret = requireEnv('ZA_SIGNING_SECRET');
 const snapshotRoot = requireEnv('ZA_SNAPSHOT_ROOT');
 const port = Number(process.env['ZA_PORT'] ?? 8787);
 if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -27,6 +28,7 @@ if (!process.env['ZA_LLM_BASE_URL']) {
 startServer({
   port,
   jwtSecret,
+  signingSecret,
   issAllowlist: (process.env['ZA_JWT_ISS_ALLOWLIST'] ?? 'zen-agent-demo')
     .split(',')
     .map((iss) => iss.trim())

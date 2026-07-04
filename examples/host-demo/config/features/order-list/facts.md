@@ -18,3 +18,5 @@
 
 - 取消订单：`POST /api/orders/{orderId}/cancel`，以用户会话身份发起，
   成功返回 `{ "ok": true, "orderId": "<订单号>" }`；对应工具 `order-list.cancel-order`。
+- 刷新订单：`GET /api/orders`，以用户会话身份重新拉取当前订单列表，
+  成功返回 `{ "ok": true, "count": <订单数> }`；对应工具 `order-list.refresh-orders`。

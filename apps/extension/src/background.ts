@@ -108,13 +108,24 @@ function createSessionBridge(port: chrome.runtime.Port) {
     }
   }
 
+  function toUpstreamFrame(message: ContentToBackgroundMessage, sessionId: string): UpstreamFrame {
+    switch (message.kind) {
+      case 'context-report':
+        return { type: 'context-report', sessionId, url: message.url, title: message.title };
+      case 'user-message':
+        return { type: 'user-message', sessionId, text: message.text };
+      case 'hitl-decision':
+        return { type: 'hitl-decision', sessionId, hitlId: message.hitlId, decision: message.decision };
+      case 'exec-result':
+        // sessionId 权威归 background：以本会话盖章覆盖 content 侧原料值。
+        return { ...message.result, sessionId };
+    }
+  }
+
   async function forward(message: ContentToBackgroundMessage): Promise<void> {
     const session = await ensureSession();
     if (session === null) return;
-    const frame: UpstreamFrame =
-      message.kind === 'context-report'
-        ? { type: 'context-report', sessionId: session.sessionId, url: message.url, title: message.title }
-        : { type: 'user-message', sessionId: session.sessionId, text: message.text };
+    const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
     try {
       const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/frames`, {
         method: 'POST',
@@ -132,10 +143,16 @@ function createSessionBridge(port: chrome.runtime.Port) {
   }
 
   // 串行转发保证 context-report 先于后续 user-message 到达服务端。
+  const UPSTREAM_KINDS: ReadonlySet<ContentToBackgroundMessage['kind']> = new Set([
+    'context-report',
+    'user-message',
+    'hitl-decision',
+    'exec-result',
+  ]);
   let pipeline: Promise<void> = Promise.resolve();
   port.onMessage.addListener((raw) => {
-    const message = raw as ContentToBackgroundMessage;
-    if (message?.kind !== 'context-report' && message?.kind !== 'user-message') return;
+    const message = raw as ContentToBackgroundMessage | null;
+    if (message === null || !UPSTREAM_KINDS.has(message.kind)) return;
     pipeline = pipeline.then(() => forward(message));
   });
   port.onDisconnect.addListener(() => {

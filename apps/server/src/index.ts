@@ -2,8 +2,16 @@
  * 模块化单体的唯一组装点（U2）：全仓只有本包同时 import 全部模块包；
  * 模块间彼此零依赖，只经 @zen-agent/contracts 端口类型在此接线。
  */
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import type { AssemblyPort, LlmPort, ToolGatePort } from '@zen-agent/contracts';
+import { join } from 'node:path';
+import type {
+  AssemblyPort,
+  ConfigSnapshotManifest,
+  LlmPort,
+  ToolDefinition,
+  ToolGatePort,
+} from '@zen-agent/contracts';
 import { createAssemblyPort } from '@zen-agent/assembly';
 import { createToolGatePort } from '@zen-agent/toolgate';
 import { createLlmPort } from '@zen-agent/llm-port';
@@ -16,6 +24,8 @@ export interface ServerOptions {
   port: number;
   /** 空值拒绝启动（验签 fail-closed 的前提）。 */
   jwtSecret: string;
+  /** 代执行指令签名密钥；空值拒绝启动（U7 一次性签名的前提），经 env 注入不落仓/日志（SEC-01）。 */
+  signingSecret: string;
   issAllowlist: string[];
   snapshotRoot: string;
   systemPromptPath: string;
@@ -32,15 +42,39 @@ export interface ServerPorts {
   llm: LlmPort;
 }
 
+/**
+ * 汇总快照内全部功能的工具并集，作为 toolgate 分级判定的工具闭集（fail-closed 依据，U7）。
+ * 组装层逻辑（唯一组装点在此，不违 U2）：读 manifest 取功能清单，逐功能 compose 收其工具、按 id 去重。
+ * 前提：assembly 快照已成功载入（否则 compose 抛快照拒载错误，在此之前触发）。
+ */
+async function collectHostTools(
+  assembly: AssemblyPort,
+  snapshotRoot: string,
+): Promise<ToolDefinition[]> {
+  const manifest = JSON.parse(
+    readFileSync(join(snapshotRoot, 'manifest.json'), 'utf8'),
+  ) as ConfigSnapshotManifest;
+  const featureIds = manifest.features ?? manifest.featureIdRules.map((rule) => rule.featureId);
+  const byId = new Map<string, ToolDefinition>();
+  for (const featureId of featureIds) {
+    const composed = await assembly.compose({ sessionId: '__bootstrap__', featureId });
+    for (const tool of composed.tools) byId.set(tool.id, tool);
+  }
+  return [...byId.values()];
+}
+
 // audit 端口接回组装的锚点=M4（其工厂在 sink 落地前如实拒绝创建，组装即调会阻断启动）。
-export function assemblePorts(options: ServerOptions): ServerPorts {
+export async function assemblePorts(options: ServerOptions): Promise<ServerPorts> {
+  const assembly = createAssemblyPort({
+    snapshotRoot: options.snapshotRoot,
+    systemPromptPath: options.systemPromptPath,
+  });
+  // 触发快照惰性载入：坏快照 fail-fast（快照拒载错误），先于按 manifest 读工具并集。
+  await assembly.resolveFeature({ url: '' });
+  const tools = await collectHostTools(assembly, options.snapshotRoot);
   return {
-    assembly: createAssemblyPort({
-      snapshotRoot: options.snapshotRoot,
-      systemPromptPath: options.systemPromptPath,
-    }),
-    // M1 工具面不进对话（LLM 不传 tools）；toolgate 接入 agent 回合的锚点=M3。
-    toolgate: createToolGatePort({ tools: [] }),
+    assembly,
+    toolgate: createToolGatePort({ tools, signingSecret: options.signingSecret }),
     llm: createLlmPort({ allowedProviders: options.allowedProviders }),
   };
 }
@@ -54,12 +88,15 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   if (!options.jwtSecret) {
     throw new Error('ZA_JWT_SECRET 未设置：JWT 验签无密钥，拒绝启动（fail-closed）');
   }
-  const ports = assemblePorts(options);
-  // 启动即触发快照惰性载入：坏快照 fail-fast 拒绝启动，而非首轮对话才暴露
-  await ports.assembly.resolveFeature({ url: '' });
+  if (!options.signingSecret) {
+    throw new Error('ZA_SIGNING_SECRET 未设置：代执行指令无签名密钥，拒绝启动（fail-closed，U7）');
+  }
+  // 组装即触发快照载入 + 工具并集汇总：坏快照/坏工具在启动期 fail-fast，而非首轮对话才暴露。
+  const ports = await assemblePorts(options);
   const gateway = createGateway({
     assembly: ports.assembly,
     llm: ports.llm,
+    toolgate: ports.toolgate,
     verifier: createTokenVerifier({
       jwtSecret: options.jwtSecret,
       issAllowlist: options.issAllowlist,

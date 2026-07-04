@@ -14,7 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@zen-agent/contracts": "workspace:*"
+    "@zen-agent/contracts": "workspace:*",
+    "ajv": "catalog:"
   },
   "devDependencies": {
     "typescript": "catalog:",

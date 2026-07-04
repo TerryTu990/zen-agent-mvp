@@ -30,5 +30,52 @@
         "orderId": { "type": "string" }
       }
     }
+  },
+  {
+    "id": "order-list.refresh-orders",
+    "featureIds": ["order-list"],
+    "description": "刷新订单列表：重新拉取当前用户的订单数据并更新页面。当用户要求刷新、重新加载或更新订单列表时调用；无需参数，可直接执行。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "execution": "client",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "/api/orders"
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "count": { "type": "number" }
+      }
+    }
+  },
+  {
+    "id": "order-list.purge-orders",
+    "featureIds": ["order-list"],
+    "description": "清空全部订单（不可逆的批量删除，高危操作）。此工具仅用于声明该能力的存在，实际被禁止执行；即便用户要求清空或删除所有订单也不会真正执行。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "execution": "client",
+    "riskTier": "forbidden",
+    "adapter": {
+      "method": "DELETE",
+      "urlTemplate": "/api/orders"
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" }
+      }
+    }
   }
 ]

@@ -1,5 +1,7 @@
 import { createContextReporter } from './context-report.js';
 import { createConversationUi } from './conversation-hitl.js';
+import { createDelegatedExecutor } from './delegated-execution.js';
+import { routeDownstreamFrame } from './content-router.js';
 import { createDomGuidePage, createPageActionRunner } from './page-action.js';
 import {
   SESSION_PORT_NAME,
@@ -21,6 +23,17 @@ const PANEL_CSS = `
   .za-msg[data-role="user"] { align-self: flex-end; background: #0969da; color: #fff; }
   .za-msg[data-role="assistant"] { align-self: flex-start; background: #f6f8fa; }
   .za-status { align-self: center; color: #cf222e; font-size: 12px; }
+  .za-toolcard { align-self: stretch; padding: 6px 10px; border-radius: 8px; font-size: 12px; border: 1px solid #d0d7de; }
+  .za-toolcard[data-status="running"] { background: #fff8c5; border-color: #d4a72c; }
+  .za-toolcard[data-status="succeeded"] { background: #dafbe1; border-color: #2da44e; }
+  .za-toolcard[data-status="failed"] { background: #ffebe9; border-color: #cf222e; }
+  .za-hitl { align-self: stretch; padding: 8px 10px; border-radius: 8px; background: #fff8c5; border: 1px solid #d4a72c; display: flex; flex-direction: column; gap: 6px; }
+  .za-hitl-title { font-weight: 600; }
+  .za-hitl-detail, .za-hitl-reason { font-size: 12px; color: #57606a; word-break: break-word; }
+  .za-hitl-actions { display: flex; gap: 6px; }
+  .za-hitl-approve, .za-hitl-reject { flex: 1; padding: 5px 0; border: none; border-radius: 6px; font: inherit; cursor: pointer; }
+  .za-hitl-approve { background: #1f883d; color: #fff; }
+  .za-hitl-reject { background: #f6f8fa; border: 1px solid #d0d7de; color: #1f2328; }
   .za-composer { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid #d0d7de; }
   #za-input { flex: 1; resize: none; height: 44px; padding: 6px 8px; border: 1px solid #d0d7de; border-radius: 8px; font: inherit; }
   #za-send { padding: 0 14px; border: none; border-radius: 8px; background: #0969da; color: #fff; font: inherit; cursor: pointer; }
@@ -70,6 +83,7 @@ function main(): void {
   const { messages, input, sendButton } = mountPanel();
   const ui = createConversationUi(messages);
   const pageAction = createPageActionRunner(createDomGuidePage());
+  const executor = createDelegatedExecutor();
   const port = chrome.runtime.connect({ name: SESSION_PORT_NAME });
   const send = (message: ContentToBackgroundMessage) => port.postMessage(message);
 
@@ -77,10 +91,8 @@ function main(): void {
     const message = raw as BackgroundToContentMessage;
     if (message.kind === 'status') {
       ui.showStatus(message.message);
-    } else if (message.kind === 'frame' && message.frame.type === 'text-delta') {
-      ui.appendTextDelta(message.frame);
-    } else if (message.kind === 'frame' && message.frame.type === 'guide-action') {
-      ui.showStatus(pageAction.run(message.frame).status);
+    } else if (message.kind === 'frame') {
+      routeDownstreamFrame(message.frame, { ui, pageAction, executor, send });
     }
   });
 

@@ -73,7 +73,11 @@ describe('compose（examples/host-demo 真实快照）', () => {
     expect(result.facts).toBe(
       readFileSync(join(demoSnapshotRoot, 'features/order-list/facts.md'), 'utf8'),
     );
-    expect(result.tools.map((t) => t.id)).toEqual(['order-list.cancel-order']);
+    expect(result.tools.map((t) => t.id)).toEqual([
+      'order-list.cancel-order',
+      'order-list.refresh-orders',
+      'order-list.purge-orders',
+    ]);
     expect(result.skills).toEqual([]);
   });
 
@@ -146,7 +150,11 @@ describe('describeInjection（与 compose 同源投影）', () => {
         ),
       },
     ]);
-    expect(description.toolIds).toEqual(['order-list.cancel-order']);
+    expect(description.toolIds).toEqual([
+      'order-list.cancel-order',
+      'order-list.refresh-orders',
+      'order-list.purge-orders',
+    ]);
   });
 
   it('featureId=null：仅 system-prompt 块，toolIds 为空', async () => {

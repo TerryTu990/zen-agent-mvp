@@ -1,8 +1,10 @@
 /**
  * 会话网关：HTTP 上行帧（C3 schema 校验 fail-closed）→ agent 回合 → SSE 下行帧。
  * 每轮注入由 assembly.compose 整段重建覆写（不 append 进历史）；
- * M1 不给 LLM 传 tools（工具面接入锚点=M3），LLM 失败以脱敏文案下发（SEC-04）。
+ * 工具面（guide 内建工具 + 宿主 API 工具）由服务端注入 LLM；宿主 API 代执行的分级/HITL 判定
+ * 只在 toolgate、fail-closed（U7），LLM 失败以脱敏文案下发（SEC-04）。
  */
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -11,11 +13,19 @@ import type {
   AssemblyPort,
   ComposeResult,
   DownstreamFrame,
+  ExecResultFrame,
   GuideActionFrame,
   GuideActionKind,
+  HitlDecisionValue,
+  IdentityClaims,
+  JsonObject,
   LlmMessage,
   LlmPort,
   LlmToolSpec,
+  Observation,
+  ToolCardStatus,
+  ToolDefinition,
+  ToolGatePort,
   UpstreamFrame,
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
@@ -24,10 +34,14 @@ import type { SessionState, SessionStore } from './sessions.js';
 export interface GatewayDeps {
   assembly: AssemblyPort;
   llm: LlmPort;
+  toolgate: ToolGatePort;
   verifier: TokenVerifier;
   store: SessionStore;
   heartbeatMs: number;
 }
+
+/** agent loop 轮数上限：防 LLM 反复触发工具无法收敛而失控烧配额。 */
+const MAX_TURN_ROUNDS = 4;
 
 export interface Gateway {
   handler(req: IncomingMessage, res: ServerResponse): void;
@@ -129,10 +143,19 @@ function buildSystemContent(composed: ComposeResult): string {
   return parts.join('\n\n');
 }
 
+/** 宿主 API 工具定义 → LLM 工具面：name=toolId，装配对 agent 透明（LLM 不感知分级/通道）。 */
+function toLlmToolSpec(tool: ToolDefinition): LlmToolSpec {
+  return { name: tool.id, description: tool.description, params: tool.params };
+}
+
 interface SessionRuntime {
   subscribers: Set<ServerResponse>;
   /** 同会话回合串行链：user-message 依次排队，避免历史交错。 */
   turnChain: Promise<void>;
+  /** HITL 挂起等待器：hitlId → resolver；hitl-decision 到达时解析，回合恢复。 */
+  pendingHitl: Map<string, (decision: HitlDecisionValue) => void>;
+  /** 代执行挂起等待器：nonce → resolver；exec-result 到达时解析，回合恢复。 */
+  pendingExec: Map<string, (result: ExecResultFrame) => void>;
 }
 
 export function createGateway(deps: GatewayDeps): Gateway {
@@ -143,7 +166,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
   const runtimeOf = (sessionId: string): SessionRuntime => {
     let runtime = runtimes.get(sessionId);
     if (!runtime) {
-      runtime = { subscribers: new Set(), turnChain: Promise.resolve() };
+      runtime = {
+        subscribers: new Set(),
+        turnChain: Promise.resolve(),
+        pendingHitl: new Map(),
+        pendingExec: new Map(),
+      };
       runtimes.set(sessionId, runtime);
     }
     return runtime;
@@ -156,52 +184,167 @@ export function createGateway(deps: GatewayDeps): Gateway {
     for (const subscriber of runtime.subscribers) subscriber.write(payload);
   };
 
-  async function runTurn(session: SessionState, text: string): Promise<void> {
+  const notify = (sessionId: string, notice: string): void => {
+    broadcast(sessionId, { type: 'text-delta', sessionId, delta: notice });
+  };
+
+  /** 等待客户端 hitl-decision；resolver 先注册再下发帧，避免决策先于等待器到达而丢帧。 */
+  function waitForHitl(sessionId: string, hitlId: string): Promise<HitlDecisionValue> {
+    const runtime = runtimeOf(sessionId);
+    return new Promise((resolve) => runtime.pendingHitl.set(hitlId, resolve));
+  }
+
+  /** 等待客户端 exec-result；同理先注册 nonce 等待器，再下发 exec-instruction 帧。 */
+  function waitForExec(sessionId: string, nonce: string): Promise<ExecResultFrame> {
+    const runtime = runtimeOf(sessionId);
+    return new Promise((resolve) => runtime.pendingExec.set(nonce, resolve));
+  }
+
+  /**
+   * 单个宿主 API 工具调用的代执行子流程：一切分级/HITL/结果判定都在 toolgate（U7 fail-closed），
+   * 网关只按判定下发帧、挂起等待客户端回传、把规整后的 observation 交回 agent loop。
+   * tool-card 摘要仅取 toolId（不含实参值，SEC-04）；deny/reject 时自造 ok:false observation。
+   */
+  async function runExecSubflow(
+    session: SessionState,
+    claims: IdentityClaims,
+    tool: ToolDefinition,
+    call: { toolCallId: string; params: JsonObject },
+  ): Promise<Observation> {
+    const { sessionId } = session;
+    const { toolCallId, params } = call;
+    broadcast(sessionId, {
+      type: 'tool-card',
+      sessionId,
+      toolCallId,
+      toolId: tool.id,
+      status: 'running',
+      summary: tool.id,
+    });
+    const finish = (status: ToolCardStatus): void => {
+      broadcast(sessionId, { type: 'tool-card', sessionId, toolCallId, toolId: tool.id, status });
+    };
+
+    const decision = await deps.toolgate.decide({
+      sessionId,
+      toolCallId,
+      toolId: tool.id,
+      params,
+      claims,
+    });
+    if (decision.verdict === 'deny') {
+      finish('failed');
+      return { toolCallId, ok: false, content: null, error: decision.reason ?? 'denied' };
+    }
+    if (decision.verdict === 'hitl') {
+      const hitlId = randomUUID();
+      const decided = waitForHitl(sessionId, hitlId);
+      broadcast(sessionId, {
+        type: 'hitl-request',
+        sessionId,
+        hitlId,
+        toolCallId,
+        toolId: tool.id,
+        params,
+        ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+      });
+      if ((await decided) === 'reject') {
+        finish('failed');
+        return { toolCallId, ok: false, content: null, error: 'user-rejected' };
+      }
+    }
+
+    const instruction = await deps.toolgate.issueExecInstruction({
+      sessionId,
+      toolCallId,
+      toolId: tool.id,
+      params,
+    });
+    const result = waitForExec(sessionId, instruction.nonce);
+    broadcast(sessionId, instruction);
+    const observation = await deps.toolgate.acceptExecResult({ sessionId, result: await result });
+    finish(observation.ok ? 'succeeded' : 'failed');
+    return observation;
+  }
+
+  async function runTurn(
+    session: SessionState,
+    text: string,
+    claims: IdentityClaims,
+  ): Promise<void> {
     const { sessionId } = session;
     const { featureId } = await deps.assembly.resolveFeature({ url: session.currentUrl ?? '' });
     const composed = await deps.assembly.compose({ sessionId, featureId });
     // 注入自省与 compose 同源，可随时按 featureId 重放；每轮记 audit assembly 事件的锚点=M4
+    const hostToolsById = new Map(composed.tools.map((tool) => [tool.id, tool]));
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemContent(composed) },
       ...session.history,
       { role: 'user', content: text },
     ];
-    const tools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
-    let assistantText = '';
-    for await (const event of deps.llm.chat(
-      tools.length > 0 ? { messages, tools } : { messages },
-    )) {
-      if (event.kind === 'text-delta') {
-        assistantText += event.delta;
-        broadcast(sessionId, { type: 'text-delta', sessionId, delta: event.delta });
-      } else if (event.kind === 'tool-call') {
-        if (event.name === GUIDE_TOOL_NAME) {
-          // 引导是终结动作：直接下发页面动作帧，本回合结束——不回喂 observation、不再等 LLM。
-          const frame = guideFrame(sessionId, event.params);
-          if (frame !== null) {
-            broadcast(sessionId, frame);
-          } else {
-            const notice = '未能定位到目标元素。';
-            assistantText += notice;
-            broadcast(sessionId, { type: 'text-delta', sessionId, delta: notice });
-          }
+    const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
+    const tools: LlmToolSpec[] = [...guideTools, ...composed.tools.map(toLlmToolSpec)];
+    // 全回合累积的用户可见文本：多轮中只有最终一轮产出气泡文本，作为本回合 assistant 历史。
+    let visibleText = '';
+
+    for (let round = 0; round < MAX_TURN_ROUNDS; round += 1) {
+      let roundText = '';
+      let call: { toolCallId: string; name: string; params: JsonObject } | null = null;
+      for await (const event of deps.llm.chat(tools.length > 0 ? { messages, tools } : { messages })) {
+        if (event.kind === 'text-delta') {
+          roundText += event.delta;
+          visibleText += event.delta;
+          broadcast(sessionId, { type: 'text-delta', sessionId, delta: event.delta });
+        } else if (event.kind === 'tool-call') {
+          call = { toolCallId: event.toolCallId, name: event.name, params: event.params };
+          break;
+        } else if (event.kind === 'done' && event.stopReason === 'error') {
+          // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
+          const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;
+          visibleText += notice;
+          notify(sessionId, notice);
+        }
+      }
+      // 无工具调用（纯文本/错误收尾）：本回合终结。
+      if (call === null) break;
+
+      if (call.name === GUIDE_TOOL_NAME) {
+        // 引导是终结动作：直接下发页面动作帧，本回合结束——不回喂 observation、不再等 LLM。
+        const frame = guideFrame(sessionId, call.params);
+        if (frame !== null) {
+          broadcast(sessionId, frame);
         } else {
-          // 宿主 API 工具（tools.json）接入 agent 回合的锚点=M3；此前只如实告知不支持，不 fail。
-          const notice = '该操作暂未支持。';
-          assistantText += notice;
-          broadcast(sessionId, { type: 'text-delta', sessionId, delta: notice });
+          const notice = '未能定位到目标元素。';
+          visibleText += notice;
+          notify(sessionId, notice);
         }
         break;
-      } else if (event.kind === 'done' && event.stopReason === 'error') {
-        // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
-        const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;
-        assistantText += notice;
-        broadcast(sessionId, { type: 'text-delta', sessionId, delta: notice });
       }
+
+      const tool = hostToolsById.get(call.name);
+      if (tool === undefined) {
+        // 白名单外的工具名（LLM 幻觉）：如实告知不支持，回合终结、不 fail。
+        const notice = '该操作暂未支持。';
+        visibleText += notice;
+        notify(sessionId, notice);
+        break;
+      }
+
+      const observation = await runExecSubflow(session, claims, tool, call);
+      // 回喂 agent：assistant 调用轮（本轮文本，通常为空）+ observation（仅规整结果，U7）。
+      // LlmMessage 端口冻结无 tool_calls 字段，故 assistant 轮不回声 tool_calls；MVP 由 mock 凭
+      // 末条 role:tool 观察驱动总结。补 tool_calls 回声的锚点＝llm-port 接真实 provider 时评估。
+      messages.push({ role: 'assistant', content: roundText });
+      messages.push({
+        role: 'tool',
+        toolCallId: call.toolCallId,
+        content: JSON.stringify(observation.ok ? observation.content : { error: observation.error }),
+      });
     }
+
     deps.store.appendHistory(sessionId, { role: 'user', content: text });
-    if (assistantText !== '') {
-      deps.store.appendHistory(sessionId, { role: 'assistant', content: assistantText });
+    if (visibleText !== '') {
+      deps.store.appendHistory(sessionId, { role: 'assistant', content: visibleText });
     }
   }
 
@@ -209,6 +352,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     req: IncomingMessage,
     res: ServerResponse,
     session: SessionState,
+    claims: IdentityClaims,
   ): Promise<void> {
     let frame: unknown;
     try {
@@ -239,7 +383,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       case 'user-message': {
         const runtime = runtimeOf(session.sessionId);
         runtime.turnChain = runtime.turnChain
-          .then(() => runTurn(session, upstream.text))
+          .then(() => runTurn(session, upstream.text, claims))
           .catch((cause) => {
             // 回合内部异常不外泄细节（SEC-04）：客户端只见类别，明细留本地日志
             console.error('agent 回合异常：', cause);
@@ -252,10 +396,30 @@ export function createGateway(deps: GatewayDeps): Gateway {
         sendJson(res, 202, { accepted: true });
         return;
       }
-      default:
-        sendJson(res, 501, {
-          error: 'NOT_IMPLEMENTED: M3 代执行+HITL——hitl-decision / exec-result 帧处理',
-        });
+      case 'hitl-decision': {
+        // 解析挂起的 HITL 等待器使回合恢复；无对应等待器＝已决策/失效，409（不改回合状态）。
+        const resolve = runtimeOf(session.sessionId).pendingHitl.get(upstream.hitlId);
+        if (resolve === undefined) {
+          sendJson(res, 409, { error: 'HITL 决策无对应挂起回合（已处理或失效）' });
+          return;
+        }
+        runtimeOf(session.sessionId).pendingHitl.delete(upstream.hitlId);
+        resolve(upstream.decision);
+        sendJson(res, 202, { accepted: true });
+        return;
+      }
+      case 'exec-result': {
+        // nonce 等待器在网关层即为一次性：命中即摘除，二次到达（重放）无等待器→409、不再入 toolgate。
+        const resolve = runtimeOf(session.sessionId).pendingExec.get(upstream.nonce);
+        if (resolve === undefined) {
+          sendJson(res, 409, { error: '代执行结果无对应挂起回合（已处理、重放或伪造 nonce）' });
+          return;
+        }
+        runtimeOf(session.sessionId).pendingExec.delete(upstream.nonce);
+        resolve(upstream);
+        sendJson(res, 202, { accepted: true });
+        return;
+      }
     }
   }
 
@@ -308,7 +472,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     }
     const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
     if (req.method === 'POST' && pathname === '/v1/sessions') {
-      const session = deps.store.create(claims.sub);
+      const session = deps.store.create(claims);
       sendJson(res, 201, { sessionId: session.sessionId });
       return;
     }
@@ -320,7 +484,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
         sendJson(res, 404, { error: '会话不存在' });
         return;
       }
-      if (match[2] === 'frames' && req.method === 'POST') return handleFrames(req, res, session);
+      // 每次请求以当前验签结果刷新会话身份，代执行门禁始终按最新有效 claims 判定（U7）。
+      deps.store.refreshClaims(sessionId, claims);
+      if (match[2] === 'frames' && req.method === 'POST') return handleFrames(req, res, session, claims);
       if (match[2] === 'events' && req.method === 'GET') return handleEvents(res, session);
       if (match[2] === 'injection' && req.method === 'GET') return handleInjection(res, session);
     }

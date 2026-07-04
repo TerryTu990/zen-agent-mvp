@@ -9,6 +9,7 @@ const snapshotRoot = join(repoRoot, 'examples/host-demo/config');
 const systemPromptPath = join(repoRoot, 'assets/system-prompt.md');
 
 const JWT_SECRET = 'za-test-secret';
+const SIGNING_SECRET = 'za-test-signing-secret';
 const ISS = 'zen-agent-demo';
 const key = new TextEncoder().encode(JWT_SECRET);
 
@@ -33,6 +34,7 @@ function serverOptions(overrides: Partial<Parameters<typeof startServer>[0]> = {
   return {
     port: 0,
     jwtSecret: JWT_SECRET,
+    signingSecret: SIGNING_SECRET,
     issAllowlist: [ISS],
     snapshotRoot,
     systemPromptPath,
@@ -213,7 +215,7 @@ describe('鉴权 fail-closed（401 闭集）', () => {
   });
 });
 
-describe('上行帧校验（400/404/501 闭集）', () => {
+describe('上行帧校验（400/404/409 闭集）', () => {
   it('请求体不是 JSON → 400', async () => {
     const token = await signToken();
     const sessionId = await createSession(token);
@@ -256,7 +258,7 @@ describe('上行帧校验（400/404/501 闭集）', () => {
     expect(res.status).toBe(404);
   });
 
-  it('hitl-decision / exec-result 合法帧 → 501（锚点 M3）', async () => {
+  it('无挂起回合的 hitl-decision / exec-result → 409（失效/伪造 nonce，不入 toolgate）', async () => {
     const token = await signToken();
     const sessionId = await createSession(token);
     const hitl = await postFrame(token, sessionId, {
@@ -265,14 +267,14 @@ describe('上行帧校验（400/404/501 闭集）', () => {
       hitlId: 'h1',
       decision: 'approve',
     });
-    expect(hitl.status).toBe(501);
+    expect(hitl.status).toBe(409);
     const exec = await postFrame(token, sessionId, {
       type: 'exec-result',
       sessionId,
       nonce: 'n1',
       ok: true,
     });
-    expect(exec.status).toBe(501);
+    expect(exec.status).toBe(409);
   });
 });
 
@@ -344,7 +346,11 @@ describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
     expect(listKinds).toContain('system-prompt');
     expect(listKinds).toContain('feature-rules');
     expect(listKinds).toContain('facts');
-    expect(listInjection['toolIds']).toEqual(['order-list.cancel-order']);
+    expect(listInjection['toolIds']).toEqual([
+      'order-list.cancel-order',
+      'order-list.refresh-orders',
+      'order-list.purge-orders',
+    ]);
 
     await postFrame(token, sessionId, {
       type: 'context-report',
@@ -494,6 +500,194 @@ describe('引导闭环（guide-action 下发 + built-in 工具注入门）', () 
   });
 });
 
+function framesByType(
+  frames: Array<Record<string, unknown>>,
+  type: string,
+): Array<Record<string, unknown>> {
+  return frames.filter((frame) => frame['type'] === type);
+}
+
+function lastCardStatus(
+  frames: Array<Record<string, unknown>>,
+  toolId: string,
+): string | undefined {
+  const cards = framesByType(frames, 'tool-card').filter((f) => f['toolId'] === toolId);
+  return cards.length > 0 ? String(cards[cards.length - 1]!['status']) : undefined;
+}
+
+describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => {
+  const REPLY_CANCEL = '已为你取消订单 ORD-1001。';
+  const REPLY_REFRESH = '已刷新，当前 2 笔订单。';
+  const REPLY_REJECT = '已取消该操作，未做任何更改。';
+  const REPLY_FORBIDDEN = '抱歉，该操作不被允许执行。';
+
+  it('auto 工具（刷新）直执 → 下发 exec-instruction，回喂结果后产出总结、无 HITL', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '刷新订单列表' });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
+      const instr = framesByType(sse.frames, 'exec-instruction')[0]!;
+      expect((instr['request'] as { method: string }).method).toBe('GET');
+      expect((instr['request'] as { url: string }).url).toBe('/api/orders');
+      expect(instr['signature']).toBeTruthy();
+      expect(instr['nonce']).toBeTruthy();
+      const nonce = String(instr['nonce']);
+      const accepted = await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce,
+        ok: true,
+        status: 200,
+        body: { ok: true, count: 2 },
+      });
+      expect(accepted.status).toBe(202);
+      await sse.waitFor(() => textOf(sse.frames) === REPLY_REFRESH);
+      expect(lastCardStatus(sse.frames, 'order-list.refresh-orders')).toBe('succeeded');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('hitl 工具（取消）→ hitl-request → approve → exec 闭环 → 成功总结', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '帮我取消订单 ORD-1001',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      // HITL 挂起期间尚未下发代执行指令（判定未放行前不签发）
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      expect(hitl['toolId']).toBe('order-list.cancel-order');
+      expect((hitl['params'] as { orderId: string }).orderId).toBe('ORD-1001');
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(hitl['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      const instr = framesByType(sse.frames, 'exec-instruction')[0]!;
+      expect((instr['request'] as { method: string }).method).toBe('POST');
+      expect((instr['request'] as { url: string }).url).toBe('/api/orders/ORD-1001/cancel');
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instr['nonce']),
+        ok: true,
+        status: 200,
+        body: { ok: true, orderId: 'ORD-1001' },
+      });
+      await sse.waitFor(() => textOf(sse.frames) === REPLY_CANCEL);
+      expect(lastCardStatus(sse.frames, 'order-list.cancel-order')).toBe('succeeded');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('hitl 工具拒绝 → 不下发 exec-instruction，回喂 user-rejected、tool-card failed', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '帮我取消订单 ORD-1001',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(hitl['hitlId']),
+        decision: 'reject',
+      });
+      await sse.waitFor(() => textOf(sse.frames) === REPLY_REJECT);
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      expect(lastCardStatus(sse.frames, 'order-list.cancel-order')).toBe('failed');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('forbidden 工具（清空）→ 服务端 deny，无 HITL/无 exec-instruction，回喂拒绝文案', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '清空所有订单',
+      });
+      await sse.waitFor(() => textOf(sse.frames) === REPLY_FORBIDDEN);
+      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      expect(lastCardStatus(sse.frames, 'order-list.purge-orders')).toBe('failed');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('exec-result 重放（同 nonce 二次 POST）→ 409，网关不再入 toolgate、不重复执行', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '刷新订单列表' });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      const nonce = String(framesByType(sse.frames, 'exec-instruction')[0]!['nonce']);
+      const first = await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce,
+        ok: true,
+        status: 200,
+        body: { ok: true, count: 2 },
+      });
+      expect(first.status).toBe(202);
+      await sse.waitFor(() => textOf(sse.frames) === REPLY_REFRESH);
+      const replay = await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce,
+        ok: true,
+        status: 200,
+        body: { ok: true, count: 999 },
+      });
+      expect(replay.status).toBe(409);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('伪造 nonce 的 exec-result → 409（无对应挂起回合）', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const res = await postFrame(token, sessionId, {
+      type: 'exec-result',
+      sessionId,
+      nonce: 'forged-nonce',
+      ok: true,
+      body: { ok: true, count: 1 },
+    });
+    expect(res.status).toBe(409);
+  });
+});
+
 describe('SSE 心跳与 CORS', () => {
   it('OPTIONS 预检 → 204 + 宽松 CORS 头', async () => {
     const res = await api('/v1/sessions', { method: 'OPTIONS' });
@@ -550,6 +744,12 @@ describe('SSE 心跳与 CORS', () => {
 describe('启动 fail-closed', () => {
   it('jwtSecret 缺失 → 拒绝启动', async () => {
     await expect(startServer(serverOptions({ jwtSecret: '' }))).rejects.toThrow(/ZA_JWT_SECRET/);
+  });
+
+  it('signingSecret 缺失 → 拒绝启动（U7 一次性签名前提）', async () => {
+    await expect(startServer(serverOptions({ signingSecret: '' }))).rejects.toThrow(
+      /ZA_SIGNING_SECRET/,
+    );
   });
 
   it('坏快照根 → 启动即 fail-fast', async () => {

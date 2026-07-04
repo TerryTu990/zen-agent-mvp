@@ -1,22 +1,22 @@
 /**
- * M2 端到端验证：真实 Chromium 加载扩展 → content/background → server SSE → mock LLM，
- * 覆盖"引导"能力全链路（guide-action 下发 + 宿主页高亮 / 失配降级）。
+ * M3 端到端验证：真实 Chromium 加载扩展 → content/background → server SSE → toolgate → 页面代执行 → 宿主 API，
+ * 覆盖"API 调用协助 + HITL"能力全链路（分级判定 / 挂起卡片 / 一次性签名指令 / 页面 fetch / 结果回喂）。
  *
- * 场景对应关系（evals/scenarios.json guide 维度 → 本脚本场景）：
- *   c 命中  ← m2-guide-01（order-list 问"导出订单在哪里？"：server 注入 built-in guide_highlight →
- *            LLM 产 tool_call → GuideActionFrame 下发 → 宿主页 #btn-export 获 za 高亮 class，
- *            面板 status 含定位文案）
- *   c 失配  ← m2-guide-02（order-list 问"在哪里打印发票？"：facts 无对应锚点，LLM 如实以文本降级、
- *            不产 guide-action —— 无元素获得高亮 class、面板不含成功文案，honest degradation）
+ * 场景（evals/scenarios.json tool/hitl/forbidden 维度 → 本脚本）：
+ *   d4 auto      ← 刷新订单列表：refresh-orders(riskTier=auto) 直执，无 HITL 卡片，宿主页 GET /api/orders，
+ *                  回喂后气泡"已刷新，当前 2 笔订单"。
+ *   d3 forbidden ← 清空所有订单：purge-orders(riskTier=forbidden) 服务端 fail-closed deny，无 HITL、无 exec-instruction、
+ *                  宿主 DELETE /api/orders 计数 0，气泡"抱歉，该操作不被允许执行"。
+ *   d2 拒绝       ← 取消 ORD-1002：cancel-order(riskTier=hitl) 挂起弹卡 → 点拒绝 → 不下发指令、宿主 /cancel 计数不增、
+ *                  气泡"已取消该操作"。
+ *   d1 HITL happy ← 取消 ORD-1001：挂起弹卡 → 点确认 → 一次性签名指令下发 → 页面以用户会话 fetch /cancel →
+ *                  结果过 resultSchema 回喂 → 气泡"已为你取消订单 ORD-1001"，tool-card 已完成。
  *
- * 与 run-m1 共用环境编排：构建 extension + server → 起 mock LLM(8788) → 起 server(8787,node dist/main.js) →
- *   静态托管 host-demo(4173) → chromium launchPersistentContext 加载扩展（优先 headless、回退 headed）；
- *   node crypto 现签 HS256 测试 JWT，经 service worker 注入 chrome.storage.local。
+ * 另三反例（nonce 重放 / ttl 超时 / invalid-result）在 toolgate 单测 + apps/server 集成测试覆盖（更确定、无需浏览器），
+ * 见 evals/runs/2026-07-04-m3.md 分层说明；本脚本覆盖三反例中"拒绝 + forbidden"两个可浏览器观察者。
  *
- * 失配路径说明：order-list 的 facts 恒登记 #btn-export，故"打印发票"这类无登记锚点的定位问句由 LLM
- *   直接以文本降级（mock 产出 MOCK-NO-ANCHOR），不发 GuideActionFrame——page-action 的 DOM 未命中
- *   ("未能…定位") 状态在本场景不可达。E2E 据实断言 honest degradation 的可观察面：无高亮 class +
- *   无"已为你定位"成功文案 + 出现如实文本降级气泡，而非假装高亮。
+ * 与 run-m1/m2 共用环境编排，唯一差异：host 服务由纯静态升级为"静态 + 宿主 API mock（带调用计数）"，
+ * 且 server 注入 ZA_SIGNING_SECRET（U7 一次性签名前提）。
  */
 import { spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
@@ -31,10 +31,8 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
 const HOST_DEMO_DIR = join(REPO_ROOT, 'examples', 'host-demo');
 
-/** page-action.ts 加在宿主页命中元素上的 za 前缀高亮 class（extension 无 @zen-agent 依赖、经手抄镜像）。 */
-const HIGHLIGHT_CLASS = 'za-guide-highlight';
-
 const JWT_SECRET = 'za-test-secret';
+const SIGNING_SECRET = 'za-test-signing-secret';
 const JWT_ISS = 'zen-agent-demo';
 const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_MOCK_PORT ?? 8788);
@@ -49,7 +47,6 @@ function base64url(input) {
   return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-/** HS256 现签测试 JWT：claims 过 C2 identity-claims 契约，exp 为 now+10min。 */
 function signTestJwt() {
   const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const payload = base64url(
@@ -66,10 +63,39 @@ function signTestJwt() {
   return `${header}.${payload}.${signature}`;
 }
 
-function startStaticHost() {
+function sendApiJson(res, status, body) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(body));
+}
+
+/**
+ * 宿主服务：静态文件 + 宿主 API mock。counts 暴露各端点调用次数供断言（代执行真实发生在页面环境、打到本服务）。
+ * cancel 返回 resultSchema 契合的 {ok, orderId}；refresh 返回 {ok, count}；delete（forbidden，永不应被调用）返回 {ok}。
+ */
+function startHostServer() {
+  const counts = { cancel: 0, refresh: 0, purge: 0 };
   const server = createServer((req, res) => {
-    const urlPath = new URL(req.url ?? '/', HOST_BASE).pathname;
-    const filePath = normalize(join(HOST_DEMO_DIR, decodeURIComponent(urlPath)));
+    const url = new URL(req.url ?? '/', HOST_BASE);
+    const path = decodeURIComponent(url.pathname);
+
+    const cancelMatch = /^\/api\/orders\/([^/]+)\/cancel$/.exec(path);
+    if (req.method === 'POST' && cancelMatch) {
+      counts.cancel += 1;
+      sendApiJson(res, 200, { ok: true, orderId: cancelMatch[1] });
+      return;
+    }
+    if (req.method === 'GET' && path === '/api/orders') {
+      counts.refresh += 1;
+      sendApiJson(res, 200, { ok: true, count: 2 });
+      return;
+    }
+    if (req.method === 'DELETE' && path === '/api/orders') {
+      counts.purge += 1;
+      sendApiJson(res, 200, { ok: true });
+      return;
+    }
+
+    const filePath = normalize(join(HOST_DEMO_DIR, path));
     if (!filePath.startsWith(HOST_DEMO_DIR) || !existsSync(filePath) || statSync(filePath).isDirectory()) {
       res.writeHead(404).end('not found');
       return;
@@ -79,7 +105,7 @@ function startStaticHost() {
   });
   return new Promise((resolveHost) => {
     server.listen(HOST_PORT, '127.0.0.1', () =>
-      resolveHost({ close: () => new Promise((r) => server.close(() => r())) }),
+      resolveHost({ counts, close: () => new Promise((r) => server.close(() => r())) }),
     );
   });
 }
@@ -92,7 +118,6 @@ function run(command, args, options) {
   });
 }
 
-/** 构建 extension + server（M2 gateway 引导接入需最新 dist），供后续 node dist/main.js 与扩展加载。 */
 async function buildTargets() {
   await run('pnpm', ['--filter', '@zen-agent/server', 'run', 'build']);
   await run('pnpm', ['--filter', '@zen-agent/extension', 'run', 'build']);
@@ -109,7 +134,7 @@ function startServer() {
     env: {
       ...process.env,
       ZA_JWT_SECRET: JWT_SECRET,
-      ZA_SIGNING_SECRET: 'za-test-signing-secret',
+      ZA_SIGNING_SECRET: SIGNING_SECRET,
       ZA_JWT_ISS_ALLOWLIST: JWT_ISS,
       ZA_SNAPSHOT_ROOT: join(REPO_ROOT, 'examples', 'host-demo', 'config'),
       ZA_SYSTEM_PROMPT_PATH: join(REPO_ROOT, 'assets', 'system-prompt.md'),
@@ -156,55 +181,65 @@ async function sendMessage(page, text) {
   await page.locator('#za-send').click();
 }
 
-/** 宿主页（light DOM）当前是否有元素带 za 高亮 class；#btn-export 命中与否是 DOM 事实、非治理判定。 */
-function anyHighlighted(page) {
-  return page.evaluate((cls) => document.querySelector(`.${cls}`) !== null, HIGHLIGHT_CLASS);
-}
-
-function btnExportHighlighted(page) {
-  return page.evaluate((cls) => {
-    const el = document.querySelector('#btn-export');
-    return el !== null && el.classList.contains(cls);
-  }, HIGHLIGHT_CLASS);
-}
-
-/** 面板消息区全文（Playwright 穿透 open shadow root 取 #za-root 内 [data-za-messages] 文本）。 */
 async function panelText(page) {
   const locator = page.locator('[data-za-messages]');
   if ((await locator.count()) === 0) return '';
   return (await locator.innerText()).trim();
 }
 
+function hitlCardCount(page) {
+  return page.locator('[data-za-hitl]').count();
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function runScenarios(page) {
-  // c 失配（order-list）：facts 无"打印发票"锚点 → LLM 如实文本降级，不假装高亮。
-  // 先跑失配再跑命中，避免命中留下的高亮 class 污染"无元素高亮"断言。
-  await sendMessage(page, '在哪里打印发票？');
-  await waitFor(async () => (await panelText(page)).includes('MOCK-NO-ANCHOR'), {
-    label: 'c 失配：等待如实文本降级回复',
-    timeoutMs: 15000,
+async function runScenarios(page, counts) {
+  // d4 auto（刷新）：riskTier=auto 直执，无 HITL 卡片，页面 GET /api/orders，回喂后总结。
+  await sendMessage(page, '刷新订单列表');
+  await waitFor(async () => (await panelText(page)).includes('已刷新，当前 2 笔订单'), {
+    label: 'd4 auto：等待刷新总结', timeoutMs: 15000,
   });
-  const missText = await panelText(page);
-  assert(!(await anyHighlighted(page)), `场景 c 失配：不应有元素获得高亮 class，面板文本：「${missText}」`);
-  assert(!missText.includes('已为你定位'), `场景 c 失配：出现了成功定位文案（假装高亮）：「${missText}」`);
-  console.log('  [pass] c 失配：无元素高亮、无成功文案，如实文本降级（MOCK-NO-ANCHOR）');
+  assert((await hitlCardCount(page)) === 0, 'd4 auto：不应出现 HITL 卡片');
+  assert(counts.refresh === 1, `d4 auto：GET /api/orders 应恰被调用 1 次，实际 ${counts.refresh}`);
+  console.log('  [pass] d4 auto：refresh 直执、无 HITL、页面 fetch 命中、总结正确');
 
-  // c 命中（order-list，同会话）：注入 guide_highlight → tool_call → GuideActionFrame → #btn-export 高亮。
-  await sendMessage(page, '导出订单在哪里？');
-  await waitFor(() => btnExportHighlighted(page), {
-    label: 'c 命中：等待 #btn-export 获得高亮 class',
-    timeoutMs: 15000,
+  // d3 forbidden（清空）：服务端 deny，无 HITL、无 exec-instruction，DELETE 计数 0。
+  await sendMessage(page, '清空所有订单');
+  await waitFor(async () => (await panelText(page)).includes('抱歉，该操作不被允许执行'), {
+    label: 'd3 forbidden：等待拒绝文案', timeoutMs: 15000,
   });
-  await waitFor(async () => (await panelText(page)).includes('已为你定位'), {
-    label: 'c 命中：等待面板定位文案',
-    timeoutMs: 5000,
+  assert((await hitlCardCount(page)) === 0, 'd3 forbidden：不应出现 HITL 卡片');
+  assert(counts.purge === 0, `d3 forbidden：DELETE /api/orders 不应被调用，实际 ${counts.purge}`);
+  console.log('  [pass] d3 forbidden：fail-closed deny、无 HITL/无 exec、DELETE 计数 0');
+
+  // d2 拒绝（取消 ORD-1002）：hitl 挂起弹卡 → 拒绝 → 不下发指令、/cancel 计数不增。
+  await sendMessage(page, '帮我取消订单 ORD-1002');
+  await waitFor(async () => (await hitlCardCount(page)) > 0, {
+    label: 'd2 拒绝：等待 HITL 卡片', timeoutMs: 15000,
   });
-  const hitText = await panelText(page);
-  assert(hitText.includes('导出按钮'), `场景 c 命中：面板 status 缺定位说明，实际：「${hitText}」`);
-  console.log(`  [pass] c 命中：#btn-export 已高亮，面板 status 含定位文案`);
+  await page.locator('[data-za-hitl-reject]').click();
+  await waitFor(async () => (await panelText(page)).includes('已取消该操作'), {
+    label: 'd2 拒绝：等待取消回喂总结', timeoutMs: 15000,
+  });
+  assert(counts.cancel === 0, `d2 拒绝：/cancel 不应被调用，实际 ${counts.cancel}`);
+  assert((await hitlCardCount(page)) === 0, 'd2 拒绝：裁决后卡片应移除');
+  console.log('  [pass] d2 拒绝：挂起弹卡 → 拒绝 → 无代执行、/cancel 计数 0');
+
+  // d1 HITL happy（取消 ORD-1001）：挂起弹卡 → 确认 → 一次性签名指令 → 页面 fetch /cancel → 回喂总结。
+  await sendMessage(page, '帮我取消订单 ORD-1001');
+  await waitFor(async () => (await hitlCardCount(page)) > 0, {
+    label: 'd1 happy：等待 HITL 卡片', timeoutMs: 15000,
+  });
+  await page.locator('[data-za-hitl-approve]').click();
+  await waitFor(async () => (await panelText(page)).includes('已为你取消订单 ORD-1001'), {
+    label: 'd1 happy：等待取消成功总结', timeoutMs: 15000,
+  });
+  assert(counts.cancel === 1, `d1 happy：POST /api/orders/ORD-1001/cancel 应恰 1 次，实际 ${counts.cancel}`);
+  const finalText = await panelText(page);
+  assert(finalText.includes('已完成：'), 'd1 happy：应出现 tool-card 已完成状态');
+  console.log('  [pass] d1 HITL happy：确认 → 签名指令 → 页面 fetch /cancel → 结果回喂 → 成功总结');
 }
 
 async function main() {
@@ -231,12 +266,12 @@ async function main() {
     );
     await waitServerReady();
 
-    console.log('[4/5] 静态托管 host-demo…');
-    const host = await startStaticHost();
+    console.log('[4/5] 起 host 服务（静态 + 宿主 API mock）…');
+    const host = await startHostServer();
     cleanups.push(() => host.close());
 
     console.log('[5/5] 启动 chromium 加载扩展…');
-    const userDataDir = join(REPO_ROOT, '.za', 'e2e-profile-m2');
+    const userDataDir = join(REPO_ROOT, '.za', 'e2e-profile-m3');
     const launchArgs = [
       `--disable-extensions-except=${EXTENSION_DIR}`,
       `--load-extension=${EXTENSION_DIR}`,
@@ -272,12 +307,12 @@ async function main() {
     await new Promise((r) => setTimeout(r, 400));
 
     console.log('场景断言：');
-    await runScenarios(page);
+    await runScenarios(page, host.counts);
 
-    console.log('\nM2 E2E 全部场景通过 ✅');
+    console.log('\nM3 E2E 全部场景通过 ✅');
   } catch (error) {
     failure = error;
-    console.error(`\nM2 E2E 失败：${error instanceof Error ? error.message : String(error)}`);
+    console.error(`\nM3 E2E 失败：${error instanceof Error ? error.message : String(error)}`);
   } finally {
     for (const cleanup of cleanups.reverse()) {
       await Promise.resolve()

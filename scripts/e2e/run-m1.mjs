@@ -102,6 +102,7 @@ function startServer() {
     env: {
       ...process.env,
       ZA_JWT_SECRET: JWT_SECRET,
+      ZA_SIGNING_SECRET: 'za-test-signing-secret',
       ZA_JWT_ISS_ALLOWLIST: JWT_ISS,
       ZA_SNAPSHOT_ROOT: join(REPO_ROOT, 'examples', 'host-demo', 'config'),
       ZA_SYSTEM_PROMPT_PATH: join(REPO_ROOT, 'assets', 'system-prompt.md'),
