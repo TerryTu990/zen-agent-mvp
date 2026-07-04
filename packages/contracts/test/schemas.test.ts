@@ -93,6 +93,19 @@ describe('C3 client-access-layer 消息帧', () => {
       sessionId: 's-001',
       delta: '在列表上方的状态筛选器中',
     },
+    'guide-action highlight 含 message': {
+      type: 'guide-action',
+      sessionId: 's-001',
+      action: 'highlight',
+      selector: '#btn-export',
+      message: '导出按钮在订单列表页的操作区',
+    },
+    'guide-action scroll-to 缺省 message': {
+      type: 'guide-action',
+      sessionId: 's-001',
+      action: 'scroll-to',
+      selector: '#btn-export',
+    },
   };
 
   it.each(Object.keys(validFrames))('合法 %s 帧通过校验', (frameType) => {
@@ -103,6 +116,22 @@ describe('C3 client-access-layer 消息帧', () => {
     'user-message 缺 required text': { type: 'user-message', sessionId: 's-001' },
     'context-report 缺 required url': { type: 'context-report', sessionId: 's-001' },
     '未知帧 type 被闭集拒绝': { type: 'page-reload', sessionId: 's-001' },
+    'guide-action action 越 highlight|scroll-to 闭集': {
+      type: 'guide-action',
+      sessionId: 's-001',
+      action: 'click',
+      selector: '#btn-export',
+    },
+    'guide-action 缺 required selector': {
+      type: 'guide-action',
+      sessionId: 's-001',
+      action: 'highlight',
+    },
+    'guide-action 缺 required type': {
+      sessionId: 's-001',
+      action: 'highlight',
+      selector: '#btn-export',
+    },
   };
 
   it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {

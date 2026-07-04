@@ -15,6 +15,10 @@ const key = new TextEncoder().encode(JWT_SECRET);
 const REPLY_R1 = '根据本功能事实：已完成订单不可取消（其取消按钮为禁用态）。';
 const REPLY_R2_LIST = '这是订单列表页：可查看订单、进入详情、取消未发货订单。';
 const REPLY_R3 = '这超出了我的职责范围：我只辅助你使用当前系统，无法回答与系统无关的问题。';
+const REPLY_NO_ANCHOR = 'MOCK-NO-ANCHOR';
+
+const ORDER_LIST_URL = 'http://127.0.0.1:4173/order-list.html';
+const UNKNOWN_URL = 'http://127.0.0.1:4173/unknown.html';
 
 interface MockLlmHandle {
   port: number;
@@ -398,6 +402,93 @@ describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
       expect(text).not.toContain(token);
     } finally {
       process.env['ZA_LLM_BASE_URL'] = savedBaseUrl;
+      sse.close();
+    }
+  });
+});
+
+function guideFrames(frames: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return frames.filter((frame) => frame['type'] === 'guide-action');
+}
+
+describe('引导闭环（guide-action 下发 + built-in 工具注入门）', () => {
+  it('order-list 问定位且 facts 有锚点 → 下发 guide-action 高亮 #btn-export，回合终结不回喂', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      const message = await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '导出订单在哪里？',
+      });
+      expect(message.status).toBe(202);
+      await sse.waitFor(() => guideFrames(sse.frames).length > 0);
+      const guide = guideFrames(sse.frames)[0]!;
+      expect(guide['action']).toBe('highlight');
+      expect(guide['selector']).toBe('#btn-export');
+      expect(guide['message']).toContain('导出');
+      expect(guide['sessionId']).toBe(sessionId);
+      // 引导是终结动作：本回合不回喂 observation，无 LLM 二次文本气泡
+      expect(textOf(sse.frames)).toBe('');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('order-list 问 facts 无锚点的定位问题 → 如实降级文本，不下发 guide-action', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '在哪里打印发票？',
+      });
+      await sse.waitFor(() => textOf(sse.frames) === REPLY_NO_ANCHOR);
+      expect(guideFrames(sse.frames)).toHaveLength(0);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('无 facts 页（featureId=null）不注入 guide 工具 → 定位问句仍退化为文本', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    await postFrame(token, sessionId, { type: 'context-report', sessionId, url: UNKNOWN_URL });
+    const injection = await getInjection(token, sessionId);
+    expect(injection['featureId']).toBeNull();
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '导出在哪里？',
+      });
+      await sse.waitFor(() => textOf(sse.frames) === REPLY_NO_ANCHOR);
+      expect(guideFrames(sse.frames)).toHaveLength(0);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('LLM 产出越界 action 的引导 tool-call → 服务端不下发非法帧，改文本降级', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '越界导出在哪里？',
+      });
+      await sse.waitFor(() => textOf(sse.frames).includes('未能定位到目标元素'));
+      expect(guideFrames(sse.frames)).toHaveLength(0);
+    } finally {
       sse.close();
     }
   });

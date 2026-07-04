@@ -1,5 +1,6 @@
 import { createContextReporter } from './context-report.js';
 import { createConversationUi } from './conversation-hitl.js';
+import { createDomGuidePage, createPageActionRunner } from './page-action.js';
 import {
   SESSION_PORT_NAME,
   type BackgroundToContentMessage,
@@ -68,6 +69,7 @@ function main(): void {
   if (document.getElementById('za-root') !== null) return;
   const { messages, input, sendButton } = mountPanel();
   const ui = createConversationUi(messages);
+  const pageAction = createPageActionRunner(createDomGuidePage());
   const port = chrome.runtime.connect({ name: SESSION_PORT_NAME });
   const send = (message: ContentToBackgroundMessage) => port.postMessage(message);
 
@@ -77,6 +79,8 @@ function main(): void {
       ui.showStatus(message.message);
     } else if (message.kind === 'frame' && message.frame.type === 'text-delta') {
       ui.appendTextDelta(message.frame);
+    } else if (message.kind === 'frame' && message.frame.type === 'guide-action') {
+      ui.showStatus(pageAction.run(message.frame).status);
     }
   });
 

@@ -11,8 +11,11 @@ import type {
   AssemblyPort,
   ComposeResult,
   DownstreamFrame,
+  GuideActionFrame,
+  GuideActionKind,
   LlmMessage,
   LlmPort,
+  LlmToolSpec,
   UpstreamFrame,
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
@@ -73,6 +76,51 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/**
+ * built-in 引导工具：不入 tools.json、不经 toolgate（那是 M3 宿主 API 工具路径）。
+ * 仅当 composed.facts 非 null（当前功能有登记锚点）时注入；selector 取自 facts 登记锚点由
+ * feature.md 运行期规则约束 LLM，服务端不校验其是否真在 facts 内（失配由客户端降级兜底）。
+ */
+const GUIDE_TOOL_NAME = 'guide_highlight';
+
+const GUIDE_TOOL_SPEC: LlmToolSpec = {
+  name: GUIDE_TOOL_NAME,
+  description:
+    '当用户询问某操作/入口在页面哪里时，用它高亮或滚动到当前功能页面上 facts 已登记的元素，帮助用户定位。selector 必须取自本功能 facts 中登记的元素锚点（如 #btn-export）；action 用 highlight 高亮或 scroll-to 滚动。',
+  params: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['action', 'selector'],
+    properties: {
+      action: { enum: ['highlight', 'scroll-to'] },
+      selector: { type: 'string' },
+      message: { type: 'string' },
+    },
+  },
+};
+
+const GUIDE_ACTIONS: ReadonlySet<string> = new Set(['highlight', 'scroll-to']);
+
+/**
+ * 把 guide_highlight tool-call 的实参规整为下行页面动作帧；message 缺省则省略（U1 纯数据）。
+ * action 越 highlight|scroll-to 闭集或 selector 非非空串 → null：服务端不下发违反 C3 契约的帧
+ * （LLM 幻觉出的非法引导参数在此被拦，改走文本降级）。
+ */
+function guideFrame(sessionId: string, params: Record<string, unknown>): GuideActionFrame | null {
+  const action = params['action'];
+  const selector = params['selector'];
+  if (typeof action !== 'string' || !GUIDE_ACTIONS.has(action)) return null;
+  if (typeof selector !== 'string' || selector === '') return null;
+  const message = params['message'];
+  return {
+    type: 'guide-action',
+    sessionId,
+    action: action as GuideActionKind,
+    selector,
+    ...(typeof message === 'string' ? { message } : {}),
+  };
+}
+
 function buildSystemContent(composed: ComposeResult): string {
   const parts = [composed.systemPrompt];
   if (composed.featureRules !== null) parts.push(composed.featureRules);
@@ -118,11 +166,32 @@ export function createGateway(deps: GatewayDeps): Gateway {
       ...session.history,
       { role: 'user', content: text },
     ];
+    const tools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
     let assistantText = '';
-    for await (const event of deps.llm.chat({ messages })) {
+    for await (const event of deps.llm.chat(
+      tools.length > 0 ? { messages, tools } : { messages },
+    )) {
       if (event.kind === 'text-delta') {
         assistantText += event.delta;
         broadcast(sessionId, { type: 'text-delta', sessionId, delta: event.delta });
+      } else if (event.kind === 'tool-call') {
+        if (event.name === GUIDE_TOOL_NAME) {
+          // 引导是终结动作：直接下发页面动作帧，本回合结束——不回喂 observation、不再等 LLM。
+          const frame = guideFrame(sessionId, event.params);
+          if (frame !== null) {
+            broadcast(sessionId, frame);
+          } else {
+            const notice = '未能定位到目标元素。';
+            assistantText += notice;
+            broadcast(sessionId, { type: 'text-delta', sessionId, delta: notice });
+          }
+        } else {
+          // 宿主 API 工具（tools.json）接入 agent 回合的锚点=M3；此前只如实告知不支持，不 fail。
+          const notice = '该操作暂未支持。';
+          assistantText += notice;
+          broadcast(sessionId, { type: 'text-delta', sessionId, delta: notice });
+        }
+        break;
       } else if (event.kind === 'done' && event.stopReason === 'error') {
         // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
         const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;

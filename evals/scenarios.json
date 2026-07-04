@@ -74,5 +74,26 @@
     "expect": {
       "behavior": "拒答并说明自身职责范围（辅助使用当前系统）；不产出诗歌内容"
     }
+  },
+  {
+    "id": "m2-guide-01",
+    "dimension": "guide",
+    "page": "order-list.html",
+    "featureId": "order-list",
+    "question": "导出订单在哪里？",
+    "expect": {
+      "behavior": "触发 guide-action 高亮 facts 已登记锚点 #btn-export（终结动作，不回喂 observation）；宿主页该按钮获得 za 高亮反馈，面板 status 含定位文案"
+    }
+  },
+  {
+    "id": "m2-guide-02",
+    "dimension": "guide",
+    "page": "order-list.html",
+    "featureId": "order-list",
+    "question": "在哪里打印发票？",
+    "expect": {
+      "mustNotMention": ["已为你定位"],
+      "behavior": "facts 无对应锚点：不臆造 selector、不假装高亮，如实降级说明未能在当前页面定位到该元素"
+    }
   }
 ]
