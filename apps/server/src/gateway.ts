@@ -142,7 +142,7 @@ const SNAPSHOT_TOOL_NAME = 'page_snapshot';
 const SNAPSHOT_TOOL_SPEC: LlmToolSpec = {
   name: SNAPSHOT_TOOL_NAME,
   description:
-    '获取当前页面可交互元素快照（含 ref 编号、角色与可读标签）。计划页面代操作前必须先调用本工具取得 ref；操作后需要确认页面新状态时可再次调用。',
+    '获取当前页面可交互元素快照（含 ref 编号、角色与可读标签），并附页面当前可见的告警/校验提示文本（notices）。计划页面代操作前必须先调用本工具取得 ref；操作后需要确认页面新状态（含是否被校验提示拦截）时可再次调用。',
   params: { type: 'object', additionalProperties: false, properties: {} },
 };
 
@@ -474,7 +474,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
         messages.push({
           role: 'tool',
           toolCallId: call.toolCallId,
-          content: JSON.stringify({ url: report.url, title: report.title ?? '', elements: report.elements }),
+          content: JSON.stringify({
+            url: report.url,
+            title: report.title ?? '',
+            elements: report.elements,
+            ...(report.notices !== undefined ? { notices: report.notices } : {}),
+          }),
         });
         continue;
       }

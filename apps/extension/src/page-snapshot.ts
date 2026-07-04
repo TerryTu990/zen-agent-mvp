@@ -16,16 +16,37 @@ const INTERACTIVE_SELECTOR = [
   '[role="link"]',
   '[role="tab"]',
   '[role="menuitem"]',
+  '[role="combobox"]',
+  '[role="option"]',
+  // 无 role 自定义下拉的有界形态：仅收 listbox 后代 li，禁无差别收录裸 li/div（快照会爆炸）。
+  '[role="listbox"] li',
   '[contenteditable="true"]',
+].join(', ');
+
+/**
+ * 页面提示文本来源：语义化提示区（alert/status/aria-live）+ 宿主常见的校验错误类名启发式。
+ * 后者仅收短文本叶节点（长容器/含表单控件的整块区域一律跳过），避免噪声撑爆观测。
+ */
+const NOTICE_SELECTOR = [
+  '[role="alert"]',
+  '[role="status"]',
+  '[aria-live="polite"]',
+  '[aria-live="assertive"]',
+  '[class*="error" i]',
+  '[class*="invalid" i]',
 ].join(', ');
 
 const MAX_ELEMENTS = 150;
 const MAX_LABEL_LENGTH = 80;
+const MAX_NOTICES = 10;
+const MAX_NOTICE_LENGTH = 200;
 
 export interface PageSnapshot {
   url: string;
   title: string;
   elements: SnapshotElement[];
+  /** 页面当前可见的告警/校验/状态提示文本（已去重截断）：agent 据此识别表单校验等拦截。 */
+  notices: string[];
 }
 
 export interface Snapshotter {
@@ -56,6 +77,49 @@ function labelOf(el: Element): string {
   const text = el.textContent?.trim().replace(/\s+/g, ' ') ?? '';
   if (text !== '') return text.slice(0, MAX_LABEL_LENGTH);
   return el.getAttribute('name') ?? '';
+}
+
+/** 提示文本专用可见性：声明式隐藏之外再排除内联 display/visibility 切换——宿主校验提示常以内联样式显隐。 */
+function isNoticeHidden(el: Element): boolean {
+  if (isDeclaredHidden(el)) return true;
+  for (let node: Element | null = el; node !== null; node = node.parentElement) {
+    if (!(node instanceof HTMLElement)) continue;
+    if (node.style.display === 'none' || node.style.visibility === 'hidden') return true;
+  }
+  return false;
+}
+
+/** 语义化提示区（alert/status/aria-live）；非此即 class 启发式命中，须加短文本约束。 */
+function isSemanticNotice(el: Element): boolean {
+  const role = el.getAttribute('role');
+  if (role === 'alert' || role === 'status') return true;
+  const live = el.getAttribute('aria-live');
+  return live === 'polite' || live === 'assertive';
+}
+
+// 只读 textContent、绝不读控件 value（密码等敏感值不进提示，沿用 SEC-04 快照口径）。
+function collectNotices(doc: Document): string[] {
+  const notices: string[] = [];
+  const seen = new Set<string>();
+  const accepted: Element[] = [];
+  for (const el of doc.querySelectorAll(NOTICE_SELECTOR)) {
+    if (notices.length >= MAX_NOTICES) break;
+    if (isNoticeHidden(el)) continue;
+    // 嵌套命中（如 alert 区内的 error 子节点）只取外层，避免同段文本重复上报。
+    if (accepted.some((outer) => outer.contains(el))) continue;
+    const text = el.textContent?.trim().replace(/\s+/g, ' ') ?? '';
+    if (text === '') continue;
+    if (!isSemanticNotice(el)) {
+      if (text.length > MAX_NOTICE_LENGTH) continue;
+      if (el.querySelector('input, select, textarea, button') !== null) continue;
+    }
+    const clipped = text.slice(0, MAX_NOTICE_LENGTH);
+    if (seen.has(clipped)) continue;
+    seen.add(clipped);
+    accepted.push(el);
+    notices.push(clipped);
+  }
+  return notices;
 }
 
 function valueOf(el: Element): string | undefined {
@@ -97,7 +161,7 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
           ...(disabled ? { disabled } : {}),
         });
       }
-      return { url: doc.location?.href ?? '', title: doc.title, elements };
+      return { url: doc.location?.href ?? '', title: doc.title, elements, notices: collectNotices(doc) };
     },
     resolve(ref) {
       const el = refs.get(ref);

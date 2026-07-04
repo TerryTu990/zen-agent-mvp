@@ -78,6 +78,8 @@ export interface SnapshotReportFrame {
   url: string;
   title?: string;
   elements: SnapshotElement[];
+  /** 页面当前可见的告警/校验/状态提示文本（客户端去重截断）：供 agent 识别表单校验等拦截性提示。 */
+  notices?: string[];
 }
 
 export type UpstreamFrame =

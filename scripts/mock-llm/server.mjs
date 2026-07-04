@@ -61,6 +61,18 @@ function pickToolCall(u, body) {
   return null;
 }
 
+/** 快照观察 notices 首条；无提示返回 null——有提示即"被页面校验拦截"，不再继续操作。 */
+function firstNotice(obs) {
+  let snap;
+  try {
+    snap = JSON.parse(obs);
+  } catch {
+    return null;
+  }
+  const notices = Array.isArray(snap.notices) ? snap.notices : [];
+  return typeof notices[0] === 'string' && notices[0] !== '' ? notices[0] : null;
+}
+
 /**
  * 快照观察轮 → page-operate 批次：从快照 elements 取首个输入框与按钮的 ref，
  * 产出 fill+click+read 三步（read 键固定 noteValue，供回喂轮匹配）。
@@ -122,8 +134,11 @@ function summarizeObs(obs) {
 function decide(sys, u, body) {
   const obs = lastToolObs(body);
   if (obs !== null) {
-    // 快照观察轮：据 elements 决策 dom 批次（agent-in-the-loop 的确定性替身）。
+    // 快照观察轮：据 elements 决策 dom 批次（agent-in-the-loop 的确定性替身）；
+    // 快照带 notices＝页面有拦截性提示 → 如实报告而非继续操作（成功幻觉的反面路径）。
     if (obs.includes('"elements"') && hasTool(body, TOOL_PAGE_OPERATE)) {
+      const notice = firstNotice(obs);
+      if (notice !== null) return { text: `页面提示：${notice}，已停止操作，请先处理该提示。` };
       return { toolCall: pageOperateCall(obs) };
     }
     // dom 结果回喂轮：报告 read 采集值。

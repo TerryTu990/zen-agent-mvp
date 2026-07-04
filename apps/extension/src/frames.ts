@@ -68,6 +68,7 @@ export interface SnapshotReportFrame {
   url: string;
   title?: string;
   elements: SnapshotElement[];
+  notices?: string[];
 }
 
 export type UpstreamFrame =

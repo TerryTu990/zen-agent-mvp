@@ -24,7 +24,9 @@ function makeDeps(overrides: Partial<DownstreamRouterDeps> = {}): {
     },
     pageAction: { run: vi.fn().mockReturnValue({ hit: true, status: '已定位' }) },
     snapshot: {
-      collect: vi.fn().mockReturnValue({ url: 'http://host/console', title: '控制台', elements: [] }),
+      collect: vi
+        .fn()
+        .mockReturnValue({ url: 'http://host/console', title: '控制台', elements: [], notices: [] }),
     },
     executor: {
       execute: vi.fn().mockResolvedValue({
@@ -132,6 +134,32 @@ describe('routeDownstreamFrame 下行帧分发', () => {
         url: 'http://host/console',
         title: '控制台',
         elements: [],
+      },
+    });
+  });
+
+  it('snapshot-request：快照带页面提示时 report 含 notices，空提示则省略该字段', () => {
+    const { deps, sent } = makeDeps({
+      snapshot: {
+        collect: vi.fn().mockReturnValue({
+          url: 'http://host/console',
+          title: '控制台',
+          elements: [],
+          notices: ['请选择分组'],
+        }),
+      },
+    });
+    routeDownstreamFrame({ type: 'snapshot-request', sessionId: 's1', requestId: 'r2' }, deps);
+    expect(sent).toContainEqual({
+      kind: 'snapshot-report',
+      report: {
+        type: 'snapshot-report',
+        sessionId: 's1',
+        requestId: 'r2',
+        url: 'http://host/console',
+        title: '控制台',
+        elements: [],
+        notices: ['请选择分组'],
       },
     });
   });

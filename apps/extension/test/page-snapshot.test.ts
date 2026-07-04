@@ -63,4 +63,94 @@ describe('createSnapshotter：可交互元素采集与 ref 映射', () => {
     snapshotter.collect();
     expect(snapshotter.resolve('za-2')).toBe(document.querySelectorAll('button')[1]);
   });
+
+  it('自定义下拉纳入采集：combobox / option / listbox 后代 li；裸 li 不收', () => {
+    document.body.innerHTML = `
+      <div role="combobox" aria-label="分组">请选择分组</div>
+      <ul role="listbox">
+        <li>分组A</li>
+        <li role="option">分组B</li>
+      </ul>
+      <ul><li>普通列表项不收</li></ul>
+    `;
+    const { elements } = createSnapshotter().collect();
+    // combobox 的 label 按既有优先级取 aria-label。
+    expect(elements.map((e) => e.label)).toEqual(['分组', '分组A', '分组B']);
+  });
+});
+
+describe('createSnapshotter：页面提示文本 notices 采集', () => {
+  it('无提示时 notices 为空数组', () => {
+    document.body.innerHTML = '<button>提交</button>';
+    expect(createSnapshotter().collect().notices).toEqual([]);
+  });
+
+  it('采集 role=alert / role=status / aria-live 区域文本并归一空白', () => {
+    document.body.innerHTML = `
+      <div role="alert">请选择分组</div>
+      <div role="status">保存中
+        请稍候</div>
+      <div aria-live="polite">已加载 3 条</div>
+      <div aria-live="off">off 区不收</div>
+    `;
+    expect(createSnapshotter().collect().notices).toEqual([
+      '请选择分组',
+      '保存中 请稍候',
+      '已加载 3 条',
+    ]);
+  });
+
+  it('采集 class 含 error/invalid 的短文本节点', () => {
+    document.body.innerHTML = `
+      <span class="form-error">请选择分组</span>
+      <p class="is-Invalid">名称不能为空</p>
+    `;
+    expect(createSnapshotter().collect().notices).toEqual(['请选择分组', '名称不能为空']);
+  });
+
+  it('class 启发式跳过长容器与含表单控件的区块', () => {
+    document.body.innerHTML = `
+      <div class="error-panel">${'长'.repeat(201)}</div>
+      <div class="error"><input type="text" value="abc" /><span>整块表单区</span></div>
+      <span class="error">真正的错误提示</span>
+    `;
+    expect(createSnapshotter().collect().notices).toEqual(['真正的错误提示']);
+  });
+
+  it('不可见提示不收：hidden 祖先 / aria-hidden / 内联 display 与 visibility（含祖先）', () => {
+    document.body.innerHTML = `
+      <div hidden><span role="alert">藏A</span></div>
+      <span role="alert" aria-hidden="true">藏B</span>
+      <span role="alert" style="display:none">藏C</span>
+      <div style="visibility:hidden"><span class="error">藏D</span></div>
+      <span role="alert">可见提示</span>
+    `;
+    expect(createSnapshotter().collect().notices).toEqual(['可见提示']);
+  });
+
+  it('去重与嵌套：alert 区内的 error 子节点只取外层，重复文本只留一条', () => {
+    document.body.innerHTML = `
+      <div role="alert">请选择分组 <span class="error">再试一次</span></div>
+      <span class="error">请选择分组 再试一次</span>
+    `;
+    expect(createSnapshotter().collect().notices).toEqual(['请选择分组 再试一次']);
+  });
+
+  it('单条截断 200 字符、总量上限 10 条', () => {
+    const long = `<div role="alert">${'甲'.repeat(250)}</div>`;
+    const many = Array.from({ length: 12 }, (_, i) => `<div role="alert">提示${i}</div>`).join('');
+    document.body.innerHTML = long + many;
+    const { notices } = createSnapshotter().collect();
+    expect(notices).toHaveLength(10);
+    expect(notices[0]).toBe('甲'.repeat(200));
+  });
+
+  it('提示只取 textContent，不含控件 value（密码值不进 notices，SEC-04）', () => {
+    document.body.innerHTML = `
+      <div role="alert">密码格式错误<input type="password" value="s3cret" /></div>
+    `;
+    const { notices } = createSnapshotter().collect();
+    expect(notices).toEqual(['密码格式错误']);
+    expect(JSON.stringify(notices)).not.toContain('s3cret');
+  });
 });

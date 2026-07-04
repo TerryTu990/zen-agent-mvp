@@ -262,6 +262,12 @@
               "disabled": { "type": "boolean" }
             }
           }
+        },
+        "notices": {
+          "$comment": "页面当前可见的告警/校验/状态提示文本（客户端已去重截断）：供 agent 识别表单校验等拦截性提示；缺省=未采集到提示。",
+          "type": "array",
+          "maxItems": 10,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
         }
       }
     },

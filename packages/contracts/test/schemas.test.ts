@@ -139,6 +139,43 @@ describe('C3 client-access-layer 消息帧', () => {
   });
 });
 
+describe('C3 snapshot-report 帧（含页面提示文本 notices）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'client-access-layer.schema.json');
+
+  const baseReport = {
+    type: 'snapshot-report',
+    sessionId: 's-001',
+    requestId: 'r-01',
+    url: 'https://host.example/orders/order-list.html',
+    title: '订单列表',
+    elements: [{ ref: 'za-1', role: 'button', label: '提交' }],
+  };
+
+  const validFrames: Record<string, unknown> = {
+    'snapshot-report 缺省 notices（向后兼容）': baseReport,
+    'snapshot-report 含 notices': { ...baseReport, notices: ['请选择分组'] },
+    'snapshot-report notices 空数组': { ...baseReport, notices: [] },
+  };
+
+  it.each(Object.keys(validFrames))('合法 %s 通过校验', (label) => {
+    expect(validate(validFrames[label]), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  const invalidFrames: Record<string, unknown> = {
+    'notices 项越 200 字符上限': { ...baseReport, notices: ['x'.repeat(201)] },
+    'notices 越 10 条上限': {
+      ...baseReport,
+      notices: Array.from({ length: 11 }, (_, i) => `提示 ${i}`),
+    },
+    'notices 含空串': { ...baseReport, notices: [''] },
+    'notices 含非字符串项': { ...baseReport, notices: [{ text: '请选择分组' }] },
+  };
+
+  it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {
+    expect(validate(invalidFrames[label])).toBe(false);
+  });
+});
+
 describe('C2 identity-claims', () => {
   const validate = compile(new Ajv2020({ strict: true }), 'identity-claims.schema.json');
 

@@ -40,7 +40,7 @@ export function routeDownstreamFrame(frame: DownstreamFrame, deps: DownstreamRou
         .then((result) => deps.send({ kind: 'exec-result', result }));
       break;
     case 'snapshot-request': {
-      const { url, title, elements } = deps.snapshot.collect();
+      const { url, title, elements, notices } = deps.snapshot.collect();
       deps.send({
         kind: 'snapshot-report',
         report: {
@@ -50,6 +50,7 @@ export function routeDownstreamFrame(frame: DownstreamFrame, deps: DownstreamRou
           url,
           ...(title !== '' ? { title } : {}),
           elements,
+          ...(notices.length > 0 ? { notices } : {}),
         },
       });
       break;
