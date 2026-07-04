@@ -23,6 +23,9 @@ function makeDeps(overrides: Partial<DownstreamRouterDeps> = {}): {
       promptHitl: vi.fn().mockResolvedValue('approve'),
     },
     pageAction: { run: vi.fn().mockReturnValue({ hit: true, status: '已定位' }) },
+    snapshot: {
+      collect: vi.fn().mockReturnValue({ url: 'http://host/console', title: '控制台', elements: [] }),
+    },
     executor: {
       execute: vi.fn().mockResolvedValue({
         type: 'exec-result',
@@ -113,6 +116,23 @@ describe('routeDownstreamFrame 下行帧分发', () => {
         kind: 'exec-result',
         result: { type: 'exec-result', sessionId: 's1', nonce: 'n1', ok: true, status: 200, body: { ok: true } },
       });
+    });
+  });
+
+  it('snapshot-request → snapshot.collect，快照经 send 回传 snapshot-report（requestId 关联）', () => {
+    const { deps, sent } = makeDeps();
+    routeDownstreamFrame({ type: 'snapshot-request', sessionId: 's1', requestId: 'r1' }, deps);
+    expect(deps.snapshot.collect).toHaveBeenCalled();
+    expect(sent).toContainEqual({
+      kind: 'snapshot-report',
+      report: {
+        type: 'snapshot-report',
+        sessionId: 's1',
+        requestId: 'r1',
+        url: 'http://host/console',
+        title: '控制台',
+        elements: [],
+      },
     });
   });
 });

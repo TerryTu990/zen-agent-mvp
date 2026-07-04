@@ -1,6 +1,8 @@
 import { createContextReporter } from './context-report.js';
 import { createConversationUi } from './conversation-hitl.js';
 import { createDelegatedExecutor } from './delegated-execution.js';
+import { createDomStepRunner } from './dom-steps.js';
+import { createSnapshotter } from './page-snapshot.js';
 import { routeDownstreamFrame } from './content-router.js';
 import { createDomGuidePage, createPageActionRunner } from './page-action.js';
 import {
@@ -290,7 +292,9 @@ function main(): void {
   wireDrawerControls(panelRefs);
   const ui = createConversationUi(messages);
   const pageAction = createPageActionRunner(createDomGuidePage());
-  const executor = createDelegatedExecutor();
+  // 快照器与 dom 解释器共享 ref 映射：解释器只解引用最近一次快照的 ref（adr-011）。
+  const snapshot = createSnapshotter();
+  const executor = createDelegatedExecutor(fetch, createDomStepRunner((ref) => snapshot.resolve(ref)));
 
   let port: chrome.runtime.Port | null = null;
   let reconnectTimer: number | null = null;
@@ -318,8 +322,10 @@ function main(): void {
     const message = raw as BackgroundToContentMessage;
     if (message.kind === 'status') {
       ui.showStatus(message.message);
+    } else if (message.kind === 'user-echo') {
+      ui.appendUserMessage(message.text);
     } else if (message.kind === 'frame') {
-      routeDownstreamFrame(message.frame, { ui, pageAction, executor, send });
+      routeDownstreamFrame(message.frame, { ui, pageAction, executor, snapshot, send });
     }
   };
   // (重)连即重发身份 + 上下文：background 复用已存 sessionId 时更新 currentUrl，无存时据此开会话。
@@ -343,6 +349,10 @@ function main(): void {
   // 保活：每 20s（< MV3 30s 空闲阈值）一次端口消息，其到达即重置 SW 计时器，
   // 页面开着 SW 不被回收 → 会话与 SSE 稳定、in-flight HITL/代执行不丢。端口已断则触发重连。
   window.setInterval(() => send({ kind: 'ping' }), 20000);
+  // 回到可见即重报上下文：组内活跃页跟随用户视线（HITL/exec/guide 路由到此页，adr-012）。
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') announce();
+  });
 
   const submit = () => {
     const text = input.value.trim();

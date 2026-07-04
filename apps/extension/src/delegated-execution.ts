@@ -1,18 +1,37 @@
 import type { ExecInstructionFrame, ExecResultFrame, JsonValue } from './frames.js';
+import type { DomStepRunner } from './dom-steps.js';
 
 export interface DelegatedExecutor {
   /**
-   * 在页面环境以用户既有会话（credentials:include）发出服务端已定值的请求，结果原样回传。
-   * 客户端零治理：不校验 signature、不改指令、不预判 riskTier——核销、resultSchema 校验、
-   * nonce 权威全在服务端（U7）。失败如实回报，错误文案不含 token/签名值（SEC-04）。
+   * 按签名指令的 request 形态代执行：http（默认）在页面环境以用户既有会话
+   * （credentials:include）发出服务端已定值的请求；dom（kind='dom'）经闭集解释器
+   * 可见地操作页面。客户端零治理：不校验 signature、不改指令、不预判 riskTier——
+   * 核销、resultSchema 校验、nonce 权威全在服务端（U7）。失败如实回报，
+   * 错误文案不含 token/签名值（SEC-04）。
    */
   execute(frame: ExecInstructionFrame): Promise<ExecResultFrame>;
 }
 
-export function createDelegatedExecutor(fetchImpl: typeof fetch = fetch): DelegatedExecutor {
+export function createDelegatedExecutor(
+  fetchImpl: typeof fetch = fetch,
+  domRunner?: DomStepRunner,
+): DelegatedExecutor {
   return {
     async execute(frame) {
       const { sessionId, nonce, request } = frame;
+
+      // 判别：仅 DomExecRequest 带 kind；in 收窄让 else 分支落回 http 形态。
+      if ('kind' in request) {
+        if (domRunner === undefined) {
+          return { type: 'exec-result', sessionId, nonce, ok: false, error: 'dom-runner-unavailable' };
+        }
+        const outcome = await domRunner.run(request.steps);
+        const result: ExecResultFrame = { type: 'exec-result', sessionId, nonce, ok: outcome.ok };
+        if (outcome.body !== undefined) result.body = outcome.body;
+        if (outcome.error !== undefined) result.error = outcome.error;
+        return result;
+      }
+
       let response: Response;
       try {
         response = await fetchImpl(request.url, {

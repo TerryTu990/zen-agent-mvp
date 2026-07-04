@@ -2,18 +2,21 @@ import type { DownstreamFrame } from './frames.js';
 import type { ConversationUi } from './conversation-hitl.js';
 import type { DelegatedExecutor } from './delegated-execution.js';
 import type { PageActionRunner } from './page-action.js';
+import type { Snapshotter } from './page-snapshot.js';
 import type { ContentToBackgroundMessage } from './messaging.js';
 
 export interface DownstreamRouterDeps {
   ui: Pick<ConversationUi, 'appendTextDelta' | 'showStatus' | 'renderToolCard' | 'promptHitl'>;
   pageAction: Pick<PageActionRunner, 'run'>;
   executor: DelegatedExecutor;
+  snapshot: Pick<Snapshotter, 'collect'>;
   send: (message: ContentToBackgroundMessage) => void;
 }
 
 /**
  * 下行帧唯一分发点。代执行与 HITL 均只呈现/执行/回传，治理判定全在服务端（U7）：
- * hitl-request 弹卡收裁决后经 send 回 hitl-decision；exec-instruction 页面环境代执行后回 exec-result。
+ * hitl-request 弹卡收裁决后经 send 回 hitl-decision；exec-instruction 页面环境代执行后回 exec-result；
+ * snapshot-request 采集可交互元素清单回 snapshot-report（sessionId 由 background 盖章）。
  */
 export function routeDownstreamFrame(frame: DownstreamFrame, deps: DownstreamRouterDeps): void {
   switch (frame.type) {
@@ -36,5 +39,20 @@ export function routeDownstreamFrame(frame: DownstreamFrame, deps: DownstreamRou
         .execute(frame)
         .then((result) => deps.send({ kind: 'exec-result', result }));
       break;
+    case 'snapshot-request': {
+      const { url, title, elements } = deps.snapshot.collect();
+      deps.send({
+        kind: 'snapshot-report',
+        report: {
+          type: 'snapshot-report',
+          sessionId: frame.sessionId,
+          requestId: frame.requestId,
+          url,
+          ...(title !== '' ? { title } : {}),
+          elements,
+        },
+      });
+      break;
+    }
   }
 }

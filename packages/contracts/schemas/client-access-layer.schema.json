@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zen-agent.dev/schema/client-access-layer/v1.json",
   "title": "zen-agent 客户端接入层契约 C3（client-access-layer，SSOT）",
-  "description": "客户端接入层与会话网关之间的消息帧闭集——本 schema 校验任一单帧（上行 4 帧经 HTTP POST，下行 5 帧经 SSE，D6：单向下行+HTTP 上行）。【五能力契约（U5）】任何客户端形态（MVP 仅 Chrome 插件；标准版 插件/嵌入 SDK/浏览器壳）都实现同一组能力：identity 身份获取 / context-report 上下文上报 / conversation-hitl 会话 UI+HITL 卡片 / page-action 页面动作 / delegated-execution 代执行——能力闭集见 $defs/capability，换形态不换契约。【治理边界】客户端零治理判定：分级/HITL 决策永远在服务端（U7）；exec-instruction 为签名一次性指令（nonce+ttl+signature 必含），exec-result 回传经服务端校验后才回喂 agent。所有帧 JSON 可序列化（U1）。",
+  "description": "客户端接入层与会话网关之间的消息帧闭集——本 schema 校验任一单帧（上行 5 帧经 HTTP POST，下行 6 帧经 SSE，D6：单向下行+HTTP 上行）。【五能力契约（U5）】任何客户端形态（MVP 仅 Chrome 插件；标准版 插件/嵌入 SDK/浏览器壳）都实现同一组能力：identity 身份获取 / context-report 上下文上报 / conversation-hitl 会话 UI+HITL 卡片 / page-action 页面动作 / delegated-execution 代执行——能力闭集见 $defs/capability，换形态不换契约。【治理边界】客户端零治理判定：分级/HITL 决策永远在服务端（U7）；exec-instruction 为签名一次性指令（nonce+ttl+signature 必含），exec-result 回传经服务端校验后才回喂 agent。所有帧 JSON 可序列化（U1）。",
   "oneOf": [
     { "$ref": "#/$defs/upstreamFrame" },
     { "$ref": "#/$defs/downstreamFrame" }
@@ -20,7 +20,8 @@
         { "$ref": "#/$defs/contextReport" },
         { "$ref": "#/$defs/userMessage" },
         { "$ref": "#/$defs/hitlDecision" },
-        { "$ref": "#/$defs/execResult" }
+        { "$ref": "#/$defs/execResult" },
+        { "$ref": "#/$defs/snapshotReport" }
       ]
     },
     "downstreamFrame": {
@@ -30,7 +31,8 @@
         { "$ref": "#/$defs/toolCard" },
         { "$ref": "#/$defs/hitlRequest" },
         { "$ref": "#/$defs/execInstruction" },
-        { "$ref": "#/$defs/guideAction" }
+        { "$ref": "#/$defs/guideAction" },
+        { "$ref": "#/$defs/snapshotRequest" }
       ]
     },
     "contextReport": {
@@ -163,33 +165,108 @@
         "signature": { "type": "string", "minLength": 1 },
         "toolCallId": { "type": "string", "minLength": 1 },
         "request": {
+          "$comment": "http 请求（默认，无 kind）或 dom 步骤批次（kind='dom'，adr-011）。",
+          "oneOf": [{ "$ref": "#/$defs/httpExecRequest" }, { "$ref": "#/$defs/domExecRequest" }]
+        }
+      }
+    },
+    "httpExecRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "url"],
+      "properties": {
+        "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+        "url": { "type": "string", "minLength": 1 },
+        "headers": {
           "type": "object",
-          "additionalProperties": false,
-          "required": ["method", "url"],
-          "properties": {
-            "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
-            "url": { "type": "string", "minLength": 1 },
-            "headers": {
-              "type": "object",
-              "additionalProperties": { "type": "string" }
-            },
-            "body": {
-              "$comment": "已定值请求体（任意 JSON 值，不限型）。",
-              "anyOf": [
-                { "type": "object" },
-                { "type": "array" },
-                { "type": "string" },
-                { "type": "number" },
-                { "type": "boolean" },
-                { "type": "null" }
-              ]
+          "additionalProperties": { "type": "string" }
+        },
+        "body": {
+          "$comment": "已定值请求体（任意 JSON 值，不限型）。",
+          "anyOf": [
+            { "type": "object" },
+            { "type": "array" },
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "domExecRequest": {
+      "$comment": "dom 代执行批次（adr-011）：服务端已 fail-closed 校验（动作闭集/ref 出自最近快照/路径围栏）的步骤，客户端闭集解释执行、不 eval 任意代码。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "steps"],
+      "properties": {
+        "kind": { "const": "dom" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/domStep" }
+        }
+      }
+    },
+    "domStep": {
+      "$comment": "动作闭集：navigate/waitFor 契约保留、②-a 未实现（toolgate 拒绝，锚点=②-b 跨导航续跑）。ref 取自最近一次 snapshot-report；read 以 name 键回传采集值。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["navigate", "waitFor", "click", "fill", "select", "read", "scroll", "highlight"]
+        },
+        "ref": { "type": "string", "minLength": 1 },
+        "to": { "type": "string", "minLength": 1 },
+        "value": { "type": "string" },
+        "name": { "type": "string", "pattern": "^[\\w-]{1,64}$" }
+      }
+    },
+    "snapshotRequest": {
+      "$comment": "页面快照请求（dom 代操作观察半程）：客户端采集可交互元素清单以 snapshot-report 回传（requestId 关联）。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "requestId"],
+      "properties": {
+        "type": { "const": "snapshot-request" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "requestId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "snapshotReport": {
+      "$comment": "页面快照上报：可交互元素清单（ref 客户端分配、仅当次有效）。服务端按不可信观察对待——只取 ref 集与 url 供签发校验，不据此做任何放行判定。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "requestId", "url", "elements"],
+      "properties": {
+        "type": { "const": "snapshot-report" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "requestId": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "elements": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ref", "role", "label"],
+            "properties": {
+              "ref": { "type": "string", "minLength": 1 },
+              "role": { "type": "string", "minLength": 1 },
+              "label": { "type": "string" },
+              "value": { "type": "string" },
+              "disabled": { "type": "boolean" }
             }
           }
         }
       }
     },
     "guideAction": {
-      "$comment": "页面动作（能力④）：action 闭集仅 highlight/scroll-to——UI 引导不含填表/替点等 DOM 自动化（D9，扩展锚点=标准版后按真实需求评估）。",
+      "$comment": "页面动作（能力④，纯引导无副作用）：action 闭集仅 highlight/scroll-to——填表/替点等有副作用的 dom 操作走 delegated-execution 的 dom 批次（adr-011），不入本闭集。",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "sessionId", "action", "selector"],

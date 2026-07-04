@@ -53,11 +53,29 @@ export interface ExecResultFrame {
   error?: string;
 }
 
+export interface SnapshotElement {
+  ref: string;
+  role: string;
+  label: string;
+  value?: string;
+  disabled?: boolean;
+}
+
+export interface SnapshotReportFrame {
+  type: 'snapshot-report';
+  sessionId: string;
+  requestId: string;
+  url: string;
+  title?: string;
+  elements: SnapshotElement[];
+}
+
 export type UpstreamFrame =
   | ContextReportFrame
   | UserMessageFrame
   | HitlDecisionFrame
-  | ExecResultFrame;
+  | ExecResultFrame
+  | SnapshotReportFrame;
 
 export interface TextDeltaFrame {
   type: 'text-delta';
@@ -92,6 +110,29 @@ export interface ExecRequest {
   body?: JsonValue;
 }
 
+export type DomStepAction =
+  | 'navigate'
+  | 'waitFor'
+  | 'click'
+  | 'fill'
+  | 'select'
+  | 'read'
+  | 'scroll'
+  | 'highlight';
+
+export interface DomStep {
+  action: DomStepAction;
+  ref?: string;
+  to?: string;
+  value?: string;
+  name?: string;
+}
+
+export interface DomExecRequest {
+  kind: 'dom';
+  steps: DomStep[];
+}
+
 export interface ExecInstructionFrame {
   type: 'exec-instruction';
   sessionId: string;
@@ -99,7 +140,7 @@ export interface ExecInstructionFrame {
   ttl: number;
   signature: string;
   toolCallId: string;
-  request: ExecRequest;
+  request: ExecRequest | DomExecRequest;
 }
 
 export interface GuideActionFrame {
@@ -110,9 +151,16 @@ export interface GuideActionFrame {
   message?: string;
 }
 
+export interface SnapshotRequestFrame {
+  type: 'snapshot-request';
+  sessionId: string;
+  requestId: string;
+}
+
 export type DownstreamFrame =
   | TextDeltaFrame
   | ToolCardFrame
   | HitlRequestFrame
   | ExecInstructionFrame
-  | GuideActionFrame;
+  | GuideActionFrame
+  | SnapshotRequestFrame;

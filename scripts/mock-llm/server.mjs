@@ -21,6 +21,8 @@ const GUIDE_LOCATE_RE = /在哪|哪里|哪儿|怎么找|如何找到|定位/;
 const TOOL_CANCEL = 'order-list.cancel-order';
 const TOOL_REFRESH = 'order-list.refresh-orders';
 const TOOL_PURGE = 'order-list.purge-orders';
+const TOOL_PAGE_OPERATE = 'order-list.page-operate';
+const TOOL_SNAPSHOT = 'page_snapshot';
 
 /** 请求 tools 是否携带指定 name 的工具（OpenAI function 形态或裸 name）。 */
 function hasTool(body, name) {
@@ -52,7 +54,37 @@ function pickToolCall(u, body) {
   if ((u.includes('清空') || u.includes('删除所有')) && hasTool(body, TOOL_PURGE)) {
     return { id: 'call_purge', name: TOOL_PURGE, arguments: JSON.stringify({}) };
   }
+  // dom 代操作首轮：先观察（快照），后续轮见 decide 的快照观察分支。
+  if (u.includes('在页面上') && hasTool(body, TOOL_SNAPSHOT)) {
+    return { id: 'call_snapshot', name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) };
+  }
   return null;
+}
+
+/**
+ * 快照观察轮 → page-operate 批次：从快照 elements 取首个输入框与按钮的 ref，
+ * 产出 fill+click+read 三步（read 键固定 noteValue，供回喂轮匹配）。
+ */
+function pageOperateCall(obs) {
+  let snap;
+  try {
+    snap = JSON.parse(obs);
+  } catch {
+    snap = { elements: [] };
+  }
+  const elements = Array.isArray(snap.elements) ? snap.elements : [];
+  const input = elements.find((e) => String(e?.role ?? '').startsWith('input'));
+  const button = elements.find((e) => e?.role === 'button');
+  const steps = [
+    { action: 'fill', ref: input?.ref ?? 'za-0', value: 'mock-note' },
+    { action: 'click', ref: button?.ref ?? 'za-0' },
+    { action: 'read', ref: input?.ref ?? 'za-0', name: 'noteValue' },
+  ];
+  return {
+    id: 'call_page_operate',
+    name: TOOL_PAGE_OPERATE,
+    arguments: JSON.stringify({ steps, summary: '在页面上填写备注并保存' }),
+  };
 }
 
 /**
@@ -84,7 +116,18 @@ function summarizeObs(obs) {
  */
 function decide(sys, u, body) {
   const obs = lastToolObs(body);
-  if (obs !== null) return { text: summarizeObs(obs) };
+  if (obs !== null) {
+    // 快照观察轮：据 elements 决策 dom 批次（agent-in-the-loop 的确定性替身）。
+    if (obs.includes('"elements"') && hasTool(body, TOOL_PAGE_OPERATE)) {
+      return { toolCall: pageOperateCall(obs) };
+    }
+    // dom 结果回喂轮：报告 read 采集值。
+    if (obs.includes('"reads"')) {
+      const m = obs.match(/"noteValue":"([^"]*)"/);
+      return { text: `已在页面上完成操作，备注为 ${m ? m[1] : ''}。` };
+    }
+    return { text: summarizeObs(obs) };
+  }
 
   const toolCall = pickToolCall(u, body);
   if (toolCall) return { toolCall };

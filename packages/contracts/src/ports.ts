@@ -66,12 +66,22 @@ export interface AssemblyPort {
 
 // ---- ToolGatePort（③工具执行层：唯一决策点 + 代执行指令签发/回收）----
 
+/** dom 代操作的判定上下文（adr-011）：网关自最近一次 snapshot-report 提取，toolgate 据此校验 ref 与围栏。 */
+export interface DomGateContext {
+  /** 最近快照的元素 ref 闭集：步骤引用越出即 deny。 */
+  refs: string[];
+  /** 快照页 URL 路径：不在 DomAdapter.pathPrefixes 围栏内即 deny。 */
+  path: string;
+}
+
 export interface GateDecisionInput {
   sessionId: string;
   toolCallId: string;
   toolId: string;
   params: JsonObject;
   claims: IdentityClaims;
+  /** dom 工具必需（缺失即 deny：未观察不操作）；http/server 工具忽略。 */
+  domContext?: DomGateContext;
 }
 
 /** 判定结果：分级矩阵 + 身份/实参校验，任一不过即 deny（fail-closed，U7）。 */
@@ -87,6 +97,8 @@ export interface IssueExecInstructionInput {
   params: JsonObject;
   /** 已验签身份：adapter 模板可经 {{hostUserId}} 等占位注入身份到请求头/URL/体（身份优先于 params，防工具冒充）。 */
   claims: IdentityClaims;
+  /** dom 工具必需：签发是治理终点，签名前独立重校验（不依赖 decide 已通过的假设，U7）。 */
+  domContext?: DomGateContext;
 }
 
 export interface AcceptExecResultInput {

@@ -4,13 +4,21 @@ declare namespace chrome {
     interface StorageArea {
       get(keys: string | string[]): Promise<Record<string, unknown>>;
       set(items: Record<string, unknown>): Promise<void>;
+      remove(keys: string | string[]): Promise<void>;
     }
     const local: StorageArea;
+    /** 跨 SW 重启存活、随浏览器关闭清除；会话存根的正确层（adr-012）。 */
+    const session: StorageArea;
   }
 
   namespace runtime {
+    interface MessageSender {
+      tab?: { id?: number; url?: string };
+      url?: string;
+    }
     interface Port {
       name: string;
+      sender?: MessageSender;
       postMessage(message: unknown): void;
       disconnect(): void;
       onMessage: { addListener(callback: (message: unknown) => void): void };

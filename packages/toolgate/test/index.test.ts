@@ -158,6 +158,29 @@ const identityTool: ToolDefinition = {
   resultSchema: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } },
 };
 
+const domTool: ToolDefinition = {
+  id: 'order-list.page-operate',
+  featureIds: ['order-list'],
+  description: '在订单页可见地代用户操作（dom 批次）',
+  params: {
+    type: 'object',
+    required: ['steps', 'summary'],
+    properties: { steps: { type: 'array' }, summary: { type: 'string' } },
+    additionalProperties: false,
+  },
+  execution: 'client',
+  riskTier: 'auto',
+  adapter: { kind: 'dom', pathPrefixes: ['/console'] },
+  resultSchema: {
+    type: 'object',
+    required: ['reads', 'completedSteps'],
+    properties: { reads: { type: 'object' }, completedSteps: { type: 'number' } },
+  },
+};
+
+/** dom 判定上下文夹具：快照页在围栏内、含 za-1/za-2 两个 ref。 */
+const domContext = { refs: ['za-1', 'za-2'], path: '/console/token' };
+
 const allTools: ToolDefinition[] = [
   autoTool,
   hitlTool,
@@ -168,6 +191,7 @@ const allTools: ToolDefinition[] = [
   unknownTierTool,
   templateTool,
   identityTool,
+  domTool,
 ];
 
 interface PortOverrides {
@@ -694,5 +718,122 @@ describe('toolgate executeServer — server 通道服务端直调', () => {
         claims: validClaims,
       }),
     ).rejects.toThrow(/前提破坏/);
+  });
+});
+
+describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () => {
+  const base = { sessionId: 's1', toolCallId: 'c-dom', toolId: domTool.id, claims: validClaims };
+  const goodParams = {
+    steps: [
+      { action: 'fill', ref: 'za-1', value: 'my-key' },
+      { action: 'click', ref: 'za-2' },
+      { action: 'read', ref: 'za-1', name: 'tokenKey' },
+    ],
+    summary: '创建令牌并读取密钥',
+  };
+
+  it('合法批次 + 快照上下文 → allow，签发 kind=dom 指令且步骤被净化（剥多余键）', async () => {
+    const port = makePort();
+    const d = await port.decide({ ...base, params: goodParams, domContext });
+    expect(d.verdict).toBe('allow');
+
+    const dirtyParams = {
+      steps: [{ action: 'click', ref: 'za-2', hallucinated: 'x', value: '不该有' }],
+      summary: '点一下',
+    };
+    const instruction = await port.issueExecInstruction({ ...base, params: dirtyParams, domContext });
+    expect(instruction.request).toEqual({ kind: 'dom', steps: [{ action: 'click', ref: 'za-2' }] });
+    // 签名覆盖净化后的 request：同 secret 可复算。
+    expect(instruction.signature).toBe(
+      computeExecSignature(SIGN_FIXTURE, {
+        nonce: instruction.nonce,
+        ttl: instruction.ttl,
+        toolCallId: instruction.toolCallId,
+        request: instruction.request as never,
+      }),
+    );
+  });
+
+  it('无快照上下文 → deny dom-context-missing（未观察不操作）', async () => {
+    const d = await makePort().decide({ ...base, params: goodParams });
+    expect(d).toEqual({ verdict: 'deny', reason: 'dom-context-missing' });
+  });
+
+  it('快照页路径不在围栏内 → deny fence-violation', async () => {
+    const d = await makePort().decide({
+      ...base,
+      params: goodParams,
+      domContext: { refs: ['za-1'], path: '/admin/users' },
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'fence-violation' });
+  });
+
+  it('ref 不在快照闭集 → deny ref-not-in-snapshot', async () => {
+    const d = await makePort().decide({
+      ...base,
+      params: { steps: [{ action: 'click', ref: 'za-99' }], summary: 'x' },
+      domContext,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'ref-not-in-snapshot' });
+  });
+
+  it('契约保留但未实现的动作（navigate/waitFor）→ deny action-not-implemented（锚点 ②-b）', async () => {
+    const d = await makePort().decide({
+      ...base,
+      params: { steps: [{ action: 'navigate', ref: 'za-1', to: '/console/token' }], summary: 'x' },
+      domContext,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'action-not-implemented:navigate' });
+  });
+
+  it('fill 缺 value / read 缺 name / 闭集外动作 / 空批次 → 各自 deny', async () => {
+    const port = makePort();
+    const cases: Array<[object, string]> = [
+      [{ steps: [{ action: 'fill', ref: 'za-1' }], summary: 'x' }, 'missing-value'],
+      [{ steps: [{ action: 'read', ref: 'za-1' }], summary: 'x' }, 'missing-read-name'],
+      [{ steps: [{ action: 'eval', ref: 'za-1' }], summary: 'x' }, 'unknown-action'],
+      [{ steps: [], summary: 'x' }, 'invalid-steps'],
+    ];
+    for (const [params, reason] of cases) {
+      const d = await port.decide({ ...base, params: params as never, domContext });
+      expect(d.verdict).toBe('deny');
+      expect(d.reason).toBe(reason);
+    }
+  });
+
+  it('签发是治理终点：decide 被绕过时 issue 独立拒签非法批次（U7）', async () => {
+    await expect(
+      makePort().issueExecInstruction({
+        ...base,
+        params: { steps: [{ action: 'click', ref: 'za-99' }], summary: 'x' },
+        domContext,
+      }),
+    ).rejects.toThrow(/ref-not-in-snapshot/);
+  });
+
+  it('dom 结果回喂走同一 resultSchema 校验：reads+completedSteps 通过、缺字段 invalid-result', async () => {
+    const port = makePort();
+    const instruction = await port.issueExecInstruction({ ...base, params: goodParams, domContext });
+    const good: ExecResultFrame = {
+      type: 'exec-result',
+      sessionId: 's1',
+      nonce: instruction.nonce,
+      ok: true,
+      body: { reads: { tokenKey: 'tok-9f' }, completedSteps: 3 },
+    };
+    const observation = await port.acceptExecResult({ sessionId: 's1', result: good });
+    expect(observation.ok).toBe(true);
+    expect(observation.content).toEqual({ reads: { tokenKey: 'tok-9f' }, completedSteps: 3 });
+
+    const second = await port.issueExecInstruction({ ...base, params: goodParams, domContext });
+    const bad: ExecResultFrame = {
+      type: 'exec-result',
+      sessionId: 's1',
+      nonce: second.nonce,
+      ok: true,
+      body: { reads: {} },
+    };
+    const rejected = await port.acceptExecResult({ sessionId: 's1', result: bad });
+    expect(rejected).toMatchObject({ ok: false, error: 'invalid-result' });
   });
 });

@@ -77,6 +77,7 @@ describe('compose（examples/host-demo 真实快照）', () => {
       'order-list.cancel-order',
       'order-list.refresh-orders',
       'order-list.purge-orders',
+      'order-list.page-operate',
     ]);
     expect(result.skills).toEqual([]);
   });
@@ -154,6 +155,7 @@ describe('describeInjection（与 compose 同源投影）', () => {
       'order-list.cancel-order',
       'order-list.refresh-orders',
       'order-list.purge-orders',
+      'order-list.page-operate',
     ]);
   });
 

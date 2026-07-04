@@ -29,6 +29,16 @@ export interface ServerAdapter {
   credentialRef?: string;
 }
 
+/**
+ * dom 通道适配（adr-011 可见页面代操作）：无请求模板——步骤由 agent 按页面快照临场决策、
+ * 服务端逐批 fail-closed 校验后一次性签名下发（U7 治理链路与 client HTTP 代执行同构）。
+ */
+export interface DomAdapter {
+  kind: 'dom';
+  /** URL 路径前缀围栏：快照页路径不在围栏内即 deny，操作面不越出功能页面范围。 */
+  pathPrefixes: string[];
+}
+
 interface ToolDefinitionBase {
   id: string;
   featureIds: string[];
@@ -46,10 +56,20 @@ export interface ClientToolDefinition extends ToolDefinitionBase {
   adapter: ClientAdapter;
 }
 
+/** dom 代操作工具：client 通道下按 adapter.kind='dom' 分形（可见执行，走同一签名指令链路）。 */
+export interface DomToolDefinition extends ToolDefinitionBase {
+  execution: 'client';
+  adapter: DomAdapter;
+}
+
 export interface ServerToolDefinition extends ToolDefinitionBase {
   execution: 'server';
   adapter: ServerAdapter;
 }
 
-/** 按 execution 判别的联合，对应 schema 根级 if/then 分形。 */
-export type ToolDefinition = ClientToolDefinition | ServerToolDefinition;
+/** 按 execution（client 下再按 adapter.kind）判别的联合，对应 schema 根级 if/then 分形。 */
+export type ToolDefinition = ClientToolDefinition | DomToolDefinition | ServerToolDefinition;
+
+export function isDomTool(tool: ToolDefinition): tool is DomToolDefinition {
+  return 'kind' in tool.adapter && tool.adapter.kind === 'dom';
+}

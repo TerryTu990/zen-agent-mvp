@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type {
   ClientCapability,
+  DomStepAction,
   DownstreamFrame,
   GuideActionKind,
   HitlDecisionValue,
@@ -16,7 +17,7 @@ interface FrameDef {
     decision?: { enum?: string[] };
     status?: { enum?: string[] };
     action?: { enum?: string[] };
-    request?: { properties: { method: { enum: string[] } } };
+    method?: { enum?: string[] };
   };
 }
 
@@ -52,6 +53,7 @@ const upstreamMirror: Record<UpstreamFrame['type'], true> = {
   'user-message': true,
   'hitl-decision': true,
   'exec-result': true,
+  'snapshot-report': true,
 };
 
 const downstreamMirror: Record<DownstreamFrame['type'], true> = {
@@ -60,6 +62,7 @@ const downstreamMirror: Record<DownstreamFrame['type'], true> = {
   'hitl-request': true,
   'exec-instruction': true,
   'guide-action': true,
+  'snapshot-request': true,
 };
 
 const capabilityMirror: Record<ClientCapability, true> = {
@@ -86,6 +89,17 @@ const httpMethodMirror: Record<HttpMethod, true> = {
   PUT: true,
   PATCH: true,
   DELETE: true,
+};
+
+const domStepActionMirror: Record<DomStepAction, true> = {
+  navigate: true,
+  waitFor: true,
+  click: true,
+  fill: true,
+  select: true,
+  read: true,
+  scroll: true,
+  highlight: true,
 };
 
 describe('frames.ts 与 C3 schema 的闭集同构', () => {
@@ -119,9 +133,15 @@ describe('frames.ts 与 C3 schema 的闭集同构', () => {
     );
   });
 
-  it('exec 请求 method 闭集一致', () => {
+  it('exec http 请求 method 闭集一致', () => {
     expect(Object.keys(httpMethodMirror).sort()).toEqual(
-      [...(defOf('execInstruction').properties.request?.properties.method.enum ?? [])].sort(),
+      [...(defOf('httpExecRequest').properties.method?.enum ?? [])].sort(),
+    );
+  });
+
+  it('dom 步骤动作闭集一致', () => {
+    expect(Object.keys(domStepActionMirror).sort()).toEqual(
+      [...(defOf('domStep').properties.action?.enum ?? [])].sort(),
     );
   });
 });

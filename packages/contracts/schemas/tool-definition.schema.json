@@ -52,7 +52,12 @@
     "required": ["execution"]
   },
   "then": {
-    "properties": { "adapter": { "$ref": "#/$defs/clientAdapter" } }
+    "properties": {
+      "adapter": {
+        "$comment": "client 通道下按 kind 分形：缺省 = HTTP 请求模板；kind='dom' = 可见页面代操作（adr-011）。",
+        "oneOf": [{ "$ref": "#/$defs/clientAdapter" }, { "$ref": "#/$defs/domAdapter" }]
+      }
+    }
   },
   "else": {
     "properties": { "adapter": { "$ref": "#/$defs/serverAdapter" } }
@@ -91,6 +96,21 @@
         "bodyTemplate": {
           "$comment": "请求体模板：JSON 对象（叶子字符串可含占位符）或整体字符串模板；GET/DELETE 通常省略。",
           "anyOf": [{ "type": "object" }, { "type": "string" }]
+        }
+      }
+    },
+    "domAdapter": {
+      "$comment": "dom 通道适配（adr-011 可见页面代操作）：无请求模板——步骤由 agent 按页面快照临场决策，服务端逐批 fail-closed 校验（动作闭集/ref 出自最近快照/围栏）后一次性签名下发；工具 params 应声明 steps+summary 的入参契约。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "pathPrefixes"],
+      "properties": {
+        "kind": { "const": "dom" },
+        "pathPrefixes": {
+          "$comment": "URL 路径前缀围栏：快照页路径不在围栏内即 deny，操作面不越出功能页面范围。",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^/" }
         }
       }
     },

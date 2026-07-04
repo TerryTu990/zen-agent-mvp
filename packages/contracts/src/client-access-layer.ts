@@ -18,7 +18,7 @@ export type HitlDecisionValue = 'approve' | 'reject';
 
 export type ToolCardStatus = 'running' | 'succeeded' | 'failed';
 
-/** 页面动作闭集：不含填表/替点等 DOM 自动化（D9，锚点=标准版后按真实需求评估）。 */
+/** 页面动作闭集（纯引导，无副作用）：填表/替点走 delegated-execution 的 dom 通道（adr-011），不入本闭集。 */
 export type GuideActionKind = 'highlight' | 'scroll-to';
 
 // ---- 上行帧（客户端 → 网关，HTTP）----
@@ -59,11 +59,33 @@ export interface ExecResultFrame {
   error?: string;
 }
 
+/** 页面可交互元素条目：ref 由客户端分配（za-N），仅当次快照内有效。 */
+export interface SnapshotElement {
+  ref: string;
+  /** 元素角色：标签名，input 附类型（如 input:text）。 */
+  role: string;
+  /** 可读标签：aria-label / 文本 / placeholder，客户端截断。 */
+  label: string;
+  value?: string;
+  disabled?: boolean;
+}
+
+/** 页面快照上报（dom 代操作的观察半程）：对应下行 snapshot-request 的 requestId。 */
+export interface SnapshotReportFrame {
+  type: 'snapshot-report';
+  sessionId: string;
+  requestId: string;
+  url: string;
+  title?: string;
+  elements: SnapshotElement[];
+}
+
 export type UpstreamFrame =
   | ContextReportFrame
   | UserMessageFrame
   | HitlDecisionFrame
-  | ExecResultFrame;
+  | ExecResultFrame
+  | SnapshotReportFrame;
 
 // ---- 下行帧（网关 → 客户端，SSE）----
 
@@ -104,6 +126,38 @@ export interface ExecRequest {
   body?: JsonValue;
 }
 
+/**
+ * dom 步骤动作闭集（adr-011）：navigate/waitFor 契约保留、②-a 未实现——
+ * toolgate fail-closed 拒绝（锚点=②-b 跨导航续跑），对齐 U3"枚举保留、未实现拒绝"惯例。
+ */
+export type DomStepAction =
+  | 'navigate'
+  | 'waitFor'
+  | 'click'
+  | 'fill'
+  | 'select'
+  | 'read'
+  | 'scroll'
+  | 'highlight';
+
+export interface DomStep {
+  action: DomStepAction;
+  /** 目标元素引用：必须取自最近一次 snapshot-report 的 ref（服务端签发前校验）。 */
+  ref?: string;
+  /** navigate 目标（同源路径，②-b 启用）。 */
+  to?: string;
+  /** fill/select 的输入值。 */
+  value?: string;
+  /** read 结果键名：exec-result.body.reads 按此键回传采集值。 */
+  name?: string;
+}
+
+/** dom 代执行请求：服务端已校验的步骤批次，客户端闭集解释执行、不 eval 任意代码。 */
+export interface DomExecRequest {
+  kind: 'dom';
+  steps: DomStep[];
+}
+
 export interface ExecInstructionFrame {
   type: 'exec-instruction';
   sessionId: string;
@@ -113,7 +167,7 @@ export interface ExecInstructionFrame {
   /** 对 {nonce,ttl,toolCallId,request} 规范化序列的签名，插件执行前校验完整性。 */
   signature: string;
   toolCallId: string;
-  request: ExecRequest;
+  request: ExecRequest | DomExecRequest;
 }
 
 export interface GuideActionFrame {
@@ -125,11 +179,19 @@ export interface GuideActionFrame {
   message?: string;
 }
 
+/** 页面快照请求：路由到组内活跃页，客户端以 snapshot-report 回传（requestId 关联）。 */
+export interface SnapshotRequestFrame {
+  type: 'snapshot-request';
+  sessionId: string;
+  requestId: string;
+}
+
 export type DownstreamFrame =
   | TextDeltaFrame
   | ToolCardFrame
   | HitlRequestFrame
   | ExecInstructionFrame
-  | GuideActionFrame;
+  | GuideActionFrame
+  | SnapshotRequestFrame;
 
 export type ClientAccessFrame = UpstreamFrame | DownstreamFrame;

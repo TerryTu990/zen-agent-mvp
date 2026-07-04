@@ -1,6 +1,11 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
+import { isDomTool } from '@zen-agent/contracts';
 import type {
+  DomExecRequest,
+  DomGateContext,
+  DomStep,
+  DomToolDefinition,
   ExecInstructionFrame,
   ExecRequest,
   GateDecision,
@@ -82,6 +87,57 @@ class InMemoryNonceStore implements NonceStore {
 
 const KNOWN_RISK_TIERS = new Set(['auto', 'hitl', 'forbidden']);
 
+/** ②-a 已实现的 dom 动作；navigate/waitFor 契约保留、命中即拒（锚点=②-b 跨导航续跑）。 */
+const IMPLEMENTED_DOM_ACTIONS = new Set(['click', 'fill', 'select', 'read', 'scroll', 'highlight']);
+const RESERVED_DOM_ACTIONS = new Set(['navigate', 'waitFor']);
+const MAX_DOM_STEPS = 20;
+const READ_NAME_PATTERN = /^[\w-]{1,64}$/;
+
+/**
+ * dom 批次 fail-closed 校验（U7）：动作闭集、ref 出自最近快照、fill/select 有值、read 有键名、
+ * 快照页路径在围栏内。通过则返回只含已知字段的净化步骤（剥离 LLM 幻觉出的多余键，签名精确覆盖将执行内容）；
+ * 任一不过返回 reason 字符串（不含实参值，SEC-04）。
+ */
+function validateDomSteps(
+  tool: DomToolDefinition,
+  params: JsonObject,
+  domContext: DomGateContext | undefined,
+): { steps: DomStep[] } | { reason: string } {
+  if (domContext === undefined) return { reason: 'dom-context-missing' };
+  if (!tool.adapter.pathPrefixes.some((prefix) => domContext.path.startsWith(prefix))) {
+    return { reason: 'fence-violation' };
+  }
+  const raw = params['steps'];
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_DOM_STEPS) {
+    return { reason: 'invalid-steps' };
+  }
+  const refs = new Set(domContext.refs);
+  const steps: DomStep[] = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      return { reason: 'invalid-step-shape' };
+    }
+    const { action, ref, value, name } = item as Record<string, JsonValue>;
+    if (typeof action !== 'string') return { reason: 'invalid-step-shape' };
+    if (RESERVED_DOM_ACTIONS.has(action)) return { reason: `action-not-implemented:${action}` };
+    if (!IMPLEMENTED_DOM_ACTIONS.has(action)) return { reason: 'unknown-action' };
+    if (typeof ref !== 'string' || !refs.has(ref)) return { reason: 'ref-not-in-snapshot' };
+    const step: DomStep = { action: action as DomStep['action'], ref };
+    if (action === 'fill' || action === 'select') {
+      if (typeof value !== 'string') return { reason: 'missing-value' };
+      step.value = value;
+    }
+    if (action === 'read') {
+      if (typeof name !== 'string' || !READ_NAME_PATTERN.test(name)) {
+        return { reason: 'missing-read-name' };
+      }
+      step.name = name;
+    }
+    steps.push(step);
+  }
+  return { steps };
+}
+
 /** 把 {{name}} 占位替换为实参；encode 用于 URL 路径段转义，headers/body 传恒等函数。 */
 function renderTemplate(
   template: string,
@@ -146,28 +202,40 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       if (!validateParams || !validateParams(input.params)) return deny('invalid-params');
       if (!input.claims.hostUserId) return deny('identity');
       if (tool.riskTier === 'forbidden') return deny('forbidden');
+      if (isDomTool(tool)) {
+        const validated = validateDomSteps(tool, input.params, input.domContext);
+        if ('reason' in validated) return deny(validated.reason);
+      }
       return { verdict: tool.riskTier === 'hitl' ? 'hitl' : 'allow' };
     },
 
     async issueExecInstruction(input: IssueExecInstructionInput): Promise<ExecInstructionFrame> {
       const tool = toolsById.get(input.toolId);
       if (!tool) throw new Error(`issueExecInstruction 前提破坏：未知 toolId`);
-      const adapter = tool.adapter;
-      // 渲染上下文＝工具实参 + 已验签身份字段；身份后置覆盖，防工具经同名 param 冒充身份（如伪造 hostUserId）。
-      const ctx: JsonObject = {
-        ...input.params,
-        hostUserId: input.claims.hostUserId,
-        tenant: input.claims.tenant,
-        sub: input.claims.sub,
-      };
-      const request: ExecRequest = {
-        method: adapter.method,
-        url: renderTemplate(adapter.urlTemplate, ctx, encodeURIComponent),
-        ...(adapter.headers ? { headers: renderHeaders(adapter.headers, ctx) } : {}),
-        ...(adapter.bodyTemplate !== undefined
-          ? { body: renderBody(adapter.bodyTemplate, ctx) }
-          : {}),
-      };
+      let request: ExecRequest | DomExecRequest;
+      if (isDomTool(tool)) {
+        // 签发是治理终点：签名前独立重校验，不依赖 decide 已通过的假设（U7 fail-closed）。
+        const validated = validateDomSteps(tool, input.params, input.domContext);
+        if ('reason' in validated) throw new Error(`dom 批次校验未过：${validated.reason}`);
+        request = { kind: 'dom', steps: validated.steps };
+      } else {
+        const adapter = tool.adapter;
+        // 渲染上下文＝工具实参 + 已验签身份字段；身份后置覆盖，防工具经同名 param 冒充身份（如伪造 hostUserId）。
+        const ctx: JsonObject = {
+          ...input.params,
+          hostUserId: input.claims.hostUserId,
+          tenant: input.claims.tenant,
+          sub: input.claims.sub,
+        };
+        request = {
+          method: adapter.method,
+          url: renderTemplate(adapter.urlTemplate, ctx, encodeURIComponent),
+          ...(adapter.headers ? { headers: renderHeaders(adapter.headers, ctx) } : {}),
+          ...(adapter.bodyTemplate !== undefined
+            ? { body: renderBody(adapter.bodyTemplate, ctx) }
+            : {}),
+        };
+      }
       const nonce = randomUUID();
       const signature = computeExecSignature(options.signingSecret, {
         nonce,

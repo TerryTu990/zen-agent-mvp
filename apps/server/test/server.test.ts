@@ -354,6 +354,7 @@ describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
       'order-list.cancel-order',
       'order-list.refresh-orders',
       'order-list.purge-orders',
+      'order-list.page-operate',
     ]);
 
     await postFrame(token, sessionId, {
@@ -687,6 +688,71 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       nonce: 'forged-nonce',
       ok: true,
       body: { ok: true, count: 1 },
+    });
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('dom 代操作闭环（快照观察 → 批次签发 → 结果回喂，adr-011）', () => {
+  it('page_snapshot 请求/上报 → kind=dom 签名指令 → reads 回喂 → 总结', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '帮我在页面上给订单加个备注',
+      });
+      // 观察半程：服务端下发 snapshot-request，客户端上报可交互元素清单。
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length > 0);
+      const snapshotRequest = framesByType(sse.frames, 'snapshot-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(snapshotRequest['requestId']),
+        url: ORDER_LIST_URL,
+        title: '订单列表',
+        elements: [
+          { ref: 'za-1', role: 'input:text', label: '备注' },
+          { ref: 'za-2', role: 'button', label: '保存' },
+        ],
+      });
+      // 操作半程：签发 kind=dom 批次（步骤引用快照 ref、已净化），等客户端回传。
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      const instr = framesByType(sse.frames, 'exec-instruction')[0]!;
+      const request = instr['request'] as { kind: string; steps: Array<Record<string, unknown>> };
+      expect(request.kind).toBe('dom');
+      expect(request.steps).toEqual([
+        { action: 'fill', ref: 'za-1', value: 'mock-note' },
+        { action: 'click', ref: 'za-2' },
+        { action: 'read', ref: 'za-1', name: 'noteValue' },
+      ]);
+      expect(instr['signature']).toBeTruthy();
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instr['nonce']),
+        ok: true,
+        body: { reads: { noteValue: 'mock-note' }, completedSteps: 3 },
+      });
+      await sse.waitFor(() => textOf(sse.frames) === '已在页面上完成操作，备注为 mock-note。');
+      expect(lastCardStatus(sse.frames, 'order-list.page-operate')).toBe('succeeded');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('过期/伪造 requestId 的快照上报 → 409（一次性等待器）', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const res = await postFrame(token, sessionId, {
+      type: 'snapshot-report',
+      sessionId,
+      requestId: 'stale-or-forged',
+      url: ORDER_LIST_URL,
+      elements: [],
     });
     expect(res.status).toBe(409);
   });

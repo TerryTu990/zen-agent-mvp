@@ -9,11 +9,13 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
+import { isDomTool } from '@zen-agent/contracts';
 import type {
   AssemblyPort,
   AuditEvent,
   AuditPort,
   ComposeResult,
+  DomGateContext,
   DownstreamFrame,
   ExecResultFrame,
   GuideActionKind,
@@ -25,6 +27,7 @@ import type {
   LlmPort,
   LlmToolSpec,
   Observation,
+  SnapshotReportFrame,
   ToolCardStatus,
   ToolDefinition,
   ToolGatePort,
@@ -54,8 +57,8 @@ function execOutcome(observation: Observation): 'ok' | 'error' | 'timeout' | 'in
   return 'error';
 }
 
-/** agent loop 轮数上限：防 LLM 反复触发工具无法收敛而失控烧配额。 */
-const MAX_TURN_ROUNDS = 4;
+/** agent loop 轮数上限：防 LLM 反复触发工具无法收敛而失控烧配额；dom 代操作一回合含 观察→操作→复核观察→收尾。 */
+const MAX_TURN_ROUNDS = 6;
 
 export interface Gateway {
   handler(req: IncomingMessage, res: ServerResponse): void;
@@ -78,6 +81,7 @@ const UPSTREAM_TYPES: ReadonlySet<string> = new Set([
   'user-message',
   'hitl-decision',
   'exec-result',
+  'snapshot-report',
 ]);
 
 const CORS_ORIGIN = { 'access-control-allow-origin': '*' } as const;
@@ -130,6 +134,28 @@ const GUIDE_TOOL_SPEC: LlmToolSpec = {
 const GUIDE_ACTIONS: ReadonlySet<string> = new Set(['highlight', 'scroll-to']);
 
 /**
+ * built-in 页面快照工具（adr-011 观察半程）：工具面含 dom 工具时注入；非终结动作——
+ * 快照作为 observation 回喂后回合继续。不经 toolgate（只读观察，无副作用；快照按不可信观察对待）。
+ */
+const SNAPSHOT_TOOL_NAME = 'page_snapshot';
+
+const SNAPSHOT_TOOL_SPEC: LlmToolSpec = {
+  name: SNAPSHOT_TOOL_NAME,
+  description:
+    '获取当前页面可交互元素快照（含 ref 编号、角色与可读标签）。计划页面代操作前必须先调用本工具取得 ref；操作后需要确认页面新状态时可再次调用。',
+  params: { type: 'object', additionalProperties: false, properties: {} },
+};
+
+/** 快照 URL → 围栏比对用路径；解析失败返回 ''（围栏必不匹配，fail-closed）。 */
+function pathOf(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * 把 guide_highlight tool-call 的实参规整为下行页面动作帧；message 缺省则省略（U1 纯数据）。
  * action 越 highlight|scroll-to 闭集或 selector 非非空串 → null：服务端不下发违反 C3 契约的帧
  * （LLM 幻觉出的非法引导参数在此被拦，改走文本降级）。
@@ -170,6 +196,10 @@ interface SessionRuntime {
   pendingHitl: Map<string, (decision: HitlDecisionValue) => void>;
   /** 代执行挂起等待器：nonce → resolver；exec-result 到达时解析，回合恢复。 */
   pendingExec: Map<string, (result: ExecResultFrame) => void>;
+  /** 快照挂起等待器：requestId → resolver；snapshot-report 到达时解析。 */
+  pendingSnapshot: Map<string, (report: SnapshotReportFrame) => void>;
+  /** 最近一次快照的判定上下文（ref 闭集 + 页路径）；dom 签发校验依据，无快照即 deny。 */
+  domContext: DomGateContext | null;
 }
 
 export function createGateway(deps: GatewayDeps): Gateway {
@@ -185,6 +215,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
         turnChain: Promise.resolve(),
         pendingHitl: new Map(),
         pendingExec: new Map(),
+        pendingSnapshot: new Map(),
+        domContext: null,
       };
       runtimes.set(sessionId, runtime);
     }
@@ -235,6 +267,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
     return new Promise((resolve) => runtime.pendingExec.set(nonce, resolve));
   }
 
+  /** 等待客户端 snapshot-report；同理先注册 requestId 等待器，再下发 snapshot-request 帧。 */
+  function waitForSnapshot(sessionId: string, requestId: string): Promise<SnapshotReportFrame> {
+    const runtime = runtimeOf(sessionId);
+    return new Promise((resolve) => runtime.pendingSnapshot.set(requestId, resolve));
+  }
+
   /**
    * 单个宿主 API 工具调用的代执行子流程：一切分级/HITL/结果判定都在 toolgate（U7 fail-closed），
    * 网关只按判定下发帧、挂起等待客户端回传、把规整后的 observation 交回 agent loop。
@@ -264,12 +302,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
       broadcast(sessionId, { type: 'tool-card', sessionId, toolCallId, toolId: tool.id, status, mode });
     };
 
+    // dom 工具判定上下文来自最近一次快照（未观察不操作：无快照 toolgate 即 deny）。
+    const domContext = isDomTool(tool) ? (runtimeOf(sessionId).domContext ?? undefined) : undefined;
     const decision = await deps.toolgate.decide({
       sessionId,
       toolCallId,
       toolId: tool.id,
       params,
       claims,
+      ...(domContext !== undefined ? { domContext } : {}),
     });
     recordEvent(sessionId, claims, featureId, {
       type: 'tool-decision',
@@ -328,6 +369,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         toolId: tool.id,
         params,
         claims,
+        ...(domContext !== undefined ? { domContext } : {}),
       });
       nonce = instruction.nonce;
       const result = waitForExec(sessionId, instruction.nonce);
@@ -378,7 +420,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
       { role: 'user', content: text },
     ];
     const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
-    const tools: LlmToolSpec[] = [...guideTools, ...composed.tools.map(toLlmToolSpec)];
+    // 快照工具只在工具面含 dom 工具时注入：无 dom 操作面就不给观察入口（最小工具面）。
+    const snapshotTools: LlmToolSpec[] = composed.tools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
+    const tools: LlmToolSpec[] = [...guideTools, ...snapshotTools, ...composed.tools.map(toLlmToolSpec)];
     // 全回合累积的用户可见文本：多轮中只有最终一轮产出气泡文本，作为本回合 assistant 历史。
     let visibleText = '';
 
@@ -402,6 +446,29 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
       // 无工具调用（纯文本/错误收尾）：本回合终结。
       if (call === null) break;
+
+      if (call.name === SNAPSHOT_TOOL_NAME) {
+        // 观察半程（非终结）：等活跃页回传快照，存判定上下文，快照作 observation 回喂后继续本回合。
+        const requestId = randomUUID();
+        const reported = waitForSnapshot(sessionId, requestId);
+        broadcast(sessionId, { type: 'snapshot-request', sessionId, requestId });
+        const report = await reported;
+        runtimeOf(sessionId).domContext = {
+          refs: report.elements.map((element) => element.ref),
+          path: pathOf(report.url),
+        };
+        messages.push({
+          role: 'assistant',
+          content: roundText,
+          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
+        });
+        messages.push({
+          role: 'tool',
+          toolCallId: call.toolCallId,
+          content: JSON.stringify({ url: report.url, title: report.title ?? '', elements: report.elements }),
+        });
+        continue;
+      }
 
       if (call.name === GUIDE_TOOL_NAME) {
         // 引导是终结动作：直接下发页面动作帧，本回合结束——不回喂 observation、不再等 LLM。
@@ -514,6 +581,18 @@ export function createGateway(deps: GatewayDeps): Gateway {
           return;
         }
         runtimeOf(session.sessionId).pendingExec.delete(upstream.nonce);
+        resolve(upstream);
+        sendJson(res, 202, { accepted: true });
+        return;
+      }
+      case 'snapshot-report': {
+        // requestId 等待器一次性：命中即摘除；无等待器＝过期/伪造，409。
+        const resolve = runtimeOf(session.sessionId).pendingSnapshot.get(upstream.requestId);
+        if (resolve === undefined) {
+          sendJson(res, 409, { error: '快照上报无对应挂起请求（已处理或失效）' });
+          return;
+        }
+        runtimeOf(session.sessionId).pendingSnapshot.delete(upstream.requestId);
         resolve(upstream);
         sendJson(res, 202, { accepted: true });
         return;

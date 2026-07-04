@@ -1,6 +1,7 @@
 import type { DownstreamFrame, UpstreamFrame } from './frames.js';
 import { createIdentityProvider } from './identity.js';
 import { createSseParser } from './sse.js';
+import { createGroupMembers, routeForFrame, type FrameRoute } from './group-routing.js';
 import {
   SESSION_PORT_NAME,
   type BackgroundToContentMessage,
@@ -8,8 +9,11 @@ import {
 } from './messaging.js';
 
 const DEFAULT_SERVER_BASE_URL = 'http://127.0.0.1:8787';
-/** 跨 SW 重启复用的服务端会话 id 存根键（拆写以免被开发期 secret 守卫误判）。 */
-const SESSION_ID_KEY = 'za.' + 'sessionId';
+/**
+ * 会话存根键按宿主源分组（adr-012 一组一会话）；存 storage.session：跨 SW 重启存活、
+ * 随浏览器关闭清除，不残留死会话存根。键名拆写以免被开发期 secret 守卫误判。
+ */
+const sessionKeyFor = (origin: string): string => 'za.' + 'sessionId.' + origin;
 
 interface Session {
   baseUrl: string;
@@ -28,23 +32,29 @@ type UpstreamContentMessage = Exclude<
   { kind: 'host-identity' } | { kind: 'ping' }
 >;
 
-function createSessionBridge(port: chrome.runtime.Port) {
+/**
+ * 一个宿主源标签页组的会话桥：组内共享一个服务端会话、一条 SSE；下行帧按
+ * routeForFrame 路由（叙事帧全员镜像 / HITL·exec·guide 仅活跃页）。
+ */
+function createGroupBridge(origin: string, onEmpty: () => void) {
   const identity = createIdentityProvider();
   const abort = new AbortController();
-  let disposed = false;
+  const members = createGroupMembers<chrome.runtime.Port>();
   let sessionPromise: Promise<Session | null> | null = null;
-  // 页面同源读取的宿主用户 id；无 za.token 时用于向 demo-token 端点自取（P0-b）。
+  // 组内任一页面同源读取的宿主用户 id；无 za.token 时用于向 demo-token 端点自取（P0-b）。
   let hostUserId: string | null = null;
 
-  const post = (message: BackgroundToContentMessage) => {
-    if (disposed) return;
+  const post = (target: chrome.runtime.Port, message: BackgroundToContentMessage): void => {
     try {
-      port.postMessage(message);
+      target.postMessage(message);
     } catch {
-      disposed = true;
+      detach(target);
     }
   };
-  const postStatus = (message: string) => post({ kind: 'status', message });
+  const postTo = (route: FrameRoute, message: BackgroundToContentMessage): void => {
+    for (const member of members.targets(route)) post(member, message);
+  };
+  const postStatus = (message: string) => postTo('all', { kind: 'status', message });
 
   // 错误消息只含键名/状态码等可定位信息，不回显 token 值（SEC-04）。
   async function openSession(): Promise<Session | null> {
@@ -65,9 +75,10 @@ function createSessionBridge(port: chrome.runtime.Port) {
         return null;
       }
     }
-    // 优先复用已存 sessionId：SW 被回收重启后，服务端会话及其挂起 HITL/代执行等待器仍在，
+    // 优先复用本组已存 sessionId：SW 被回收重启后，服务端会话及其挂起 HITL/代执行等待器仍在，
     // 复用即恢复 in-flight 流程、避免每次重连新建会话（会话风暴 + nonce↔会话错位 409）。
-    const storedId = (await chrome.storage.local.get(SESSION_ID_KEY))[SESSION_ID_KEY];
+    const key = sessionKeyFor(origin);
+    const storedId = (await chrome.storage.session.get(key))[key];
     if (typeof storedId === 'string' && storedId !== '') {
       const resumed: Session = { baseUrl, token, sessionId: storedId };
       const reader = await openEventStream(resumed, true);
@@ -75,8 +86,8 @@ function createSessionBridge(port: chrome.runtime.Port) {
         void drainEvents(reader);
         return resumed;
       }
-      // 复用失败（会话已失效/服务端重启）：置空存根，落到新建。
-      await chrome.storage.local.set({ [SESSION_ID_KEY]: '' });
+      // 复用失败（会话已失效/服务端重启）：清存根，落到新建。
+      await chrome.storage.session.remove(key);
     }
     let response: Response;
     try {
@@ -97,7 +108,7 @@ function createSessionBridge(port: chrome.runtime.Port) {
       return null;
     }
     const { sessionId } = (await response.json()) as { sessionId: string };
-    await chrome.storage.local.set({ [SESSION_ID_KEY]: sessionId });
+    await chrome.storage.session.set({ [key]: sessionId });
     const session = { baseUrl, token, sessionId };
     // 先建立 SSE 订阅再返回：否则首个 user-message 触发的回合可能早于订阅注册而丢失下行帧（订阅竞态）。
     const reader = await openEventStream(session);
@@ -129,7 +140,7 @@ function createSessionBridge(port: chrome.runtime.Port) {
         signal: abort.signal,
       });
     } catch {
-      if (!disposed && !quiet) postStatus('事件流连接中断');
+      if (!abort.signal.aborted && !quiet) postStatus('事件流连接中断');
       return null;
     }
     if (!response.ok || response.body === null) {
@@ -148,14 +159,15 @@ function createSessionBridge(port: chrome.runtime.Port) {
         if (done) break;
         for (const payload of parser.push(decoder.decode(value, { stream: true }))) {
           try {
-            post({ kind: 'frame', frame: JSON.parse(payload) as DownstreamFrame });
+            const frame = JSON.parse(payload) as DownstreamFrame;
+            postTo(routeForFrame(frame), { kind: 'frame', frame });
           } catch {
             postStatus('收到无法解析的下行帧，已丢弃');
           }
         }
       }
     } catch {
-      if (!disposed) postStatus('事件流连接中断');
+      if (!abort.signal.aborted) postStatus('事件流连接中断');
     }
   }
 
@@ -170,6 +182,8 @@ function createSessionBridge(port: chrome.runtime.Port) {
       case 'exec-result':
         // sessionId 权威归 background：以本会话盖章覆盖 content 侧原料值。
         return { ...message.result, sessionId };
+      case 'snapshot-report':
+        return { ...message.report, sessionId };
     }
   }
 
@@ -193,32 +207,76 @@ function createSessionBridge(port: chrome.runtime.Port) {
     }
   }
 
-  // 串行转发保证 context-report 先于后续 user-message 到达服务端。
+  // 串行转发保证 context-report 先于后续 user-message 到达服务端（组内共用一条管线）。
   const UPSTREAM_KINDS: ReadonlySet<ContentToBackgroundMessage['kind']> = new Set([
     'context-report',
     'user-message',
     'hitl-decision',
     'exec-result',
+    'snapshot-report',
   ]);
   let pipeline: Promise<void> = Promise.resolve();
-  port.onMessage.addListener((raw) => {
-    const message = raw as ContentToBackgroundMessage | null;
-    if (message === null) return;
-    if (message.kind === 'host-identity') {
-      hostUserId = message.hostUserId;
-      return;
+
+  function detach(port: chrome.runtime.Port): void {
+    members.remove(port);
+    if (members.size() === 0) {
+      abort.abort();
+      onEmpty();
     }
-    // 保活心跳：其到达已重置 SW 空闲计时器，不转发、不入管线。
-    if (message.kind === 'ping') return;
-    if (!UPSTREAM_KINDS.has(message.kind)) return;
-    pipeline = pipeline.then(() => forward(message));
-  });
-  port.onDisconnect.addListener(() => {
-    disposed = true;
-    abort.abort();
-  });
+  }
+
+  function attach(port: chrome.runtime.Port): void {
+    members.add(port);
+    port.onMessage.addListener((raw) => {
+      const message = raw as ContentToBackgroundMessage | null;
+      if (message === null) return;
+      if (message.kind === 'host-identity') {
+        hostUserId = message.hostUserId;
+        return;
+      }
+      // 保活心跳：其到达已重置 SW 空闲计时器，不转发、不入管线。
+      if (message.kind === 'ping') return;
+      if (!UPSTREAM_KINDS.has(message.kind)) return;
+      // 上下文上报/用户发言都来自用户视线所在页：即组内活跃页（HITL/exec/guide 的路由目标）。
+      if (message.kind === 'context-report' || message.kind === 'user-message') {
+        members.markActive(port);
+      }
+      // 组内其它页回显该提问，保持各页对话镜像一致。
+      if (message.kind === 'user-message') {
+        for (const other of members.others(port)) post(other, { kind: 'user-echo', text: message.text });
+      }
+      pipeline = pipeline.then(() => forward(message));
+    });
+    port.onDisconnect.addListener(() => detach(port));
+  }
+
+  return { attach };
+}
+
+const groups = new Map<string, ReturnType<typeof createGroupBridge>>();
+let fallbackGroupSeq = 0;
+
+/** 组键 = 页面 origin；来源不可识别时按端口独立成组（宁可隔离，不可误并组）。 */
+function groupKeyOf(port: chrome.runtime.Port): string {
+  const url = port.sender?.tab?.url ?? port.sender?.url;
+  if (url !== undefined) {
+    try {
+      return new URL(url).origin;
+    } catch {
+      // 落到独立组
+    }
+  }
+  fallbackGroupSeq += 1;
+  return `za-isolated:${fallbackGroupSeq}`;
 }
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name === SESSION_PORT_NAME) createSessionBridge(port);
+  if (port.name !== SESSION_PORT_NAME) return;
+  const key = groupKeyOf(port);
+  let bridge = groups.get(key);
+  if (bridge === undefined) {
+    bridge = createGroupBridge(key, () => groups.delete(key));
+    groups.set(key, bridge);
+  }
+  bridge.attach(port);
 });
