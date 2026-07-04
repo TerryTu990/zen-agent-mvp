@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "rm -rf dist && tsc --noEmit -p tsconfig.json && esbuild src/content.ts --bundle --format=iife --outfile=dist/content.js && esbuild src/background.ts --bundle --format=esm --outfile=dist/background.js",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "typescript": "catalog:"
+    "esbuild": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

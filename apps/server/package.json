@@ -10,16 +10,21 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "@zen-agent/assembly": "workspace:*",
     "@zen-agent/audit": "workspace:*",
     "@zen-agent/contracts": "workspace:*",
     "@zen-agent/llm-port": "workspace:*",
-    "@zen-agent/toolgate": "workspace:*"
+    "@zen-agent/toolgate": "workspace:*",
+    "ajv": "catalog:",
+    "jose": "catalog:"
   },
   "devDependencies": {
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

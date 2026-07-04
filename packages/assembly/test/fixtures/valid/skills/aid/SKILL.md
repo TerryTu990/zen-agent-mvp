@@ -1,0 +1,1 @@
+AID-SKILL 内容

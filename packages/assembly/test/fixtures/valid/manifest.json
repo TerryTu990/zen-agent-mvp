@@ -1,0 +1,8 @@
+{
+  "version": "1.2.3",
+  "featureIdRules": [
+    { "urlPattern": "alpha/special", "featureId": "beta" },
+    { "urlPattern": "alpha", "featureId": "alpha" }
+  ],
+  "features": ["alpha", "beta"]
+}

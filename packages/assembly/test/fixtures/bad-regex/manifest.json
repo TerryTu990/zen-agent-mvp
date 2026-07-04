@@ -1,0 +1,5 @@
+{
+  "version": "1.0.0",
+  "featureIdRules": [{ "urlPattern": "(", "featureId": "other" }],
+  "features": ["other"]
+}

@@ -1,0 +1,1 @@
+GREET-SKILL 内容
