@@ -27,60 +27,6 @@ const HOST_USER_ID = process.env.ZA_CODEFLOW_USER_ID ?? '2579';
 const TOKEN_KEY = 'za.' + 'token';
 const BASEURL_KEY = 'za.serverBaseUrl';
 
-/**
- * 本地 MCP 边车：演示「客户端 MCP 调用」模式。扩展 content script 经 127.0.0.1 host 权限
- * POST 到本端点，故须开 CORS。仅实现 echo 工具（tools/call），非 echo 一律 JSON-RPC method-not-found。
- * 端口须与 tools.json 内 codeflow-token.mcp-echo 的 urlTemplate 一致（默认 8789 = 8787+2）。
- *
- * 代执行客户端固定用 credentials:'include' 发请求，带凭证的跨源请求禁止通配 origin——
- * 故 CORS 须回显请求 Origin + allow-credentials:true，不能用 '*'（否则浏览器拦截、fetch 抛网络错误）。
- */
-function startMcpSidecar(port) {
-  const corsFor = (req) => ({
-    'access-control-allow-origin': req.headers.origin ?? 'null',
-    'access-control-allow-credentials': 'true',
-    'access-control-allow-methods': 'POST, OPTIONS',
-    'access-control-allow-headers': 'content-type',
-    vary: 'Origin',
-  });
-  createServer((req, res) => {
-    const cors = corsFor(req);
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204, cors);
-      res.end();
-      return;
-    }
-    if (req.method !== 'POST' || !req.url?.startsWith('/mcp')) {
-      res.writeHead(404, { ...cors, 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: 'not-found' }));
-      return;
-    }
-    let raw = '';
-    req.on('data', (chunk) => {
-      raw += chunk;
-    });
-    req.on('end', () => {
-      let rpc = {};
-      try {
-        rpc = JSON.parse(raw || '{}');
-      } catch {
-        rpc = {};
-      }
-      const id = rpc.id ?? null;
-      const name = rpc.params?.name;
-      const text = rpc.params?.arguments?.text;
-      const body =
-        rpc.method === 'tools/call' && name === 'echo'
-          ? { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: String(text ?? '') }] } }
-          : { jsonrpc: '2.0', id, error: { code: -32601, message: 'method not found' } };
-      res.writeHead(200, { ...cors, 'content-type': 'application/json' });
-      res.end(JSON.stringify(body));
-    });
-  }).listen(port, '127.0.0.1', () => {
-    console.log(`MCP 边车监听 http://127.0.0.1:${port}/mcp（echo 工具，JSON-RPC tools/call）`);
-  });
-}
-
 function base64url(input) {
   return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
@@ -128,14 +74,9 @@ function main() {
     console.log('==============================================================================\n');
   });
 
-  // MCP 边车（server 通道/demo-token 说明见下方启动打印）：端口须与 tools.json mcp-echo 的 urlTemplate 对齐。
-  const MCP_PORT = PORT + 2;
-  startMcpSidecar(MCP_PORT);
-
-  console.log('================ 三模式 demo 说明 ================');
+  console.log('================ 调用方式 demo 说明 ================');
   console.log('- 客户端发起：create-token / get-token-key（扩展以用户会话代执行）');
   console.log('- 服务端发起：list-models（服务端以平台级凭证直调 /v1/models）；需设 ZA_CF_PLATFORM_KEY，未设则该工具优雅失败');
-  console.log(`- MCP 调用：mcp-echo（扩展经本地 MCP 边车 http://127.0.0.1:${MCP_PORT}/mcp 调用）`);
   console.log('demo-token 自取端点已启用（POST /demo-token，body {hostUserId}→{token}）');
   console.log('=================================================\n');
 

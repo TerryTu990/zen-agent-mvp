@@ -89,13 +89,13 @@ describe('renderToolCard 按 mode 分组', () => {
     const ui = createConversationUi(messages);
 
     ui.renderToolCard(toolCard('running', { toolCallId: 'a', mode: 'server' }));
-    ui.renderToolCard(toolCard('running', { toolCallId: 'b', mode: 'mcp' }));
+    ui.renderToolCard(toolCard('running', { toolCallId: 'b', mode: 'client' }));
     ui.renderToolCard(toolCard('running', { toolCallId: 'c' }));
 
     expect(messages.querySelector('[data-mode="server"] [data-za-toolcard]')).not.toBeNull();
-    expect(messages.querySelector('[data-mode="mcp"] [data-za-toolcard]')).not.toBeNull();
-    expect(messages.querySelector('[data-mode="client"] [data-za-toolcard]')).not.toBeNull();
-    expect(messages.querySelectorAll('.za-toolgroup').length).toBe(3);
+    // 显式 client 与缺省 mode 合流进同一 client 组：server + client 共两组。
+    expect(messages.querySelectorAll('[data-mode="client"] [data-za-toolcard]').length).toBe(2);
+    expect(messages.querySelectorAll('.za-toolgroup').length).toBe(2);
   });
 
   it('同 mode 多卡进同一组，且状态迁移就地更新', () => {

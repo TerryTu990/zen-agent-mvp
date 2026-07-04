@@ -249,8 +249,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
   ): Promise<Observation> {
     const { sessionId } = session;
     const { toolCallId, params } = call;
-    // UI 分组用调用模式（纯展示）：apiMode 优先，缺省按 execution 通道推断。
-    const mode = tool.apiMode ?? tool.execution;
+    // UI 分组用调用模式（纯展示，不承载判定）：直接取 execution 通道。
+    const mode = tool.execution;
     broadcast(sessionId, {
       type: 'tool-card',
       sessionId,

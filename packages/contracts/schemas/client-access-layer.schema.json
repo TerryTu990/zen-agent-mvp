@@ -126,9 +126,9 @@
           "type": "string"
         },
         "mode": {
-          "$comment": "UI 分组用调用模式（纯展示，不承载判定）：client|server|mcp。",
+          "$comment": "UI 分组用调用模式（纯展示，不承载判定）：client|server。",
           "type": "string",
-          "enum": ["client", "server", "mcp"]
+          "enum": ["client", "server"]
         }
       }
     },

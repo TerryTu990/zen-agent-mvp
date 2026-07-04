@@ -39,8 +39,6 @@ interface ToolDefinitionBase {
   riskTier: RiskTier;
   /** 结果契约：exec-result.body 校验不过即 invalid-result、不回喂 agent（U7）。 */
   resultSchema: JsonObject;
-  /** UI 调用模式分组标签（纯展示，不参与 U7 治理判定）；缺省时网关按 execution 推断为 client|server。 */
-  apiMode?: 'client' | 'server' | 'mcp';
 }
 
 export interface ClientToolDefinition extends ToolDefinitionBase {

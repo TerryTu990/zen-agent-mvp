@@ -102,7 +102,7 @@ const serverCredTool: ToolDefinition = {
 const bogusChannelTool = {
   ...serverTool,
   id: 'order-list.bogus-channel',
-  execution: 'mcp',
+  execution: 'bogus',
 } as unknown as ToolDefinition;
 
 const unknownTierTool = {

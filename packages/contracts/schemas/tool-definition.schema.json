@@ -45,11 +45,6 @@
     "resultSchema": {
       "$comment": "执行结果契约：内联 JSON Schema（draft 2020-12）对象。exec-result.body 服务端校验不过 = invalid-result，不回喂 agent（U7）。",
       "type": "object"
-    },
-    "apiMode": {
-      "$comment": "UI 调用模式分组标签（纯展示，不参与 U7 治理判定）：client 用户会话代执行 / server 服务端直调 / mcp 客户端 MCP 调用。缺省时消费端按 execution 推断。",
-      "type": "string",
-      "enum": ["client", "server", "mcp"]
     }
   },
   "if": {

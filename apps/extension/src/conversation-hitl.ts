@@ -6,7 +6,6 @@ type ToolMode = NonNullable<ToolCardFrame['mode']>;
 const MODE_LABEL: Record<ToolMode, string> = {
   client: '客户端发起',
   server: '服务端发起',
-  mcp: '客户端 MCP',
 };
 
 export interface ConversationUi {

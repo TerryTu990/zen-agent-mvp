@@ -95,8 +95,6 @@ const PANEL_CSS = `
   .za-toolgroup[data-mode="client"] .za-toolgroup-title::before { background: var(--n-act); }
   .za-toolgroup[data-mode="server"] .za-toolgroup-title { color: var(--n-agent); }
   .za-toolgroup[data-mode="server"] .za-toolgroup-title::before { background: var(--n-agent); }
-  .za-toolgroup[data-mode="mcp"] .za-toolgroup-title { color: var(--n-ctrl); }
-  .za-toolgroup[data-mode="mcp"] .za-toolgroup-title::before { background: var(--n-ctrl); }
   .za-toolgroup-body { display: flex; flex-direction: column; gap: 6px; }
 
   .za-toolcard { padding: 8px 12px; border-radius: 10px; font-family: var(--mono); font-size: 12px; border: 1px solid var(--line); background: var(--paper-2); color: var(--ink-soft); }
