@@ -85,6 +85,8 @@ export interface IssueExecInstructionInput {
   toolCallId: string;
   toolId: string;
   params: JsonObject;
+  /** 已验签身份：adapter 模板可经 {{hostUserId}} 等占位注入身份到请求头/URL/体（身份优先于 params，防工具冒充）。 */
+  claims: IdentityClaims;
 }
 
 export interface AcceptExecResultInput {

@@ -308,6 +308,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       toolCallId,
       toolId: tool.id,
       params,
+      claims,
     });
     const result = waitForExec(sessionId, instruction.nonce);
     broadcast(sessionId, instruction);

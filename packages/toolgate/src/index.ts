@@ -144,12 +144,19 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       const tool = toolsById.get(input.toolId);
       if (!tool) throw new Error(`issueExecInstruction 前提破坏：未知 toolId`);
       const adapter = tool.adapter;
+      // 渲染上下文＝工具实参 + 已验签身份字段；身份后置覆盖，防工具经同名 param 冒充身份（如伪造 hostUserId）。
+      const ctx: JsonObject = {
+        ...input.params,
+        hostUserId: input.claims.hostUserId,
+        tenant: input.claims.tenant,
+        sub: input.claims.sub,
+      };
       const request: ExecRequest = {
         method: adapter.method,
-        url: renderTemplate(adapter.urlTemplate, input.params, encodeURIComponent),
-        ...(adapter.headers ? { headers: renderHeaders(adapter.headers, input.params) } : {}),
+        url: renderTemplate(adapter.urlTemplate, ctx, encodeURIComponent),
+        ...(adapter.headers ? { headers: renderHeaders(adapter.headers, ctx) } : {}),
         ...(adapter.bodyTemplate !== undefined
-          ? { body: renderBody(adapter.bodyTemplate, input.params) }
+          ? { body: renderBody(adapter.bodyTemplate, ctx) }
           : {}),
       };
       const nonce = randomUUID();

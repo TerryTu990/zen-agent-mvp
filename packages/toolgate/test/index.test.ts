@@ -105,6 +105,27 @@ const templateTool: ToolDefinition = {
   resultSchema: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } },
 };
 
+const identityTool: ToolDefinition = {
+  id: 'host.create-key',
+  featureIds: ['host'],
+  description: '建 key（请求头/URL/体经 {{hostUserId}} 注入身份）',
+  params: {
+    type: 'object',
+    required: ['name'],
+    properties: { name: { type: 'string' }, hostUserId: { type: 'string' } },
+    additionalProperties: false,
+  },
+  execution: 'client',
+  riskTier: 'auto',
+  adapter: {
+    method: 'POST',
+    urlTemplate: '/api/key?u={{hostUserId}}',
+    headers: { 'New-Api-User': '{{hostUserId}}' },
+    bodyTemplate: { name: '{{name}}', owner: '{{hostUserId}}' },
+  },
+  resultSchema: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } },
+};
+
 const allTools: ToolDefinition[] = [
   autoTool,
   hitlTool,
@@ -112,6 +133,7 @@ const allTools: ToolDefinition[] = [
   serverTool,
   unknownTierTool,
   templateTool,
+  identityTool,
 ];
 
 function makePort(overrides?: { ttlMs?: number; now?: () => number }) {
@@ -238,6 +260,7 @@ describe('toolgate issueExecInstruction — 一次性签名指令', () => {
       toolCallId: 'c1',
       toolId: hitlTool.id,
       params: { orderId: 'ORD/1001' },
+      claims: validClaims,
     });
     expect(frame.type).toBe('exec-instruction');
     expect(frame.sessionId).toBe('s1');
@@ -271,6 +294,7 @@ describe('toolgate issueExecInstruction — 一次性签名指令', () => {
       toolCallId: 'c1',
       toolId: autoTool.id,
       params: {},
+      claims: validClaims,
     });
     expect(frame.ttl).toBe(5000);
   });
@@ -281,10 +305,25 @@ describe('toolgate issueExecInstruction — 一次性签名指令', () => {
       toolCallId: 'c1',
       toolId: templateTool.id,
       params: { orderId: 'ORD-9', memo: 'hello world' },
+      claims: validClaims,
     });
     expect(frame.request.url).toBe('/api/orders/ORD-9/note');
     expect(frame.request.headers).toEqual({ 'X-Memo': 'hello world' });
     expect(frame.request.body).toEqual({ memo: 'hello world', tag: 'fixed' });
+  });
+
+  it('adapter 模板经 {{hostUserId}} 从已验签 claims 注入身份，工具 param 不能冒充', async () => {
+    const frame = await makePort().issueExecInstruction({
+      sessionId: 's1',
+      toolCallId: 'c1',
+      toolId: identityTool.id,
+      // 恶意/混淆的同名 param 试图冒充身份，应被 claims 覆盖
+      params: { name: 'k1', hostUserId: 'evil-spoof' },
+      claims: validClaims,
+    });
+    expect(frame.request.headers).toEqual({ 'New-Api-User': 'host-1' });
+    expect(frame.request.url).toBe('/api/key?u=host-1');
+    expect(frame.request.body).toEqual({ name: 'k1', owner: 'host-1' });
   });
 
   it('每次签发 nonce 唯一', async () => {
@@ -294,12 +333,14 @@ describe('toolgate issueExecInstruction — 一次性签名指令', () => {
       toolCallId: 'c1',
       toolId: autoTool.id,
       params: {},
+      claims: validClaims,
     });
     const b = await port.issueExecInstruction({
       sessionId: 's1',
       toolCallId: 'c2',
       toolId: autoTool.id,
       params: {},
+      claims: validClaims,
     });
     expect(a.nonce).not.toBe(b.nonce);
   });
@@ -316,6 +357,7 @@ async function issueAndResult(
     toolCallId: 'c1',
     toolId,
     params: params as never,
+    claims: validClaims,
   });
   return { frame, obs: await port.acceptExecResult({ sessionId: 's1', result: result(frame.nonce) }) };
 }
@@ -386,6 +428,7 @@ describe('toolgate acceptExecResult — 核销 + 校验 + 规整', () => {
       toolCallId: 'c1',
       toolId: hitlTool.id,
       params: { orderId: 'ORD-1001' },
+      claims: validClaims,
     });
     const good: ExecResultFrame = {
       type: 'exec-result',
@@ -409,6 +452,7 @@ describe('toolgate acceptExecResult — 核销 + 校验 + 规整', () => {
       toolCallId: 'c1',
       toolId: hitlTool.id,
       params: { orderId: 'ORD-1001' },
+      claims: validClaims,
     });
     clock = 1000 + 100 + 1;
     const obs = await port.acceptExecResult({
