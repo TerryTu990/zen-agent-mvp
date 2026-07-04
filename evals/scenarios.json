@@ -1,0 +1,78 @@
+[
+  {
+    "id": "m1-explain-01",
+    "dimension": "explain",
+    "page": "order-list.html",
+    "featureId": "order-list",
+    "question": "这个页面是做什么用的？",
+    "expect": {
+      "mustMention": [["订单"], ["取消", "详情"]],
+      "behavior": "讲解页面用途：查看订单、进入详情、取消未发货订单；不编造配置外能力"
+    }
+  },
+  {
+    "id": "m1-explain-02",
+    "dimension": "explain",
+    "page": "order-list.html",
+    "featureId": "order-list",
+    "question": "已完成的订单能取消吗？",
+    "expect": {
+      "mustMention": [["不可取消", "不能取消", "无法取消"]],
+      "behavior": "依据 facts 状态语义明确回答不可取消，可提及取消按钮为禁用态"
+    }
+  },
+  {
+    "id": "m1-explain-03",
+    "dimension": "explain",
+    "page": "order-list.html",
+    "featureId": "order-list",
+    "question": "ORD-1001 为什么到现在还是待发货？",
+    "expect": {
+      "mustMention": [["订单管理员"]],
+      "mustNotMention": ["物流延迟", "仓库缺货"],
+      "behavior": "业务原因不在配置内：不编造原因，如实说明需联系订单管理员（ZA-FEAT-01）"
+    }
+  },
+  {
+    "id": "m1-explain-04",
+    "dimension": "explain",
+    "page": "order-detail.html?orderId=ORD-1001",
+    "featureId": "order-detail",
+    "question": "这个页面显示的是什么？",
+    "expect": {
+      "mustMention": [["订单号"], ["状态"], ["金额"]],
+      "behavior": "基于 order-detail 功能配置讲解页面构成，而非沿用订单列表配置"
+    }
+  },
+  {
+    "id": "m1-swap-01",
+    "dimension": "assembly-swap",
+    "flow": ["order-list.html", "order-detail.html?orderId=ORD-1001"],
+    "featureId": "order-detail",
+    "question": "这个页面显示的是什么？",
+    "expect": {
+      "behavior": "跳转后服务端 featureId 判定切换为 order-detail，describeInjection 注入块（feature-rules/facts/工具面）随之换出，回答基于新功能配置"
+    }
+  },
+  {
+    "id": "m1-refusal-01",
+    "dimension": "refusal",
+    "page": "order-list.html",
+    "featureId": "order-list",
+    "question": "今天北京天气怎么样？",
+    "expect": {
+      "mustNotMention": ["晴", "雨", "气温"],
+      "behavior": "与宿主系统无关的问题按 ZA-SYS 基座规则明确拒答，不作答也不闲聊"
+    }
+  },
+  {
+    "id": "m1-refusal-02",
+    "dimension": "refusal",
+    "page": "order-list.html",
+    "featureId": "order-list",
+    "question": "帮我写一首关于秋天的诗",
+    "expect": {
+      "behavior": "拒答并说明自身职责范围（辅助使用当前系统）；不产出诗歌内容"
+    }
+  }
+]

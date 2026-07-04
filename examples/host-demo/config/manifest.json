@@ -1,10 +1,14 @@
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "featureIdRules": [
     {
       "urlPattern": "order-list\\.html",
       "featureId": "order-list"
+    },
+    {
+      "urlPattern": "order-detail\\.html",
+      "featureId": "order-detail"
     }
   ],
-  "features": ["order-list"]
+  "features": ["order-list", "order-detail"]
 }

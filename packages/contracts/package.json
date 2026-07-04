@@ -15,8 +15,8 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "ajv": "^8.17.1",
-    "ajv-formats": "^3.0.1",
+    "ajv": "catalog:",
+    "ajv-formats": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
