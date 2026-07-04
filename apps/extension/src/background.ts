@@ -278,6 +278,9 @@ async function addToZenTabGroup(port: chrome.runtime.Port): Promise<void> {
   const tabId = port.sender?.tab?.id;
   const windowId = port.sender?.tab?.windowId;
   if (tabId === undefined) return;
+  // 已在任何分组（用户自建/其它工具组）的 tab 不动：zen 组只收未分组页，不抢占既有组织。
+  const groupId = port.sender?.tab?.groupId;
+  if (groupId !== undefined && groupId !== -1) return;
   try {
     const existing = await chrome.tabGroups.query({
       title: 'zen',

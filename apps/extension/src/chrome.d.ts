@@ -31,7 +31,8 @@ declare namespace chrome {
 
   namespace runtime {
     interface MessageSender {
-      tab?: { id?: number; url?: string; windowId?: number };
+      /** groupId：-1=未分组（TAB_GROUP_ID_NONE）。 */
+      tab?: { id?: number; url?: string; windowId?: number; groupId?: number };
       url?: string;
     }
     interface Port {
