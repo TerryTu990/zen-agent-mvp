@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>订单列表 - Demo 宿主系统</title>
+</head>
+<body>
+  <h1 id="page-title">订单列表</h1>
+  <button id="btn-refresh">刷新</button>
+  <table id="order-table">
+    <thead>
+      <tr><th>订单号</th><th>状态</th><th>金额</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><a href="order-detail.html?orderId=ORD-1001">ORD-1001</a></td>
+        <td>待发货</td>
+        <td>¥128.00</td>
+        <td><button class="btn-cancel" data-order-id="ORD-1001">取消订单</button></td>
+      </tr>
+      <tr>
+        <td><a href="order-detail.html?orderId=ORD-1002">ORD-1002</a></td>
+        <td>已完成</td>
+        <td>¥56.50</td>
+        <td><button class="btn-cancel" data-order-id="ORD-1002" disabled>取消订单</button></td>
+      </tr>
+    </tbody>
+  </table>
+</body>
+</html>

@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zen-agent.dev/schema/audit-event/v1.json",
+  "title": "zen-agent 审计事件契约 C5（audit-event，SSOT）",
+  "description": "全链路审计事件的权威结构——会话/装配/工具决策/HITL 裁决/工具执行五段链路的事件类型闭集（type 枚举 + data 按 type 分形，if/then 强制）。【schema 独立于落点（U6）】MVP sink=.za/events.jsonl，标准版 sink=观测审计服务 DB；升级只换 sink 不换本 schema。【旁路铁律】record-only：审计生产与落盘永远在控制流旁路，任何审计故障 MUST NOT 影响会话与执行链路。【脱敏前置】事件落 sink 前由生产方脱敏：工具实参/响应体/页面内容不入事件（只记 id、结局与摘要字段），secret/凭证值任何字段禁入。事件 JSON 可序列化，跨端口传递满足 U1。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eventId", "type", "ts", "sessionId", "data"],
+  "properties": {
+    "eventId": {
+      "$comment": "事件全局唯一标识（生产方生成，如 uuid）。",
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "$comment": "事件类型闭集：session-start/session-end（会话）、assembly（装配）、tool-decision（门禁判定）、hitl-verdict（人审裁决）、tool-execution（执行结局）。",
+      "type": "string",
+      "enum": ["session-start", "session-end", "assembly", "tool-decision", "hitl-verdict", "tool-execution"]
+    },
+    "ts": {
+      "$comment": "事件时刻，ISO 8601 date-time。",
+      "type": "string",
+      "format": "date-time"
+    },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "userId": {
+      "$comment": "取值 = identity-claims.hostUserId（宿主侧用户标识，非 secret）。",
+      "type": "string"
+    },
+    "tenant": { "type": "string" },
+    "featureId": {
+      "$comment": "事件发生时会话所处功能；未命中任何功能时省略。",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "data": {
+      "$comment": "类型专有载荷，形状由 type 决定（见 allOf 分形）。",
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "session-start" } }, "required": ["type"] },
+      "then": { "properties": { "data": { "$ref": "#/$defs/sessionStartData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "session-end" } }, "required": ["type"] },
+      "then": { "properties": { "data": { "$ref": "#/$defs/sessionEndData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "assembly" } }, "required": ["type"] },
+      "then": { "properties": { "data": { "$ref": "#/$defs/assemblyData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "tool-decision" } }, "required": ["type"] },
+      "then": { "properties": { "data": { "$ref": "#/$defs/toolDecisionData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "hitl-verdict" } }, "required": ["type"] },
+      "then": { "properties": { "data": { "$ref": "#/$defs/hitlVerdictData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "tool-execution" } }, "required": ["type"] },
+      "then": { "properties": { "data": { "$ref": "#/$defs/toolExecutionData" } } }
+    }
+  ],
+  "$defs": {
+    "sessionStartData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "clientKind": {
+          "$comment": "客户端形态闭集（U5 三形态）；MVP 恒为 extension。",
+          "type": "string",
+          "enum": ["extension", "sdk", "shell"]
+        },
+        "iss": {
+          "$comment": "身份签发方（identity-claims.iss），审计信任链来源。",
+          "type": "string"
+        }
+      }
+    },
+    "sessionEndData": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": ["user-close", "timeout", "error"]
+        }
+      }
+    },
+    "assemblyData": {
+      "$comment": "装配事件：记录本轮注入组成（与 describeInjection 同源），用于回答『那次回答时 agent 看到了什么』。只记 id 与摘要，不记注入全文。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshotVersion", "toolIds", "skillIds"],
+      "properties": {
+        "snapshotVersion": { "type": "string" },
+        "featureId": {
+          "$comment": "本轮命中的功能；null = featureIdRules 无命中、仅装配稳定基座。",
+          "anyOf": [{ "type": "string" }, { "type": "null" }]
+        },
+        "toolIds": { "type": "array", "items": { "type": "string" } },
+        "skillIds": { "type": "array", "items": { "type": "string" } },
+        "rulesDigest": {
+          "$comment": "注入规则块内容摘要（如 sha256 前缀），供不落全文地比对漂移。",
+          "type": "string"
+        }
+      }
+    },
+    "toolDecisionData": {
+      "$comment": "门禁判定事件（服务端唯一决策点，U7）：verdict 是判定结果闭集——allow 放行 / hitl 挂起待裁 / deny 拒绝（riskTier=forbidden、身份校验不过、实参校验不过均归 deny）。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolCallId", "toolId", "riskTier", "verdict"],
+      "properties": {
+        "toolCallId": { "type": "string", "minLength": 1 },
+        "toolId": { "type": "string", "minLength": 1 },
+        "riskTier": { "type": "string", "enum": ["auto", "hitl", "forbidden"] },
+        "verdict": { "type": "string", "enum": ["allow", "hitl", "deny"] },
+        "reason": {
+          "$comment": "deny/hitl 的判定依据说明（不含实参值与敏感信息）。",
+          "type": "string"
+        }
+      }
+    },
+    "hitlVerdictData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hitlId", "decision"],
+      "properties": {
+        "hitlId": { "type": "string", "minLength": 1 },
+        "toolCallId": { "type": "string" },
+        "decision": { "type": "string", "enum": ["approve", "reject"] }
+      }
+    },
+    "toolExecutionData": {
+      "$comment": "执行结局事件：outcome 闭集——ok 成功回喂 / error 宿主 API 报错 / timeout 指令 ttl 过期或结果未归 / invalid-result 结果未过 resultSchema 校验被拒回喂（U7）。不记请求与响应体本身。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolCallId", "toolId", "execution", "outcome"],
+      "properties": {
+        "toolCallId": { "type": "string", "minLength": 1 },
+        "toolId": { "type": "string", "minLength": 1 },
+        "execution": { "type": "string", "enum": ["client", "server"] },
+        "nonce": {
+          "$comment": "client 通道的指令 nonce，关联 exec-instruction/exec-result 帧。",
+          "type": "string"
+        },
+        "outcome": { "type": "string", "enum": ["ok", "error", "timeout", "invalid-result"] },
+        "status": {
+          "$comment": "宿主 API 响应状态码（有响应时记录）。",
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "durationMs": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

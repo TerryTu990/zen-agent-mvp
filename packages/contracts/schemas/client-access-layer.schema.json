@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zen-agent.dev/schema/client-access-layer/v1.json",
+  "title": "zen-agent 客户端接入层契约 C3（client-access-layer，SSOT）",
+  "description": "客户端接入层与会话网关之间的消息帧闭集——本 schema 校验任一单帧（上行 4 帧经 HTTP POST，下行 5 帧经 SSE，D6：单向下行+HTTP 上行）。【五能力契约（U5）】任何客户端形态（MVP 仅 Chrome 插件；标准版 插件/嵌入 SDK/浏览器壳）都实现同一组能力：identity 身份获取 / context-report 上下文上报 / conversation-hitl 会话 UI+HITL 卡片 / page-action 页面动作 / delegated-execution 代执行——能力闭集见 $defs/capability，换形态不换契约。【治理边界】客户端零治理判定：分级/HITL 决策永远在服务端（U7）；exec-instruction 为签名一次性指令（nonce+ttl+signature 必含），exec-result 回传经服务端校验后才回喂 agent。所有帧 JSON 可序列化（U1）。",
+  "oneOf": [
+    { "$ref": "#/$defs/upstreamFrame" },
+    { "$ref": "#/$defs/downstreamFrame" }
+  ],
+  "$defs": {
+    "capability": {
+      "$comment": "五能力闭集（U5）：identity=获取/续期用户 token；context-report=featureId 定位+白名单快照上报；conversation-hitl=会话 UI 与 HITL 确认卡片；page-action=高亮/滚动等页面动作；delegated-execution=以用户会话代发宿主 API。",
+      "type": "string",
+      "enum": ["identity", "context-report", "conversation-hitl", "page-action", "delegated-execution"]
+    },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "upstreamFrame": {
+      "$comment": "上行帧闭集（客户端 → 网关，HTTP）。",
+      "oneOf": [
+        { "$ref": "#/$defs/contextReport" },
+        { "$ref": "#/$defs/userMessage" },
+        { "$ref": "#/$defs/hitlDecision" },
+        { "$ref": "#/$defs/execResult" }
+      ]
+    },
+    "downstreamFrame": {
+      "$comment": "下行帧闭集（网关 → 客户端，SSE）。",
+      "oneOf": [
+        { "$ref": "#/$defs/textDelta" },
+        { "$ref": "#/$defs/toolCard" },
+        { "$ref": "#/$defs/hitlRequest" },
+        { "$ref": "#/$defs/execInstruction" },
+        { "$ref": "#/$defs/guideAction" }
+      ]
+    },
+    "contextReport": {
+      "$comment": "上下文上报（能力②）：用户所在页面变化时上报。featureId 判定权威在服务端（按 manifest.featureIdRules 以 url 匹配），客户端上报值仅供参考；snapshot 只含功能配置白名单允许采集的字段，页面全文/敏感内容禁入。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "url"],
+      "properties": {
+        "type": { "const": "context-report" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "url": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "featureId": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "snapshot": { "type": "object" }
+      }
+    },
+    "userMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "text"],
+      "properties": {
+        "type": { "const": "user-message" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    },
+    "hitlDecision": {
+      "$comment": "HITL 卡片裁决回传：对应下行 hitl-request 的 hitlId。approve 后服务端才继续执行链路；客户端只采集意愿、不做任何放行判定（U7）。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "hitlId", "decision"],
+      "properties": {
+        "type": { "const": "hitl-decision" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "hitlId": { "type": "string", "minLength": 1 },
+        "decision": { "type": "string", "enum": ["approve", "reject"] },
+        "comment": { "type": "string" }
+      }
+    },
+    "execResult": {
+      "$comment": "代执行结果回传（能力⑤下半程）：nonce 关联签发的 exec-instruction，服务端核销一次性 nonce、校验 ttl 未过期、body 过 tool.resultSchema 后才规整回喂 agent（U7）；任一校验不过按 invalid-result 处理、不回喂。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "nonce", "ok"],
+      "properties": {
+        "type": { "const": "exec-result" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "nonce": { "type": "string", "minLength": 1 },
+        "ok": { "type": "boolean" },
+        "status": {
+          "$comment": "宿主 API 响应 HTTP 状态码；网络层失败（未得到响应）时省略并置 ok=false。",
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "body": {
+          "$comment": "宿主 API 响应体（任意 JSON 值，不限型）。",
+          "anyOf": [
+            { "type": "object" },
+            { "type": "array" },
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            { "type": "null" }
+          ]
+        },
+        "error": { "type": "string" }
+      }
+    },
+    "textDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "delta"],
+      "properties": {
+        "type": { "const": "text-delta" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "delta": { "type": "string" }
+      }
+    },
+    "toolCard": {
+      "$comment": "工具活动展示卡（纯展示，不承载任何判定）：同一 toolCallId 按 status 演进多次下发（running → succeeded|failed）。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "toolCallId", "toolId", "status"],
+      "properties": {
+        "type": { "const": "tool-card" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "toolCallId": { "type": "string", "minLength": 1 },
+        "toolId": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["running", "succeeded", "failed"] },
+        "summary": {
+          "$comment": "面向用户的动作摘要（已脱敏）；不下发完整 params/body。",
+          "type": "string"
+        }
+      }
+    },
+    "hitlRequest": {
+      "$comment": "HITL 确认卡片（riskTier=hitl 命中即挂起）：展示待执行动作与实参供用户裁决；挂起期间该 toolCallId 链路冻结，凭上行 hitl-decision 恢复。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "hitlId", "toolId", "params"],
+      "properties": {
+        "type": { "const": "hitl-request" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "hitlId": { "type": "string", "minLength": 1 },
+        "toolCallId": { "type": "string", "minLength": 1 },
+        "toolId": { "type": "string", "minLength": 1 },
+        "params": {
+          "$comment": "本次调用实参（用户须看到真实将发生什么，不做摘要替代）。",
+          "type": "object"
+        },
+        "reason": { "type": "string" }
+      }
+    },
+    "execInstruction": {
+      "$comment": "代执行指令（能力⑤上半程，U7）：服务端已完成门禁判定与模板实参代入，request 为最终定值请求。nonce 一次性（服务端签发即登记、回传即核销）；ttl 为自签发起的存活毫秒数，过期作废；signature 为服务端对 {nonce,ttl,toolCallId,request} 规范化序列的签名，插件执行前校验完整性以防页面脚本篡改注入。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "nonce", "ttl", "signature", "toolCallId", "request"],
+      "properties": {
+        "type": { "const": "exec-instruction" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "nonce": { "type": "string", "minLength": 1 },
+        "ttl": { "type": "integer", "minimum": 1 },
+        "signature": { "type": "string", "minLength": 1 },
+        "toolCallId": { "type": "string", "minLength": 1 },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "url"],
+          "properties": {
+            "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+            "url": { "type": "string", "minLength": 1 },
+            "headers": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "body": {
+              "$comment": "已定值请求体（任意 JSON 值，不限型）。",
+              "anyOf": [
+                { "type": "object" },
+                { "type": "array" },
+                { "type": "string" },
+                { "type": "number" },
+                { "type": "boolean" },
+                { "type": "null" }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "guideAction": {
+      "$comment": "页面动作（能力④）：action 闭集仅 highlight/scroll-to——UI 引导不含填表/替点等 DOM 自动化（D9，扩展锚点=标准版后按真实需求评估）。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "action", "selector"],
+      "properties": {
+        "type": { "const": "guide-action" },
+        "sessionId": { "$ref": "#/$defs/sessionId" },
+        "action": { "type": "string", "enum": ["highlight", "scroll-to"] },
+        "selector": {
+          "$comment": "CSS 选择器，指向宿主页面目标元素；未命中时客户端静默降级为文字说明，不报错中断会话。",
+          "type": "string",
+          "minLength": 1
+        },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zen-agent.dev/schema/tool-definition/v1.json",
+  "title": "zen-agent 工具定义契约 C1（tool-definition，SSOT）",
+  "description": "单个工具的权威定义——agent 可调用能力的唯一登记形态，配置快照内 assets/features/<id>/tools.json 的数组元素即本契约实例。【riskTier 即操作分级矩阵落点】auto=直接执行 / hitl=挂起等人裁决 / forbidden=声明存在但永拒；判定永远在服务端工具执行层 fail-closed（U7），客户端零治理判定。【execution 双通道闭集】client=签名一次性指令下发、插件在页面环境以用户会话代执行；server=服务端直调（枚举保留、MVP 不实现，U3——枚举值不删，升级只补执行器不动契约）。adapter 按 execution 分形（if/then 强制）：client 用请求模板、server 用 API 映射。【结果回喂】exec-result 回传 body 经 resultSchema 服务端校验通过后才规整为 observation 回喂 agent（U7）。本定义整体 JSON 可序列化，跨端口传递满足 U1。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "featureIds", "description", "params", "execution", "riskTier", "adapter", "resultSchema"],
+  "properties": {
+    "id": {
+      "$comment": "工具全局唯一标识（kebab，可点号分段命名空间）。审计事件、tool-card、门禁决策均以此关联。",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$"
+    },
+    "featureIds": {
+      "$comment": "本工具挂载的功能闭单（装配白名单来源：装配器按当前 featureId 过滤出可见工具集，每轮换出）。",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/featureId" }
+    },
+    "description": {
+      "$comment": "面向 LLM 的工具说明（何时用/做什么/参数含义），直接进 tool spec；写给模型而非写给人。",
+      "type": "string",
+      "minLength": 1
+    },
+    "params": {
+      "$comment": "入参契约：内联 JSON Schema（draft 2020-12）对象，装配期原样进 LLM tool spec，执行前服务端按此校验实参。",
+      "type": "object"
+    },
+    "execution": {
+      "$comment": "执行通道闭集（U3）：MVP 只实现 client，server 保留不删。agent 对通道无感知（D3），通道是定义侧配置维度。",
+      "type": "string",
+      "enum": ["client", "server"]
+    },
+    "riskTier": {
+      "$comment": "操作分级闭集：auto 直执 / hitl 人审 / forbidden 永拒。服务端唯一决策点按此判定，缺失或未知值一律 deny（fail-closed，U7）。",
+      "type": "string",
+      "enum": ["auto", "hitl", "forbidden"]
+    },
+    "adapter": {
+      "$comment": "执行适配段，形状由 execution 决定（见根级 if/then 分形）。",
+      "type": "object"
+    },
+    "resultSchema": {
+      "$comment": "执行结果契约：内联 JSON Schema（draft 2020-12）对象。exec-result.body 服务端校验不过 = invalid-result，不回喂 agent（U7）。",
+      "type": "object"
+    }
+  },
+  "if": {
+    "properties": { "execution": { "const": "client" } },
+    "required": ["execution"]
+  },
+  "then": {
+    "properties": { "adapter": { "$ref": "#/$defs/clientAdapter" } }
+  },
+  "else": {
+    "properties": { "adapter": { "$ref": "#/$defs/serverAdapter" } }
+  },
+  "$defs": {
+    "featureId": {
+      "$comment": "功能标识文法，与 config-snapshot manifest.featureIdRules[].featureId 同文法（跨契约对齐）。",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "httpMethod": {
+      "type": "string",
+      "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]
+    },
+    "templateString": {
+      "$comment": "模板串：{{paramName}} 占位符按名绑定 params 属性，服务端签发 exec-instruction 前完成实参代入——客户端只收已定值的最终请求，不做模板求值（客户端零治理判定）。",
+      "type": "string",
+      "minLength": 1
+    },
+    "clientAdapter": {
+      "$comment": "client 通道适配：宿主 API 请求模板。服务端代入实参后签名下发（nonce+ttl 一次性，U7），插件在页面环境以用户既有会话（cookie 等）发出——构造上即用户权限、无提权面（D2）。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "urlTemplate"],
+      "properties": {
+        "method": { "$ref": "#/$defs/httpMethod" },
+        "urlTemplate": {
+          "$comment": "宿主 API 地址模板：同源相对路径（/api/...）或绝对 URL，可含 {{param}} 占位符。",
+          "$ref": "#/$defs/templateString"
+        },
+        "headers": {
+          "$comment": "附加请求头（值可含占位符）。凭证真值禁入（身份走用户会话透传，平台零特权）。",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/templateString" }
+        },
+        "bodyTemplate": {
+          "$comment": "请求体模板：JSON 对象（叶子字符串可含占位符）或整体字符串模板；GET/DELETE 通常省略。",
+          "anyOf": [{ "type": "object" }, { "type": "string" }]
+        }
+      }
+    },
+    "serverAdapter": {
+      "$comment": "server 通道适配：服务端直调 API 映射（token 化 API 首选）。U3 保留段——MVP 定形不实现，标准版补执行器时本契约不变。凭证一律 credentialRef 引用名，真值由服务端运行时注入、永不入配置。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "urlTemplate"],
+      "properties": {
+        "method": { "$ref": "#/$defs/httpMethod" },
+        "urlTemplate": {
+          "$comment": "目标 API 绝对 URL 模板，可含 {{param}} 占位符。",
+          "$ref": "#/$defs/templateString"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/templateString" }
+        },
+        "bodyTemplate": {
+          "anyOf": [{ "type": "object" }, { "type": "string" }]
+        },
+        "credentialRef": {
+          "$comment": "服务端托管凭证的引用名（非值）；解析仅发生在执行器边界，不进 Context/审计。",
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+        }
+      }
+    }
+  }
+}

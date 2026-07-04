@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zen-agent.dev/schema/identity-claims/v1.json",
+  "title": "zen-agent 身份契约 C2（identity-claims，SSOT）",
+  "description": "平台内流转的用户身份 claims 闭集——网关验签 JWT 后投影出的规范化身份对象（原始 JWT 的 iat/aud/jti 等标准字段投影时丢弃，additionalProperties:false 物理保证闭集）。【信任契约】平台零特权、不建账号：token 由宿主/企业 SSO 签发（iss 白名单验签），平台只验签与透传，工具执行一律以该身份进行（client 通道=用户会话天然同权，server 通道=透传 claims 换取用户级凭据）。工具门禁的身份校验以本对象为唯一输入（U7）。MVP 与标准版共用同一 claims 结构（简化 token 也按此投影），身份联邦独立部署时本契约不变；对象 JSON 可序列化，跨端口传递满足 U1。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sub", "tenant", "roles", "hostUserId", "iss", "exp"],
+  "properties": {
+    "sub": {
+      "$comment": "平台侧用户主体标识（token 的 subject）。会话隔离按此键（单租户多用户）。",
+      "type": "string",
+      "minLength": 1
+    },
+    "tenant": {
+      "$comment": "租户标识。MVP 单租户固定值，标准版多租户隔离键——字段先行、语义不变。",
+      "type": "string",
+      "minLength": 1
+    },
+    "roles": {
+      "$comment": "宿主侧角色闭单（可为空）。仅供工具门禁做粗粒度校验；细粒度权限永远由宿主 API 以用户身份自行判定，平台不复刻宿主权限模型。",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "hostUserId": {
+      "$comment": "宿主系统内用户标识。代执行/直调透传身份与审计事件 userId 的取值源。",
+      "type": "string",
+      "minLength": 1
+    },
+    "iss": {
+      "$comment": "签发方标识。网关按 iss 白名单选择验签密钥/JWKS，白名单外一律拒绝（fail-closed）。",
+      "type": "string",
+      "minLength": 1
+    },
+    "exp": {
+      "$comment": "过期时刻（epoch 秒，短时效）。过期 token 拒绝服务，续期由客户端接入层向签发方重新获取（能力①身份获取）。",
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

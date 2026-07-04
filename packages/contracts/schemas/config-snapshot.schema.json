@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zen-agent.dev/schema/config-snapshot/v1.json",
+  "title": "zen-agent 配置快照契约 C4（config-snapshot manifest，SSOT）",
+  "description": "配置快照清单（manifest.json）的权威契约。【快照布局】assets/features/<id>/{feature.md(功能规则), facts.md(功能事实), tools.json(工具定义数组，元素由 tool-definition.schema.json 级联校验)} + assets/skills/<fn>/SKILL.md + 根 manifest.json（本契约）。【版本化不可变（U4）】快照以 version 整体发布、发布后不可变；装配器只认整快照，升级 = 换生产端（MVP git 文件 → 标准版配置中心产出物），文件布局与 manifest 结构同构、消费端不换。【featureId 判定权威】featureIdRules 是 url → featureId 的唯一映射源：服务端按数组顺序逐条匹配、首个命中生效；无命中则本轮只装配稳定基座、不装功能块（fail-safe，不猜测）。manifest JSON 可序列化，跨端口传递满足 U1。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "featureIdRules"],
+  "properties": {
+    "version": {
+      "$comment": "快照版本（semver，可全序比较）。装配结果与审计事件均回写该版本，问题可追溯到确定快照。",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+    },
+    "featureIdRules": {
+      "$comment": "url → featureId 映射规则表（有序，首个命中生效；排序即优先级，具体规则放通配规则之前）。",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/featureIdRule" }
+    },
+    "features": {
+      "$comment": "可选·快照内功能闭单（featureId 列表）。声明时装配器启动校验各 assets/features/<id>/ 目录齐备，缺失 fail-closed 拒载快照；省略则以目录扫描为准。",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/featureId" }
+    }
+  },
+  "$defs": {
+    "featureId": {
+      "$comment": "功能标识文法，与 tool-definition.schema.json $defs/featureId 及 assets/features/<id>/ 目录名一致（三处同文法）。",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "featureIdRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["urlPattern", "featureId"],
+      "properties": {
+        "urlPattern": {
+          "$comment": "ECMAScript 正则源串，对页面完整 URL 做 test 匹配（不含斜杠定界符与 flags）。",
+          "type": "string",
+          "minLength": 1
+        },
+        "featureId": { "$ref": "#/$defs/featureId" }
+      }
+    }
+  }
+}

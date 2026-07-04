@@ -1,0 +1,10 @@
+{
+  "version": "0.1.0",
+  "featureIdRules": [
+    {
+      "urlPattern": "order-list\\.html",
+      "featureId": "order-list"
+    }
+  ],
+  "features": ["order-list"]
+}

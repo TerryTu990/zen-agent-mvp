@@ -1,0 +1,25 @@
+{
+  "name": "@zen-agent/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@zen-agent/assembly": "workspace:*",
+    "@zen-agent/audit": "workspace:*",
+    "@zen-agent/contracts": "workspace:*",
+    "@zen-agent/llm-port": "workspace:*",
+    "@zen-agent/toolgate": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

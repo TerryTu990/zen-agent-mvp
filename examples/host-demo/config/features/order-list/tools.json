@@ -1,0 +1,34 @@
+[
+  {
+    "id": "order-list.cancel-order",
+    "featureIds": ["order-list"],
+    "description": "取消一笔待发货订单。仅当用户明确要求取消且给出订单号时调用；orderId 为订单列表中的订单号（如 ORD-1001）。已完成订单不可取消，不要对其调用本工具。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orderId"],
+      "properties": {
+        "orderId": {
+          "type": "string",
+          "pattern": "^ORD-[0-9]+$",
+          "description": "要取消的订单号"
+        }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "adapter": {
+      "method": "POST",
+      "urlTemplate": "/api/orders/{{orderId}}/cancel"
+    },
+    "resultSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "orderId"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "orderId": { "type": "string" }
+      }
+    }
+  }
+]
