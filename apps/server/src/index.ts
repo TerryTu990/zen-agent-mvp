@@ -7,6 +7,7 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 import type {
   AssemblyPort,
+  AuditPort,
   ConfigSnapshotManifest,
   LlmPort,
   ToolDefinition,
@@ -15,6 +16,7 @@ import type {
 import { createAssemblyPort } from '@zen-agent/assembly';
 import { createToolGatePort } from '@zen-agent/toolgate';
 import { createLlmPort } from '@zen-agent/llm-port';
+import { createAuditPort } from '@zen-agent/audit';
 import { createTokenVerifier } from './auth.js';
 import { createMemorySessionStore } from './sessions.js';
 import { createGateway } from './gateway.js';
@@ -40,6 +42,7 @@ export interface ServerPorts {
   assembly: AssemblyPort;
   toolgate: ToolGatePort;
   llm: LlmPort;
+  audit: AuditPort;
 }
 
 /**
@@ -63,7 +66,6 @@ async function collectHostTools(
   return [...byId.values()];
 }
 
-// audit 端口接回组装的锚点=M4（其工厂在 sink 落地前如实拒绝创建，组装即调会阻断启动）。
 export async function assemblePorts(options: ServerOptions): Promise<ServerPorts> {
   const assembly = createAssemblyPort({
     snapshotRoot: options.snapshotRoot,
@@ -76,6 +78,7 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
     assembly,
     toolgate: createToolGatePort({ tools, signingSecret: options.signingSecret }),
     llm: createLlmPort({ allowedProviders: options.allowedProviders }),
+    audit: createAuditPort({ sinkPath: options.auditSinkPath }),
   };
 }
 
@@ -97,6 +100,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     assembly: ports.assembly,
     llm: ports.llm,
     toolgate: ports.toolgate,
+    audit: ports.audit,
     verifier: createTokenVerifier({
       jwtSecret: options.jwtSecret,
       issAllowlist: options.issAllowlist,

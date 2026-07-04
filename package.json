@@ -13,7 +13,8 @@
     "test:e2e": "node scripts/e2e/run-m1.mjs",
     "test:e2e:m2": "node scripts/e2e/run-m2.mjs",
     "test:e2e:m3": "node scripts/e2e/run-m3.mjs",
-    "lint:deps": "node scripts/lint-deps.mjs"
+    "lint:deps": "node scripts/lint-deps.mjs",
+    "eval": "node scripts/evals/run.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",

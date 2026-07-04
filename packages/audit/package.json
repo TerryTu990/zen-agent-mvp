@@ -17,6 +17,8 @@
     "@zen-agent/contracts": "workspace:*"
   },
   "devDependencies": {
+    "ajv": "catalog:",
+    "ajv-formats": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

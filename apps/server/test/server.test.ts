@@ -1,3 +1,5 @@
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SignJWT } from 'jose';
@@ -7,6 +9,8 @@ import { startServer, type RunningServer } from '../src/index.js';
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/host-demo/config');
 const systemPromptPath = join(repoRoot, 'assets/system-prompt.md');
+// 共享测试 server 的审计落点：审计链测试按 sessionId 过滤本流事件，与其它测试的事件互不干扰。
+const AUDIT_SINK = join(mkdtempSync(join(tmpdir(), 'za-server-audit-')), 'events.jsonl');
 
 const JWT_SECRET = 'za-test-secret';
 const SIGNING_SECRET = 'za-test-signing-secret';
@@ -38,7 +42,7 @@ function serverOptions(overrides: Partial<Parameters<typeof startServer>[0]> = {
     issAllowlist: [ISS],
     snapshotRoot,
     systemPromptPath,
-    auditSinkPath: join(repoRoot, '.za/events.jsonl'),
+    auditSinkPath: AUDIT_SINK,
     allowedProviders: ['openai-compatible'],
     heartbeatMs: 60_000,
     ...overrides,
@@ -756,5 +760,161 @@ describe('启动 fail-closed', () => {
     await expect(
       startServer(serverOptions({ snapshotRoot: join(repoRoot, 'examples/no-such-config') })),
     ).rejects.toThrow(/快照拒载/);
+  });
+});
+
+/** 读共享审计落点，取属于指定 session 的事件（按 sessionId 隔离本测试流）。 */
+function auditEventsFor(sessionId: string): Array<Record<string, unknown>> {
+  const raw = readFileSync(AUDIT_SINK, 'utf8');
+  return raw
+    .split('\n')
+    .filter((line) => line !== '')
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((event) => event['sessionId'] === sessionId);
+}
+
+const SECRET_SIGNATURES = [/sk-[A-Za-z0-9]{20,}/, /eyJ[\w-]+\.[\w-]+\.[\w-]+/, /ghp_[A-Za-z0-9]{36}/, /-----BEGIN [A-Z ]*PRIVATE KEY-----/];
+
+/** 针对自定义 base（旁路测试自起的 server）的 SSE 读取，语义同 openSse。 */
+async function openSse2(base: string, token: string, sessionId: string): Promise<SseHandle> {
+  const controller = new AbortController();
+  const response = await fetch(`${base}/v1/sessions/${sessionId}/events`, {
+    headers: authHeaders(token),
+    signal: controller.signal,
+  });
+  const frames: Array<Record<string, unknown>> = [];
+  void (async () => {
+    if (!response.body) return;
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      for await (const chunk of response.body) {
+        buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+        let index: number;
+        while ((index = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, index);
+          buffer = buffer.slice(index + 2);
+          for (const line of block.split('\n')) {
+            if (line.startsWith('data: ')) frames.push(JSON.parse(line.slice(6)) as Record<string, unknown>);
+          }
+        }
+      }
+    } catch {
+      // abort 断开属正常收尾
+    }
+  })();
+  return {
+    frames,
+    raw: () => '',
+    async waitFor(predicate, timeoutMs = 8000) {
+      const deadline = Date.now() + timeoutMs;
+      while (!predicate()) {
+        if (Date.now() > deadline) throw new Error(`SSE 等待超时；已收帧：${JSON.stringify(frames)}`);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    },
+    close: () => controller.abort(),
+  };
+}
+
+describe('审计事件链（M4 全链路 + 脱敏 + 旁路）', () => {
+  it('完整 HITL 代执行后 .za events 含五段事件链且无 secret/签名值', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    let signature = '';
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '帮我取消订单 ORD-1001' });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(hitl['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      const instr = framesByType(sse.frames, 'exec-instruction')[0]!;
+      signature = String(instr['signature']);
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instr['nonce']),
+        ok: true,
+        status: 200,
+        body: { ok: true, orderId: 'ORD-1001' },
+      });
+      await sse.waitFor(() => textOf(sse.frames).includes('已为你取消订单 ORD-1001'));
+    } finally {
+      sse.close();
+    }
+
+    const events = auditEventsFor(sessionId);
+    const types = events.map((e) => e['type']);
+    for (const expected of ['session-start', 'assembly', 'tool-decision', 'hitl-verdict', 'tool-execution']) {
+      expect(types).toContain(expected);
+    }
+    const decision = events.find((e) => e['type'] === 'tool-decision')!['data'] as Record<string, unknown>;
+    expect(decision['verdict']).toBe('hitl');
+    expect(decision['riskTier']).toBe('hitl');
+    const verdict = events.find((e) => e['type'] === 'hitl-verdict')!['data'] as Record<string, unknown>;
+    expect(verdict['decision']).toBe('approve');
+    const execution = events.find((e) => e['type'] === 'tool-execution')!['data'] as Record<string, unknown>;
+    expect(execution['outcome']).toBe('ok');
+    expect(execution['execution']).toBe('client');
+
+    // 脱敏 + 无签名：事件全文不含 secret 样式，且不含 exec-instruction 的 signature 字段值。
+    const dump = JSON.stringify(events);
+    for (const sig of SECRET_SIGNATURES) expect(dump).not.toMatch(sig);
+    expect(dump).not.toContain(signature);
+    expect(dump).not.toContain(token);
+  });
+
+  it('forbidden 工具：审计有 tool-decision(deny) 但无 tool-execution（未执行）', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '帮我清空所有订单' });
+      await sse.waitFor(() => textOf(sse.frames).includes('不被允许'));
+    } finally {
+      sse.close();
+    }
+    const events = auditEventsFor(sessionId);
+    const decision = events.find((e) => e['type'] === 'tool-decision')!['data'] as Record<string, unknown>;
+    expect(decision['verdict']).toBe('deny');
+    expect(events.some((e) => e['type'] === 'tool-execution')).toBe(false);
+  });
+
+  it('旁路铁律：审计 sink 不可写时会话主链路不受影响', async () => {
+    // auditSinkPath 指向一个已存在的目录 → append 必失败；record 吞掉、会话仍正常。
+    const badServer = await startServer(serverOptions({ auditSinkPath: repoRoot }));
+    try {
+      const base = `http://127.0.0.1:${badServer.port}`;
+      const token = await signToken();
+      const createRes = await fetch(`${base}/v1/sessions`, { method: 'POST', headers: authHeaders(token) });
+      expect(createRes.status).toBe(201);
+      const { sessionId } = (await createRes.json()) as { sessionId: string };
+      const sse = await openSse2(base, token, sessionId);
+      try {
+        await fetch(`${base}/v1/sessions/${sessionId}/frames`, {
+          method: 'POST',
+          headers: authHeaders(token, { 'content-type': 'application/json' }),
+          body: JSON.stringify({ type: 'context-report', sessionId, url: ORDER_LIST_URL }),
+        });
+        await fetch(`${base}/v1/sessions/${sessionId}/frames`, {
+          method: 'POST',
+          headers: authHeaders(token, { 'content-type': 'application/json' }),
+          body: JSON.stringify({ type: 'user-message', sessionId, text: '已完成的订单能取消吗？' }),
+        });
+        await sse.waitFor(() => textOf(sse.frames).includes('不可取消'));
+      } finally {
+        sse.close();
+      }
+    } finally {
+      await badServer.close();
+    }
   });
 });

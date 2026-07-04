@@ -116,6 +116,12 @@ importers:
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
+      ajv:
+        specifier: 'catalog:'
+        version: 8.20.0
+      ajv-formats:
+        specifier: 'catalog:'
+        version: 3.0.1(ajv@8.20.0)
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

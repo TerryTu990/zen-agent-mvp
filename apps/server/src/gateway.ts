@@ -11,11 +11,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import type {
   AssemblyPort,
+  AuditEvent,
+  AuditPort,
   ComposeResult,
   DownstreamFrame,
   ExecResultFrame,
-  GuideActionFrame,
   GuideActionKind,
+  GuideActionFrame,
   HitlDecisionValue,
   IdentityClaims,
   JsonObject,
@@ -35,9 +37,18 @@ export interface GatewayDeps {
   assembly: AssemblyPort;
   llm: LlmPort;
   toolgate: ToolGatePort;
+  audit: AuditPort;
   verifier: TokenVerifier;
   store: SessionStore;
   heartbeatMs: number;
+}
+
+/** 执行结局 → 审计 outcome 闭集映射；deny/reject 不产 tool-execution（未执行），故只映射已执行结果。 */
+function execOutcome(observation: Observation): 'ok' | 'error' | 'timeout' | 'invalid-result' {
+  if (observation.ok) return 'ok';
+  if (observation.error === 'invalid-result') return 'invalid-result';
+  if (observation.error === 'timeout') return 'timeout';
+  return 'error';
 }
 
 /** agent loop 轮数上限：防 LLM 反复触发工具无法收敛而失控烧配额。 */
@@ -188,6 +199,27 @@ export function createGateway(deps: GatewayDeps): Gateway {
     broadcast(sessionId, { type: 'text-delta', sessionId, delta: notice });
   };
 
+  /**
+   * 记一条审计事件（record-only 旁路，U6/C5）：网关只传 schema 允许字段（不含实参/响应体/签名/secret），
+   * 脱敏前置由此构造保证、audit sink 再兜一层。eventId/ts 就地生成；audit.record 契约不抛，无需 try/catch。
+   */
+  const recordEvent = (
+    sessionId: string,
+    claims: IdentityClaims,
+    featureId: string | null,
+    body: Pick<AuditEvent, 'type' | 'data'>,
+  ): void => {
+    deps.audit.record({
+      eventId: randomUUID(),
+      ts: new Date().toISOString(),
+      sessionId,
+      userId: claims.hostUserId,
+      tenant: claims.tenant,
+      ...(featureId !== null ? { featureId } : {}),
+      ...body,
+    } as AuditEvent);
+  };
+
   /** 等待客户端 hitl-decision；resolver 先注册再下发帧，避免决策先于等待器到达而丢帧。 */
   function waitForHitl(sessionId: string, hitlId: string): Promise<HitlDecisionValue> {
     const runtime = runtimeOf(sessionId);
@@ -208,6 +240,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
   async function runExecSubflow(
     session: SessionState,
     claims: IdentityClaims,
+    featureId: string | null,
     tool: ToolDefinition,
     call: { toolCallId: string; params: JsonObject },
   ): Promise<Observation> {
@@ -232,6 +265,16 @@ export function createGateway(deps: GatewayDeps): Gateway {
       params,
       claims,
     });
+    recordEvent(sessionId, claims, featureId, {
+      type: 'tool-decision',
+      data: {
+        toolCallId,
+        toolId: tool.id,
+        riskTier: tool.riskTier,
+        verdict: decision.verdict,
+        ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+      },
+    });
     if (decision.verdict === 'deny') {
       finish('failed');
       return { toolCallId, ok: false, content: null, error: decision.reason ?? 'denied' };
@@ -248,12 +291,18 @@ export function createGateway(deps: GatewayDeps): Gateway {
         params,
         ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
       });
-      if ((await decided) === 'reject') {
+      const verdict = await decided;
+      recordEvent(sessionId, claims, featureId, {
+        type: 'hitl-verdict',
+        data: { hitlId, toolCallId, decision: verdict },
+      });
+      if (verdict === 'reject') {
         finish('failed');
         return { toolCallId, ok: false, content: null, error: 'user-rejected' };
       }
     }
 
+    const startedAt = Date.now();
     const instruction = await deps.toolgate.issueExecInstruction({
       sessionId,
       toolCallId,
@@ -262,8 +311,21 @@ export function createGateway(deps: GatewayDeps): Gateway {
     });
     const result = waitForExec(sessionId, instruction.nonce);
     broadcast(sessionId, instruction);
-    const observation = await deps.toolgate.acceptExecResult({ sessionId, result: await result });
+    const execResult = await result;
+    const observation = await deps.toolgate.acceptExecResult({ sessionId, result: execResult });
     finish(observation.ok ? 'succeeded' : 'failed');
+    recordEvent(sessionId, claims, featureId, {
+      type: 'tool-execution',
+      data: {
+        toolCallId,
+        toolId: tool.id,
+        execution: tool.execution,
+        nonce: instruction.nonce,
+        outcome: execOutcome(observation),
+        ...(typeof execResult.status === 'number' ? { status: execResult.status } : {}),
+        durationMs: Date.now() - startedAt,
+      },
+    });
     return observation;
   }
 
@@ -275,7 +337,17 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const { sessionId } = session;
     const { featureId } = await deps.assembly.resolveFeature({ url: session.currentUrl ?? '' });
     const composed = await deps.assembly.compose({ sessionId, featureId });
-    // 注入自省与 compose 同源，可随时按 featureId 重放；每轮记 audit assembly 事件的锚点=M4
+    // 注入自省与 compose 同源：审计 assembly 事件记录本轮 agent 看到了什么（只记 id 与版本，不落全文）。
+    const injection = await deps.assembly.describeInjection({ sessionId, featureId });
+    recordEvent(sessionId, claims, featureId, {
+      type: 'assembly',
+      data: {
+        snapshotVersion: injection.snapshotVersion,
+        featureId,
+        toolIds: injection.toolIds,
+        skillIds: composed.skills.map((skill) => skill.id),
+      },
+    });
     const hostToolsById = new Map(composed.tools.map((tool) => [tool.id, tool]));
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemContent(composed) },
@@ -330,7 +402,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         break;
       }
 
-      const observation = await runExecSubflow(session, claims, tool, call);
+      const observation = await runExecSubflow(session, claims, featureId, tool, call);
       // 回喂 agent：assistant 调用轮（本轮文本，通常为空）+ observation（仅规整结果，U7）。
       // LlmMessage 端口冻结无 tool_calls 字段，故 assistant 轮不回声 tool_calls；MVP 由 mock 凭
       // 末条 role:tool 观察驱动总结。补 tool_calls 回声的锚点＝llm-port 接真实 provider 时评估。
@@ -473,6 +545,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
     if (req.method === 'POST' && pathname === '/v1/sessions') {
       const session = deps.store.create(claims);
+      recordEvent(session.sessionId, claims, null, {
+        type: 'session-start',
+        data: { clientKind: 'extension', iss: claims.iss },
+      });
       sendJson(res, 201, { sessionId: session.sessionId });
       return;
     }
