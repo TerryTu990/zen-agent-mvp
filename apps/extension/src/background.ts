@@ -270,6 +270,32 @@ function groupKeyOf(port: chrome.runtime.Port): string {
   return `za-isolated:${fallbackGroupSeq}`;
 }
 
+/**
+ * 可视化：agent 已连接的 tab 并入本窗口的「zen」标签组（原生可折叠；关组即关全部成员页）。
+ * 仅视觉投影，失败（特殊窗口/不支持）静默降级，不影响会话。
+ */
+async function addToZenTabGroup(port: chrome.runtime.Port): Promise<void> {
+  const tabId = port.sender?.tab?.id;
+  const windowId = port.sender?.tab?.windowId;
+  if (tabId === undefined) return;
+  try {
+    const existing = await chrome.tabGroups.query({
+      title: 'zen',
+      ...(windowId !== undefined ? { windowId } : {}),
+    });
+    const groupId = existing[0]?.id;
+    const joined = await chrome.tabs.group({
+      tabIds: tabId,
+      ...(groupId !== undefined ? { groupId } : {}),
+    });
+    if (groupId === undefined) {
+      await chrome.tabGroups.update(joined, { title: 'zen', color: 'purple' });
+    }
+  } catch {
+    // 分组失败不影响会话
+  }
+}
+
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== SESSION_PORT_NAME) return;
   const key = groupKeyOf(port);
@@ -279,4 +305,5 @@ chrome.runtime.onConnect.addListener((port) => {
     groups.set(key, bridge);
   }
   bridge.attach(port);
+  void addToZenTabGroup(port);
 });

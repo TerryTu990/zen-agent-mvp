@@ -83,7 +83,11 @@ function pageOperateCall(obs) {
   return {
     id: 'call_page_operate',
     name: TOOL_PAGE_OPERATE,
-    arguments: JSON.stringify({ steps, summary: '在页面上填写备注并保存' }),
+    arguments: JSON.stringify({
+      task: '给订单添加备注',
+      steps,
+      summary: '在页面上填写备注并保存',
+    }),
   };
 }
 
@@ -102,6 +106,7 @@ function summarizeObs(obs) {
     return `已刷新，当前 ${c ? c[1] : ''} 笔订单。`;
   }
   if (obs.includes('user-rejected')) return '已取消该操作，未做任何更改。';
+  if (obs.includes('user-stopped')) return '已按你的要求停止页面操作。';
   if (obs.includes('forbidden')) return '抱歉，该操作不被允许执行。';
   if (/invalid-result|exec-failed|timeout|replayed/.test(obs)) return '操作未成功完成。';
   return 'MOCK-OBS-DEFAULT';

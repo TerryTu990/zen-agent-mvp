@@ -107,6 +107,9 @@ const PANEL_CSS = `
   .za-hitl { align-self: stretch; padding: 11px 13px; border-radius: 14px; background: var(--clay-soft); border: 1px solid color-mix(in srgb, var(--clay) 38%, var(--line-2)); display: flex; flex-direction: column; gap: 7px; animation: za-rise .24s cubic-bezier(.16, 1, .3, 1) both; }
   .za-hitl-title { font-weight: 600; color: var(--clay); }
   .za-hitl-detail, .za-hitl-reason { font-size: 12.5px; color: var(--ink-soft); word-break: break-word; }
+  .za-hitl-hint { font-size: 11.5px; color: var(--pencil); }
+  .za-stop { position: absolute; right: 14px; bottom: 76px; z-index: 3; display: none; padding: 7px 14px; border: none; border-radius: 999px; font: inherit; font-size: 12.5px; cursor: pointer; background: var(--ink); color: var(--paper); box-shadow: 0 4px 14px rgba(28, 27, 24, .28); }
+  .za-stop[data-on] { display: block; }
   .za-hitl-actions { display: flex; gap: 8px; margin-top: 2px; }
   .za-hitl-approve, .za-hitl-reject { flex: 1; padding: 7px 0; border: none; border-radius: 8px; font: inherit; cursor: pointer; }
   .za-hitl-approve { background: var(--clay); color: #fff; }
@@ -140,6 +143,7 @@ interface Panel {
   resizeHandle: HTMLElement;
   collapseButton: HTMLButtonElement;
   fab: HTMLButtonElement;
+  stopButton: HTMLButtonElement;
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -212,7 +216,12 @@ function mountPanel(): Panel {
   sendButton.textContent = '发送';
   composer.append(input, sendButton);
 
-  panel.append(resizeHandle, header, messages, composer);
+  // dom 批次执行期浮现的「停止」：点击即在步间中止并回传 user-stopped（服务端据此吊销任务授权）。
+  const stopButton = document.createElement('button');
+  stopButton.className = 'za-stop';
+  stopButton.textContent = '⏹ 停止操作';
+
+  panel.append(resizeHandle, header, messages, composer, stopButton);
 
   const fab = document.createElement('button');
   fab.className = 'za-fab';
@@ -228,7 +237,7 @@ function mountPanel(): Panel {
   wrap.append(panel, fab);
   shadow.append(style, wrap);
   document.documentElement.append(host);
-  return { messages, input, sendButton, wrap, panel, resizeHandle, collapseButton, fab };
+  return { messages, input, sendButton, wrap, panel, resizeHandle, collapseButton, fab, stopButton };
 }
 
 /** 页面同源读取当前登录宿主用户的 id（codeflow 存于 localStorage 'user'）；结构不符则返回 null。 */
@@ -288,13 +297,33 @@ function wireDrawerControls(panelRefs: Panel): void {
 function main(): void {
   if (document.getElementById('za-root') !== null) return;
   const panelRefs = mountPanel();
-  const { messages, input, sendButton } = panelRefs;
+  const { messages, input, sendButton, stopButton } = panelRefs;
   wireDrawerControls(panelRefs);
   const ui = createConversationUi(messages);
   const pageAction = createPageActionRunner(createDomGuidePage());
   // 快照器与 dom 解释器共享 ref 映射：解释器只解引用最近一次快照的 ref（adr-011）。
   const snapshot = createSnapshotter();
-  const executor = createDelegatedExecutor(fetch, createDomStepRunner((ref) => snapshot.resolve(ref)));
+  let stopRequested = false;
+  stopButton.addEventListener('click', () => {
+    stopRequested = true;
+  });
+  const domRunner = createDomStepRunner(
+    (ref) => snapshot.resolve(ref),
+    undefined,
+    () => stopRequested,
+  );
+  // 执行期显隐停止按钮；每批开跑前复位停止标志（停止只作用于当前在跑的批次）。
+  const executor = createDelegatedExecutor(fetch, {
+    async run(steps) {
+      stopRequested = false;
+      stopButton.setAttribute('data-on', '');
+      try {
+        return await domRunner.run(steps);
+      } finally {
+        stopButton.removeAttribute('data-on');
+      }
+    },
+  });
 
   let port: chrome.runtime.Port | null = null;
   let reconnectTimer: number | null = null;

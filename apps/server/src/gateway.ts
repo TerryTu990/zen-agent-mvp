@@ -347,6 +347,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
         finish('failed');
         return { toolCallId, ok: false, content: null, error: 'user-rejected' };
       }
+      // dom 工具的批准是任务级授权：登记 grant，同任务后续批次 decide 直接放行（adr-011 一任务一确认）。
+      if (isDomTool(tool) && typeof params['task'] === 'string') {
+        await deps.toolgate.grantHitl({ sessionId, toolId: tool.id, task: params['task'] });
+      }
     }
 
     const startedAt = Date.now();
@@ -425,6 +429,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const tools: LlmToolSpec[] = [...guideTools, ...snapshotTools, ...composed.tools.map(toLlmToolSpec)];
     // 全回合累积的用户可见文本：多轮中只有最终一轮产出气泡文本，作为本回合 assistant 历史。
     let visibleText = '';
+    // 回合是否自然收尾（纯文本/引导/未知工具终结）；false=轮数耗尽被截断，须显式告知用户而非静默停。
+    let settled = false;
 
     for (let round = 0; round < MAX_TURN_ROUNDS; round += 1) {
       let roundText = '';
@@ -445,7 +451,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
         }
       }
       // 无工具调用（纯文本/错误收尾）：本回合终结。
-      if (call === null) break;
+      if (call === null) {
+        settled = true;
+        break;
+      }
 
       if (call.name === SNAPSHOT_TOOL_NAME) {
         // 观察半程（非终结）：等活跃页回传快照，存判定上下文，快照作 observation 回喂后继续本回合。
@@ -480,6 +489,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           visibleText += notice;
           notify(sessionId, notice);
         }
+        settled = true;
         break;
       }
 
@@ -489,6 +499,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         const notice = '该操作暂未支持。';
         visibleText += notice;
         notify(sessionId, notice);
+        settled = true;
         break;
       }
 
@@ -507,6 +518,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
       });
     }
 
+    if (!settled) {
+      // 轮数耗尽被截断：显式收尾而非静默停（用户视角"卡住"），并留在历史里供下回合衔接。
+      const notice = '本轮操作步数已达上限，我先停在这里；回复「继续」可接着做。';
+      visibleText += notice;
+      notify(sessionId, notice);
+    }
     deps.store.appendHistory(sessionId, { role: 'user', content: text });
     if (visibleText !== '') {
       deps.store.appendHistory(sessionId, { role: 'assistant', content: visibleText });

@@ -11,9 +11,27 @@ declare namespace chrome {
     const session: StorageArea;
   }
 
+  namespace tabs {
+    /** 把 tab 并入标签组；省略 groupId 时新建组并返回其 id。 */
+    function group(options: { tabIds: number | number[]; groupId?: number }): Promise<number>;
+  }
+
+  namespace tabGroups {
+    interface TabGroup {
+      id: number;
+      title?: string;
+      windowId: number;
+    }
+    function query(queryInfo: { title?: string; windowId?: number }): Promise<TabGroup[]>;
+    function update(
+      groupId: number,
+      updateProperties: { title?: string; color?: string; collapsed?: boolean },
+    ): Promise<TabGroup>;
+  }
+
   namespace runtime {
     interface MessageSender {
-      tab?: { id?: number; url?: string };
+      tab?: { id?: number; url?: string; windowId?: number };
       url?: string;
     }
     interface Port {

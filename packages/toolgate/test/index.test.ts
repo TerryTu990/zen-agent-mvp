@@ -164,8 +164,8 @@ const domTool: ToolDefinition = {
   description: '在订单页可见地代用户操作（dom 批次）',
   params: {
     type: 'object',
-    required: ['steps', 'summary'],
-    properties: { steps: { type: 'array' }, summary: { type: 'string' } },
+    required: ['task', 'steps', 'summary'],
+    properties: { task: { type: 'string' }, steps: { type: 'array' }, summary: { type: 'string' } },
     additionalProperties: false,
   },
   execution: 'client',
@@ -176,6 +176,13 @@ const domTool: ToolDefinition = {
     required: ['reads', 'completedSteps'],
     properties: { reads: { type: 'object' }, completedSteps: { type: 'number' } },
   },
+};
+
+/** hitl 级 dom 工具：任务级授权（grant）测试对象。 */
+const domHitlTool: ToolDefinition = {
+  ...domTool,
+  id: 'order-list.page-operate-hitl',
+  riskTier: 'hitl',
 };
 
 /** dom 判定上下文夹具：快照页在围栏内、含 za-1/za-2 两个 ref。 */
@@ -192,6 +199,7 @@ const allTools: ToolDefinition[] = [
   templateTool,
   identityTool,
   domTool,
+  domHitlTool,
 ];
 
 interface PortOverrides {
@@ -724,6 +732,7 @@ describe('toolgate executeServer — server 通道服务端直调', () => {
 describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () => {
   const base = { sessionId: 's1', toolCallId: 'c-dom', toolId: domTool.id, claims: validClaims };
   const goodParams = {
+    task: '创建令牌并读取密钥',
     steps: [
       { action: 'fill', ref: 'za-1', value: 'my-key' },
       { action: 'click', ref: 'za-2' },
@@ -738,6 +747,7 @@ describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () 
     expect(d.verdict).toBe('allow');
 
     const dirtyParams = {
+      task: '创建令牌并读取密钥',
       steps: [{ action: 'click', ref: 'za-2', hallucinated: 'x', value: '不该有' }],
       summary: '点一下',
     };
@@ -771,7 +781,7 @@ describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () 
   it('ref 不在快照闭集 → deny ref-not-in-snapshot', async () => {
     const d = await makePort().decide({
       ...base,
-      params: { steps: [{ action: 'click', ref: 'za-99' }], summary: 'x' },
+      params: { task: 't1', steps: [{ action: 'click', ref: 'za-99' }], summary: 'x' },
       domContext,
     });
     expect(d).toEqual({ verdict: 'deny', reason: 'ref-not-in-snapshot' });
@@ -780,7 +790,7 @@ describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () 
   it('契约保留但未实现的动作（navigate/waitFor）→ deny action-not-implemented（锚点 ②-b）', async () => {
     const d = await makePort().decide({
       ...base,
-      params: { steps: [{ action: 'navigate', ref: 'za-1', to: '/console/token' }], summary: 'x' },
+      params: { task: 't1', steps: [{ action: 'navigate', ref: 'za-1', to: '/console/token' }], summary: 'x' },
       domContext,
     });
     expect(d).toEqual({ verdict: 'deny', reason: 'action-not-implemented:navigate' });
@@ -789,10 +799,10 @@ describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () 
   it('fill 缺 value / read 缺 name / 闭集外动作 / 空批次 → 各自 deny', async () => {
     const port = makePort();
     const cases: Array<[object, string]> = [
-      [{ steps: [{ action: 'fill', ref: 'za-1' }], summary: 'x' }, 'missing-value'],
-      [{ steps: [{ action: 'read', ref: 'za-1' }], summary: 'x' }, 'missing-read-name'],
-      [{ steps: [{ action: 'eval', ref: 'za-1' }], summary: 'x' }, 'unknown-action'],
-      [{ steps: [], summary: 'x' }, 'invalid-steps'],
+      [{ task: 't1', steps: [{ action: 'fill', ref: 'za-1' }], summary: 'x' }, 'missing-value'],
+      [{ task: 't1', steps: [{ action: 'read', ref: 'za-1' }], summary: 'x' }, 'missing-read-name'],
+      [{ task: 't1', steps: [{ action: 'eval', ref: 'za-1' }], summary: 'x' }, 'unknown-action'],
+      [{ task: 't1', steps: [], summary: 'x' }, 'invalid-steps'],
     ];
     for (const [params, reason] of cases) {
       const d = await port.decide({ ...base, params: params as never, domContext });
@@ -805,7 +815,7 @@ describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () 
     await expect(
       makePort().issueExecInstruction({
         ...base,
-        params: { steps: [{ action: 'click', ref: 'za-99' }], summary: 'x' },
+        params: { task: 't1', steps: [{ action: 'click', ref: 'za-99' }], summary: 'x' },
         domContext,
       }),
     ).rejects.toThrow(/ref-not-in-snapshot/);
@@ -835,5 +845,88 @@ describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () 
     };
     const rejected = await port.acceptExecResult({ sessionId: 's1', result: bad });
     expect(rejected).toMatchObject({ ok: false, error: 'invalid-result' });
+  });
+});
+
+describe('toolgate 任务级 HITL 授权（grant，一任务一确认）', () => {
+  const base = { sessionId: 's1', toolCallId: 'c-g', toolId: domHitlTool.id, claims: validClaims };
+  const taskParams = (task: string) => ({
+    task,
+    steps: [{ action: 'click', ref: 'za-1' }],
+    summary: 'x',
+  });
+
+  it('缺 task → deny missing-task（授权作用域标识必填）', async () => {
+    const d = await makePort().decide({
+      ...base,
+      params: { steps: [{ action: 'click', ref: 'za-1' }], summary: 'x' } as never,
+      domContext,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'invalid-params' });
+  });
+
+  it('首批 hitl → grantHitl 后同任务后续批次 allow；不同任务仍 hitl', async () => {
+    const port = makePort();
+    const first = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
+    expect(first.verdict).toBe('hitl');
+
+    await port.grantHitl({ sessionId: 's1', toolId: domHitlTool.id, task: '建令牌' });
+    const second = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
+    expect(second.verdict).toBe('allow');
+
+    const other = await port.decide({ ...base, params: taskParams('删令牌'), domContext });
+    expect(other.verdict).toBe('hitl');
+    // 会话隔离：另一会话同任务不共享授权。
+    const otherSession = await port.decide({
+      ...base,
+      sessionId: 's2',
+      params: taskParams('建令牌'),
+      domContext,
+    });
+    expect(otherSession.verdict).toBe('hitl');
+  });
+
+  it('滑动闲置超时后授权失效，回到 hitl', async () => {
+    let clock = 1_000_000;
+    const port = createToolGatePort({
+      tools: allTools,
+      signingSecret: SIGN_FIXTURE,
+      hitlGrantTtlMs: 1000,
+      now: () => clock,
+    });
+    await port.grantHitl({ sessionId: 's1', toolId: domHitlTool.id, task: '建令牌' });
+    clock += 900;
+    const fresh = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
+    expect(fresh.verdict).toBe('allow');
+    // 上次使用已续期：再过 900ms 仍在滑动窗口内。
+    clock += 900;
+    const slid = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
+    expect(slid.verdict).toBe('allow');
+    clock += 1001;
+    const expired = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
+    expect(expired.verdict).toBe('hitl');
+  });
+
+  it('exec-result=user-stopped 吊销该工具全部任务授权（停止=收回自动执行）', async () => {
+    const port = makePort();
+    await port.grantHitl({ sessionId: 's1', toolId: domHitlTool.id, task: '建令牌' });
+    const instruction = await port.issueExecInstruction({
+      ...base,
+      params: taskParams('建令牌'),
+      domContext,
+    });
+    const stopped = await port.acceptExecResult({
+      sessionId: 's1',
+      result: {
+        type: 'exec-result',
+        sessionId: 's1',
+        nonce: instruction.nonce,
+        ok: false,
+        error: 'user-stopped',
+      },
+    });
+    expect(stopped).toMatchObject({ ok: false, error: 'user-stopped' });
+    const after = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
+    expect(after.verdict).toBe('hitl');
   });
 });

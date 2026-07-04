@@ -114,8 +114,21 @@ export interface Observation {
   error?: string;
 }
 
+/** 任务级 HITL 授权登记：dom 工具 hitl 获批后记 grant，同任务后续批次 decide 直接放行（adr-011 一任务一确认）。 */
+export interface HitlGrantInput {
+  sessionId: string;
+  toolId: string;
+  /** agent 声明的任务标题（params.task）：授权作用域即用户在确认卡上看到并批准的这个任务。 */
+  task: string;
+}
+
 export interface ToolGatePort {
   decide(input: GateDecisionInput): Promise<GateDecision>;
+  /**
+   * 登记任务级授权（仅 dom 工具语义）：同 (sessionId,toolId,task) 的后续 decide 放行，
+   * 滑动 TTL 过期 / exec-result=user-stopped 吊销后回到 hitl。
+   */
+  grantHitl(input: HitlGrantInput): Promise<void>;
   /** 前提：decide 已放行（allow 或 hitl 获批）。签发即登记一次性 nonce。 */
   issueExecInstruction(input: IssueExecInstructionInput): Promise<ExecInstructionFrame>;
   /** 核销 nonce、验 ttl、按 resultSchema 校验后规整；任一不过返回 ok=false 的 observation。 */

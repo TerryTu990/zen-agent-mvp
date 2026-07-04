@@ -64,6 +64,7 @@ export type {
   DomGateContext,
   GateDecisionInput,
   GateDecision,
+  HitlGrantInput,
   IssueExecInstructionInput,
   AcceptExecResultInput,
   Observation,

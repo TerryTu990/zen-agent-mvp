@@ -49,6 +49,8 @@ function readValueOf(el: Element): string {
 export function createDomStepRunner(
   resolve: (ref: string) => Element | null,
   pace: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  // 用户「停止」检查点（步间生效）：返回 true 即中止余下步骤，错误串固定 user-stopped（服务端据此吊销任务授权）。
+  isStopped: () => boolean = () => false,
 ): DomStepRunner {
   async function spotlight(el: Element): Promise<void> {
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -66,6 +68,7 @@ export function createDomStepRunner(
     async run(steps) {
       const reads: JsonObject = {};
       for (const [index, step] of steps.entries()) {
+        if (isStopped()) return { ok: false, error: 'user-stopped' };
         const fail = (reason: string): DomStepOutcome => ({
           ok: false,
           error: `step-${index + 1}-${step.action}:${reason}`,

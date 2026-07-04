@@ -29,7 +29,20 @@ const STATUS_LABEL: Record<ToolCardFrame['status'], string> = {
 function summarizeParams(params: JsonObject): string {
   const entries = Object.entries(params);
   if (entries.length === 0) return '（无参数）';
-  return entries.map(([key, value]) => `${key}: ${String(value)}`).join('，');
+  return entries
+    .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`)
+    .join('，');
+}
+
+/** dom 任务授权卡的功能级摘要：只呈现任务/摘要/步数，不铺字段细节（一任务一确认，adr-011）。 */
+function summarizeDomTask(params: JsonObject): { title: string; detail: string } {
+  const summary = typeof params['summary'] === 'string' ? params['summary'] : '';
+  const steps = Array.isArray(params['steps']) ? params['steps'].length : 0;
+  const count = `共 ${steps} 步页面操作`;
+  return {
+    title: String(params['task']),
+    detail: summary === '' ? count : `${summary}（${count}）`,
+  };
 }
 
 const WHO_LABEL: Record<'user' | 'assistant', string> = {
@@ -153,20 +166,29 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         card.setAttribute('data-za-hitl', '');
         card.className = 'za-hitl';
 
+        // 带 task 的是 dom 任务级授权：功能级呈现 + 说明"批准后本任务自动执行、可停止"。
+        const domTask = typeof frame.params['task'] === 'string' ? summarizeDomTask(frame.params) : null;
+
         const title = document.createElement('div');
         title.className = 'za-hitl-title';
-        title.textContent = `需你确认：${frame.toolId}`;
+        title.textContent = domTask === null ? `需你确认：${frame.toolId}` : `需你授权：${domTask.title}`;
 
         const detail = document.createElement('div');
         detail.className = 'za-hitl-detail';
-        detail.textContent = summarizeParams(frame.params);
+        detail.textContent = domTask === null ? summarizeParams(frame.params) : domTask.detail;
+
+        const hint = domTask === null ? null : document.createElement('div');
+        if (hint !== null) {
+          hint.className = 'za-hitl-hint';
+          hint.textContent = '授权后本任务内的后续页面操作将自动执行；执行中可随时点「停止」。';
+        }
 
         const actions = document.createElement('div');
         actions.className = 'za-hitl-actions';
         const approve = document.createElement('button');
         approve.setAttribute('data-za-hitl-approve', '');
         approve.className = 'za-hitl-approve';
-        approve.textContent = '确认执行';
+        approve.textContent = domTask === null ? '确认执行' : '授权执行';
         const reject = document.createElement('button');
         reject.setAttribute('data-za-hitl-reject', '');
         reject.className = 'za-hitl-reject';
@@ -174,6 +196,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         actions.append(approve, reject);
 
         card.append(title, detail);
+        if (hint !== null) card.append(hint);
         if (frame.reason !== undefined) {
           const reason = document.createElement('div');
           reason.className = 'za-hitl-reason';

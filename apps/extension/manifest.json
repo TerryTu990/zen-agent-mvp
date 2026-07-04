@@ -22,7 +22,7 @@
       "128": "icons/icon-128.png"
     }
   },
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "activeTab", "tabGroups"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "https://codeflow.asia/*"],
   "content_scripts": [
     {
