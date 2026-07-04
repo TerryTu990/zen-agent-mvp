@@ -403,10 +403,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
 
       const observation = await runExecSubflow(session, claims, featureId, tool, call);
-      // 回喂 agent：assistant 调用轮（本轮文本，通常为空）+ observation（仅规整结果，U7）。
-      // LlmMessage 端口冻结无 tool_calls 字段，故 assistant 轮不回声 tool_calls；MVP 由 mock 凭
-      // 末条 role:tool 观察驱动总结。补 tool_calls 回声的锚点＝llm-port 接真实 provider 时评估。
-      messages.push({ role: 'assistant', content: roundText });
+      // 回喂 agent：assistant 调用轮回声本轮 tool_calls（OpenAI 兼容 API 要求 role:tool 须有前置
+      // 带 tool_calls 的 assistant 消息，否则拒绝孤儿 tool 消息）+ observation（仅规整结果，U7）。
+      messages.push({
+        role: 'assistant',
+        content: roundText,
+        toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
+      });
       messages.push({
         role: 'tool',
         toolCallId: call.toolCallId,

@@ -133,6 +133,15 @@ function buildBody(model: string, request: LlmChatRequest): JsonObject {
       role: m.role,
       content: m.content,
       ...(m.toolCallId !== undefined ? { tool_call_id: m.toolCallId } : {}),
+      ...(m.toolCalls !== undefined && m.toolCalls.length > 0
+        ? {
+            tool_calls: m.toolCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function',
+              function: { name: tc.name, arguments: JSON.stringify(tc.params) },
+            })),
+          }
+        : {}),
     })),
   };
   if (request.tools !== undefined && request.tools.length > 0) {

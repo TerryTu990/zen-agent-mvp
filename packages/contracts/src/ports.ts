@@ -110,11 +110,20 @@ export interface ToolGatePort {
 
 // ---- LlmPort（④LLM 接入层：provider 白名单插拔，密钥托管在实现侧）----
 
+/** assistant 回合发起的工具调用回声；供回喂轮把 role:tool 观察关联到其发起调用（OpenAI 兼容 API 要求）。 */
+export interface LlmToolCall {
+  id: string;
+  name: string;
+  params: JsonObject;
+}
+
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   /** role=tool 时关联的调用。 */
   toolCallId?: string;
+  /** role=assistant 且本轮发起了工具调用时的回声；缺省=纯文本轮。 */
+  toolCalls?: LlmToolCall[];
 }
 
 export interface LlmToolSpec {

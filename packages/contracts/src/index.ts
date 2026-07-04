@@ -59,6 +59,7 @@ export type {
   Observation,
   ToolGatePort,
   LlmMessage,
+  LlmToolCall,
   LlmToolSpec,
   LlmChatRequest,
   LlmStreamEvent,
