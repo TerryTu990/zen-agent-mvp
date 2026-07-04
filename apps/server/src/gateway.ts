@@ -31,6 +31,7 @@ import type {
   UpstreamFrame,
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
+import { signDemoToken, type DemoTokenSigner } from './demo-token.js';
 import type { SessionState, SessionStore } from './sessions.js';
 
 export interface GatewayDeps {
@@ -41,6 +42,8 @@ export interface GatewayDeps {
   verifier: TokenVerifier;
   store: SessionStore;
   heartbeatMs: number;
+  /** 存在即启用 POST /demo-token（P0-b，env 门控）；缺省=端点关闭（404）。 */
+  demoToken?: DemoTokenSigner;
 }
 
 /** 执行结局 → 审计 outcome 闭集映射；deny/reject 不产 tool-execution（未执行），故只映射已执行结果。 */
@@ -246,6 +249,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
   ): Promise<Observation> {
     const { sessionId } = session;
     const { toolCallId, params } = call;
+    // UI 分组用调用模式（纯展示）：apiMode 优先，缺省按 execution 通道推断。
+    const mode = tool.apiMode ?? tool.execution;
     broadcast(sessionId, {
       type: 'tool-card',
       sessionId,
@@ -253,9 +258,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
       toolId: tool.id,
       status: 'running',
       summary: tool.id,
+      mode,
     });
     const finish = (status: ToolCardStatus): void => {
-      broadcast(sessionId, { type: 'tool-card', sessionId, toolCallId, toolId: tool.id, status });
+      broadcast(sessionId, { type: 'tool-card', sessionId, toolCallId, toolId: tool.id, status, mode });
     };
 
     const decision = await deps.toolgate.decide({
@@ -303,17 +309,33 @@ export function createGateway(deps: GatewayDeps): Gateway {
     }
 
     const startedAt = Date.now();
-    const instruction = await deps.toolgate.issueExecInstruction({
-      sessionId,
-      toolCallId,
-      toolId: tool.id,
-      params,
-      claims,
-    });
-    const result = waitForExec(sessionId, instruction.nonce);
-    broadcast(sessionId, instruction);
-    const execResult = await result;
-    const observation = await deps.toolgate.acceptExecResult({ sessionId, result: execResult });
+    // 放行后按通道分支：client 签发一次性签名指令、等客户端回传；server 服务端直调、无 nonce/无客户端回传（U3/U7）。
+    let observation: Observation;
+    let nonce: string | undefined;
+    let status: number | undefined;
+    if (tool.execution === 'server') {
+      observation = await deps.toolgate.executeServer({
+        sessionId,
+        toolCallId,
+        toolId: tool.id,
+        params,
+        claims,
+      });
+    } else {
+      const instruction = await deps.toolgate.issueExecInstruction({
+        sessionId,
+        toolCallId,
+        toolId: tool.id,
+        params,
+        claims,
+      });
+      nonce = instruction.nonce;
+      const result = waitForExec(sessionId, instruction.nonce);
+      broadcast(sessionId, instruction);
+      const execResult = await result;
+      if (typeof execResult.status === 'number') status = execResult.status;
+      observation = await deps.toolgate.acceptExecResult({ sessionId, result: execResult });
+    }
     finish(observation.ok ? 'succeeded' : 'failed');
     recordEvent(sessionId, claims, featureId, {
       type: 'tool-execution',
@@ -321,9 +343,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
         toolCallId,
         toolId: tool.id,
         execution: tool.execution,
-        nonce: instruction.nonce,
+        ...(nonce !== undefined ? { nonce } : {}),
         outcome: execOutcome(observation),
-        ...(typeof execResult.status === 'number' ? { status: execResult.status } : {}),
+        ...(status !== undefined ? { status } : {}),
         durationMs: Date.now() - startedAt,
       },
     });
@@ -531,6 +553,32 @@ export function createGateway(deps: GatewayDeps): Gateway {
     sendJson(res, 200, description);
   }
 
+  /**
+   * P0-b demo-token 签发（demo 级）：有意不要求 authorization——此端点就是发 token 的，故须先于 verifier 判定。
+   * 信任模型见 demo-token.ts：真实鉴权在代执行时靠用户 cookie，伪造 hostUserId 只会被下游宿主拒绝。
+   */
+  async function handleDemoToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const signer = deps.demoToken;
+    if (signer === undefined) {
+      sendJson(res, 404, { error: '未知路由' });
+      return;
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      sendJson(res, 400, { error: '请求体不是合法 JSON' });
+      return;
+    }
+    const hostUserId = (body as { hostUserId?: unknown }).hostUserId;
+    if (typeof hostUserId !== 'string' || !/^[\w-]{1,64}$/.test(hostUserId)) {
+      sendJson(res, 400, { error: 'hostUserId 缺失或格式非法' });
+      return;
+    }
+    const token = await signDemoToken(signer, hostUserId);
+    sendJson(res, 200, { token });
+  }
+
   async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
@@ -541,12 +589,16 @@ export function createGateway(deps: GatewayDeps): Gateway {
       res.end();
       return;
     }
+    const requestPath = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    if (req.method === 'POST' && requestPath === '/demo-token') {
+      return handleDemoToken(req, res);
+    }
     const claims = await deps.verifier.verify(req.headers.authorization);
     if (claims === null) {
       sendJson(res, 401, { error: '身份校验未通过' });
       return;
     }
-    const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    const pathname = requestPath;
     if (req.method === 'POST' && pathname === '/v1/sessions') {
       const session = deps.store.create(claims);
       recordEvent(session.sessionId, claims, null, {

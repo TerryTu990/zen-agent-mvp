@@ -72,6 +72,7 @@ export interface ToolCardFrame {
   toolId: string;
   status: ToolCardStatus;
   summary?: string;
+  mode?: 'client' | 'server' | 'mcp';
 }
 
 export interface HitlRequestFrame {

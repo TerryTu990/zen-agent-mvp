@@ -81,6 +81,8 @@ export interface ToolCardFrame {
   status: ToolCardStatus;
   /** 面向用户的已脱敏摘要；不下发完整 params/body。 */
   summary?: string;
+  /** UI 分组用调用模式（纯展示）：client 用户会话代执行 / server 服务端直调 / mcp 客户端 MCP 调用。 */
+  mode?: 'client' | 'server' | 'mcp';
 }
 
 export interface HitlRequestFrame {

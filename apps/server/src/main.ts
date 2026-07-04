@@ -13,6 +13,16 @@ function requireEnv(name: string): string {
   return value;
 }
 
+/**
+ * server 通道凭证解析：credentialRef → env `ZA_CRED_<UPPER_SNAKE(ref)>` 的真值（如 codeflowPlatformKey → ZA_CRED_CODEFLOW_PLATFORM_KEY）。
+ * 真值只在执行器边界经此惰性读取、注入本次请求，不落配置/日志/审计（SEC-01/02）。
+ */
+function resolveCredential(ref: string): string | undefined {
+  const key = `ZA_CRED_${ref.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[-\s]+/g, '_').toUpperCase()}`;
+  const value = process.env[key];
+  return value && value !== '' ? value : undefined;
+}
+
 const jwtSecret = requireEnv('ZA_JWT_SECRET');
 const signingSecret = requireEnv('ZA_SIGNING_SECRET');
 const snapshotRoot = requireEnv('ZA_SNAPSHOT_ROOT');
@@ -37,6 +47,11 @@ startServer({
   systemPromptPath: process.env['ZA_SYSTEM_PROMPT_PATH'] ?? 'assets/system-prompt.md',
   auditSinkPath: process.env['ZA_AUDIT_SINK'] ?? '.za/events.jsonl',
   allowedProviders: ['openai-compatible'],
+  demoToken: {
+    enabled: process.env['ZA_DEMO_TOKEN_ENABLED'] === '1',
+    iss: process.env['ZA_JWT_ISS'] ?? 'zen-agent-demo',
+  },
+  resolveCredential,
 }).then(
   ({ port: boundPort }) => {
     console.log(`zen-agent server listening on http://127.0.0.1:${boundPort}`);

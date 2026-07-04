@@ -108,6 +108,12 @@ export interface ToolGatePort {
   issueExecInstruction(input: IssueExecInstructionInput): Promise<ExecInstructionFrame>;
   /** 核销 nonce、验 ttl、按 resultSchema 校验后规整；任一不过返回 ok=false 的 observation。 */
   acceptExecResult(input: AcceptExecResultInput): Promise<Observation>;
+  /**
+   * server 通道服务端直调：前提 decide 已放行。按 ServerAdapter 渲染请求、解析 credentialRef 注入凭证
+   * （真值只存于本次请求构造，MUST NOT 落日志/审计/Context），响应体过 resultSchema 校验后规整为 observation。
+   * 不经 nonce/客户端回传（那是 client 通道）；凭证解析不到时按未配置处理返回 ok=false。
+   */
+  executeServer(input: IssueExecInstructionInput): Promise<Observation>;
 }
 
 // ---- LlmPort（④LLM 接入层：provider 白名单插拔，密钥托管在实现侧）----

@@ -124,6 +124,11 @@
         "summary": {
           "$comment": "面向用户的动作摘要（已脱敏）；不下发完整 params/body。",
           "type": "string"
+        },
+        "mode": {
+          "$comment": "UI 分组用调用模式（纯展示，不承载判定）：client|server|mcp。",
+          "type": "string",
+          "enum": ["client", "server", "mcp"]
         }
       }
     },

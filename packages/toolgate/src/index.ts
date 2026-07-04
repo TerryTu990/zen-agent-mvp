@@ -23,6 +23,13 @@ export interface ToolGateOptions {
   ttlMs?: number;
   /** 时钟注入点（默认 Date.now），仅测试用于驱动 ttl；内部参数，非端口。 */
   now?: () => number;
+  /**
+   * server 通道凭证解析：ref→真值；真值 MUST NOT 落日志/审计/Context（SEC-01/02），
+   * 由组装层运行时注入、不写进 toolgate。缺省或解析不到按未配置处理（executeServer 返回 credential-unresolved）。
+   */
+  resolveCredential?: (ref: string) => string | undefined;
+  /** fetch 注入点，仅测试用于替身；默认全局 fetch。 */
+  fetchImpl?: typeof fetch;
 }
 
 const DEFAULT_TTL_MS = 60000;
@@ -132,7 +139,9 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       const tool = toolsById.get(input.toolId);
       if (!tool) return deny('unknown-tool');
       if (!KNOWN_RISK_TIERS.has(tool.riskTier)) return deny('unknown-risk-tier');
-      if (tool.execution !== 'client') return deny('channel-not-implemented');
+      // 通道闸 fail-closed：闭集两值都已实现（client 代执行 / server 直调）；显式列举，未来枚举扩张时新通道默认被拒而非静默降级（U3/U7）。
+      if (tool.execution !== 'client' && tool.execution !== 'server')
+        return deny('channel-not-implemented');
       const validateParams = paramsValidators.get(input.toolId);
       if (!validateParams || !validateParams(input.params)) return deny('invalid-params');
       if (!input.claims.hostUserId) return deny('identity');
@@ -212,6 +221,57 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         return { toolCallId: record.toolCallId, ok: false, content: null, error: 'invalid-result' };
       }
       return { toolCallId: record.toolCallId, ok: true, content: body };
+    },
+
+    async executeServer(input: IssueExecInstructionInput): Promise<Observation> {
+      const tool = toolsById.get(input.toolId);
+      if (!tool) throw new Error('executeServer 前提破坏：未知 toolId');
+      if (tool.execution !== 'server') throw new Error('executeServer 前提破坏：非 server 通道');
+      const adapter = tool.adapter;
+      // 渲染上下文＝实参 + 已验签身份（身份后置覆盖防冒充）+ 解析出的凭证；凭证真值仅参与本次请求构造，不落任何返回/日志。
+      const ctx: JsonObject = {
+        ...input.params,
+        hostUserId: input.claims.hostUserId,
+        tenant: input.claims.tenant,
+        sub: input.claims.sub,
+      };
+      if (adapter.credentialRef !== undefined) {
+        const credential = options.resolveCredential?.(adapter.credentialRef);
+        if (credential === undefined) {
+          return { toolCallId: input.toolCallId, ok: false, content: null, error: 'credential-unresolved' };
+        }
+        // adapter 模板以 {{credential}} 占位注入（如 "Authorization": "Bearer {{credential}}"）。
+        ctx.credential = credential;
+      }
+      const headers = adapter.headers ? renderHeaders(adapter.headers, ctx) : {};
+      const bodyValue = adapter.bodyTemplate !== undefined ? renderBody(adapter.bodyTemplate, ctx) : undefined;
+      if (bodyValue !== undefined && !Object.keys(headers).some((h) => h.toLowerCase() === 'content-type')) {
+        headers['content-type'] = 'application/json';
+      }
+      const doFetch = options.fetchImpl ?? fetch;
+      let response: Response;
+      try {
+        response = await doFetch(renderTemplate(adapter.urlTemplate, ctx, encodeURIComponent), {
+          method: adapter.method,
+          ...(Object.keys(headers).length > 0 ? { headers } : {}),
+          ...(bodyValue !== undefined ? { body: JSON.stringify(bodyValue) } : {}),
+        });
+      } catch {
+        return { toolCallId: input.toolCallId, ok: false, content: null, error: 'exec-failed' };
+      }
+      let body: JsonValue = null;
+      try {
+        body = (await response.json()) as JsonValue;
+      } catch {
+        body = null;
+      }
+      // 不采信宿主原文：唯有过服务端 resultSchema 校验才回喂 agent（U7）。非 2xx 且无有效结果体归 exec-failed。
+      const validateResult = resultValidators.get(input.toolId);
+      if (!validateResult || !validateResult(body)) {
+        const error = response.ok ? 'invalid-result' : 'exec-failed';
+        return { toolCallId: input.toolCallId, ok: false, content: null, error };
+      }
+      return { toolCallId: input.toolCallId, ok: true, content: body };
     },
   };
 }

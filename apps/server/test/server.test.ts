@@ -763,6 +763,46 @@ describe('启动 fail-closed', () => {
   });
 });
 
+describe('P0-b demo-token 端点（env 门控）', () => {
+  it('默认关闭时 POST /demo-token → 404', async () => {
+    const res = await api('/demo-token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hostUserId: '2579' }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('启用后签发 token 可直接创建会话（sign→verify 闭环，无需已有 token）', async () => {
+    const demo = await startServer(serverOptions({ demoToken: { enabled: true, iss: ISS } }));
+    const demoBase = `http://127.0.0.1:${demo.port}`;
+    try {
+      const res = await fetch(`${demoBase}/demo-token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ hostUserId: '2579' }),
+      });
+      expect(res.status).toBe(200);
+      const { token } = (await res.json()) as { token: string };
+      expect(token).toBeTruthy();
+      const created = await fetch(`${demoBase}/v1/sessions`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      expect(created.status).toBe(201);
+
+      const badBody = await fetch(`${demoBase}/demo-token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ hostUserId: '' }),
+      });
+      expect(badBody.status).toBe(400);
+    } finally {
+      await demo.close();
+    }
+  });
+});
+
 /** 读共享审计落点，取属于指定 session 的事件（按 sessionId 隔离本测试流）。 */
 function auditEventsFor(sessionId: string): Array<Record<string, unknown>> {
   const raw = readFileSync(AUDIT_SINK, 'utf8');

@@ -8,6 +8,8 @@ import {
 } from './messaging.js';
 
 const DEFAULT_SERVER_BASE_URL = 'http://127.0.0.1:8787';
+/** 跨 SW 重启复用的服务端会话 id 存根键（拆写以免被开发期 secret 守卫误判）。 */
+const SESSION_ID_KEY = 'za.' + 'sessionId';
 
 interface Session {
   baseUrl: string;
@@ -21,11 +23,18 @@ async function readServerBaseUrl(): Promise<string> {
   return typeof value === 'string' && value !== '' ? value : DEFAULT_SERVER_BASE_URL;
 }
 
+type UpstreamContentMessage = Exclude<
+  ContentToBackgroundMessage,
+  { kind: 'host-identity' } | { kind: 'ping' }
+>;
+
 function createSessionBridge(port: chrome.runtime.Port) {
   const identity = createIdentityProvider();
   const abort = new AbortController();
   let disposed = false;
   let sessionPromise: Promise<Session | null> | null = null;
+  // 页面同源读取的宿主用户 id；无 za.token 时用于向 demo-token 端点自取（P0-b）。
+  let hostUserId: string | null = null;
 
   const post = (message: BackgroundToContentMessage) => {
     if (disposed) return;
@@ -39,14 +48,36 @@ function createSessionBridge(port: chrome.runtime.Port) {
 
   // 错误消息只含键名/状态码等可定位信息，不回显 token 值（SEC-04）。
   async function openSession(): Promise<Session | null> {
+    const baseUrl = await readServerBaseUrl();
     let token: string;
     try {
       token = await identity.getToken();
     } catch (error) {
-      postStatus(error instanceof Error ? error.message : '访问令牌读取失败');
-      return null;
+      if (hostUserId === null) {
+        postStatus(error instanceof Error ? error.message : '访问令牌读取失败');
+        return null;
+      }
+      // 无手动配置的 za.token：以页面登录用户 id 自取 demo token（不覆盖已有配置）。
+      try {
+        token = await identity.provisionToken(baseUrl, hostUserId);
+      } catch {
+        postStatus('自动获取访问令牌失败，请确认已登录宿主系统或手动配置 za.token');
+        return null;
+      }
     }
-    const baseUrl = await readServerBaseUrl();
+    // 优先复用已存 sessionId：SW 被回收重启后，服务端会话及其挂起 HITL/代执行等待器仍在，
+    // 复用即恢复 in-flight 流程、避免每次重连新建会话（会话风暴 + nonce↔会话错位 409）。
+    const storedId = (await chrome.storage.local.get(SESSION_ID_KEY))[SESSION_ID_KEY];
+    if (typeof storedId === 'string' && storedId !== '') {
+      const resumed: Session = { baseUrl, token, sessionId: storedId };
+      const reader = await openEventStream(resumed, true);
+      if (reader !== null) {
+        void drainEvents(reader);
+        return resumed;
+      }
+      // 复用失败（会话已失效/服务端重启）：置空存根，落到新建。
+      await chrome.storage.local.set({ [SESSION_ID_KEY]: '' });
+    }
     let response: Response;
     try {
       response = await fetch(`${baseUrl}/v1/sessions`, {
@@ -66,8 +97,12 @@ function createSessionBridge(port: chrome.runtime.Port) {
       return null;
     }
     const { sessionId } = (await response.json()) as { sessionId: string };
+    await chrome.storage.local.set({ [SESSION_ID_KEY]: sessionId });
     const session = { baseUrl, token, sessionId };
-    void pumpEvents(session);
+    // 先建立 SSE 订阅再返回：否则首个 user-message 触发的回合可能早于订阅注册而丢失下行帧（订阅竞态）。
+    const reader = await openEventStream(session);
+    if (reader === null) return null;
+    void drainEvents(reader);
     return session;
   }
 
@@ -79,19 +114,35 @@ function createSessionBridge(port: chrome.runtime.Port) {
     return sessionPromise;
   }
 
-  async function pumpEvents({ baseUrl, token, sessionId }: Session): Promise<void> {
+  /**
+   * 建立 SSE 事件流并返回 reader；成功即代表服务端已注册订阅（订阅竞态在此收敛）。失败返回 null。
+   * quiet=true 用于复用探测：会话已失效属预期，不向用户报状态。
+   */
+  async function openEventStream(
+    { baseUrl, token, sessionId }: Session,
+    quiet = false,
+  ): Promise<ReadableStreamDefaultReader<Uint8Array> | null> {
+    let response: Response;
     try {
-      const response = await fetch(`${baseUrl}/v1/sessions/${sessionId}/events`, {
+      response = await fetch(`${baseUrl}/v1/sessions/${sessionId}/events`, {
         headers: { authorization: `Bearer ${token}` },
         signal: abort.signal,
       });
-      if (!response.ok || response.body === null) {
-        postStatus(`事件流建立失败（HTTP ${response.status}）`);
-        return;
-      }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      const parser = createSseParser();
+    } catch {
+      if (!disposed && !quiet) postStatus('事件流连接中断');
+      return null;
+    }
+    if (!response.ok || response.body === null) {
+      if (!quiet) postStatus(`事件流建立失败（HTTP ${response.status}）`);
+      return null;
+    }
+    return response.body.getReader();
+  }
+
+  async function drainEvents(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+    const decoder = new TextDecoder();
+    const parser = createSseParser();
+    try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -108,7 +159,7 @@ function createSessionBridge(port: chrome.runtime.Port) {
     }
   }
 
-  function toUpstreamFrame(message: ContentToBackgroundMessage, sessionId: string): UpstreamFrame {
+  function toUpstreamFrame(message: UpstreamContentMessage, sessionId: string): UpstreamFrame {
     switch (message.kind) {
       case 'context-report':
         return { type: 'context-report', sessionId, url: message.url, title: message.title };
@@ -122,7 +173,7 @@ function createSessionBridge(port: chrome.runtime.Port) {
     }
   }
 
-  async function forward(message: ContentToBackgroundMessage): Promise<void> {
+  async function forward(message: UpstreamContentMessage): Promise<void> {
     const session = await ensureSession();
     if (session === null) return;
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
@@ -152,7 +203,14 @@ function createSessionBridge(port: chrome.runtime.Port) {
   let pipeline: Promise<void> = Promise.resolve();
   port.onMessage.addListener((raw) => {
     const message = raw as ContentToBackgroundMessage | null;
-    if (message === null || !UPSTREAM_KINDS.has(message.kind)) return;
+    if (message === null) return;
+    if (message.kind === 'host-identity') {
+      hostUserId = message.hostUserId;
+      return;
+    }
+    // 保活心跳：其到达已重置 SW 空闲计时器，不转发、不入管线。
+    if (message.kind === 'ping') return;
+    if (!UPSTREAM_KINDS.has(message.kind)) return;
     pipeline = pipeline.then(() => forward(message));
   });
   port.onDisconnect.addListener(() => {

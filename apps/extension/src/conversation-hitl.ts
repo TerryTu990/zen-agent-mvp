@@ -1,4 +1,13 @@
 import type { HitlDecisionValue, HitlRequestFrame, JsonObject, TextDeltaFrame, ToolCardFrame } from './frames.js';
+import { renderMarkdown } from './markdown.js';
+
+type ToolMode = NonNullable<ToolCardFrame['mode']>;
+
+const MODE_LABEL: Record<ToolMode, string> = {
+  client: '客户端发起',
+  server: '服务端发起',
+  mcp: '客户端 MCP',
+};
 
 export interface ConversationUi {
   appendUserMessage(text: string): void;
@@ -24,32 +33,100 @@ function summarizeParams(params: JsonObject): string {
   return entries.map(([key, value]) => `${key}: ${String(value)}`).join('，');
 }
 
+const WHO_LABEL: Record<'user' | 'assistant', string> = {
+  user: '你',
+  assistant: 'zen-agent',
+};
+
 export function createConversationUi(messages: HTMLElement): ConversationUi {
-  let assistantBubble: HTMLElement | null = null;
+  // assistant 气泡内的 .mdlite 容器；累积原始文本每次 delta 后全量重渲染，保证 markdown 结构完整。
+  let assistantBody: HTMLElement | null = null;
+  let assistantRaw = '';
+  // 当前流式中的 assistant 气泡（挂 .streaming 显闪烁光标）；无 done 帧，以去抖判定流结束。
+  let streamingBub: HTMLElement | null = null;
+  let settleTimer: ReturnType<typeof setTimeout> | null = null;
   // 同一 toolCallId 的状态迁移就地更新同一张卡片，避免 running→succeeded 产生两张卡。
   const toolCards = new Map<string, HTMLElement>();
+  // 工具卡按调用模式归组，同 mode 的卡进同一 section body。
+  const toolGroups = new Map<ToolMode, HTMLElement>();
 
-  const appendBubble = (role: 'user' | 'assistant', text: string): HTMLElement => {
-    const bubble = document.createElement('div');
-    bubble.className = 'za-msg';
-    bubble.dataset['role'] = role;
-    bubble.textContent = text;
-    messages.append(bubble);
+  const scrollToEnd = (): void => {
     messages.scrollTop = messages.scrollHeight;
-    return bubble;
+  };
+
+  const clearStreaming = (): void => {
+    if (settleTimer !== null) {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+    }
+    if (streamingBub !== null) {
+      streamingBub.classList.remove('streaming');
+      streamingBub = null;
+    }
+  };
+
+  /** 每条消息＝wrapper[data-role] > .za-who 署名 + .za-bub 气泡；返回气泡供填充。 */
+  const appendMessage = (role: 'user' | 'assistant'): HTMLElement => {
+    const wrap = document.createElement('div');
+    wrap.className = 'za-msg';
+    wrap.dataset['role'] = role;
+    const who = document.createElement('div');
+    who.className = 'za-who';
+    who.textContent = WHO_LABEL[role];
+    const bub = document.createElement('div');
+    bub.className = 'za-bub';
+    wrap.append(who, bub);
+    messages.append(wrap);
+    return bub;
+  };
+
+  const ensureToolGroup = (mode: ToolMode): HTMLElement => {
+    let body = toolGroups.get(mode) ?? null;
+    if (body === null) {
+      const section = document.createElement('div');
+      section.className = 'za-toolgroup';
+      section.dataset['mode'] = mode;
+      const title = document.createElement('div');
+      title.className = 'za-toolgroup-title';
+      title.textContent = MODE_LABEL[mode];
+      body = document.createElement('div');
+      body.className = 'za-toolgroup-body';
+      section.append(title, body);
+      messages.append(section);
+      toolGroups.set(mode, body);
+    }
+    return body;
   };
 
   return {
     appendUserMessage(text) {
-      appendBubble('user', text);
-      assistantBubble = null;
+      clearStreaming();
+      const bubble = appendMessage('user');
+      bubble.textContent = text;
+      scrollToEnd();
+      assistantBody = null;
+      assistantRaw = '';
     },
     appendTextDelta(frame) {
-      assistantBubble ??= appendBubble('assistant', '');
-      assistantBubble.textContent += frame.delta;
-      messages.scrollTop = messages.scrollHeight;
+      if (assistantBody === null) {
+        const bubble = appendMessage('assistant');
+        bubble.classList.add('streaming');
+        streamingBub = bubble;
+        assistantBody = document.createElement('div');
+        assistantBody.className = 'za-md mdlite';
+        bubble.append(assistantBody);
+        assistantRaw = '';
+      }
+      assistantRaw += frame.delta;
+      assistantBody.textContent = '';
+      assistantBody.append(renderMarkdown(assistantRaw));
+      scrollToEnd();
+      // 去抖：最后一个 delta 后短暂静默即视为流结束，撤下光标（无 done 帧兜底）。
+      if (settleTimer !== null) clearTimeout(settleTimer);
+      settleTimer = setTimeout(clearStreaming, 700);
     },
     showStatus(message) {
+      clearStreaming();
       const status = document.createElement('div');
       status.className = 'za-status';
       status.textContent = message;
@@ -57,19 +134,21 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
       messages.scrollTop = messages.scrollHeight;
     },
     renderToolCard(frame) {
+      clearStreaming();
       let card = toolCards.get(frame.toolCallId) ?? null;
       if (card === null) {
         card = document.createElement('div');
         card.setAttribute('data-za-toolcard', '');
         card.className = 'za-toolcard';
         toolCards.set(frame.toolCallId, card);
-        messages.append(card);
+        ensureToolGroup(frame.mode ?? 'client').append(card);
       }
       card.setAttribute('data-status', frame.status);
       card.textContent = `${STATUS_LABEL[frame.status]}：${frame.summary ?? frame.toolId}`;
-      messages.scrollTop = messages.scrollHeight;
+      scrollToEnd();
     },
     promptHitl(frame) {
+      clearStreaming();
       return new Promise<HitlDecisionValue>((resolve) => {
         const card = document.createElement('div');
         card.setAttribute('data-za-hitl', '');

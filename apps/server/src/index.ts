@@ -36,6 +36,16 @@ export interface ServerOptions {
   allowedProviders: string[];
   /** SSE 心跳间隔毫秒，默认 15000。 */
   heartbeatMs?: number;
+  /**
+   * P0-b demo-token 端点（env 门控）：enabled=false 时 /demo-token 恒 404。
+   * 签发复用 jwtSecret（与 verifier 同 secret，故自签 token 能验签通过）；iss 须在 issAllowlist 内。
+   */
+  demoToken?: { enabled: boolean; iss: string };
+  /**
+   * server 通道凭证解析：ServerAdapter.credentialRef → 真值。由组装边界运行时注入、真值不入配置/日志/审计（SEC-01/02）。
+   * 缺省或解析不到时 executeServer 返回 credential-unresolved。
+   */
+  resolveCredential?: (ref: string) => string | undefined;
 }
 
 export interface ServerPorts {
@@ -76,7 +86,11 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
   const tools = await collectHostTools(assembly, options.snapshotRoot);
   return {
     assembly,
-    toolgate: createToolGatePort({ tools, signingSecret: options.signingSecret }),
+    toolgate: createToolGatePort({
+      tools,
+      signingSecret: options.signingSecret,
+      ...(options.resolveCredential ? { resolveCredential: options.resolveCredential } : {}),
+    }),
     llm: createLlmPort({ allowedProviders: options.allowedProviders }),
     audit: createAuditPort({ sinkPath: options.auditSinkPath }),
   };
@@ -107,6 +121,9 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     }),
     store: createMemorySessionStore(),
     heartbeatMs: options.heartbeatMs ?? 15_000,
+    ...(options.demoToken?.enabled
+      ? { demoToken: { jwtSecret: options.jwtSecret, iss: options.demoToken.iss } }
+      : {}),
   });
   const server = createServer(gateway.handler);
   await new Promise<void>((resolve, reject) => {

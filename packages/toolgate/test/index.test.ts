@@ -65,13 +65,45 @@ const forbiddenTool: ToolDefinition = {
 const serverTool: ToolDefinition = {
   id: 'order-list.server-op',
   featureIds: ['order-list'],
-  description: 'server 通道（MVP 未实现）',
+  description: 'server 通道（服务端直调）',
   params: { type: 'object', properties: {}, additionalProperties: false },
   execution: 'server',
   riskTier: 'auto',
   adapter: { method: 'GET', urlTemplate: 'https://host.example/api/orders' },
   resultSchema: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } },
 };
+
+const serverCredTool: ToolDefinition = {
+  id: 'order-list.server-fetch',
+  featureIds: ['order-list'],
+  description: 'server 通道：凭证经 {{credential}} 注入请求头',
+  params: {
+    type: 'object',
+    required: ['orderId'],
+    properties: { orderId: { type: 'string' } },
+    additionalProperties: false,
+  },
+  execution: 'server',
+  riskTier: 'auto',
+  adapter: {
+    method: 'GET',
+    urlTemplate: 'https://host.example/api/orders/{{orderId}}?u={{hostUserId}}',
+    headers: { Authorization: 'Bearer {{credential}}' },
+    credentialRef: 'host-api-key',
+  },
+  resultSchema: {
+    type: 'object',
+    required: ['ok'],
+    properties: { ok: { type: 'boolean' }, orderId: { type: 'string' } },
+  },
+};
+
+// execution 非闭集值（模拟未来枚举扩张时的未实现通道）：decide 必 fail-closed 拒绝，不静默降级（U3）。
+const bogusChannelTool = {
+  ...serverTool,
+  id: 'order-list.bogus-channel',
+  execution: 'mcp',
+} as unknown as ToolDefinition;
 
 const unknownTierTool = {
   id: 'order-list.weird',
@@ -131,17 +163,30 @@ const allTools: ToolDefinition[] = [
   hitlTool,
   forbiddenTool,
   serverTool,
+  serverCredTool,
+  bogusChannelTool,
   unknownTierTool,
   templateTool,
   identityTool,
 ];
 
-function makePort(overrides?: { ttlMs?: number; now?: () => number }) {
+interface PortOverrides {
+  ttlMs?: number;
+  now?: () => number;
+  resolveCredential?: (ref: string) => string | undefined;
+  fetchImpl?: typeof fetch;
+}
+
+function makePort(overrides?: PortOverrides) {
   return createToolGatePort({
     tools: allTools,
     signingSecret: SIGN_FIXTURE,
     ...(overrides?.ttlMs !== undefined ? { ttlMs: overrides.ttlMs } : {}),
     ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
+    ...(overrides?.resolveCredential !== undefined
+      ? { resolveCredential: overrides.resolveCredential }
+      : {}),
+    ...(overrides?.fetchImpl !== undefined ? { fetchImpl: overrides.fetchImpl } : {}),
   });
 }
 
@@ -170,11 +215,22 @@ describe('toolgate decide — fail-closed 分级矩阵', () => {
     expect(d.reason).toBe('unknown-risk-tier');
   });
 
-  it('execution 非 client → deny channel-not-implemented（U3 fail-closed）', async () => {
+  it('execution=server（已实现通道）→ 按分级放行（U3 两通道均放行）', async () => {
     const d = await makePort().decide({
       sessionId: 's1',
       toolCallId: 'c1',
       toolId: serverTool.id,
+      params: {},
+      claims: validClaims,
+    });
+    expect(d.verdict).toBe('allow');
+  });
+
+  it('execution 非闭集通道 → deny channel-not-implemented（U3 fail-closed，不静默降级）', async () => {
+    const d = await makePort().decide({
+      sessionId: 's1',
+      toolCallId: 'c1',
+      toolId: bogusChannelTool.id,
       params: {},
       claims: validClaims,
     });
@@ -519,5 +575,124 @@ describe('computeExecSignature — 稳定键序（防篡改）', () => {
       .update('{"nonce":"n","toolCallId":"c","ttl":1,"x":{"p":1,"q":2}}')
       .digest('hex');
     expect(a).toBe(manual);
+  });
+});
+
+describe('toolgate executeServer — server 通道服务端直调', () => {
+  // 仅测试固定值，非真实凭证（真实凭证运行时经 resolveCredential 注入，ZA-C-SEC-02）。
+  const CRED_FIXTURE = 'cred-fixture-value';
+
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  it('credentialRef 解析成功 → 凭证经 {{credential}} 注入请求头、身份经 claims 注入、body 过 resultSchema → ok', async () => {
+    let capturedUrl = '';
+    let capturedAuth: string | undefined;
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedAuth = (init?.headers as Record<string, string>)['Authorization'];
+      return jsonResponse({ ok: true, orderId: 'ORD-1' });
+    }) as unknown as typeof fetch;
+    const port = makePort({
+      resolveCredential: (ref) => (ref === 'host-api-key' ? CRED_FIXTURE : undefined),
+      fetchImpl,
+    });
+    const obs = await port.executeServer({
+      sessionId: 's1',
+      toolCallId: 'c1',
+      toolId: serverCredTool.id,
+      params: { orderId: 'ORD-1' },
+      claims: validClaims,
+    });
+    expect(obs.ok).toBe(true);
+    expect(obs.content).toEqual({ ok: true, orderId: 'ORD-1' });
+    expect(obs.toolCallId).toBe('c1');
+    expect(capturedAuth).toBe(`Bearer ${CRED_FIXTURE}`);
+    // 身份取自已验签 claims（host-1），不被 param 冒充
+    expect(capturedUrl).toBe('https://host.example/api/orders/ORD-1?u=host-1');
+    // 凭证真值 MUST NOT 落 observation（SEC-01）
+    expect(JSON.stringify(obs)).not.toContain(CRED_FIXTURE);
+  });
+
+  it('credentialRef 解析不到 → credential-unresolved，不发请求', async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return jsonResponse({ ok: true });
+    }) as unknown as typeof fetch;
+    const port = makePort({ resolveCredential: () => undefined, fetchImpl });
+    const obs = await port.executeServer({
+      sessionId: 's1',
+      toolCallId: 'c1',
+      toolId: serverCredTool.id,
+      params: { orderId: 'ORD-1' },
+      claims: validClaims,
+    });
+    expect(obs.ok).toBe(false);
+    expect(obs.error).toBe('credential-unresolved');
+    expect(obs.content).toBeNull();
+    expect(called).toBe(false);
+  });
+
+  it('响应 body 不过 resultSchema（2xx）→ invalid-result（不采信宿主原文，U7）', async () => {
+    const fetchImpl = (async () => jsonResponse({ ok: 'yes' })) as unknown as typeof fetch;
+    const port = makePort({ resolveCredential: () => CRED_FIXTURE, fetchImpl });
+    const obs = await port.executeServer({
+      sessionId: 's1',
+      toolCallId: 'c1',
+      toolId: serverCredTool.id,
+      params: { orderId: 'ORD-1' },
+      claims: validClaims,
+    });
+    expect(obs.ok).toBe(false);
+    expect(obs.error).toBe('invalid-result');
+    expect(obs.content).toBeNull();
+  });
+
+  it('非 2xx 且结果体不合契约 → exec-failed', async () => {
+    const fetchImpl = (async () =>
+      jsonResponse({ message: 'forbidden' }, 403)) as unknown as typeof fetch;
+    const port = makePort({ resolveCredential: () => CRED_FIXTURE, fetchImpl });
+    const obs = await port.executeServer({
+      sessionId: 's1',
+      toolCallId: 'c1',
+      toolId: serverCredTool.id,
+      params: { orderId: 'ORD-1' },
+      claims: validClaims,
+    });
+    expect(obs.ok).toBe(false);
+    expect(obs.error).toBe('exec-failed');
+  });
+
+  it('网络异常 → exec-failed', async () => {
+    const fetchImpl = (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    const port = makePort({ resolveCredential: () => CRED_FIXTURE, fetchImpl });
+    const obs = await port.executeServer({
+      sessionId: 's1',
+      toolCallId: 'c1',
+      toolId: serverCredTool.id,
+      params: { orderId: 'ORD-1' },
+      claims: validClaims,
+    });
+    expect(obs.ok).toBe(false);
+    expect(obs.error).toBe('exec-failed');
+  });
+
+  it('非 server 通道工具调 executeServer → 前提破坏抛错', async () => {
+    await expect(
+      makePort().executeServer({
+        sessionId: 's1',
+        toolCallId: 'c1',
+        toolId: autoTool.id,
+        params: {},
+        claims: validClaims,
+      }),
+    ).rejects.toThrow(/前提破坏/);
   });
 });

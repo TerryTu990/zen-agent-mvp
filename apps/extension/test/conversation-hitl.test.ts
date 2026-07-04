@@ -83,6 +83,62 @@ describe('renderToolCard 工具卡片三状态', () => {
   });
 });
 
+describe('renderToolCard 按 mode 分组', () => {
+  it('不同 mode 进不同 section；缺省 mode 归入 client 组', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.renderToolCard(toolCard('running', { toolCallId: 'a', mode: 'server' }));
+    ui.renderToolCard(toolCard('running', { toolCallId: 'b', mode: 'mcp' }));
+    ui.renderToolCard(toolCard('running', { toolCallId: 'c' }));
+
+    expect(messages.querySelector('[data-mode="server"] [data-za-toolcard]')).not.toBeNull();
+    expect(messages.querySelector('[data-mode="mcp"] [data-za-toolcard]')).not.toBeNull();
+    expect(messages.querySelector('[data-mode="client"] [data-za-toolcard]')).not.toBeNull();
+    expect(messages.querySelectorAll('.za-toolgroup').length).toBe(3);
+  });
+
+  it('同 mode 多卡进同一组，且状态迁移就地更新', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.renderToolCard(toolCard('running', { toolCallId: 'a', mode: 'server' }));
+    ui.renderToolCard(toolCard('running', { toolCallId: 'b', mode: 'server' }));
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'a', mode: 'server' }));
+
+    const groups = messages.querySelectorAll('.za-toolgroup');
+    expect(groups.length).toBe(1);
+    expect(messages.querySelectorAll('[data-za-toolcard]').length).toBe(2);
+    expect(messages.querySelector('[data-za-toolcard]')?.getAttribute('data-status')).toBe('succeeded');
+  });
+});
+
+describe('appendTextDelta assistant 气泡 markdown 渲染', () => {
+  it('累积增量后全量重渲染，粗体成 b 节点、用户气泡为纯文本', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.appendTextDelta({ type: 'text-delta', sessionId: 's1', delta: '**重' });
+    ui.appendTextDelta({ type: 'text-delta', sessionId: 's1', delta: '点**' });
+
+    const bubble = messages.querySelector('.za-msg[data-role="assistant"] .mdlite');
+    expect(bubble?.querySelector('b')?.textContent).toBe('重点');
+    // 全量重渲染而非累加，只应有一个气泡
+    expect(messages.querySelectorAll('.za-msg[data-role="assistant"]').length).toBe(1);
+  });
+
+  it('用户再次发言关闭当前回合，下一 delta 开新气泡', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.appendTextDelta({ type: 'text-delta', sessionId: 's1', delta: 'a' });
+    ui.appendUserMessage('问题');
+    ui.appendTextDelta({ type: 'text-delta', sessionId: 's1', delta: 'b' });
+
+    expect(messages.querySelectorAll('.za-msg[data-role="assistant"]').length).toBe(2);
+  });
+});
+
 describe('promptHitl HITL 卡片裁决', () => {
   it('approve：点确认按钮 → Promise 解析为 approve', async () => {
     const messages = messagesEl();
