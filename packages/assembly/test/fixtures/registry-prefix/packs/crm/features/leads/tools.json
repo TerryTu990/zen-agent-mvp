@@ -1,0 +1,21 @@
+[
+  {
+    "id": "leads.do",
+    "featureIds": [
+      "leads"
+    ],
+    "description": "leads.do 示例操作",
+    "params": {
+      "type": "object"
+    },
+    "execution": "client",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "/api/leads"
+    },
+    "resultSchema": {
+      "type": "object"
+    }
+  }
+]

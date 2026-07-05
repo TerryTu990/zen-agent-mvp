@@ -1,0 +1,12 @@
+{
+  "packId": "mail-126",
+  "version": "0.1.0",
+  "site": {
+    "origin": "https://mail.126.com",
+    "locations": ["/"]
+  },
+  "featureIdRules": [
+    { "urlPattern": "mail\\.126\\.com", "featureId": "mail-compose" }
+  ],
+  "features": ["mail-compose"]
+}

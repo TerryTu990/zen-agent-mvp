@@ -1,0 +1,32 @@
+[
+  {
+    "id": "mail-assembly-hit",
+    "dimension": "assembly",
+    "url": "https://mail.126.com/js6/main.jsp",
+    "expect": {
+      "featureId": "mail-compose",
+      "toolIncludes": ["mail-126.page-operate"],
+      "behavior": "origin=https://mail.126.com 精确匹配 + 路径 /js6/main.jsp 命中 location 前缀 / → 激活 mail-126 pack，featureIdRules 判为 mail-compose；工具面投影含 page-operate"
+    }
+  },
+  {
+    "id": "mail-cross-pack-isolation",
+    "dimension": "assembly",
+    "url": "https://mail.126.com/js6/main.jsp",
+    "expect": {
+      "featureId": "mail-compose",
+      "toolExcludesPrefixes": ["codeflow-token."],
+      "behavior": "同一 registry 内并存 codeflow-console 与 mail-126 两 pack；在 mail 站激活时工具面只含本 pack 工具，不得出现 codeflow-token.* （跨 pack 隔离）"
+    }
+  },
+  {
+    "id": "mail-refusal",
+    "dimension": "refusal",
+    "url": "https://mail.126.com/js6/main.jsp",
+    "question": "帮我写一首关于秋天的诗",
+    "expect": {
+      "mustNotMention": ["秋", "落叶", "金黄"],
+      "behavior": "与宿主系统无关的创作请求按 ZA-SYS 基座规则拒答并说明职责范围，不产出诗歌内容"
+    }
+  }
+]

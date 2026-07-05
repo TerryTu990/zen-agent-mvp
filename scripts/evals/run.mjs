@@ -7,7 +7,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
@@ -17,6 +17,11 @@ import { startMockLlm } from '../mock-llm/server.mjs';
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const SERVER_DIST = join(REPO_ROOT, 'apps', 'server', 'dist', 'main.js');
 const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
+// 装配快照根（server 载入）+ pack 级评测发现根（ADR-013 §4：扫 packs 各 eval/scenarios.json 逐 pack 跑）。
+// 两根分阶段各起一台 server（同端口先后独占）：host-demo 根跑存量 13 场景 + 其 pack 发现；
+// acceptance 根跑 codeflow-console/mail-126 两验收 pack（origin 为 codeflow.asia/mail.126.com，与 host-demo 不同源，故须独立载入）。
+const SNAPSHOT_ROOT = join(REPO_ROOT, 'examples', 'host-demo', 'config');
+const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
 const AUDIT_SCHEMA_PATH = join(REPO_ROOT, 'packages', 'contracts', 'schemas', 'audit-event.schema.json');
 const AUDIT_SINK_PATH = join(REPO_ROOT, '.za', 'eval-events.jsonl');
 const REPORT_PATH = join(REPO_ROOT, 'evals', 'runs', '2026-07-04-eval.md');
@@ -26,7 +31,8 @@ const SIGNING_SECRET = 'za-test-signing-secret';
 const JWT_ISS = 'zen-agent-demo';
 const SERVER_PORT = Number(process.env.ZA_EVAL_SERVER_PORT ?? 8791);
 const MOCK_LLM_PORT = Number(process.env.ZA_EVAL_MOCK_PORT ?? 8792);
-const HOST_PORT = Number(process.env.ZA_EVAL_HOST_PORT ?? 4176);
+// host 端口须对齐 host-demo pack 的 site.origin（http://127.0.0.1:4173），否则 origin 围栏不命中、featureId 落空。
+const HOST_PORT = Number(process.env.ZA_EVAL_HOST_PORT ?? 4173);
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
 
@@ -109,7 +115,7 @@ function run(command, args, options) {
   });
 }
 
-function startServer() {
+function startServer(snapshotRoot = SNAPSHOT_ROOT) {
   if (!existsSync(SERVER_DIST)) {
     throw new Error(`server 未构建：缺 ${SERVER_DIST}（先 pnpm --filter @zen-agent/server build）`);
   }
@@ -121,7 +127,7 @@ function startServer() {
       ZA_JWT_SECRET: JWT_SECRET,
       ZA_SIGNING_SECRET: SIGNING_SECRET,
       ZA_JWT_ISS_ALLOWLIST: JWT_ISS,
-      ZA_SNAPSHOT_ROOT: join(REPO_ROOT, 'examples', 'host-demo', 'config'),
+      ZA_SNAPSHOT_ROOT: snapshotRoot,
       ZA_SYSTEM_PROMPT_PATH: join(REPO_ROOT, 'assets', 'system-prompt.md'),
       ZA_PORT: String(SERVER_PORT),
       ZA_LLM_BASE_URL: `http://127.0.0.1:${MOCK_LLM_PORT}/v1`,
@@ -371,9 +377,64 @@ async function runAssemblySwap(scenario, token) {
   return { pass: reasons.length === 0, reasons };
 }
 
+/**
+ * pack 级评测发现（ADR-013 §4）：扫 <root>/packs 下各 pack 的 eval/scenarios.json，逐 pack 收其场景。
+ * ZA-EVAL 素材同仓——pack 分发到哪评测跟到哪；本阶段 host-demo pack 暂无 eval 目录，发现为空即跳过。
+ */
+function discoverPackScenarios(root) {
+  const packsDir = join(root, 'packs');
+  if (!existsSync(packsDir)) return [];
+  const discovered = [];
+  for (const entry of readdirSync(packsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const scenariosPath = join(packsDir, entry.name, 'eval', 'scenarios.json');
+    if (!existsSync(scenariosPath)) continue;
+    const scenarios = JSON.parse(readFileSync(scenariosPath, 'utf8'));
+    discovered.push({ packId: entry.name, scenarios });
+  }
+  return discovered;
+}
+
+/**
+ * pack 级「装配」维度（ADR-013 §4 验收）：只经 /injection 自省端口断言装配结果，不驱动 LLM。
+ * scenario.url 为完整 URL（含 pack origin），context-report 后拉取注入描述断言 featureId 与工具面投影
+ * （toolIncludes 须命中、toolExcludesPrefixes 前缀不得出现——后者证跨 pack 隔离与 fail-safe 回落）。
+ */
+async function runAssemblyInjection(scenario, token) {
+  const auth = { authorization: `Bearer ${token}` };
+  const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
+  const sessionId = created.sessionId;
+  await postFrame(sessionId, token, { type: 'context-report', sessionId, url: scenario.url });
+  await sleep(100);
+  const injection = await (
+    await fetch(`${SERVER_BASE}/v1/sessions/${sessionId}/injection`, { headers: auth })
+  ).json();
+  const expect = scenario.expect ?? {};
+  const toolIds = Array.isArray(injection.toolIds) ? injection.toolIds : [];
+  const reasons = [];
+  if ('featureId' in expect && injection.featureId !== expect.featureId) {
+    reasons.push(`装配 featureId 期望 ${JSON.stringify(expect.featureId)}，实际 ${JSON.stringify(injection.featureId)}`);
+  }
+  for (const toolId of expect.toolIncludes ?? []) {
+    if (!toolIds.includes(toolId)) {
+      reasons.push(`工具面缺必含工具 ${toolId}；实际工具面 [${toolIds.join(', ')}]`);
+    }
+  }
+  for (const prefix of expect.toolExcludesPrefixes ?? []) {
+    const leaked = toolIds.filter((id) => id.startsWith(prefix));
+    if (leaked.length > 0) {
+      reasons.push(`工具面出现禁止前缀 ${prefix} 的工具 [${leaked.join(', ')}]`);
+    }
+  }
+  return { pass: reasons.length === 0, reasons };
+}
+
 async function runScenarioOnce(scenario, token) {
   if (scenario.dimension === 'assembly-swap') {
     return runAssemblySwap(scenario, token);
+  }
+  if (scenario.dimension === 'assembly') {
+    return runAssemblyInjection(scenario, token);
   }
   const auth = { authorization: `Bearer ${token}` };
   const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
@@ -381,10 +442,11 @@ async function runScenarioOnce(scenario, token) {
   const bus = createFrameBus();
   const sse = await openSse(sessionId, token, bus);
   try {
+    // pack 级场景用完整 url（含 pack origin）；存量场景用相对 page（挂 host-demo 本地 origin）。
     await postFrame(sessionId, token, {
       type: 'context-report',
       sessionId,
-      url: `${HOST_BASE}/${scenario.page}`,
+      url: scenario.url ?? `${HOST_BASE}/${scenario.page}`,
     });
     await sleep(80); // 让 context-report 落地先于 user-message（与既有 e2e 脚本一致的时序假设）
     await postFrame(sessionId, token, { type: 'user-message', sessionId, text: scenario.question });
@@ -507,6 +569,49 @@ function renderReport({ results, auditReport, dimensionSummary }) {
   return lines.join('\n');
 }
 
+/** 幂等停止 server 子进程：已退出即直接 resolve，避免二次 kill 时 exit 事件不再触发而永挂。 */
+function makeStop(child) {
+  let stopped = false;
+  return () =>
+    new Promise((r) => {
+      if (stopped || child.exitCode !== null) return r();
+      stopped = true;
+      child.once('exit', () => r());
+      child.kill('SIGTERM');
+    });
+}
+
+/** 逐 pack 跑其 eval/scenarios.json（发现为空即打印跳过），结果并入 results。 */
+async function runPackSets(root, token, results) {
+  const packSets = discoverPackScenarios(root);
+  if (packSets.length === 0) {
+    console.log(`  未发现 pack 级评测素材（${join(root, 'packs')}/*/eval/scenarios.json），跳过。`);
+    return;
+  }
+  for (const { packId, scenarios: packScenarios } of packSets) {
+    console.log(`  pack「${packId}」：${packScenarios.length} 个场景 × ${RUNS} 次`);
+    for (const scenario of packScenarios) {
+      const runOutcomes = [];
+      for (let i = 0; i < RUNS; i += 1) {
+        try {
+          runOutcomes.push(await runScenarioOnce(scenario, token));
+        } catch (cause) {
+          runOutcomes.push({ pass: false, reasons: [`运行异常：${cause instanceof Error ? cause.message : String(cause)}`] });
+        }
+      }
+      const passCount = runOutcomes.filter((r) => r.pass).length;
+      results.push({ id: `${packId}/${scenario.id}`, dimension: scenario.dimension, passCount, runOutcomes });
+      const status = passCount === RUNS ? 'PASS' : 'FAIL';
+      console.log(`    [${status}] ${packId}/${scenario.id} (${scenario.dimension})：${passCount}/${RUNS}`);
+      if (passCount !== RUNS) {
+        runOutcomes.forEach((o, i) => {
+          if (!o.pass) console.log(`        run${i + 1}: ${o.reasons.join('; ')}`);
+        });
+      }
+    }
+  }
+}
+
 async function main() {
   const cleanups = [];
   let failure = null;
@@ -523,15 +628,9 @@ async function main() {
     const mock = await startMockLlm({ port: MOCK_LLM_PORT });
     cleanups.push(() => mock.close());
 
-    console.log('[3/4] 起 server…');
-    const serverProc = startServer();
-    cleanups.push(
-      () =>
-        new Promise((r) => {
-          serverProc.once('exit', () => r());
-          serverProc.kill('SIGTERM');
-        }),
-    );
+    console.log('[3/4] 起 server（host-demo 根）…');
+    const stopServer1 = makeStop(startServer(SNAPSHOT_ROOT));
+    cleanups.push(stopServer1);
     await waitServerReady();
 
     console.log('[4/4] 起宿主 API mock…');
@@ -562,6 +661,21 @@ async function main() {
         });
       }
     }
+
+    console.log('\n按根发现 pack 级评测（host-demo 根 · packs/*/eval/scenarios.json）…');
+    await runPackSets(SNAPSHOT_ROOT, token, results);
+
+    // acceptance 根的 pack（codeflow.asia/mail.126.com）与 host-demo 不同源，须换台 server 独立载入；
+    // 同端口先停 host-demo server 再起 acceptance server（宿主 API mock 沿用，验收 pack 场景为装配/拒答，不触宿主 API）。
+    console.log('\n停 host-demo server，换起 acceptance 根 server…');
+    await stopServer1();
+    const stopServer2 = makeStop(startServer(ACCEPTANCE_ROOT));
+    cleanups.push(stopServer2);
+    await waitServerReady();
+
+    console.log('\n按根发现 pack 级评测（acceptance 根 · packs/*/eval/scenarios.json）…');
+    await runPackSets(ACCEPTANCE_ROOT, token, results);
+    await stopServer2();
 
     console.log('\n审计完整性校验…');
     const auditReport = checkAuditIntegrity();

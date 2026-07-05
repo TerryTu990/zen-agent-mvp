@@ -1,0 +1,21 @@
+[
+  {
+    "id": "two.do",
+    "featureIds": [
+      "two"
+    ],
+    "description": "two.do 示例操作",
+    "params": {
+      "type": "object"
+    },
+    "execution": "client",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "/api/two"
+    },
+    "resultSchema": {
+      "type": "object"
+    }
+  }
+]

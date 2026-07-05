@@ -1,9 +1,10 @@
 /**
- * 真实浏览器 E2E 的服务端启动器：把 server 指向 codeflow 功能快照 + 真实 LLM，常驻前台。
+ * 真机验收的服务端启动器：把 server 指向 acceptance 双站点 pack registry（codeflow-console × mail-126）+ 真实 LLM，常驻前台。
+ * 快照根为仓内 examples/acceptance（registry 形态，两 pack 各带 site 围栏）；跨站任务回合数较多，故设 ZA_MAX_TURN_ROUNDS=40。
  * demo .env 的 ZF_LLM_* 经 --env-file 注入并映射为 ZA_LLM_*（密钥不入上下文，SEC-02）。
  * 启动前打印一枚自签 za.token（HS256，hostUserId=codeflow userId），供扩展 chrome.storage.local 配置。
  *
- * 启动：node --env-file=../tmp/zen-agent-demo/.env scripts/e2e/serve-codeflow.mjs
+ * 启动：node --env-file=../tmp/zen-agent-demo/.env scripts/e2e/serve-acceptance.mjs
  */
 import { spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
@@ -14,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const SERVER_DIST = join(REPO_ROOT, 'apps', 'server', 'dist', 'main.js');
-const SNAPSHOT_ROOT = resolve(REPO_ROOT, '..', 'tmp', 'zen-agent-demo', 'config');
+const SNAPSHOT_ROOT = resolve(REPO_ROOT, 'examples', 'acceptance');
 
 const JWT_SECRET = process.env.ZA_TEST_JWT_SECRET ?? 'za-test-secret';
 const SIGNING_SECRET = process.env.ZA_TEST_SIGNING_SECRET ?? 'za-test-signing-secret';
@@ -53,7 +54,7 @@ function main() {
     process.exit(1);
   }
   if (!process.env.ZF_LLM_BASE_URL || !process.env.ZF_LLM_API_KEY || !process.env.ZF_LLM_MODEL) {
-    console.error('缺 ZF_LLM_*：请以 node --env-file=<demo>/.env scripts/e2e/serve-codeflow.mjs 启动');
+    console.error('缺 ZF_LLM_*：请以 node --env-file=<demo>/.env scripts/e2e/serve-acceptance.mjs 启动');
     process.exit(1);
   }
 
@@ -74,11 +75,13 @@ function main() {
     console.log('==============================================================================\n');
   });
 
-  console.log('================ 调用方式 demo 说明 ================');
-  console.log('- 客户端发起：create-token / get-token-key（扩展以用户会话代执行）');
-  console.log('- 服务端发起：list-models（服务端以平台级凭证直调 /v1/models）；需设 ZA_CF_PLATFORM_KEY，未设则该工具优雅失败');
+  console.log('================ acceptance 双站点 demo 说明 ================');
+  console.log('- 快照根：examples/acceptance（registry：codeflow-console × mail-126 两 pack）');
+  console.log('- codeflow.asia/console：create-token / get-token-key（客户端代执行）、list-models（服务端）');
+  console.log('- mail.126.com：mail-compose 写信页 dom 代操作（page-operate，riskTier hitl）');
+  console.log('- ZA_MAX_TURN_ROUNDS=40：跨站任务（建 key → 开 126 → 写信）回合数较多');
   console.log('demo-token 自取端点已启用（POST /demo-token，body {hostUserId}→{token}）');
-  console.log('=================================================\n');
+  console.log('=========================================================\n');
 
   const child = spawn('node', [SERVER_DIST], {
     cwd: REPO_ROOT,
@@ -93,13 +96,14 @@ function main() {
       ZA_SNAPSHOT_ROOT: SNAPSHOT_ROOT,
       ZA_SYSTEM_PROMPT_PATH: join(REPO_ROOT, 'assets', 'system-prompt.md'),
       ZA_PORT: String(PORT),
+      ZA_MAX_TURN_ROUNDS: '40',
       ZA_LLM_BASE_URL: process.env.ZF_LLM_BASE_URL,
       ZA_LLM_API_KEY: process.env.ZF_LLM_API_KEY,
       ZA_LLM_MODEL: process.env.ZF_LLM_MODEL,
       // server 通道 demo：复用同为 codeflow 中继密钥的 LLM key 作平台级凭证（credentialRef=codeflowPlatformKey），
       // 供 list-models 服务端直调 /v1/models。env→env 透传，真值不入仓/上下文（SEC-02）。
       ZA_CRED_CODEFLOW_PLATFORM_KEY: process.env.ZF_LLM_API_KEY,
-      ZA_AUDIT_SINK: join(REPO_ROOT, '.za', 'codeflow-events.jsonl'),
+      ZA_AUDIT_SINK: join(REPO_ROOT, '.za', 'acceptance-events.jsonl'),
     },
   });
   child.on('exit', (code) => process.exit(code ?? 0));

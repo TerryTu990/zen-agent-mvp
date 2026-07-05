@@ -1,0 +1,21 @@
+[
+  {
+    "id": "home.do",
+    "featureIds": [
+      "home"
+    ],
+    "description": "home.do 示例操作",
+    "params": {
+      "type": "object"
+    },
+    "execution": "client",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "/api/home"
+    },
+    "resultSchema": {
+      "type": "object"
+    }
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "packs": [
+    {
+      "packId": "root",
+      "version": "1.0.0"
+    },
+    {
+      "packId": "crm",
+      "version": "1.0.0"
+    }
+  ]
+}

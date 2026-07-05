@@ -38,7 +38,13 @@ export type {
   DownstreamFrame,
   ClientAccessFrame,
 } from './client-access-layer.js';
-export type { FeatureIdRule, ConfigSnapshotManifest } from './config-snapshot.js';
+export type {
+  FeatureIdRule,
+  ConfigSnapshotManifest,
+  SiteFence,
+  PackManifest,
+  RegistryManifest,
+} from './config-snapshot.js';
 export type {
   AuditEventType,
   GateVerdict,
@@ -60,6 +66,8 @@ export type {
   ComposeResult,
   InjectionBlock,
   InjectionDescription,
+  ReadPackDocInput,
+  ReadPackDocResult,
   AssemblyPort,
   DomGateContext,
   GateDecisionInput,

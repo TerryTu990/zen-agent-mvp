@@ -134,6 +134,25 @@ const SNAPSHOT_TOOL_SPEC: LlmToolSpec = {
   params: { type: 'object', additionalProperties: false, properties: {} },
 };
 
+/**
+ * built-in 文档读取工具（ADR-013 渐进披露）：仅当激活 pack 有 docs 索引时注入。
+ * 服务端执行——调 assembly.readPackDoc 读当前激活 pack 的 docs/（只读该 pack、路径穿越 fail-closed、单次截断）；
+ * 非终结动作：正文作 observation 回喂后回合继续。不经 toolgate（只读本地文档、无副作用、无凭证面）。
+ */
+const PACK_DOC_TOOL_NAME = 'pack_doc';
+
+const PACK_DOC_TOOL_SPEC: LlmToolSpec = {
+  name: PACK_DOC_TOOL_NAME,
+  description:
+    '按需读取当前站点操作文档的正文。path 取自系统提示中"站点操作文档索引"列出的文件名（如 guide.md）；用于获取索引未展开的详细操作步骤/参考信息。仅能读当前站点自带的文档。',
+  params: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['path'],
+    properties: { path: { type: 'string' } },
+  },
+};
+
 /** 快照 URL → 围栏比对用路径；解析失败返回 ''（围栏必不匹配，fail-closed）。 */
 function pathOf(url: string): string {
   try {
@@ -168,7 +187,14 @@ function buildSystemContent(composed: ComposeResult): string {
   if (composed.featureRules !== null) parts.push(composed.featureRules);
   if (composed.facts !== null) parts.push(composed.facts);
   for (const skill of composed.skills) parts.push(skill.content);
+  if (composed.docsIndex !== null) parts.push(composed.docsIndex);
   return parts.join('\n\n');
+}
+
+/** 激活 pack 定位（审计与 docs 读取用）；packId=null 表仅基座。 */
+interface PackRef {
+  packId: string | null;
+  packVersion: string | null;
 }
 
 /** 宿主 API 工具定义 → LLM 工具面：name=toolId，装配对 agent 透明（LLM 不感知分级/通道）。 */
@@ -242,6 +268,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     claims: IdentityClaims,
     featureId: string | null,
     body: Pick<AuditEvent, 'type' | 'data'>,
+    pack?: PackRef,
   ): void => {
     deps.audit.record({
       eventId: randomUUID(),
@@ -249,6 +276,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
       sessionId,
       userId: claims.hostUserId,
       tenant: claims.tenant,
+      ...(pack?.packId != null ? { packId: pack.packId } : {}),
+      ...(pack?.packVersion != null ? { packVersion: pack.packVersion } : {}),
       ...(featureId !== null ? { featureId } : {}),
       ...body,
     } as AuditEvent);
@@ -281,6 +310,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     session: SessionState,
     claims: IdentityClaims,
     featureId: string | null,
+    pack: PackRef,
     tool: ToolDefinition,
     call: { toolCallId: string; params: JsonObject },
   ): Promise<Observation> {
@@ -320,7 +350,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         verdict: decision.verdict,
         ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
       },
-    });
+    }, pack);
     if (decision.verdict === 'deny') {
       finish('failed');
       return { toolCallId, ok: false, content: null, error: decision.reason ?? 'denied' };
@@ -341,7 +371,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       recordEvent(sessionId, claims, featureId, {
         type: 'hitl-verdict',
         data: { hitlId, toolCallId, decision: verdict },
-      });
+      }, pack);
       if (verdict === 'reject') {
         finish('failed');
         return { toolCallId, ok: false, content: null, error: 'user-rejected' };
@@ -393,7 +423,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...(status !== undefined ? { status } : {}),
         durationMs: Date.now() - startedAt,
       },
-    });
+    }, pack);
     return observation;
   }
 
@@ -403,10 +433,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
     claims: IdentityClaims,
   ): Promise<void> {
     const { sessionId } = session;
-    const { featureId } = await deps.assembly.resolveFeature({ url: session.currentUrl ?? '' });
-    const composed = await deps.assembly.compose({ sessionId, featureId });
+    const { packId, packVersion, featureId } = await deps.assembly.resolveFeature({
+      url: session.currentUrl ?? '',
+    });
+    const pack: PackRef = { packId, packVersion };
+    const composed = await deps.assembly.compose({ sessionId, packId, featureId });
     // 注入自省与 compose 同源：审计 assembly 事件记录本轮 agent 看到了什么（只记 id 与版本，不落全文）。
-    const injection = await deps.assembly.describeInjection({ sessionId, featureId });
+    const injection = await deps.assembly.describeInjection({ sessionId, packId, featureId });
     recordEvent(sessionId, claims, featureId, {
       type: 'assembly',
       data: {
@@ -415,7 +448,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         toolIds: injection.toolIds,
         skillIds: composed.skills.map((skill) => skill.id),
       },
-    });
+    }, pack);
     const hostToolsById = new Map(composed.tools.map((tool) => [tool.id, tool]));
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemContent(composed) },
@@ -425,7 +458,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
     // 快照工具只在工具面含 dom 工具时注入：无 dom 操作面就不给观察入口（最小工具面）。
     const snapshotTools: LlmToolSpec[] = composed.tools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
-    const tools: LlmToolSpec[] = [...guideTools, ...snapshotTools, ...composed.tools.map(toLlmToolSpec)];
+    // pack_doc 只在激活 pack 有 docs 索引时注入（渐进披露）：无索引则不给读取入口。
+    const docTools: LlmToolSpec[] = composed.docsIndex !== null ? [PACK_DOC_TOOL_SPEC] : [];
+    const tools: LlmToolSpec[] = [
+      ...guideTools,
+      ...snapshotTools,
+      ...docTools,
+      ...composed.tools.map(toLlmToolSpec),
+    ];
     // 本回合待落 history 的消息序列（含工具轮）：回合内只追加不回改，落盘边界统一瘦身。
     const turnMessages: LlmMessage[] = [{ role: 'user', content: text }];
     // 终结轮（纯文本/引导/未知工具/截断）的气泡文本；工具轮的 roundText 进各自 assistant 回声，不入此。
@@ -487,6 +527,27 @@ export function createGateway(deps: GatewayDeps): Gateway {
         continue;
       }
 
+      if (call.name === PACK_DOC_TOOL_NAME) {
+        // 渐进披露（非终结）：服务端读当前激活 pack 的 docs/ 正文，作 observation 回喂后继续本回合。
+        const docPath = typeof call.params['path'] === 'string' ? call.params['path'] : '';
+        const doc = await deps.assembly.readPackDoc({ packId, docPath });
+        const docEcho: LlmMessage = {
+          role: 'assistant',
+          content: roundText,
+          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
+        };
+        const docObs: LlmMessage = {
+          role: 'tool',
+          toolCallId: call.toolCallId,
+          content: JSON.stringify(
+            doc.ok ? { content: doc.content ?? '', truncated: doc.truncated === true } : { error: doc.error ?? '读取失败' },
+          ),
+        };
+        messages.push(docEcho, docObs);
+        turnMessages.push(docEcho, docObs);
+        continue;
+      }
+
       if (call.name === GUIDE_TOOL_NAME) {
         // 引导是终结动作：直接下发页面动作帧，本回合结束——不回喂 observation、不再等 LLM。
         tailText += roundText;
@@ -512,7 +573,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         break;
       }
 
-      const observation = await runExecSubflow(session, claims, featureId, tool, call);
+      const observation = await runExecSubflow(session, claims, featureId, pack, tool, call);
       // 回喂 agent：assistant 调用轮回声本轮 tool_calls（OpenAI 兼容 API 要求 role:tool 须有前置
       // 带 tool_calls 的 assistant 消息，否则拒绝孤儿 tool 消息）+ observation（仅规整结果，U7）。
       const execEcho: LlmMessage = {
@@ -653,9 +714,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
   }
 
   async function handleInjection(res: ServerResponse, session: SessionState): Promise<void> {
-    const { featureId } = await deps.assembly.resolveFeature({ url: session.currentUrl ?? '' });
+    const { packId, featureId } = await deps.assembly.resolveFeature({
+      url: session.currentUrl ?? '',
+    });
     const description = await deps.assembly.describeInjection({
       sessionId: session.sessionId,
+      packId,
       featureId,
     });
     sendJson(res, 200, description);

@@ -17,13 +17,20 @@ export interface ResolveFeatureInput {
 }
 
 export interface ResolveFeatureResult {
-  /** null = manifest.featureIdRules 无命中，仅装配稳定基座（fail-safe）。 */
+  /** 激活 pack（ADR-013）：origin 精确 + 最长 location 前缀命中的唯一 pack；null = 无 pack 命中（仅基座）。legacy 快照恒为 "default"。 */
+  packId: string | null;
+  /** 激活 pack 的 semver；packId=null 时为 null。 */
+  packVersion: string | null;
+  /** null = 激活 pack 的 featureIdRules 无命中（或无 pack），仅装配稳定基座（fail-safe）。 */
   featureId: string | null;
+  /** registry/legacy 根版本（区别于 pack 独立版本 packVersion）。 */
   snapshotVersion: string;
 }
 
 export interface ComposeInput {
   sessionId: string;
+  /** 激活 pack；null = 仅基座（skills/docs/工具面均为空）。取自 resolveFeature 判定，装配对 agent 透明。 */
+  packId: string | null;
   featureId: string | null;
 }
 
@@ -32,20 +39,29 @@ export interface SkillAsset {
   content: string;
 }
 
-/** 每轮换出的装配产物：稳定基座 + 功能块 + skills + 工具白名单（装配对 agent 透明）。 */
+/**
+ * 每轮换出的装配产物：稳定基座 + 功能块 + pack 作用域 skills + 工具白名单 + docs 索引（装配对 agent 透明）。
+ * skills/docsIndex 收敛到激活 pack；packId=null 时均为空/null。
+ */
 export interface ComposeResult {
   snapshotVersion: string;
+  /** 激活 pack（ADR-013）；null = 仅基座。 */
+  packId: string | null;
+  packVersion: string | null;
   systemPrompt: string;
-  /** assets/features/<id>/feature.md；无功能命中时为 null。 */
+  /** features/<id>/feature.md；无功能命中时为 null。 */
   featureRules: string | null;
-  /** assets/features/<id>/facts.md；无功能命中时为 null。 */
+  /** features/<id>/facts.md；无功能命中时为 null。 */
   facts: string | null;
+  /** 激活 pack 的 skills（pack 作用域，非全局）。 */
   skills: SkillAsset[];
   tools: ToolDefinition[];
+  /** 激活 pack 的 docs/ 渐进披露索引（frontmatter 标题+摘要）；docs/ 为空或无 pack 时为 null。 */
+  docsIndex: string | null;
 }
 
 export interface InjectionBlock {
-  kind: 'system-prompt' | 'feature-rules' | 'facts' | 'skill';
+  kind: 'system-prompt' | 'feature-rules' | 'facts' | 'skill' | 'docs-index';
   id?: string;
   bytes: number;
 }
@@ -53,15 +69,39 @@ export interface InjectionBlock {
 /** 注入自省：与 compose 同源产出，供审计 assembly 事件与调试查看。 */
 export interface InjectionDescription {
   snapshotVersion: string;
+  /** 激活 pack；null = 仅基座。 */
+  packId: string | null;
   featureId: string | null;
   blocks: InjectionBlock[];
   toolIds: string[];
+}
+
+/** pack docs 正文按需读取（渐进披露的 pack_doc 内建工具后端）：只读当前激活 pack 的 docs/。 */
+export interface ReadPackDocInput {
+  /** 当前激活 pack（网关注入，agent 不可跨 pack 指定——只读当前激活 pack 的 docs/）。 */
+  packId: string | null;
+  /** docs/ 内相对路径（如 "guide.md"）；路径穿越出 docs/ → fail-closed 拒读。 */
+  docPath: string;
+}
+
+export interface ReadPackDocResult {
+  ok: boolean;
+  /** ok=true 时的正文（单次截断上限内）。 */
+  content?: string;
+  /** true = 正文超单次上限被截断。 */
+  truncated?: boolean;
+  /** ok=false 时的失败原因（不含敏感路径细节）。 */
+  error?: string;
 }
 
 export interface AssemblyPort {
   resolveFeature(input: ResolveFeatureInput): Promise<ResolveFeatureResult>;
   compose(input: ComposeInput): Promise<ComposeResult>;
   describeInjection(input: ComposeInput): Promise<InjectionDescription>;
+  /** 读当前激活 pack 的 docs/ 单篇正文；只可读该 pack、路径穿越 fail-closed、单次截断上限。 */
+  readPackDoc(input: ReadPackDocInput): Promise<ReadPackDocResult>;
+  /** 全 pack 工具并集（toolgate fail-closed 判定的工具闭集来源，U7）；跨 pack 按 toolId 去重。 */
+  allTools(): Promise<ToolDefinition[]>;
 }
 
 // ---- ToolGatePort（③工具执行层：唯一决策点 + 代执行指令签发/回收）----

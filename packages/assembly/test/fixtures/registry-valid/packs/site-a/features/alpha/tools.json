@@ -1,0 +1,21 @@
+[
+  {
+    "id": "alpha.do",
+    "featureIds": [
+      "alpha"
+    ],
+    "description": "alpha.do 示例操作",
+    "params": {
+      "type": "object"
+    },
+    "execution": "client",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "/api/alpha"
+    },
+    "resultSchema": {
+      "type": "object"
+    }
+  }
+]

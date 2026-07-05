@@ -1,0 +1,21 @@
+[
+  {
+    "id": "beta.do",
+    "featureIds": [
+      "beta"
+    ],
+    "description": "beta.do 示例操作",
+    "params": {
+      "type": "object"
+    },
+    "execution": "client",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "/api/beta"
+    },
+    "resultSchema": {
+      "type": "object"
+    }
+  }
+]

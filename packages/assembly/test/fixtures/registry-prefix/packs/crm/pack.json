@@ -1,0 +1,19 @@
+{
+  "packId": "crm",
+  "version": "1.0.0",
+  "site": {
+    "origin": "http://host.example",
+    "locations": [
+      "/crm"
+    ]
+  },
+  "featureIdRules": [
+    {
+      "urlPattern": ".*",
+      "featureId": "leads"
+    }
+  ],
+  "features": [
+    "leads"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "packId": "codeflow-console",
+  "version": "0.1.0",
+  "site": {
+    "origin": "https://codeflow.asia",
+    "locations": ["/console"]
+  },
+  "tenant": "codeflow",
+  "featureIdRules": [
+    { "urlPattern": "codeflow\\.asia/console", "featureId": "codeflow-token" }
+  ],
+  "features": ["codeflow-token"]
+}

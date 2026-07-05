@@ -1,0 +1,9 @@
+{
+  "version": "1.0.0",
+  "packs": [
+    {
+      "packId": "drift",
+      "version": "9.9.9"
+    }
+  ]
+}

@@ -28,6 +28,10 @@ interface AuditEventBase {
   /** 取值 = identity-claims.hostUserId。 */
   userId?: string;
   tenant?: string;
+  /** 会话激活的站点包（ADR-013）；无 pack 命中或 legacy 缺省时省略。 */
+  packId?: string;
+  /** 激活 pack 的 semver；随 packId 一同记录。 */
+  packVersion?: string;
   featureId?: string;
 }
 

@@ -1,0 +1,21 @@
+[
+  {
+    "id": "one.do",
+    "featureIds": [
+      "one"
+    ],
+    "description": "one.do 示例操作",
+    "params": {
+      "type": "object"
+    },
+    "execution": "client",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "/api/one"
+    },
+    "resultSchema": {
+      "type": "object"
+    }
+  }
+]

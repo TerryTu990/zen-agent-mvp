@@ -2,17 +2,8 @@
  * 模块化单体的唯一组装点（U2）：全仓只有本包同时 import 全部模块包；
  * 模块间彼此零依赖，只经 @zen-agent/contracts 端口类型在此接线。
  */
-import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { join } from 'node:path';
-import type {
-  AssemblyPort,
-  AuditPort,
-  ConfigSnapshotManifest,
-  LlmPort,
-  ToolDefinition,
-  ToolGatePort,
-} from '@zen-agent/contracts';
+import type { AssemblyPort, AuditPort, LlmPort, ToolGatePort } from '@zen-agent/contracts';
 import { createAssemblyPort } from '@zen-agent/assembly';
 import { createToolGatePort } from '@zen-agent/toolgate';
 import { createLlmPort } from '@zen-agent/llm-port';
@@ -71,35 +62,15 @@ export interface ServerPorts {
   audit: AuditPort;
 }
 
-/**
- * 汇总快照内全部功能的工具并集，作为 toolgate 分级判定的工具闭集（fail-closed 依据，U7）。
- * 组装层逻辑（唯一组装点在此，不违 U2）：读 manifest 取功能清单，逐功能 compose 收其工具、按 id 去重。
- * 前提：assembly 快照已成功载入（否则 compose 抛快照拒载错误，在此之前触发）。
- */
-async function collectHostTools(
-  assembly: AssemblyPort,
-  snapshotRoot: string,
-): Promise<ToolDefinition[]> {
-  const manifest = JSON.parse(
-    readFileSync(join(snapshotRoot, 'manifest.json'), 'utf8'),
-  ) as ConfigSnapshotManifest;
-  const featureIds = manifest.features ?? manifest.featureIdRules.map((rule) => rule.featureId);
-  const byId = new Map<string, ToolDefinition>();
-  for (const featureId of featureIds) {
-    const composed = await assembly.compose({ sessionId: '__bootstrap__', featureId });
-    for (const tool of composed.tools) byId.set(tool.id, tool);
-  }
-  return [...byId.values()];
-}
-
 export async function assemblePorts(options: ServerOptions): Promise<ServerPorts> {
   const assembly = createAssemblyPort({
     snapshotRoot: options.snapshotRoot,
     systemPromptPath: options.systemPromptPath,
   });
-  // 触发快照惰性载入：坏快照 fail-fast（快照拒载错误），先于按 manifest 读工具并集。
+  // 触发快照惰性载入：坏快照 fail-fast（快照拒载错误），先于读全 pack 工具并集。
   await assembly.resolveFeature({ url: '' });
-  const tools = await collectHostTools(assembly, options.snapshotRoot);
+  // toolgate 分级判定的工具闭集（fail-closed 依据，U7）：全 pack 工具并集，按 toolId 去重。
+  const tools = await assembly.allTools();
   return {
     assembly,
     toolgate: createToolGatePort({

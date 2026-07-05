@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zen-agent.dev/schema/registry/v1.json",
+  "title": "zen-agent 全局 registry 契约 C4（root manifest，registry 形态，SSOT）",
+  "description": "根 manifest.json 的 registry 形态：已安装 pack 的登记表。装配器启动全量载入 packs/<packId>/pack.json 并逐 pack fail-closed 校验（拒载语义沿用 legacy loadSnapshot）。根 manifest 二形态判别：含 packs 数组 → 本 registry 契约；否则按 config-snapshot（legacy）契约。安装 = pack 目录入 packs/ + 此处登记；卸载 = 去登记，该站点回落仅基座。registry JSON 可序列化，跨端口传递满足 U1。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "packs"],
+  "properties": {
+    "version": {
+      "$comment": "registry 版本（semver），装配结果的 snapshotVersion 回写该值。",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+    },
+    "packs": {
+      "$comment": "已安装 pack 登记项；packId+version 须与 packs/<packId>/pack.json 一致（不一致 fail-closed 拒载）。",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["packId", "version"],
+        "properties": {
+          "packId": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+          }
+        }
+      }
+    }
+  }
+}
