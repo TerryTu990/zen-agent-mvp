@@ -35,6 +35,12 @@ import type {
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
 import { signDemoToken, type DemoTokenSigner } from './demo-token.js';
+import {
+  compressHistory,
+  estimateHistoryTokens,
+  shouldCompress,
+  type UsageTokens,
+} from './compress.js';
 import { pruneStaleSnapshots, SNAPSHOT_TOOL_NAME } from './history.js';
 import type { SessionState, SessionStore } from './sessions.js';
 
@@ -48,6 +54,10 @@ export interface GatewayDeps {
   heartbeatMs: number;
   /** agent loop 轮数上限：防 LLM 反复触发工具无法收敛而失控烧配额；dom 代操作一批页面操作固定耗 2 轮（操作+复核快照）。 */
   maxTurnRounds: number;
+  /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW）。 */
+  compressContextWindow: number;
+  /** 历史压缩触发阈值比例（ZA_LLM_COMPRESS_THRESHOLD）：估算 token 达 窗口×阈值 即压缩。 */
+  compressThreshold: number;
   /** Access-Control-Allow-Origin 响应头值。 */
   corsOrigin: string;
   /** 存在即启用 POST /demo-token（P0-b，env 门控）；缺省=端点关闭（404）。 */
@@ -472,6 +482,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
     let tailText = '';
     // 回合是否自然收尾（纯文本/引导/未知工具终结）；false=轮数耗尽被截断，须显式告知用户而非静默停。
     let settled = false;
+    // 本回合最近一次完整消费到 done 的 usage 实数（工具轮在 tool-call 处提前 break、不含 usage）；
+    // 落盘边界压缩触发估算优先用它，缺省回退字符近似。
+    let lastUsage: UsageTokens | undefined;
 
     for (let round = 0; round < deps.maxTurnRounds; round += 1) {
       let roundText = '';
@@ -483,11 +496,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
         } else if (event.kind === 'tool-call') {
           call = { toolCallId: event.toolCallId, name: event.name, params: event.params };
           break;
-        } else if (event.kind === 'done' && event.stopReason === 'error') {
-          // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
-          const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;
-          roundText += notice;
-          notify(sessionId, notice);
+        } else if (event.kind === 'done') {
+          if (event.usage !== undefined) lastUsage = event.usage;
+          if (event.stopReason === 'error') {
+            // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
+            const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;
+            roundText += notice;
+            notify(sessionId, notice);
+          }
         }
       }
       // 无工具调用（纯文本/错误收尾）：本回合终结，本轮文本即气泡。
@@ -600,7 +616,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
       turnMessages.push({ role: 'assistant', content: tailText });
     }
     // 回合落盘边界：追加工具轮并瘦身（仅留最近一次快照观测全文），护 prompt 缓存前缀不回改。
-    deps.store.setHistory(sessionId, pruneStaleSnapshots([...session.history, ...turnMessages]));
+    const pruned = pruneStaleSnapshots([...session.history, ...turnMessages]);
+    // 达阈值再压缩：较早回合压滚动摘要、最近 K 轮留原文；摘要生成失败 fail-open（原样落盘，下回合再试）。
+    const estimate = estimateHistoryTokens(
+      lastUsage !== undefined ? { history: pruned, usage: lastUsage } : { history: pruned },
+    );
+    const toStore = shouldCompress(estimate, deps.compressContextWindow, deps.compressThreshold)
+      ? await compressHistory(pruned, { llm: deps.llm })
+      : pruned;
+    deps.store.setHistory(sessionId, toStore);
   }
 
   async function handleFrames(

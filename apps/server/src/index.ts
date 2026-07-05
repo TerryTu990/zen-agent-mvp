@@ -34,6 +34,10 @@ export interface ServerOptions {
   heartbeatMs?: number;
   /** agent loop 单回合轮数上限，默认 12；dom 代操作一批页面操作固定耗 2 轮（操作+复核快照）。 */
   maxTurnRounds?: number;
+  /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW），默认 200000。 */
+  compressContextWindow?: number;
+  /** 历史压缩触发阈值比例（ZA_LLM_COMPRESS_THRESHOLD），默认 0.6。 */
+  compressThreshold?: number;
   /** Access-Control-Allow-Origin 响应头值，默认 '*'。 */
   corsOrigin?: string;
   /**
@@ -118,6 +122,8 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     store,
     heartbeatMs: options.heartbeatMs ?? 15_000,
     maxTurnRounds: options.maxTurnRounds ?? 12,
+    compressContextWindow: options.compressContextWindow ?? 200_000,
+    compressThreshold: options.compressThreshold ?? 0.6,
     corsOrigin: options.corsOrigin ?? '*',
     ...(options.demoToken?.enabled
       ? { demoToken: { jwtSecret: options.jwtSecret, iss: options.demoToken.iss } }

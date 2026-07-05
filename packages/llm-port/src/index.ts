@@ -40,6 +40,33 @@ interface ToolCallDraft {
   args: string;
 }
 
+interface LlmUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * 从流帧解析上游 token 用量（OpenAI `stream_options.include_usage` 末帧：choices 空、带 usage）。
+ * 字段缺失/类型不符 → undefined，由消费侧回退字符近似（usage 是可选透传，非硬要求）。
+ */
+function parseUsage(data: string): LlmUsage | undefined {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(data);
+  } catch {
+    return undefined;
+  }
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const usage = (payload as { usage?: unknown }).usage;
+  if (typeof usage !== 'object' || usage === null) return undefined;
+  const { prompt_tokens, completion_tokens } = usage as {
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+  };
+  if (typeof prompt_tokens !== 'number' || typeof completion_tokens !== 'number') return undefined;
+  return { inputTokens: prompt_tokens, outputTokens: completion_tokens };
+}
+
 /**
  * 一切失败路径（白名单/env 缺失/上游 4xx/断流/实参非法）不抛异常，
  * 统一以 done error 事件收尾；错误文案只含键名与状态类别，不含 env 值（SEC-04）。
@@ -90,11 +117,14 @@ async function* chatStream(
     const toolCalls = new Map<number, ToolCallDraft>();
     let finishReason: string | null = null;
     let sawDone = false;
+    let usage: LlmUsage | undefined;
     for await (const data of sseDataLines(response.body)) {
       if (data === '[DONE]') {
         sawDone = true;
         break;
       }
+      const parsedUsage = parseUsage(data);
+      if (parsedUsage !== undefined) usage = parsedUsage;
       const choice = parseChoice(data);
       if (choice === null) continue;
       if (typeof choice.finish_reason === 'string') finishReason = choice.finish_reason;
@@ -123,10 +153,10 @@ async function* chatStream(
           params,
         };
       }
-      yield { kind: 'done', stopReason: 'tool-call' };
+      yield { kind: 'done', stopReason: 'tool-call', ...(usage !== undefined ? { usage } : {}) };
       return;
     }
-    yield { kind: 'done', stopReason: 'end' };
+    yield { kind: 'done', stopReason: 'end', ...(usage !== undefined ? { usage } : {}) };
   } catch (err) {
     yield doneError(`上游请求失败（${err instanceof Error ? err.name : 'unknown'}）`);
   }
@@ -160,6 +190,8 @@ function buildBody(model: string, request: LlmChatRequest): JsonObject {
   const body: JsonObject = {
     model,
     stream: true,
+    // 请求上游在流末追加 token 用量帧（choices 为空、带 usage）；上游不支持时静默忽略、无 usage 帧。
+    stream_options: { include_usage: true },
     messages: request.messages.map((m) => ({
       role: m.role,
       content: m.content,

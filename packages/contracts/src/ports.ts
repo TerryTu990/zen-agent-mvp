@@ -216,7 +216,13 @@ export interface LlmChatRequest {
 export type LlmStreamEvent =
   | { kind: 'text-delta'; delta: string }
   | { kind: 'tool-call'; toolCallId: string; name: string; params: JsonObject }
-  | { kind: 'done'; stopReason: 'end' | 'tool-call' | 'error'; error?: string };
+  | {
+      kind: 'done';
+      stopReason: 'end' | 'tool-call' | 'error';
+      error?: string;
+      /** 上游返回 token 用量时透传（缺省=上游未报，消费侧回退字符近似估算）。 */
+      usage?: { inputTokens: number; outputTokens: number };
+    };
 
 export interface LlmPort {
   chat(request: LlmChatRequest): AsyncIterable<LlmStreamEvent>;

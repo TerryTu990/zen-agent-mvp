@@ -313,6 +313,71 @@ describe('createLlmPort · tool_calls 增量聚合', () => {
   });
 });
 
+describe('createLlmPort · 上游 usage 透传', () => {
+  it('末帧带 usage（choices 空）→ done 事件透传 inputTokens/outputTokens', async () => {
+    const chunks = [
+      { choices: [{ index: 0, delta: { content: '好' }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+      { choices: [], usage: { prompt_tokens: 1200, completion_tokens: 34, total_tokens: 1234 } },
+    ];
+    const { url, close } = await startSseServer((res) => {
+      for (const chunk of chunks) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    try {
+      pointAtMock();
+      process.env['ZA_LLM_BASE_URL'] = url;
+      const events = await collect(port().chat({ messages: [{ role: 'user', content: 'hi' }] }));
+      const done = doneOf(events);
+      expect(done.stopReason).toBe('end');
+      expect(done.usage).toEqual({ inputTokens: 1200, outputTokens: 34 });
+    } finally {
+      await close();
+    }
+  });
+
+  it('上游无 usage 帧 → done 事件不含 usage 字段（缺省）', async () => {
+    const chunks = [
+      { choices: [{ index: 0, delta: { content: '好' }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+    ];
+    const { url, close } = await startSseServer((res) => {
+      for (const chunk of chunks) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    try {
+      pointAtMock();
+      process.env['ZA_LLM_BASE_URL'] = url;
+      const events = await collect(port().chat({ messages: [{ role: 'user', content: 'hi' }] }));
+      expect(doneOf(events).usage).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  it('请求体带 stream_options.include_usage', async () => {
+    let seenBody: unknown;
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      seenBody = JSON.parse(String(init?.body ?? '{}'));
+      return new Response(
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: '好' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
+        { status: 200 },
+      );
+    };
+    pointAtMock();
+    await collect(
+      createLlmPort({ allowedProviders: ['openai-compatible'], fetchImpl }).chat({
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    );
+    expect((seenBody as { stream_options?: unknown }).stream_options).toEqual({
+      include_usage: true,
+    });
+  });
+});
+
 async function startSseServer(
   write: (res: import('node:http').ServerResponse) => void,
 ): Promise<{ url: string; close(): Promise<void> }> {

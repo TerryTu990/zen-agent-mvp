@@ -41,6 +41,16 @@ if (!Number.isInteger(sessionTtlMs) || sessionTtlMs < 1) {
   console.error('ZA_SESSION_TTL_MS 不是正整数，拒绝启动');
   process.exit(1);
 }
+const compressContextWindow = Number(process.env['ZA_LLM_CONTEXT_WINDOW'] ?? 200_000);
+if (!Number.isInteger(compressContextWindow) || compressContextWindow < 1) {
+  console.error('ZA_LLM_CONTEXT_WINDOW 不是正整数，拒绝启动');
+  process.exit(1);
+}
+const compressThreshold = Number(process.env['ZA_LLM_COMPRESS_THRESHOLD'] ?? 0.6);
+if (!Number.isFinite(compressThreshold) || compressThreshold <= 0 || compressThreshold > 1) {
+  console.error('ZA_LLM_COMPRESS_THRESHOLD 不是 (0,1] 区间小数，拒绝启动');
+  process.exit(1);
+}
 if (!process.env['ZA_LLM_BASE_URL']) {
   console.warn('ZA_LLM_BASE_URL 未设置：LLM 调用将以"服务暂时不可用"降级');
 }
@@ -55,6 +65,8 @@ startServer({
     .filter((iss) => iss !== ''),
   snapshotRoot,
   maxTurnRounds,
+  compressContextWindow,
+  compressThreshold,
   corsOrigin: process.env['ZA_CORS_ORIGIN'] ?? '*',
   systemPromptPath: process.env['ZA_SYSTEM_PROMPT_PATH'] ?? 'assets/system-prompt.md',
   auditSinkPath: process.env['ZA_AUDIT_SINK'] ?? '.za/events.jsonl',
