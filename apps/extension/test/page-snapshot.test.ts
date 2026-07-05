@@ -75,8 +75,8 @@ describe('createSnapshotter：可交互元素采集与 ref 映射', () => {
       <ul><li>普通列表项不收</li></ul>
     `;
     const { elements } = createSnapshotter().collect();
-    // combobox 的 label 按既有优先级取 aria-label。
-    expect(elements.map((e) => e.label)).toEqual(['分组', '分组A', '分组B']);
+    // 展开中的 listbox 属优先根，其选项 ref 前置；combobox 的 label 按既有优先级取 aria-label。
+    expect(elements.map((e) => e.label)).toEqual(['分组A', '分组B', '分组']);
   });
 
   it('role 属性优先于 tagName：div[role=option] 报 option，无 role 元素仍按 tag', () => {
@@ -136,6 +136,17 @@ describe('createSnapshotter：模态层优先采集', () => {
       <div role="dialog" style="display:none"><button>藏层按钮</button></div>
     `;
     expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['主体', '藏层按钮']);
+  });
+
+  it('无 role 子项的 listbox（Semi 类组件）：直接子项拿到 ref，浮层优先于配额', () => {
+    const filler = Array.from({ length: MAX_ELEMENTS }, (_, i) => `<button>主体${i}</button>`).join('');
+    document.body.innerHTML = `
+      ${filler}
+      <div role="listbox"><div>ato Claude 转 Codex 分组</div><div>awsq</div></div>
+    `;
+    const { elements } = createSnapshotter().collect();
+    expect(elements).toHaveLength(MAX_ELEMENTS);
+    expect(elements.slice(0, 2).map((e) => e.label)).toEqual(['ato Claude 转 Codex 分组', 'awsq']);
   });
 });
 

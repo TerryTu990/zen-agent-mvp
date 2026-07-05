@@ -19,8 +19,10 @@ const INTERACTIVE_SELECTOR = [
   '[role="menuitem"]',
   '[role="combobox"]',
   '[role="option"]',
-  // 无 role 自定义下拉的有界形态：仅收 listbox 后代 li，禁无差别收录裸 li/div（快照会爆炸）。
+  // 无 role 自定义下拉的有界形态：listbox 后代 li 与直接子项（ARIA 契约下即选项行，
+  // 部分组件库如 Semi Design 不给子项标 role）；禁无差别收录裸 li/div（快照会爆炸）。
   '[role="listbox"] li',
+  '[role="listbox"] > *',
   '[contenteditable="true"]',
 ].join(', ');
 
@@ -40,6 +42,8 @@ const NOTICE_SELECTOR = [
 /** 模态层根匹配：显式语义（role=dialog / aria-modal）优先；无命中再兜底 class 含 dialog/modal 的容器。 */
 const MODAL_SELECTOR = '[role="dialog"], [aria-modal="true"]';
 const MODAL_FALLBACK_SELECTOR = '[class*="dialog" i], [class*="modal" i]';
+/** 展开中的下拉浮层常挂 body 末尾，文档序采集易被配额截断，须与模态层同享优先配额。 */
+const FLOATING_LIST_SELECTOR = '[role="listbox"]';
 
 export interface PageSnapshot {
   url: string;
@@ -97,14 +101,23 @@ function isInlineHidden(el: Element): boolean {
   return false;
 }
 
+function findVisible(doc: Document, selector: string): Element[] {
+  return [...doc.querySelectorAll(selector)].filter(
+    (el) => !isDeclaredHidden(el) && !isInlineHidden(el),
+  );
+}
+
 /** class 兜底命中只取最外层容器，嵌套命中（modal 壳内的 modal-body）不重复算根。 */
 function findModalRoots(doc: Document): Element[] {
-  const visible = (selector: string) =>
-    [...doc.querySelectorAll(selector)].filter((el) => !isDeclaredHidden(el) && !isInlineHidden(el));
-  const explicit = visible(MODAL_SELECTOR);
+  const explicit = findVisible(doc, MODAL_SELECTOR);
   if (explicit.length > 0) return explicit;
-  const fallback = visible(MODAL_FALLBACK_SELECTOR);
+  const fallback = findVisible(doc, MODAL_FALLBACK_SELECTOR);
   return fallback.filter((el) => !fallback.some((outer) => outer !== el && outer.contains(el)));
+}
+
+/** 优先配额根：展开中的下拉浮层最优先（正在交互的目标），其次模态层，最后全文档。 */
+function findPriorityRoots(doc: Document): Element[] {
+  return [...findVisible(doc, FLOATING_LIST_SELECTOR), ...findModalRoots(doc)];
 }
 
 /** 语义化提示区（alert/status/aria-live）；非此即 class 启发式命中，须加短文本约束。 */
@@ -180,9 +193,9 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
           ...(disabled ? { disabled } : {}),
         });
       };
-      // 模态层内可交互元素先分配 ref：防页面主体占满 MAX_ELEMENTS 配额导致弹层按钮拿不到 ref。
-      for (const modal of findModalRoots(doc)) {
-        for (const el of modal.querySelectorAll(INTERACTIVE_SELECTOR)) capture(el);
+      // 浮层/模态内可交互元素先分配 ref：防页面主体占满 MAX_ELEMENTS 配额导致弹层按钮、下拉选项拿不到 ref。
+      for (const root of findPriorityRoots(doc)) {
+        for (const el of root.querySelectorAll(INTERACTIVE_SELECTOR)) capture(el);
       }
       for (const el of doc.querySelectorAll(INTERACTIVE_SELECTOR)) capture(el);
       return { url: doc.location?.href ?? '', title: doc.title, elements, notices: collectNotices(doc) };
