@@ -791,6 +791,50 @@ describe('dom 代操作闭环（快照观察 → 批次签发 → 结果回喂�
   });
 });
 
+describe('agent loop 轮数上限（maxTurnRounds 注入）', () => {
+  it('maxTurnRounds=1：快照耗尽轮数 → 显式截断收尾、不签发操作指令', async () => {
+    const capped = await startServer(serverOptions({ maxTurnRounds: 1 }));
+    const base = `http://127.0.0.1:${capped.port}`;
+    try {
+      const token = await signToken();
+      const created = await fetch(`${base}/v1/sessions`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      const { sessionId } = (await created.json()) as { sessionId: string };
+      const post = (frame: Record<string, unknown>) =>
+        fetch(`${base}/v1/sessions/${sessionId}/frames`, {
+          method: 'POST',
+          headers: authHeaders(token, { 'content-type': 'application/json' }),
+          body: JSON.stringify(frame),
+        });
+      const sse = await openSse2(base, token, sessionId);
+      try {
+        await post({ type: 'context-report', sessionId, url: ORDER_LIST_URL });
+        await post({ type: 'user-message', sessionId, text: '帮我在页面上给订单加个备注' });
+        await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length > 0);
+        const requestId = String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']);
+        await post({
+          type: 'snapshot-report',
+          sessionId,
+          requestId,
+          url: ORDER_LIST_URL,
+          elements: [
+            { ref: 'za-1', role: 'input:text', label: '备注' },
+            { ref: 'za-2', role: 'button', label: '保存' },
+          ],
+        });
+        await sse.waitFor(() => textOf(sse.frames).includes('已达上限'));
+        expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      } finally {
+        sse.close();
+      }
+    } finally {
+      await capped.close();
+    }
+  });
+});
+
 describe('SSE 心跳与 CORS', () => {
   it('OPTIONS 预检 → 204 + 宽松 CORS 头', async () => {
     const res = await api('/v1/sessions', { method: 'OPTIONS' });
@@ -803,6 +847,24 @@ describe('SSE 心跳与 CORS', () => {
     const token = await signToken();
     const res = await api('/v1/sessions', { method: 'POST', headers: authHeaders(token) });
     expect(res.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
+  it('corsOrigin 注入生效：预检与业务响应按配置回源', async () => {
+    const scoped = await startServer(serverOptions({ corsOrigin: 'http://host.example' }));
+    const scopedBase = `http://127.0.0.1:${scoped.port}`;
+    try {
+      const preflight = await fetch(`${scopedBase}/v1/sessions`, { method: 'OPTIONS' });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get('access-control-allow-origin')).toBe('http://host.example');
+      const token = await signToken();
+      const res = await fetch(`${scopedBase}/v1/sessions`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      expect(res.headers.get('access-control-allow-origin')).toBe('http://host.example');
+    } finally {
+      await scoped.close();
+    }
   });
 
   it('心跳为 ": ping" 注释行，按配置间隔重复下发', async () => {

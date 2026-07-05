@@ -36,6 +36,10 @@ export interface ServerOptions {
   allowedProviders: string[];
   /** SSE 心跳间隔毫秒，默认 15000。 */
   heartbeatMs?: number;
+  /** agent loop 单回合轮数上限，默认 12；dom 代操作一批页面操作固定耗 2 轮（操作+复核快照）。 */
+  maxTurnRounds?: number;
+  /** Access-Control-Allow-Origin 响应头值，默认 '*'。 */
+  corsOrigin?: string;
   /**
    * P0-b demo-token 端点（env 门控）：enabled=false 时 /demo-token 恒 404。
    * 签发复用 jwtSecret（与 verifier 同 secret，故自签 token 能验签通过）；iss 须在 issAllowlist 内。
@@ -121,6 +125,8 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     }),
     store: createMemorySessionStore(),
     heartbeatMs: options.heartbeatMs ?? 15_000,
+    maxTurnRounds: options.maxTurnRounds ?? 12,
+    corsOrigin: options.corsOrigin ?? '*',
     ...(options.demoToken?.enabled
       ? { demoToken: { jwtSecret: options.jwtSecret, iss: options.demoToken.iss } }
       : {}),

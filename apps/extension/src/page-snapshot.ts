@@ -5,6 +5,7 @@
  * 保证 jsdom 可测且不因宿主 CSS 花活漏采。
  */
 import type { SnapshotElement } from './frames.js';
+import { MAX_ELEMENTS, MAX_LABEL_LENGTH, MAX_NOTICES, MAX_NOTICE_LENGTH } from './tuning.js';
 
 const INTERACTIVE_SELECTOR = [
   'a[href]',
@@ -36,10 +37,9 @@ const NOTICE_SELECTOR = [
   '[class*="invalid" i]',
 ].join(', ');
 
-const MAX_ELEMENTS = 150;
-const MAX_LABEL_LENGTH = 80;
-const MAX_NOTICES = 10;
-const MAX_NOTICE_LENGTH = 200;
+/** 模态层根匹配：显式语义（role=dialog / aria-modal）优先；无命中再兜底 class 含 dialog/modal 的容器。 */
+const MODAL_SELECTOR = '[role="dialog"], [aria-modal="true"]';
+const MODAL_FALLBACK_SELECTOR = '[class*="dialog" i], [class*="modal" i]';
 
 export interface PageSnapshot {
   url: string;
@@ -63,9 +63,14 @@ function isDeclaredHidden(el: Element): boolean {
 }
 
 function roleOf(el: Element): string {
+  const explicit = el.getAttribute('role')?.trim().toLowerCase() ?? '';
+  if (explicit !== '') return explicit;
   const tag = el.tagName.toLowerCase();
   return el instanceof HTMLInputElement ? `${tag}:${el.type}` : tag;
 }
+
+// 占位标签：让 agent 能区分"未命名图标钮"与正常控件，不再按位置瞎猜语义。
+const UNLABELED_PLACEHOLDER = '[无文字标签]';
 
 function labelOf(el: Element): string {
   const aria = el.getAttribute('aria-label');
@@ -76,17 +81,30 @@ function labelOf(el: Element): string {
   }
   const text = el.textContent?.trim().replace(/\s+/g, ' ') ?? '';
   if (text !== '') return text.slice(0, MAX_LABEL_LENGTH);
-  return el.getAttribute('name') ?? '';
+  const title = el.getAttribute('title');
+  if (title !== null && title.trim() !== '') return title.trim().slice(0, MAX_LABEL_LENGTH);
+  const name = el.getAttribute('name');
+  if (name !== null && name.trim() !== '') return name;
+  return UNLABELED_PLACEHOLDER;
 }
 
-/** 提示文本专用可见性：声明式隐藏之外再排除内联 display/visibility 切换——宿主校验提示常以内联样式显隐。 */
-function isNoticeHidden(el: Element): boolean {
-  if (isDeclaredHidden(el)) return true;
+/** 内联 display/visibility 显隐（含祖先）——宿主的模态层与校验提示常以内联样式切换。 */
+function isInlineHidden(el: Element): boolean {
   for (let node: Element | null = el; node !== null; node = node.parentElement) {
     if (!(node instanceof HTMLElement)) continue;
     if (node.style.display === 'none' || node.style.visibility === 'hidden') return true;
   }
   return false;
+}
+
+/** class 兜底命中只取最外层容器，嵌套命中（modal 壳内的 modal-body）不重复算根。 */
+function findModalRoots(doc: Document): Element[] {
+  const visible = (selector: string) =>
+    [...doc.querySelectorAll(selector)].filter((el) => !isDeclaredHidden(el) && !isInlineHidden(el));
+  const explicit = visible(MODAL_SELECTOR);
+  if (explicit.length > 0) return explicit;
+  const fallback = visible(MODAL_FALLBACK_SELECTOR);
+  return fallback.filter((el) => !fallback.some((outer) => outer !== el && outer.contains(el)));
 }
 
 /** 语义化提示区（alert/status/aria-live）；非此即 class 启发式命中，须加短文本约束。 */
@@ -104,7 +122,7 @@ function collectNotices(doc: Document): string[] {
   const accepted: Element[] = [];
   for (const el of doc.querySelectorAll(NOTICE_SELECTOR)) {
     if (notices.length >= MAX_NOTICES) break;
-    if (isNoticeHidden(el)) continue;
+    if (isDeclaredHidden(el) || isInlineHidden(el)) continue;
     // 嵌套命中（如 alert 区内的 error 子节点）只取外层，避免同段文本重复上报。
     if (accepted.some((outer) => outer.contains(el))) continue;
     const text = el.textContent?.trim().replace(/\s+/g, ' ') ?? '';
@@ -142,10 +160,11 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
     collect() {
       refs = new Map();
       const elements: SnapshotElement[] = [];
+      const taken = new Set<Element>();
       let seq = 0;
-      for (const el of doc.querySelectorAll(INTERACTIVE_SELECTOR)) {
-        if (elements.length >= MAX_ELEMENTS) break;
-        if (isDeclaredHidden(el)) continue;
+      const capture = (el: Element): void => {
+        if (elements.length >= MAX_ELEMENTS || taken.has(el) || isDeclaredHidden(el)) return;
+        taken.add(el);
         seq += 1;
         const ref = `za-${seq}`;
         refs.set(ref, el);
@@ -160,7 +179,12 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
           ...(value !== undefined ? { value } : {}),
           ...(disabled ? { disabled } : {}),
         });
+      };
+      // 模态层内可交互元素先分配 ref：防页面主体占满 MAX_ELEMENTS 配额导致弹层按钮拿不到 ref。
+      for (const modal of findModalRoots(doc)) {
+        for (const el of modal.querySelectorAll(INTERACTIVE_SELECTOR)) capture(el);
       }
+      for (const el of doc.querySelectorAll(INTERACTIVE_SELECTOR)) capture(el);
       return { url: doc.location?.href ?? '', title: doc.title, elements, notices: collectNotices(doc) };
     },
     resolve(ref) {

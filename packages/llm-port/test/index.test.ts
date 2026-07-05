@@ -188,6 +188,67 @@ describe('createLlmPort · 上游异常', () => {
   });
 });
 
+describe('createLlmPort · 网络瞬时失败重试', () => {
+  const SSE_OK = [
+    `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: '好' }, finish_reason: null }] })}`,
+    'data: [DONE]',
+    '',
+  ].join('\n\n');
+
+  function retryPort(fetchImpl: typeof fetch) {
+    return createLlmPort({ allowedProviders: ['openai-compatible'], fetchImpl, retryDelayMs: 0 });
+  }
+
+  it('首次 fetch 抛 TypeError → 重试一次成功，流正常收尾', async () => {
+    pointAtMock();
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError('fetch failed');
+      return new Response(SSE_OK, { status: 200 });
+    };
+    const events = await collect(
+      retryPort(fetchImpl).chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    );
+    expect(calls).toBe(2);
+    expect(textOf(events)).toBe('好');
+    expect(doneOf(events).stopReason).toBe('end');
+  });
+
+  it('连续两次网络失败 → 只重试一次，done error 如实收尾且不泄敏', async () => {
+    pointAtMock();
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      throw new TypeError('fetch failed');
+    };
+    const events = await collect(
+      retryPort(fetchImpl).chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    );
+    expect(calls).toBe(2);
+    const done = doneOf(events);
+    expect(done.stopReason).toBe('error');
+    expect(done.error).toContain('TypeError');
+    expect(done.error).not.toContain('za-test-fake-key');
+  });
+
+  it('HTTP 错误响应不触发重试（上游业务语义不变）', async () => {
+    pointAtMock();
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      return new Response('boom', { status: 500 });
+    };
+    const events = await collect(
+      retryPort(fetchImpl).chat({ messages: [{ role: 'user', content: 'hi' }] }),
+    );
+    expect(calls).toBe(1);
+    const done = doneOf(events);
+    expect(done.stopReason).toBe('error');
+    expect(done.error).toContain('500');
+  });
+});
+
 describe('createLlmPort · tool_calls 增量聚合', () => {
   it('分片 arguments 聚合为单个 tool-call 事件，done stopReason=tool-call', async () => {
     const chunks = [

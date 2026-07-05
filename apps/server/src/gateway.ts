@@ -45,6 +45,10 @@ export interface GatewayDeps {
   verifier: TokenVerifier;
   store: SessionStore;
   heartbeatMs: number;
+  /** agent loop 轮数上限：防 LLM 反复触发工具无法收敛而失控烧配额；dom 代操作一批页面操作固定耗 2 轮（操作+复核快照）。 */
+  maxTurnRounds: number;
+  /** Access-Control-Allow-Origin 响应头值。 */
+  corsOrigin: string;
   /** 存在即启用 POST /demo-token（P0-b，env 门控）；缺省=端点关闭（404）。 */
   demoToken?: DemoTokenSigner;
 }
@@ -56,9 +60,6 @@ function execOutcome(observation: Observation): 'ok' | 'error' | 'timeout' | 'in
   if (observation.error === 'timeout') return 'timeout';
   return 'error';
 }
-
-/** agent loop 轮数上限：防 LLM 反复触发工具无法收敛而失控烧配额；dom 代操作一回合含 观察→操作→复核观察→收尾。 */
-const MAX_TURN_ROUNDS = 6;
 
 export interface Gateway {
   handler(req: IncomingMessage, res: ServerResponse): void;
@@ -83,18 +84,6 @@ const UPSTREAM_TYPES: ReadonlySet<string> = new Set([
   'exec-result',
   'snapshot-report',
 ]);
-
-const CORS_ORIGIN = { 'access-control-allow-origin': '*' } as const;
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...CORS_ORIGIN });
-  res.end(JSON.stringify(body));
-}
-
-function sendNoContent(res: ServerResponse): void {
-  res.writeHead(204, CORS_ORIGIN);
-  res.end();
-}
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -206,6 +195,17 @@ export function createGateway(deps: GatewayDeps): Gateway {
   const validateFrame = createFrameValidator();
   const runtimes = new Map<string, SessionRuntime>();
   const openStreams = new Map<ServerResponse, () => void>();
+  const corsHeaders = { 'access-control-allow-origin': deps.corsOrigin } as const;
+
+  const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...corsHeaders });
+    res.end(JSON.stringify(body));
+  };
+
+  const sendNoContent = (res: ServerResponse): void => {
+    res.writeHead(204, corsHeaders);
+    res.end();
+  };
 
   const runtimeOf = (sessionId: string): SessionRuntime => {
     let runtime = runtimes.get(sessionId);
@@ -432,7 +432,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // 回合是否自然收尾（纯文本/引导/未知工具终结）；false=轮数耗尽被截断，须显式告知用户而非静默停。
     let settled = false;
 
-    for (let round = 0; round < MAX_TURN_ROUNDS; round += 1) {
+    for (let round = 0; round < deps.maxTurnRounds; round += 1) {
       let roundText = '';
       let call: { toolCallId: string; name: string; params: JsonObject } | null = null;
       for await (const event of deps.llm.chat(tools.length > 0 ? { messages, tools } : { messages })) {
@@ -627,7 +627,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
       connection: 'keep-alive',
-      ...CORS_ORIGIN,
+      ...corsHeaders,
     });
     res.write(': ping\n\n');
     const runtime = runtimeOf(session.sessionId);
@@ -683,7 +683,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
   async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
-        ...CORS_ORIGIN,
+        ...corsHeaders,
         'access-control-allow-headers': 'authorization,content-type',
         'access-control-allow-methods': 'GET,POST,OPTIONS',
       });

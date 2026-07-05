@@ -3,15 +3,29 @@ import type { JsonObject, LlmChatRequest, LlmPort, LlmStreamEvent } from '@zen-a
 export interface LlmPortOptions {
   /** provider 白名单：白名单外的 provider（含 model 的 `<provider>/` 前缀）fail-closed 拒绝；密钥托管在实现侧、经环境变量注入。 */
   allowedProviders: string[];
+  /** fetch 替身（测试注入用），缺省用全局 fetch。 */
+  fetchImpl?: typeof fetch;
+  /** 网络层瞬时失败重试一次前的退避毫秒，默认 300；测试注入 0 免等待。 */
+  retryDelayMs?: number;
 }
 
 const DEFAULT_PROVIDER = 'openai-compatible';
 
+interface ChatConfig {
+  allowed: ReadonlySet<string>;
+  fetchImpl: typeof fetch;
+  retryDelayMs: number;
+}
+
 export function createLlmPort(options: LlmPortOptions): LlmPort {
-  const allowed = new Set(options.allowedProviders);
+  const config: ChatConfig = {
+    allowed: new Set(options.allowedProviders),
+    fetchImpl: options.fetchImpl ?? fetch,
+    retryDelayMs: options.retryDelayMs ?? 300,
+  };
   return {
     chat(request) {
-      return chatStream(allowed, request);
+      return chatStream(config, request);
     },
   };
 }
@@ -31,7 +45,7 @@ interface ToolCallDraft {
  * 统一以 done error 事件收尾；错误文案只含键名与状态类别，不含 env 值（SEC-04）。
  */
 async function* chatStream(
-  allowed: ReadonlySet<string>,
+  config: ChatConfig,
   request: LlmChatRequest,
 ): AsyncGenerator<LlmStreamEvent> {
   let provider = DEFAULT_PROVIDER;
@@ -43,7 +57,7 @@ async function* chatStream(
       model = model.slice(slash + 1);
     }
   }
-  if (!allowed.has(provider)) {
+  if (!config.allowed.has(provider)) {
     yield doneError(`provider 不在白名单：${provider}`);
     return;
   }
@@ -59,7 +73,7 @@ async function* chatStream(
   }
 
   try {
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    const response = await fetchWithOneRetry(config, `${baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       headers: buildHeaders(),
       body: JSON.stringify(buildBody(model, request)),
@@ -115,6 +129,23 @@ async function* chatStream(
     yield { kind: 'done', stopReason: 'end' };
   } catch (err) {
     yield doneError(`上游请求失败（${err instanceof Error ? err.name : 'unknown'}）`);
+  }
+}
+
+/**
+ * 网络层瞬时失败（fetch reject，如连接类 TypeError）退避后重试一次；
+ * HTTP 错误响应（4xx/5xx）已是上游业务语义，原样返回、不重试。
+ */
+async function fetchWithOneRetry(
+  config: ChatConfig,
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  try {
+    return await config.fetchImpl(url, init);
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, config.retryDelayMs));
+    return config.fetchImpl(url, init);
   }
 }
 

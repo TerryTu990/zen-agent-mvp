@@ -32,8 +32,8 @@ const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
 
 const TURN_TIMEOUT_MS = Number(process.env.ZA_RL_TURN_TIMEOUT_MS ?? 120000);
-const QUIET_MS = 2000;
-const POLL_MS = 150;
+const QUIET_MS = Number(process.env.ZA_RL_QUIET_MS ?? 2000);
+const POLL_MS = Number(process.env.ZA_RL_POLL_MS ?? 150);
 
 /** 已知场景的行为期望：真实 LLM 是否应发起代执行、宿主 API 是否应被调用、HITL 如何裁决。 */
 const BEHAVIOR_BY_ID = {

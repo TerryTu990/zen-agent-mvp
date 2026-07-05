@@ -4,6 +4,7 @@
  * 任一步失败立即中止余下步骤、如实回报（HOW-05），错误只含 ref/动作名不含值（SEC-04）。
  */
 import type { DomStep, JsonObject } from './frames.js';
+import { STEP_PACE_MS } from './tuning.js';
 
 export interface DomStepOutcome {
   ok: boolean;
@@ -15,8 +16,6 @@ export interface DomStepOutcome {
 export interface DomStepRunner {
   run(steps: DomStep[]): Promise<DomStepOutcome>;
 }
-
-const STEP_PACE_MS = 350;
 
 const HIGHLIGHT_STYLE = '3px solid #B4552F';
 

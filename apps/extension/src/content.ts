@@ -10,10 +10,8 @@ import {
   type BackgroundToContentMessage,
   type ContentToBackgroundMessage,
 } from './messaging.js';
+import { DRAWER_DEFAULT_WIDTH, DRAWER_MAX_WIDTH, DRAWER_MIN_WIDTH } from './tuning.js';
 
-const DRAWER_MIN_WIDTH = 300;
-const DRAWER_MAX_WIDTH = 720;
-const DRAWER_DEFAULT_WIDTH = 400;
 const WIDTH_KEY = 'za.drawerWidth';
 const COLLAPSED_KEY = 'za.drawerCollapsed';
 

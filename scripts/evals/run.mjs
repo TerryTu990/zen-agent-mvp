@@ -30,10 +30,10 @@ const HOST_PORT = Number(process.env.ZA_EVAL_HOST_PORT ?? 4176);
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
 
-const RUNS = 3;
-const TURN_TIMEOUT_MS = 15000;
-const QUIET_MS = 500;
-const POLL_MS = 120;
+const RUNS = Number(process.env.ZA_EVAL_RUNS ?? 3);
+const TURN_TIMEOUT_MS = Number(process.env.ZA_EVAL_TURN_TIMEOUT_MS ?? 15000);
+const QUIET_MS = Number(process.env.ZA_EVAL_QUIET_MS ?? 500);
+const POLL_MS = Number(process.env.ZA_EVAL_POLL_MS ?? 120);
 
 /**
  * hitl 维度场景没有机器可读的"裁决策略"字段（scenarios.json 契约只有 mustMention/mustNotMention/behavior，

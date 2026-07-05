@@ -31,6 +31,11 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
   console.error('ZA_PORT 不是合法端口号，拒绝启动');
   process.exit(1);
 }
+const maxTurnRounds = Number(process.env['ZA_MAX_TURN_ROUNDS'] ?? 12);
+if (!Number.isInteger(maxTurnRounds) || maxTurnRounds < 1) {
+  console.error('ZA_MAX_TURN_ROUNDS 不是正整数，拒绝启动');
+  process.exit(1);
+}
 if (!process.env['ZA_LLM_BASE_URL']) {
   console.warn('ZA_LLM_BASE_URL 未设置：LLM 调用将以"服务暂时不可用"降级');
 }
@@ -44,6 +49,8 @@ startServer({
     .map((iss) => iss.trim())
     .filter((iss) => iss !== ''),
   snapshotRoot,
+  maxTurnRounds,
+  corsOrigin: process.env['ZA_CORS_ORIGIN'] ?? '*',
   systemPromptPath: process.env['ZA_SYSTEM_PROMPT_PATH'] ?? 'assets/system-prompt.md',
   auditSinkPath: process.env['ZA_AUDIT_SINK'] ?? '.za/events.jsonl',
   allowedProviders: ['openai-compatible'],

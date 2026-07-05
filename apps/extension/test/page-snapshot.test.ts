@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createSnapshotter } from '../src/page-snapshot.js';
+import { MAX_ELEMENTS } from '../src/tuning.js';
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -76,6 +77,65 @@ describe('createSnapshotter：可交互元素采集与 ref 映射', () => {
     const { elements } = createSnapshotter().collect();
     // combobox 的 label 按既有优先级取 aria-label。
     expect(elements.map((e) => e.label)).toEqual(['分组', '分组A', '分组B']);
+  });
+
+  it('role 属性优先于 tagName：div[role=option] 报 option，无 role 元素仍按 tag', () => {
+    document.body.innerHTML = `
+      <div role="option">分组B</div>
+      <button>普通按钮</button>
+      <input type="text" aria-label="名称" />
+    `;
+    const { elements } = createSnapshotter().collect();
+    expect(elements[0]).toMatchObject({ role: 'option', label: '分组B' });
+    expect(elements[1]).toMatchObject({ role: 'button' });
+    expect(elements[2]).toMatchObject({ role: 'input:text' });
+  });
+
+  it('label 兜底链补 title；仍无可读标签的元素给可辨识占位', () => {
+    document.body.innerHTML = `
+      <button title="关闭"><svg></svg></button>
+      <button><svg></svg></button>
+    `;
+    const { elements } = createSnapshotter().collect();
+    expect(elements[0]).toMatchObject({ label: '关闭' });
+    expect(elements[1]).toMatchObject({ label: '[无文字标签]' });
+  });
+});
+
+describe('createSnapshotter：模态层优先采集', () => {
+  it('页面主体占满配额时弹层内按钮仍拿到 ref：模态元素 ref 前置，总量不超上限', () => {
+    const filler = Array.from({ length: MAX_ELEMENTS }, (_, i) => `<button>主体${i}</button>`).join('');
+    document.body.innerHTML = `
+      ${filler}
+      <div role="dialog"><input aria-label="备注" /><button>提交</button><button>取消</button></div>
+    `;
+    const snapshotter = createSnapshotter();
+    const { elements } = snapshotter.collect();
+    expect(elements).toHaveLength(MAX_ELEMENTS);
+    expect(elements.slice(0, 3).map((e) => e.label)).toEqual(['备注', '提交', '取消']);
+    expect(snapshotter.resolve('za-2')).toBe(document.querySelector('[role="dialog"] button'));
+  });
+
+  it('模态元素不重复计数；aria-modal 与 class 兜底（含嵌套命中只取外层）均可识别', () => {
+    document.body.innerHTML = `
+      <button>主体</button>
+      <div aria-modal="true"><button>提交</button></div>
+    `;
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['提交', '主体']);
+
+    document.body.innerHTML = `
+      <button>主体</button>
+      <div class="app-modal"><div class="modal-body"><button>确定</button></div></div>
+    `;
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['确定', '主体']);
+  });
+
+  it('隐藏模态层（内联 display:none）不触发优先采集', () => {
+    document.body.innerHTML = `
+      <button>主体</button>
+      <div role="dialog" style="display:none"><button>藏层按钮</button></div>
+    `;
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['主体', '藏层按钮']);
   });
 });
 
