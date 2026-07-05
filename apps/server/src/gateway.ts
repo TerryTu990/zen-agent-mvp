@@ -35,6 +35,7 @@ import type {
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
 import { signDemoToken, type DemoTokenSigner } from './demo-token.js';
+import { pruneStaleSnapshots, SNAPSHOT_TOOL_NAME } from './history.js';
 import type { SessionState, SessionStore } from './sessions.js';
 
 export interface GatewayDeps {
@@ -126,8 +127,6 @@ const GUIDE_ACTIONS: ReadonlySet<string> = new Set(['highlight', 'scroll-to']);
  * built-in 页面快照工具（adr-011 观察半程）：工具面含 dom 工具时注入；非终结动作——
  * 快照作为 observation 回喂后回合继续。不经 toolgate（只读观察，无副作用；快照按不可信观察对待）。
  */
-const SNAPSHOT_TOOL_NAME = 'page_snapshot';
-
 const SNAPSHOT_TOOL_SPEC: LlmToolSpec = {
   name: SNAPSHOT_TOOL_NAME,
   description:
@@ -427,8 +426,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // 快照工具只在工具面含 dom 工具时注入：无 dom 操作面就不给观察入口（最小工具面）。
     const snapshotTools: LlmToolSpec[] = composed.tools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
     const tools: LlmToolSpec[] = [...guideTools, ...snapshotTools, ...composed.tools.map(toLlmToolSpec)];
-    // 全回合累积的用户可见文本：多轮中只有最终一轮产出气泡文本，作为本回合 assistant 历史。
-    let visibleText = '';
+    // 本回合待落 history 的消息序列（含工具轮）：回合内只追加不回改，落盘边界统一瘦身。
+    const turnMessages: LlmMessage[] = [{ role: 'user', content: text }];
+    // 终结轮（纯文本/引导/未知工具/截断）的气泡文本；工具轮的 roundText 进各自 assistant 回声，不入此。
+    let tailText = '';
     // 回合是否自然收尾（纯文本/引导/未知工具终结）；false=轮数耗尽被截断，须显式告知用户而非静默停。
     let settled = false;
 
@@ -438,7 +439,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
       for await (const event of deps.llm.chat(tools.length > 0 ? { messages, tools } : { messages })) {
         if (event.kind === 'text-delta') {
           roundText += event.delta;
-          visibleText += event.delta;
           broadcast(sessionId, { type: 'text-delta', sessionId, delta: event.delta });
         } else if (event.kind === 'tool-call') {
           call = { toolCallId: event.toolCallId, name: event.name, params: event.params };
@@ -446,12 +446,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
         } else if (event.kind === 'done' && event.stopReason === 'error') {
           // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
           const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;
-          visibleText += notice;
+          roundText += notice;
           notify(sessionId, notice);
         }
       }
-      // 无工具调用（纯文本/错误收尾）：本回合终结。
+      // 无工具调用（纯文本/错误收尾）：本回合终结，本轮文本即气泡。
       if (call === null) {
+        tailText += roundText;
         settled = true;
         break;
       }
@@ -466,12 +467,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
           refs: report.elements.map((element) => element.ref),
           path: pathOf(report.url),
         };
-        messages.push({
+        const snapshotEcho: LlmMessage = {
           role: 'assistant',
           content: roundText,
           toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
-        });
-        messages.push({
+        };
+        const snapshotObs: LlmMessage = {
           role: 'tool',
           toolCallId: call.toolCallId,
           content: JSON.stringify({
@@ -480,18 +481,21 @@ export function createGateway(deps: GatewayDeps): Gateway {
             elements: report.elements,
             ...(report.notices !== undefined ? { notices: report.notices } : {}),
           }),
-        });
+        };
+        messages.push(snapshotEcho, snapshotObs);
+        turnMessages.push(snapshotEcho, snapshotObs);
         continue;
       }
 
       if (call.name === GUIDE_TOOL_NAME) {
         // 引导是终结动作：直接下发页面动作帧，本回合结束——不回喂 observation、不再等 LLM。
+        tailText += roundText;
         const frame = guideFrame(sessionId, call.params);
         if (frame !== null) {
           broadcast(sessionId, frame);
         } else {
           const notice = '未能定位到目标元素。';
-          visibleText += notice;
+          tailText += notice;
           notify(sessionId, notice);
         }
         settled = true;
@@ -502,7 +506,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (tool === undefined) {
         // 白名单外的工具名（LLM 幻觉）：如实告知不支持，回合终结、不 fail。
         const notice = '该操作暂未支持。';
-        visibleText += notice;
+        tailText += roundText + notice;
         notify(sessionId, notice);
         settled = true;
         break;
@@ -511,28 +515,31 @@ export function createGateway(deps: GatewayDeps): Gateway {
       const observation = await runExecSubflow(session, claims, featureId, tool, call);
       // 回喂 agent：assistant 调用轮回声本轮 tool_calls（OpenAI 兼容 API 要求 role:tool 须有前置
       // 带 tool_calls 的 assistant 消息，否则拒绝孤儿 tool 消息）+ observation（仅规整结果，U7）。
-      messages.push({
+      const execEcho: LlmMessage = {
         role: 'assistant',
         content: roundText,
         toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
-      });
-      messages.push({
+      };
+      const execObs: LlmMessage = {
         role: 'tool',
         toolCallId: call.toolCallId,
         content: JSON.stringify(observation.ok ? observation.content : { error: observation.error }),
-      });
+      };
+      messages.push(execEcho, execObs);
+      turnMessages.push(execEcho, execObs);
     }
 
     if (!settled) {
       // 轮数耗尽被截断：显式收尾而非静默停（用户视角"卡住"），并留在历史里供下回合衔接。
       const notice = '本轮操作步数已达上限，我先停在这里；回复「继续」可接着做。';
-      visibleText += notice;
+      tailText += notice;
       notify(sessionId, notice);
     }
-    deps.store.appendHistory(sessionId, { role: 'user', content: text });
-    if (visibleText !== '') {
-      deps.store.appendHistory(sessionId, { role: 'assistant', content: visibleText });
+    if (tailText !== '') {
+      turnMessages.push({ role: 'assistant', content: tailText });
     }
+    // 回合落盘边界：追加工具轮并瘦身（仅留最近一次快照观测全文），护 prompt 缓存前缀不回改。
+    deps.store.setHistory(sessionId, pruneStaleSnapshots([...session.history, ...turnMessages]));
   }
 
   async function handleFrames(

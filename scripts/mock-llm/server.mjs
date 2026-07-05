@@ -33,13 +33,16 @@ function hasTool(body, name) {
 }
 
 /**
- * 最后一条 role:tool 观察的文本内容——代执行回喂轮才存在（服务端把 observation 追加为 role:tool）；
- * 非 null 即"第二轮"，据此产出总结文本而非再次触发工具。
+ * 代执行回喂轮的 observation 文本——仅当消息尾部就是 role:tool（其后无更新 user 消息）才成立。
+ * 契约感知：服务端把 execEcho(assistant)+observation(role:tool) 追加在末尾后立即再调本轮，
+ * 故回喂轮的最后一条必是 role:tool；而 history 现持久化历史工具轮，新 user 回合的尾部是 role:user，
+ * 若只取"数组中最后一条 role:tool"会误把上一回合的陈旧观测当作本回合回喂，令新 user 指令走不到工具触发。
+ * 非 null 即"回喂轮"，据此产出总结文本而非再次触发工具。
  */
 function lastToolObs(body) {
   const msgs = Array.isArray(body?.messages) ? body.messages : [];
-  const obs = [...msgs].reverse().find((m) => m?.role === 'tool');
-  return obs ? String(obs.content ?? '') : null;
+  const last = msgs[msgs.length - 1];
+  return last?.role === 'tool' ? String(last.content ?? '') : null;
 }
 
 /** 首轮工具触发：按关键词 + 工具可见性产出 tool_call；无命中返回 null。 */

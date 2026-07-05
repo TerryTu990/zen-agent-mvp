@@ -18,7 +18,12 @@ import { createToolGatePort } from '@zen-agent/toolgate';
 import { createLlmPort } from '@zen-agent/llm-port';
 import { createAuditPort } from '@zen-agent/audit';
 import { createTokenVerifier } from './auth.js';
-import { createMemorySessionStore } from './sessions.js';
+import {
+  createMemorySessionStore,
+  createPersistentSessionStore,
+  type PersistentSessionStore,
+  type SessionStore,
+} from './sessions.js';
 import { createGateway } from './gateway.js';
 
 export interface ServerOptions {
@@ -50,6 +55,13 @@ export interface ServerOptions {
    * 缺省或解析不到时 executeServer 返回 credential-unresolved。
    */
   resolveCredential?: (ref: string) => string | undefined;
+  /**
+   * 会话持久化落盘目录（P2）：设置即启用 `.za/sessions/<id>.jsonl` 落盘 + 重启重放 + 闲置清理；
+   * 缺省=纯内存态（不落盘）。存储故障 fail-open、不进控制流。
+   */
+  sessionDir?: string;
+  /** 会话闲置 TTL 毫秒，默认 3600000（1 小时）；仅在 sessionDir 启用时生效。 */
+  sessionTtlMs?: number;
 }
 
 export interface ServerPorts {
@@ -114,6 +126,15 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   }
   // 组装即触发快照载入 + 工具并集汇总：坏快照/坏工具在启动期 fail-fast，而非首轮对话才暴露。
   const ports = await assemblePorts(options);
+  const memoryStore = createMemorySessionStore();
+  const persistentStore: PersistentSessionStore | undefined =
+    options.sessionDir !== undefined
+      ? createPersistentSessionStore(memoryStore, {
+          dir: options.sessionDir,
+          ...(options.sessionTtlMs !== undefined ? { ttlMs: options.sessionTtlMs } : {}),
+        })
+      : undefined;
+  const store: SessionStore = persistentStore ?? memoryStore;
   const gateway = createGateway({
     assembly: ports.assembly,
     llm: ports.llm,
@@ -123,7 +144,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       jwtSecret: options.jwtSecret,
       issAllowlist: options.issAllowlist,
     }),
-    store: createMemorySessionStore(),
+    store,
     heartbeatMs: options.heartbeatMs ?? 15_000,
     maxTurnRounds: options.maxTurnRounds ?? 12,
     corsOrigin: options.corsOrigin ?? '*',
@@ -145,6 +166,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     close: () =>
       new Promise<void>((resolve, reject) => {
         gateway.shutdown();
+        persistentStore?.stop();
         server.close((cause) => (cause ? reject(cause) : resolve()));
         server.closeAllConnections();
       }),
