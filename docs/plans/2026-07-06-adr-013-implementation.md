@@ -123,6 +123,16 @@ SW 控制台写入 `za.token`/`za.serverBaseUrl`/`za.autoActivate`。
 判定：126 显示发送成功页/已发送列表有该信；`.za/` 审计流含完整事件链且 key 值已脱敏；
 开发侧不把 key 值写入仓库/日志/对话产物（SEC-01 自守）。
 
+## 七.5、批次④前置 spike 结论（2026-07-06 真机实测，已登录态）
+
+**判定：方案 A 成立（同源 iframe 下钻，无需 all_frames）。** mail.126.com 实测：
+
+- 顶层为 SPA（`/js6/main.jsp`，hash 路由 `#module=compose.ComposeModule|{...}`），origin `https://mail.126.com`。
+- 写信页共 4 个 iframe **全部同源**；正文编辑器 = 无 src iframe + `body[contenteditable="true"]`（可见 ~1134×219），`contentDocument` 直接可达；其余（附件上传等）不可见。
+- 顶层文档元素：收件人 `input.nui-editableAddr-ipt`（aria-label "收件人地址输入框…多人时地址请以分号隔开"）；主题 `input#<动态cid>_subjectInput`；发送按钮为 DIV `js-component-button nui-mainBtn`（内部 span 文本"发送"），id 全动态。
+- **facts 须写明**：126 元素 id 动态生成，定位靠 aria-label/可见文本/角色，勿依赖 id；正文在 iframe 内、收件人多人以分号隔开；写信入口为左侧"写信"按钮；快照器 `[contenteditable="true"]` 选择器命中编辑器 body（需 iframe 下钻后可见）。
+- 快照 ref 需带 frame 路径（如 `f1:e12`），dom 步进器按 frame 路径解析到对应 `contentDocument`。
+
 ## 八、风险与权衡
 
 | 风险 | 处置 |
