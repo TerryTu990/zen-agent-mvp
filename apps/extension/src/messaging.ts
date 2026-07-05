@@ -21,6 +21,9 @@ export type ContentToBackgroundMessage =
   | { kind: 'snapshot-report'; report: SnapshotReportFrame }
   // 页面同源读取的宿主用户 id（P0-b 自取 token 用），非 C3 上行帧、不进转发管线。
   | { kind: 'host-identity'; hostUserId: string }
+  // navigate 代执行（ADR-013 批次④）：dom 批次遇 navigate 步请 background 在本组窗口开目标页并入组；
+  // requestId 关联 navigate-result 回执，不进上行转发管线。
+  | { kind: 'navigate-request'; requestId: string; url: string }
   // 保活心跳：仅靠端口消息的到达重置 MV3 service worker 空闲计时器，background 不处理内容。
   | { kind: 'ping' };
 
@@ -28,4 +31,18 @@ export type BackgroundToContentMessage =
   | { kind: 'frame'; frame: DownstreamFrame }
   | { kind: 'status'; message: string }
   // 同组其它标签页的用户提问回显：保持组内各页对话镜像一致（adr-012）。
-  | { kind: 'user-echo'; text: string };
+  | { kind: 'user-echo'; text: string }
+  // navigate-request 的回执：ok 时 url 为新开页目标地址，供 content 组 exec-result。
+  | { kind: 'navigate-result'; requestId: string; ok: boolean; url?: string; error?: string };
+
+/**
+ * 激活握手的一次性 runtime 消息（不走 Port，经 chrome.runtime/tabs.sendMessage 单发）：
+ * 显式发起模型下，content 加载不自动连会话，须经此握手由 background 决定是否激活（ADR-013 批次④ §5）。
+ */
+export type ContentRuntimeMessage =
+  // content 加载完成：autoActivate 为该页 origin 是否命中 za.autoActivate 开关（配置级 dev/demo）。
+  | { kind: 'request-activate'; autoActivate: boolean };
+
+export type BackgroundRuntimeMessage =
+  // background 决定激活：content 据此挂面板并连接会话端口。
+  | { kind: 'activate' };

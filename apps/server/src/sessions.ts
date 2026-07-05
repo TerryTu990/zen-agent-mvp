@@ -20,8 +20,15 @@ export interface SessionState {
   ownerSub: string;
   /** 最近一次请求的验签 claims：代执行门禁的身份取值源（U7），每次请求刷新。 */
   claims: IdentityClaims;
+  /**
+   * per-origin 宿主身份映射（ADR-013 任务组）：网关按 claims.tenant 匹配 pack.tenant 路由后写入 origin→claims；
+   * http/server 工具按目标 pack origin 取此身份 fail-closed。C2 契约不变（值仍是单个 claims 对象）。
+   */
+  claimsByOrigin: Record<string, IdentityClaims>;
   /** 最近一次 context-report 上报的完整 URL；未上报为 null（featureId 判定 fail-safe 落空）。 */
   currentUrl: string | null;
+  /** 上一回合激活的 packId（ADR-013）：回合开始若 packId 变化则向历史注入站点边界标记；初始 null。 */
+  lastPackId: string | null;
   /** 用户/助手文本轮 + 工具轮（assistant toolCalls 回声 + role:tool 观测）；system 注入每轮整段重建，不进历史。 */
   history: LlmMessage[];
 }
@@ -35,6 +42,10 @@ export interface SessionStore {
   setHistory(sessionId: string, history: LlmMessage[]): void;
   /** 用最近一次验签结果刷新会话身份，使代执行门禁始终以当前有效身份判定。 */
   refreshClaims(sessionId: string, claims: IdentityClaims): void;
+  /** 记某 origin 的 per-origin 宿主身份（ADR-013 任务组：claims.tenant→pack.tenant 路由命中时写入）。 */
+  setOriginClaims(sessionId: string, origin: string, claims: IdentityClaims): void;
+  /** 记本回合激活 packId（站点边界标记判据）。 */
+  setLastPackId(sessionId: string, packId: string): void;
   /** 逐出会话（TTL 清理用）；不存在即无操作。 */
   delete(sessionId: string): void;
   /** 载入既有会话状态（持久化重放恢复用）；覆盖同 id 内存项。 */
@@ -54,7 +65,9 @@ export function createMemorySessionStore(): SessionStore {
         sessionId: randomUUID(),
         ownerSub: claims.sub,
         claims,
+        claimsByOrigin: {},
         currentUrl: null,
+        lastPackId: null,
         history: [],
       };
       sessions.set(session.sessionId, session);
@@ -75,6 +88,12 @@ export function createMemorySessionStore(): SessionStore {
     refreshClaims(sessionId, claims) {
       mustGet(sessionId).claims = claims;
     },
+    setOriginClaims(sessionId, origin, claims) {
+      mustGet(sessionId).claimsByOrigin[origin] = claims;
+    },
+    setLastPackId(sessionId, packId) {
+      mustGet(sessionId).lastPackId = packId;
+    },
     delete(sessionId) {
       sessions.delete(sessionId);
     },
@@ -90,6 +109,8 @@ type SessionEvent =
   | { t: 'context'; url: string }
   | { t: 'history'; history: LlmMessage[] }
   | { t: 'claims'; claims: IdentityClaims }
+  | { t: 'origin-claims'; origin: string; claims: IdentityClaims }
+  | { t: 'last-pack'; packId: string }
   | { t: 'summary'; summary: string };
 
 export interface PersistentSessionStore extends SessionStore {
@@ -169,7 +190,9 @@ export function createPersistentSessionStore(
             sessionId: event.sessionId,
             ownerSub: event.ownerSub,
             claims: event.claims,
+            claimsByOrigin: {},
             currentUrl: null,
+            lastPackId: null,
             history: [],
           };
         } else if (state === undefined) {
@@ -180,6 +203,10 @@ export function createPersistentSessionStore(
           state.history = event.history;
         } else if (event.t === 'claims') {
           state.claims = event.claims;
+        } else if (event.t === 'origin-claims') {
+          state.claimsByOrigin[event.origin] = event.claims;
+        } else if (event.t === 'last-pack') {
+          state.lastPackId = event.packId;
         }
       }
     } catch (cause) {
@@ -269,6 +296,21 @@ export function createPersistentSessionStore(
       if (before === undefined || JSON.stringify(before) !== JSON.stringify(claims)) {
         append(sessionId, { t: 'claims', claims });
       }
+    },
+    setOriginClaims(sessionId, origin, claims) {
+      const before = inner.get(sessionId)?.claimsByOrigin[origin];
+      inner.setOriginClaims(sessionId, origin, claims);
+      touch(sessionId);
+      // 每请求按 tenant 路由触发；同 origin claims 未变即不落盘。
+      if (before === undefined || JSON.stringify(before) !== JSON.stringify(claims)) {
+        append(sessionId, { t: 'origin-claims', origin, claims });
+      }
+    },
+    setLastPackId(sessionId, packId) {
+      const before = inner.get(sessionId)?.lastPackId;
+      inner.setLastPackId(sessionId, packId);
+      touch(sessionId);
+      if (before !== packId) append(sessionId, { t: 'last-pack', packId });
     },
     delete(sessionId) {
       inner.delete(sessionId);

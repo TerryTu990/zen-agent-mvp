@@ -1,0 +1,12 @@
+{
+  "packId": "host-a",
+  "version": "0.1.0",
+  "site": {
+    "origin": "http://127.0.0.1:4173",
+    "locations": ["/"]
+  },
+  "featureIdRules": [
+    { "urlPattern": "order-list\\.html", "featureId": "order-list" }
+  ],
+  "features": ["order-list"]
+}

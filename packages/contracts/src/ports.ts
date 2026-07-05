@@ -94,6 +94,23 @@ export interface ReadPackDocResult {
   error?: string;
 }
 
+/** 已安装带 site 围栏的 pack 描述（ADR-013 任务组）：per-origin 身份路由与 navigate 越界校验的依据；legacy 无 site 的 pack 不列入。 */
+export interface SiteDescriptor {
+  packId: string;
+  /** 精确匹配的页面 origin（scheme://host[:port]）。 */
+  origin: string;
+  /** claims.tenant → origin 路由键；缺省=该 pack 不参与 per-origin 身份路由（宿主身份回退平台 claims）。 */
+  tenant?: string;
+  /** 已归一路径前缀围栏（'/' 表整站）。 */
+  locations: string[];
+}
+
+/** 工具→归属 pack 登记（未去重，逐 pack 列出）：toolgate 载入期据此建立命名空间纪律、检测跨 pack 同名 toolId。 */
+export interface ToolOwnership {
+  packId: string;
+  toolId: string;
+}
+
 export interface AssemblyPort {
   resolveFeature(input: ResolveFeatureInput): Promise<ResolveFeatureResult>;
   compose(input: ComposeInput): Promise<ComposeResult>;
@@ -102,6 +119,10 @@ export interface AssemblyPort {
   readPackDoc(input: ReadPackDocInput): Promise<ReadPackDocResult>;
   /** 全 pack 工具并集（toolgate fail-closed 判定的工具闭集来源，U7）；跨 pack 按 toolId 去重。 */
   allTools(): Promise<ToolDefinition[]>;
+  /** 已安装带 site 围栏的 pack 列表（ADR-013）：per-origin 身份路由 + navigate 围栏校验用。 */
+  listSites(): Promise<SiteDescriptor[]>;
+  /** 逐 pack 列出工具归属（未去重）：toolgate 载入期命名空间纪律检测用。 */
+  listToolOwnership(): Promise<ToolOwnership[]>;
 }
 
 // ---- ToolGatePort（③工具执行层：唯一决策点 + 代执行指令签发/回收）----
@@ -112,9 +133,25 @@ export interface DomGateContext {
   refs: string[];
   /** 快照页 URL 路径：不在 DomAdapter.pathPrefixes 围栏内即 deny。 */
   path: string;
+  /** 快照页 origin（ADR-013）：site pack 的非 navigate dom 步须 === 工具所属 pack origin，越界即 deny。 */
+  origin?: string;
 }
 
-export interface GateDecisionInput {
+/**
+ * ADR-013 任务组：工具所属激活 pack 的 site 上下文（网关按激活 pack 计算传入）。
+ * packOrigin 缺省=legacy 无 site pack（沿用平台 claims 身份、不校 origin 围栏）。
+ */
+interface PackScopeInput {
+  /** 工具所属激活 pack 的 site.origin；有值即启用 origin 围栏 + per-origin 身份口径。 */
+  packOrigin?: string;
+  /**
+   * packOrigin 对应的宿主身份：tenant'd pack 取 per-origin 路由 claims（缺失/过期即 fail-closed），
+   * no-tenant site pack 由网关回退为平台 claims。http/server 工具据此渲染与校验；dom 工具不用。
+   */
+  claimsForOrigin?: IdentityClaims;
+}
+
+export interface GateDecisionInput extends PackScopeInput {
   sessionId: string;
   toolCallId: string;
   toolId: string;
@@ -130,7 +167,7 @@ export interface GateDecision {
   reason?: string;
 }
 
-export interface IssueExecInstructionInput {
+export interface IssueExecInstructionInput extends PackScopeInput {
   sessionId: string;
   toolCallId: string;
   toolId: string;

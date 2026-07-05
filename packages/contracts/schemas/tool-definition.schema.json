@@ -38,6 +38,11 @@
       "type": "string",
       "enum": ["auto", "hitl", "forbidden"]
     },
+    "hitlMode": {
+      "$comment": "HITL 授权粒度（仅 riskTier=hitl 有意义，缺省 per-task）：per-task 同任务首批确认后自动放行；every-call 对外不可撤回动作，toolgate 跳过任务级授权复用、次次挂起单独确认（不复用授权）。",
+      "type": "string",
+      "enum": ["per-task", "every-call"]
+    },
     "adapter": {
       "$comment": "执行适配段，形状由 execution 决定（见根级 if/then 分形）。",
       "type": "object"

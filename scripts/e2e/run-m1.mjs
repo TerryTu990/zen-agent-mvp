@@ -278,12 +278,17 @@ async function main() {
     if (!context || !sw) throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
     cleanups.push(() => context.close());
 
-    // 经 service worker 注入令牌与服务端地址，随后 reload 使 background 以令牌重开会话
+    // 经 service worker 注入令牌与服务端地址；za.autoActivate 命中 host origin 使 reload 后自动激活
+    // （显式发起模型下 content 不自动连会话，autoActivate 供自动化驱动等价"打开即注入"）。
     await sw.evaluate(
-      async ([t, base]) => {
-        await chrome.storage.local.set({ 'za.token': t, 'za.serverBaseUrl': base });
+      async ([t, base, origin]) => {
+        await chrome.storage.local.set({
+          'za.token': t,
+          'za.serverBaseUrl': base,
+          'za.autoActivate': [origin],
+        });
       },
-      [token, SERVER_BASE],
+      [token, SERVER_BASE, HOST_BASE],
     );
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });

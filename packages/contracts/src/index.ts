@@ -2,6 +2,7 @@ export type { JsonPrimitive, JsonValue, JsonObject } from './json.js';
 export type {
   ToolExecution,
   RiskTier,
+  HitlMode,
   HttpMethod,
   ClientAdapter,
   DomAdapter,
@@ -68,6 +69,8 @@ export type {
   InjectionDescription,
   ReadPackDocInput,
   ReadPackDocResult,
+  SiteDescriptor,
+  ToolOwnership,
   AssemblyPort,
   DomGateContext,
   GateDecisionInput,

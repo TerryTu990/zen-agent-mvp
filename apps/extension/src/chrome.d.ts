@@ -12,8 +12,27 @@ declare namespace chrome {
   }
 
   namespace tabs {
+    interface Tab {
+      id?: number;
+      url?: string;
+      windowId?: number;
+      groupId?: number;
+    }
+    /** 新开标签页；ADR-013 批次④ navigate 客户端据此在本组窗口开目标页。 */
+    function create(createProperties: { url: string; windowId?: number; active?: boolean }): Promise<Tab>;
     /** 把 tab 并入标签组；省略 groupId 时新建组并返回其 id。 */
     function group(options: { tabIds: number | number[]; groupId?: number }): Promise<number>;
+    /** 向指定标签页的内容脚本单发一次性消息（激活握手用）。 */
+    function sendMessage(tabId: number, message: unknown): Promise<unknown>;
+    interface TabChangeInfo {
+      status?: string;
+      url?: string;
+      /** 标签页组成员变化（拖入/移出组）即以此字段上报；-1=离组。 */
+      groupId?: number;
+    }
+    const onUpdated: {
+      addListener(callback: (tabId: number, changeInfo: TabChangeInfo, tab: Tab) => void): void;
+    };
   }
 
   namespace tabGroups {
@@ -27,6 +46,12 @@ declare namespace chrome {
       groupId: number,
       updateProperties: { title?: string; color?: string; collapsed?: boolean },
     ): Promise<TabGroup>;
+    const onRemoved: { addListener(callback: (group: { id: number }) => void): void };
+  }
+
+  namespace action {
+    /** 无 default_popup 时点击工具栏图标触发；tab 为当前活动页。 */
+    const onClicked: { addListener(callback: (tab: tabs.Tab) => void): void };
   }
 
   namespace runtime {
@@ -44,6 +69,17 @@ declare namespace chrome {
       onDisconnect: { addListener(callback: () => void): void };
     }
     function connect(connectInfo?: { name?: string }): Port;
+    /** 一次性消息（激活握手）：content→background；background 侧经 onMessage 收 sender.tab。 */
+    function sendMessage(message: unknown): Promise<unknown>;
     const onConnect: { addListener(callback: (port: Port) => void): void };
+    const onMessage: {
+      addListener(
+        callback: (
+          message: unknown,
+          sender: MessageSender,
+          sendResponse: (response?: unknown) => void,
+        ) => void,
+      ): void;
+    };
   }
 }

@@ -12,8 +12,10 @@ import type {
   PackManifest,
   ReadPackDocResult,
   RegistryManifest,
+  SiteDescriptor,
   SkillAsset,
   ToolDefinition,
+  ToolOwnership,
 } from '@zen-agent/contracts';
 
 export interface AssemblyOptions {
@@ -46,6 +48,8 @@ interface LoadedPack {
   version: string;
   /** null = legacy 无 site 围栏（不校 origin）。 */
   origin: string | null;
+  /** claims.tenant → origin 路由键（ADR-013）；缺省=不参与 per-origin 身份路由。 */
+  tenant: string | undefined;
   /** 路径前缀（已归一去尾斜杠，'/' 表整站）；legacy 为空数组。 */
   locations: string[];
   rules: CompiledRule[];
@@ -272,6 +276,7 @@ function loadPack(
     packId: pack.packId,
     version: pack.version,
     origin: pack.site.origin,
+    tenant: pack.tenant,
     locations: (pack.site.locations ?? ['/']).map(normalizeLocation),
     rules,
     features,
@@ -349,6 +354,7 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
     packId: 'default',
     version: manifest.version,
     origin: null,
+    tenant: undefined,
     locations: [],
     rules,
     features,
@@ -531,6 +537,28 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
         }
       }
       return structuredClone([...byId.values()]);
+    },
+    async listSites() {
+      const sites: SiteDescriptor[] = [];
+      for (const pack of getSnapshot().packs.values()) {
+        if (pack.origin === null) continue;
+        sites.push({
+          packId: pack.packId,
+          origin: pack.origin,
+          ...(pack.tenant !== undefined ? { tenant: pack.tenant } : {}),
+          locations: [...pack.locations],
+        });
+      }
+      return sites;
+    },
+    async listToolOwnership() {
+      const ownership: ToolOwnership[] = [];
+      for (const pack of getSnapshot().packs.values()) {
+        for (const feature of pack.features.values()) {
+          for (const tool of feature.tools) ownership.push({ packId: pack.packId, toolId: tool.id });
+        }
+      }
+      return ownership;
     },
   };
 }

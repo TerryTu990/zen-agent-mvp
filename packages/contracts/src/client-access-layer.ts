@@ -144,9 +144,11 @@ export type DomStepAction =
 
 export interface DomStep {
   action: DomStepAction;
-  /** 目标元素引用：必须取自最近一次 snapshot-report 的 ref（服务端签发前校验）。 */
+  /** 目标元素引用：必须取自最近一次 snapshot-report 的 ref（服务端签发前校验）。navigate 步免除。 */
   ref?: string;
-  /** navigate 目标（同源路径，②-b 启用）。 */
+  /** navigate 目标绝对 URL（ADR-013 批次④启用）：须落在某已安装 pack 的 site 围栏内，服务端签发前校验。 */
+  url?: string;
+  /** navigate 目标（同源路径，②-b 保留字段）。 */
   to?: string;
   /** fill/select 的输入值。 */
   value?: string;

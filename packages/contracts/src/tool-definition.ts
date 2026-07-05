@@ -10,6 +10,12 @@ export type ToolExecution = 'client' | 'server';
 /** 操作分级闭集（分级矩阵落点）：服务端 fail-closed 判定（U7），未知值一律 deny。 */
 export type RiskTier = 'auto' | 'hitl' | 'forbidden';
 
+/**
+ * HITL 授权粒度（仅 riskTier=hitl 有意义，缺省 per-task）：
+ * per-task=同任务首批确认后自动放行；every-call=对外不可撤回动作，次次挂起单独确认、不复用授权。
+ */
+export type HitlMode = 'per-task' | 'every-call';
+
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /** client 通道适配：宿主 API 请求模板，{{param}} 占位符由服务端代入实参后签名下发。 */
@@ -47,6 +53,8 @@ interface ToolDefinitionBase {
   /** 入参契约：内联 JSON Schema（draft 2020-12）。 */
   params: JsonObject;
   riskTier: RiskTier;
+  /** 缺省 per-task；every-call 使 toolgate 对本工具跳过任务级授权复用、次次挂起确认（对外不可撤回动作）。 */
+  hitlMode?: HitlMode;
   /** 结果契约：exec-result.body 校验不过即 invalid-result、不回喂 agent（U7）。 */
   resultSchema: JsonObject;
 }

@@ -75,10 +75,15 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
   await assembly.resolveFeature({ url: '' });
   // toolgate 分级判定的工具闭集（fail-closed 依据，U7）：全 pack 工具并集，按 toolId 去重。
   const tools = await assembly.allTools();
+  // ADR-013：site 围栏（navigate 校验）+ 逐 pack 工具归属（命名空间纪律，跨 pack 同名 toolId 载入即拒启）。
+  const sites = await assembly.listSites();
+  const toolOwnership = await assembly.listToolOwnership();
   return {
     assembly,
     toolgate: createToolGatePort({
       tools,
+      sites,
+      toolOwnership,
       signingSecret: options.signingSecret,
       ...(options.resolveCredential ? { resolveCredential: options.resolveCredential } : {}),
     }),

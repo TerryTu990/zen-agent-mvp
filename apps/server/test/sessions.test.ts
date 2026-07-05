@@ -122,4 +122,24 @@ describe('createPersistentSessionStore（P2 会话持久化）', () => {
     const linesAfter = readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
     expect(linesAfter).toBe(linesBefore);
   });
+
+  it('ADR-013：per-origin claims 与 lastPackId 重放恢复；相同值不重复落盘', () => {
+    const dir = freshDir();
+    const first = persistent(dir);
+    const { sessionId } = first.create(CLAIMS);
+    const file = join(dir, `${sessionId}.jsonl`);
+    first.setOriginClaims(sessionId, 'https://codeflow.asia', CLAIMS);
+    first.setLastPackId(sessionId, 'codeflow-console');
+    const linesAfter1 = readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
+    // 相同 origin claims / 相同 packId 再写入不落盘。
+    first.setOriginClaims(sessionId, 'https://codeflow.asia', { ...CLAIMS });
+    first.setLastPackId(sessionId, 'codeflow-console');
+    const linesAfter2 = readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
+    expect(linesAfter2).toBe(linesAfter1);
+
+    const revived = persistent(dir);
+    const restored = revived.get(sessionId);
+    expect(restored!.claimsByOrigin['https://codeflow.asia']?.hostUserId).toBe('host-u1');
+    expect(restored!.lastPackId).toBe('codeflow-console');
+  });
 });

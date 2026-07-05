@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>站点乙 - 表单</title>
+</head>
+<body>
+  <h1 id="page-title">站点乙表单</h1>
+  <label for="sb-field">备注</label>
+  <input id="sb-field" type="text" aria-label="备注输入框" />
+  <button id="sb-submit">提交</button>
+  <div id="sb-result" role="status" aria-live="polite"></div>
+  <script>
+    document.getElementById('sb-submit').addEventListener('click', function () {
+      var value = document.getElementById('sb-field').value;
+      document.getElementById('sb-result').textContent = '已提交：' + value;
+    });
+  </script>
+</body>
+</html>

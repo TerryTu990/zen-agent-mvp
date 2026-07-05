@@ -228,6 +228,18 @@ async function postFrame(sessionId, token, frame) {
 /** 代插件之职：绝对化 exec-instruction 的相对 url、真实 fetch 宿主 API、把结果原样回喂为 exec-result。 */
 async function executeInstruction(sessionId, token, frame) {
   const { request } = frame;
+  // dom 代执行批次（ADR-013 send-email 等）：代插件之职回一个符合 resultSchema 的确定性结果
+  // （reads 空对象 + completedSteps=步数），供回喂轮总结；不触真实浏览器。
+  if (request?.kind === 'dom') {
+    await postFrame(sessionId, token, {
+      type: 'exec-result',
+      sessionId,
+      nonce: frame.nonce,
+      ok: true,
+      body: { reads: {}, completedSteps: Array.isArray(request.steps) ? request.steps.length : 1 },
+    });
+    return;
+  }
   const absoluteUrl = request.url.startsWith('http') ? request.url : `${HOST_BASE}${request.url}`;
   let execResult;
   try {
@@ -270,6 +282,7 @@ async function executeInstruction(sessionId, token, frame) {
 async function driveTurn(sessionId, token, scenario, bus) {
   const handledHitl = new Set();
   const handledExec = new Set();
+  const handledSnapshot = new Set();
   let guideFrame = null;
   const deadline = Date.now() + TURN_TIMEOUT_MS;
 
@@ -283,6 +296,17 @@ async function driveTurn(sessionId, token, scenario, bus) {
           sessionId,
           hitlId: frame.hitlId,
           decision,
+        });
+      }
+      if (frame.type === 'snapshot-request' && !handledSnapshot.has(frame.requestId)) {
+        // 代插件之职回一份确定性快照（含一个"发送"按钮），url=场景 origin 使 dom origin 围栏命中（ADR-013）。
+        handledSnapshot.add(frame.requestId);
+        await postFrame(sessionId, token, {
+          type: 'snapshot-report',
+          sessionId,
+          requestId: frame.requestId,
+          url: scenario.url ?? `${HOST_BASE}/${scenario.page}`,
+          elements: [{ ref: 'za-send', role: 'button', label: '发送' }],
         });
       }
       if (frame.type === 'exec-instruction' && !handledExec.has(frame.nonce)) {
@@ -429,12 +453,53 @@ async function runAssemblyInjection(scenario, token) {
   return { pass: reasons.length === 0, reasons };
 }
 
+/**
+ * hitl「授权不复用」场景（ADR-013 every-call）：同一会话内对同一发送动作连发两次请求，
+ * 断言两次都触发了对目标工具的 hitl-request（每次单独确认、不复用授权）。
+ * per-task 工具第二次会因任务级授权复用而不再触发 hitl，故本断言可判别 every-call。
+ */
+async function runHitlNoReuse(scenario, token) {
+  const auth = { authorization: `Bearer ${token}` };
+  const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
+  const sessionId = created.sessionId;
+  const bus = createFrameBus();
+  const sse = await openSse(sessionId, token, bus);
+  try {
+    await postFrame(sessionId, token, { type: 'context-report', sessionId, url: scenario.url });
+    await sleep(80);
+    const rounds = scenario.expect?.hitlCount ?? 2;
+    for (let i = 0; i < rounds; i += 1) {
+      await postFrame(sessionId, token, { type: 'user-message', sessionId, text: scenario.question });
+      await driveTurn(sessionId, token, scenario, bus);
+    }
+    const targetTool = scenario.expect?.hitlToolId;
+    const hitlIds = new Set(
+      bus
+        .all()
+        .filter((f) => f.type === 'hitl-request' && (!targetTool || f.toolId === targetTool))
+        .map((f) => f.hitlId),
+    );
+    const reasons = [];
+    if (hitlIds.size !== rounds) {
+      reasons.push(
+        `期望 ${targetTool ?? '目标工具'} 触发 ${rounds} 次独立 hitl-request（授权不复用），实际 ${hitlIds.size} 次`,
+      );
+    }
+    return { pass: reasons.length === 0, reasons };
+  } finally {
+    sse.close();
+  }
+}
+
 async function runScenarioOnce(scenario, token) {
   if (scenario.dimension === 'assembly-swap') {
     return runAssemblySwap(scenario, token);
   }
   if (scenario.dimension === 'assembly') {
     return runAssemblyInjection(scenario, token);
+  }
+  if (scenario.dimension === 'hitl' && scenario.expect?.hitlCount !== undefined) {
+    return runHitlNoReuse(scenario, token);
   }
   const auth = { authorization: `Bearer ${token}` };
   const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();

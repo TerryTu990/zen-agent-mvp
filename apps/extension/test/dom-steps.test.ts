@@ -67,8 +67,56 @@ describe('createDomStepRunner：闭集步骤解释执行', () => {
     ]);
     expect(notFillable).toEqual({ ok: false, error: 'step-1-fill:not-fillable' });
 
-    const unsupported = await runnerFor({ 'za-1': div }).run([{ action: 'navigate', ref: 'za-1' }]);
-    expect(unsupported).toEqual({ ok: false, error: 'step-1-navigate:action-not-supported' });
+    // waitFor 仍属服务端保留、客户端未实现动作：如实失败不硬来。
+    const unsupported = await runnerFor({ 'za-1': div }).run([{ action: 'waitFor', ref: 'za-1' }]);
+    expect(unsupported).toEqual({ ok: false, error: 'step-1-waitFor:action-not-supported' });
+  });
+
+  it('navigate 步：免 ref、委托 navigate 回调、body 回目标 url（ADR-013 批次④）', async () => {
+    const navigated: string[] = [];
+    const navigate = async (url: string) => {
+      navigated.push(url);
+      return { ok: true, url };
+    };
+    const runner = createDomStepRunner(() => null, instantPace, () => false, navigate);
+    const outcome = await runner.run([{ action: 'navigate', url: 'https://mail.126.com/' }]);
+    expect(navigated).toEqual(['https://mail.126.com/']);
+    expect(outcome).toEqual({ ok: true, body: { url: 'https://mail.126.com/' } });
+  });
+
+  it('navigate 步：navigate 回调失败如实回报；未注入回调时 navigate-unavailable', async () => {
+    const failing = async () => ({ ok: false, error: 'fence-violation' });
+    const failed = await createDomStepRunner(() => null, instantPace, () => false, failing).run([
+      { action: 'navigate', url: 'https://evil.example/' },
+    ]);
+    expect(failed).toEqual({ ok: false, error: 'step-1-navigate:fence-violation' });
+
+    const noRunner = await createDomStepRunner(() => null, instantPace).run([
+      { action: 'navigate', url: 'https://mail.126.com/' },
+    ]);
+    expect(noRunner).toEqual({ ok: false, error: 'step-1-navigate:navigate-unavailable' });
+  });
+
+  it('同源 iframe 元素：realm 感知使 fill/read 正确作用于子文档控件（iframe 下钻步进）', async () => {
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const childDoc = frame.contentDocument!;
+    // 子 iframe 属独立 realm，其 Element.prototype 与顶层不同——jsdom 无布局引擎，同样打桩 scrollIntoView。
+    (childDoc.defaultView as unknown as { Element: typeof Element }).Element.prototype.scrollIntoView = vi.fn();
+    childDoc.body.innerHTML = '<input type="text" /><div contenteditable="true">正文占位</div>';
+    const childInput = childDoc.querySelector('input')!;
+    const childEditor = childDoc.querySelector('[contenteditable]')!;
+    const inputEvents: string[] = [];
+    childInput.addEventListener('input', () => inputEvents.push('input'));
+
+    const outcome = await runnerFor({ 'f1:za-1': childInput, 'f1:za-2': childEditor }).run([
+      { action: 'fill', ref: 'f1:za-1', value: '子文档值' },
+      { action: 'read', ref: 'f1:za-2', name: 'body' },
+    ]);
+
+    expect(childInput.value).toBe('子文档值');
+    expect(inputEvents).toEqual(['input']);
+    expect(outcome).toEqual({ ok: true, body: { reads: { body: '正文占位' }, completedSteps: 2 } });
   });
 
   it('select 设值并派发 change；read 无 name 时回退 ref 作键', async () => {

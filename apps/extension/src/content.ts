@@ -1,14 +1,16 @@
 import { createContextReporter } from './context-report.js';
 import { createConversationUi } from './conversation-hitl.js';
 import { createDelegatedExecutor } from './delegated-execution.js';
-import { createDomStepRunner } from './dom-steps.js';
+import { createDomStepRunner, type DomNavigate } from './dom-steps.js';
 import { createSnapshotter } from './page-snapshot.js';
 import { routeDownstreamFrame } from './content-router.js';
 import { createDomGuidePage, createPageActionRunner } from './page-action.js';
 import {
   SESSION_PORT_NAME,
   type BackgroundToContentMessage,
+  type BackgroundRuntimeMessage,
   type ContentToBackgroundMessage,
+  type ContentRuntimeMessage,
 } from './messaging.js';
 import { DRAWER_DEFAULT_WIDTH, DRAWER_MAX_WIDTH, DRAWER_MIN_WIDTH } from './tuning.js';
 
@@ -292,8 +294,11 @@ function wireDrawerControls(panelRefs: Panel): void {
   });
 }
 
-function main(): void {
-  if (document.getElementById('za-root') !== null) return;
+let activated = false;
+
+function activate(): void {
+  if (activated || document.getElementById('za-root') !== null) return;
+  activated = true;
   const panelRefs = mountPanel();
   const { messages, input, sendButton, stopButton } = panelRefs;
   wireDrawerControls(panelRefs);
@@ -305,10 +310,21 @@ function main(): void {
   stopButton.addEventListener('click', () => {
     stopRequested = true;
   });
+  // navigate 步经 background 在本组窗口开目标页并入组；requestId 关联回执，端口断则以失败兜底。
+  const pendingNavigations = new Map<string, (result: { ok: boolean; url?: string; error?: string }) => void>();
+  let navSeq = 0;
+  const navigate: DomNavigate = (url) =>
+    new Promise((resolveNav) => {
+      navSeq += 1;
+      const requestId = `nav-${navSeq}`;
+      pendingNavigations.set(requestId, resolveNav);
+      send({ kind: 'navigate-request', requestId, url });
+    });
   const domRunner = createDomStepRunner(
     (ref) => snapshot.resolve(ref),
     undefined,
     () => stopRequested,
+    navigate,
   );
   // 执行期显隐停止按钮；每批开跑前复位停止标志（停止只作用于当前在跑的批次）。
   const executor = createDelegatedExecutor(fetch, {
@@ -351,6 +367,16 @@ function main(): void {
       ui.showStatus(message.message);
     } else if (message.kind === 'user-echo') {
       ui.appendUserMessage(message.text);
+    } else if (message.kind === 'navigate-result') {
+      const resolveNav = pendingNavigations.get(message.requestId);
+      if (resolveNav !== undefined) {
+        pendingNavigations.delete(message.requestId);
+        resolveNav({
+          ok: message.ok,
+          ...(message.url !== undefined ? { url: message.url } : {}),
+          ...(message.error !== undefined ? { error: message.error } : {}),
+        });
+      }
     } else if (message.kind === 'frame') {
       routeDownstreamFrame(message.frame, { ui, pageAction, executor, snapshot, send });
     }
@@ -397,4 +423,32 @@ function main(): void {
   });
 }
 
-main();
+/** 当前页 origin 是否命中 za.autoActivate 开关（配置级 dev/demo；非对话可改）。 */
+async function matchesAutoActivate(): Promise<boolean> {
+  try {
+    const items = await chrome.storage.local.get('za.autoActivate');
+    const list = items['za.autoActivate'];
+    return Array.isArray(list) && list.includes(location.origin);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 显式发起（ADR-013 批次④ §5）：content 加载不自动连会话，仅注册激活握手——
+ * 收 background 的 activate 才挂面板连接；加载时上报是否命中 autoActivate，由 background 决定激活。
+ * 仅在顶层文档运行（面板/会话归顶层；同源 iframe 只作快照下钻对象）。
+ */
+function boot(): void {
+  if (window.top !== window) return;
+  chrome.runtime.onMessage.addListener((raw) => {
+    const message = raw as BackgroundRuntimeMessage | null;
+    if (message?.kind === 'activate') activate();
+  });
+  void matchesAutoActivate().then((autoActivate) => {
+    const request: ContentRuntimeMessage = { kind: 'request-activate', autoActivate };
+    void chrome.runtime.sendMessage(request).catch(() => {});
+  });
+}
+
+boot();

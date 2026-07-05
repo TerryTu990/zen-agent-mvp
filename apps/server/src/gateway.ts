@@ -27,6 +27,7 @@ import type {
   LlmPort,
   LlmToolSpec,
   Observation,
+  SiteDescriptor,
   SnapshotReportFrame,
   ToolCardStatus,
   ToolDefinition,
@@ -36,6 +37,7 @@ import type {
 import type { TokenVerifier } from './auth.js';
 import { signDemoToken, type DemoTokenSigner } from './demo-token.js';
 import {
+  BOUNDARY_MARKER,
   compressHistory,
   estimateHistoryTokens,
   shouldCompress,
@@ -172,6 +174,15 @@ function pathOf(url: string): string {
   }
 }
 
+/** 快照 URL → origin（dom origin 围栏比对用）；解析失败返回 ''（围栏必不匹配，fail-closed）。 */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return '';
+  }
+}
+
 /**
  * 把 guide_highlight tool-call 的实参规整为下行页面动作帧；message 缺省则省略（U1 纯数据）。
  * action 越 highlight|scroll-to 闭集或 selector 非非空串 → null：服务端不下发违反 C3 契约的帧
@@ -231,6 +242,32 @@ export function createGateway(deps: GatewayDeps): Gateway {
   const runtimes = new Map<string, SessionRuntime>();
   const openStreams = new Map<ServerResponse, () => void>();
   const corsHeaders = { 'access-control-allow-origin': deps.corsOrigin } as const;
+
+  // 已安装 site 列表（快照不可变，惰性载入一次缓存）：per-origin 身份路由 + navigate 围栏 + 边界标记 origin 用。
+  let sitesPromise: Promise<SiteDescriptor[]> | undefined;
+  const getSites = (): Promise<SiteDescriptor[]> => (sitesPromise ??= deps.assembly.listSites());
+
+  /**
+   * 计算工具所属激活 pack 的 site 作用域（ADR-013）：
+   *  - packOrigin：激活 pack 的 site.origin（有 site 才有值），驱动 toolgate 的 origin 围栏与 per-origin 身份口径；
+   *  - claimsForOrigin：tenant'd pack 取会话 per-origin 身份（路由命中才有），no-tenant site pack 回退平台 claims。
+   * legacy 无 site pack → 两者皆空，toolgate 沿用平台 claims、不校 origin。
+   */
+  async function packScope(
+    session: SessionState,
+    packId: string | null,
+    claims: IdentityClaims,
+  ): Promise<{ packOrigin?: string; claimsForOrigin?: IdentityClaims }> {
+    if (packId === null) return {};
+    const site = (await getSites()).find((s) => s.packId === packId);
+    if (site === undefined) return {};
+    const claimsForOrigin =
+      site.tenant !== undefined ? session.claimsByOrigin[site.origin] : claims;
+    return {
+      packOrigin: site.origin,
+      ...(claimsForOrigin !== undefined ? { claimsForOrigin } : {}),
+    };
+  }
 
   const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...corsHeaders });
@@ -343,12 +380,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
 
     // dom 工具判定上下文来自最近一次快照（未观察不操作：无快照 toolgate 即 deny）。
     const domContext = isDomTool(tool) ? (runtimeOf(sessionId).domContext ?? undefined) : undefined;
+    // 工具所属激活 pack 的 site 作用域（ADR-013）：origin 围栏 + per-origin 身份口径。
+    const scope = await packScope(session, pack.packId, claims);
     const decision = await deps.toolgate.decide({
       sessionId,
       toolCallId,
       toolId: tool.id,
       params,
       claims,
+      ...scope,
       ...(domContext !== undefined ? { domContext } : {}),
     });
     recordEvent(sessionId, claims, featureId, {
@@ -404,6 +444,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         toolId: tool.id,
         params,
         claims,
+        ...scope,
       });
     } else {
       const instruction = await deps.toolgate.issueExecInstruction({
@@ -412,6 +453,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         toolId: tool.id,
         params,
         claims,
+        ...scope,
         ...(domContext !== undefined ? { domContext } : {}),
       });
       nonce = instruction.nonce;
@@ -447,6 +489,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
       url: session.currentUrl ?? '',
     });
     const pack: PackRef = { packId, packVersion };
+    // 站点边界标记（ADR-013）：本回合激活 pack 与上回合不同 → 向历史注入一行边界标记，防跨站历史误导；
+    // 复用 compress.ts BOUNDARY_MARKER 常量，摘要器识别后整句保留。首回合（prev=null）不注入。
+    const prevPackId = session.lastPackId;
+    const boundaryMessages: LlmMessage[] = [];
+    if (prevPackId !== null && packId !== null && prevPackId !== packId) {
+      const origin = (await getSites()).find((s) => s.packId === packId)?.origin ?? packId;
+      boundaryMessages.push({ role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` });
+    }
+    if (packId !== null && packId !== prevPackId) deps.store.setLastPackId(sessionId, packId);
     const composed = await deps.assembly.compose({ sessionId, packId, featureId });
     // 注入自省与 compose 同源：审计 assembly 事件记录本轮 agent 看到了什么（只记 id 与版本，不落全文）。
     const injection = await deps.assembly.describeInjection({ sessionId, packId, featureId });
@@ -463,6 +514,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemContent(composed) },
       ...session.history,
+      ...boundaryMessages,
       { role: 'user', content: text },
     ];
     const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
@@ -477,7 +529,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
       ...composed.tools.map(toLlmToolSpec),
     ];
     // 本回合待落 history 的消息序列（含工具轮）：回合内只追加不回改，落盘边界统一瘦身。
-    const turnMessages: LlmMessage[] = [{ role: 'user', content: text }];
+    // 边界标记随本回合落 history（进入下回合上下文与 P1 摘要保留集）。
+    const turnMessages: LlmMessage[] = [...boundaryMessages, { role: 'user', content: text }];
     // 终结轮（纯文本/引导/未知工具/截断）的气泡文本；工具轮的 roundText 进各自 assistant 回声，不入此。
     let tailText = '';
     // 回合是否自然收尾（纯文本/引导/未知工具终结）；false=轮数耗尽被截断，须显式告知用户而非静默停。
@@ -522,6 +575,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         runtimeOf(sessionId).domContext = {
           refs: report.elements.map((element) => element.ref),
           path: pathOf(report.url),
+          origin: originOf(report.url),
         };
         const snapshotEcho: LlmMessage = {
           role: 'assistant',
@@ -814,6 +868,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
       // 每次请求以当前验签结果刷新会话身份，代执行门禁始终按最新有效 claims 判定（U7）。
       deps.store.refreshClaims(sessionId, claims);
+      // per-origin 身份路由（ADR-013 任务组）：claims.tenant 匹配 pack.tenant 的 site → 记该 origin 的宿主身份；
+      // 无 tenant 的 pack 不参与（其 http/server 工具由 toolgate 回退平台 claims）。
+      for (const site of await getSites()) {
+        if (site.tenant !== undefined && site.tenant === claims.tenant) {
+          deps.store.setOriginClaims(sessionId, site.origin, claims);
+        }
+      }
       if (match[2] === 'frames' && req.method === 'POST') return handleFrames(req, res, session, claims);
       if (match[2] === 'events' && req.method === 'GET') return handleEvents(res, session);
       if (match[2] === 'injection' && req.method === 'GET') return handleInjection(res, session);

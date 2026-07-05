@@ -163,16 +163,15 @@
     },
     "resultSchema": {
       "type": "object",
-      "required": [
-        "reads",
-        "completedSteps"
-      ],
       "properties": {
         "reads": {
           "type": "object"
         },
         "completedSteps": {
           "type": "number"
+        },
+        "url": {
+          "type": "string"
         }
       }
     }

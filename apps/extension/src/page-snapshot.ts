@@ -166,6 +166,18 @@ function valueOf(el: Element): string | undefined {
   return undefined;
 }
 
+/**
+ * 同源 iframe 的子文档（ADR-013 批次④ 方案 A）：contentDocument 可达即同源、返回其 document；
+ * 跨源浏览器返回 null 或抛安全错误——一律视为不可下钻、跳过。
+ */
+function sameOriginDoc(iframe: Element): Document | null {
+  try {
+    return (iframe as HTMLIFrameElement).contentDocument;
+  } catch {
+    return null;
+  }
+}
+
 export function createSnapshotter(doc: Document = document): Snapshotter {
   let refs = new Map<string, Element>();
 
@@ -175,11 +187,13 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
       const elements: SnapshotElement[] = [];
       const taken = new Set<Element>();
       let seq = 0;
-      const capture = (el: Element): void => {
+      let frameSeq = 0;
+      // framePrefix 空串=顶层（ref 维持 za-N，回归零影响）；同源 iframe 内元素带 f<idx>: 前缀。
+      const capture = (el: Element, framePrefix: string): void => {
         if (elements.length >= MAX_ELEMENTS || taken.has(el) || isDeclaredHidden(el)) return;
         taken.add(el);
         seq += 1;
-        const ref = `za-${seq}`;
+        const ref = `${framePrefix}za-${seq}`;
         refs.set(ref, el);
         const value = valueOf(el);
         const disabled = el instanceof HTMLButtonElement || el instanceof HTMLInputElement
@@ -193,11 +207,22 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
           ...(disabled ? { disabled } : {}),
         });
       };
-      // 浮层/模态内可交互元素先分配 ref：防页面主体占满 MAX_ELEMENTS 配额导致弹层按钮、下拉选项拿不到 ref。
-      for (const root of findPriorityRoots(doc)) {
-        for (const el of root.querySelectorAll(INTERACTIVE_SELECTOR)) capture(el);
-      }
-      for (const el of doc.querySelectorAll(INTERACTIVE_SELECTOR)) capture(el);
+      const walk = (into: Document, framePrefix: string): void => {
+        if (elements.length >= MAX_ELEMENTS) return;
+        // 浮层/模态内可交互元素先分配 ref：防页面主体占满配额导致弹层按钮、下拉选项拿不到 ref。
+        for (const root of findPriorityRoots(into)) {
+          for (const el of root.querySelectorAll(INTERACTIVE_SELECTOR)) capture(el, framePrefix);
+        }
+        for (const el of into.querySelectorAll(INTERACTIVE_SELECTOR)) capture(el, framePrefix);
+        // 递归下钻同源 iframe；配额（MAX_ELEMENTS）跨帧全局共享，跨源帧跳过。
+        for (const iframe of into.querySelectorAll('iframe')) {
+          const childDoc = sameOriginDoc(iframe);
+          if (childDoc === null) continue;
+          frameSeq += 1;
+          walk(childDoc, `f${frameSeq}:`);
+        }
+      };
+      walk(doc, '');
       return { url: doc.location?.href ?? '', title: doc.title, elements, notices: collectNotices(doc) };
     },
     resolve(ref) {
