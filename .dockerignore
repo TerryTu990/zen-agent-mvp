@@ -1,0 +1,17 @@
+# 构建上下文只需源码与锁文件；产物/数据/密钥/开发资产一律不进上下文。
+node_modules
+**/node_modules
+**/dist
+.za
+.env
+.env.*
+credentials.local.json
+.git
+.claude
+docs
+evals
+examples
+scripts
+apps/extension
+*.md
+!assets/system-prompt.md

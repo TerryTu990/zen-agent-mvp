@@ -959,6 +959,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
       return;
     }
     const requestPath = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    // 存活探针（容器/编排健康检查用）：无鉴权、无副作用、不触任何端口——仅证明进程在监听。
+    if (req.method === 'GET' && requestPath === '/healthz') {
+      sendJson(res, 200, { ok: true });
+      return;
+    }
     if (req.method === 'POST' && requestPath === '/demo-token') {
       return handleDemoToken(req, res);
     }

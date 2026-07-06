@@ -18,8 +18,10 @@ import {
 import { createGateway } from './gateway.js';
 
 export interface ServerOptions {
-  /** 0 = 随机可用端口（测试用）；固定监听 127.0.0.1。 */
+  /** 0 = 随机可用端口（测试用）。 */
   port: number;
+  /** 监听地址，默认 '127.0.0.1'（本机开发）；容器/对外部署设 '0.0.0.0'。 */
+  host?: string;
   /** 空值拒绝启动（验签 fail-closed 的前提）。 */
   jwtSecret: string;
   /** 代执行指令签名密钥；空值拒绝启动（U7 一次性签名的前提），经 env 注入不落仓/日志（SEC-01）。 */
@@ -137,7 +139,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   const server = createServer(gateway.handler);
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(options.port, '127.0.0.1', resolve);
+    server.listen(options.port, options.host ?? '127.0.0.1', resolve);
   });
   const address = server.address();
   if (address === null || typeof address === 'string') {

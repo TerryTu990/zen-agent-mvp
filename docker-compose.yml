@@ -1,0 +1,31 @@
+# zen-agent 服务端部署示例：站点包快照与运行数据均在容器外——
+# 换站点配置 = 换宿主机目录内容（重启生效），无需重建镜像（U4 快照不可变，改配置=发新版本目录）。
+services:
+  zen-agent:
+    build: .
+    ports:
+      - '8787:8787'
+    environment:
+      # --- 必填 secret：从宿主环境 / .env 文件注入，MUST NOT 写入本文件 ---
+      ZA_JWT_SECRET: ${ZA_JWT_SECRET:?required}
+      ZA_SIGNING_SECRET: ${ZA_SIGNING_SECRET:?required}
+      # --- LLM 上游（openai 兼容）---
+      ZA_LLM_BASE_URL: ${ZA_LLM_BASE_URL:?required}
+      ZA_LLM_API_KEY: ${ZA_LLM_API_KEY:?required}
+      ZA_LLM_MODEL: ${ZA_LLM_MODEL:?required}
+      # --- 快照根：指向下方挂入的站点包目录（容器内路径）---
+      ZA_SNAPSHOT_ROOT: /app/snapshot
+      # --- 按需项 ---
+      ZA_JWT_ISS_ALLOWLIST: ${ZA_JWT_ISS_ALLOWLIST:-zen-agent-demo}
+      ZA_CORS_ORIGIN: ${ZA_CORS_ORIGIN:-*}
+      # server 通道宿主凭证（如有）：ZA_CRED_<UPPER_SNAKE(credentialRef)>
+      # ZA_CRED_CODEFLOW_PLATFORM_KEY: ${ZA_CRED_CODEFLOW_PLATFORM_KEY}
+    volumes:
+      # 站点包快照（只读）：宿主机目录含 manifest.json + packs/*；发新版本=替换目录内容后重启。
+      - ${ZA_SNAPSHOT_HOST_DIR:?required}:/app/snapshot:ro
+      # 运行数据（可写）：审计 events.jsonl + 会话 sessions/，容器重建不丢。
+      - za-data:/data/za
+    restart: unless-stopped
+
+volumes:
+  za-data:

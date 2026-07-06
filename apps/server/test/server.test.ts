@@ -187,6 +187,15 @@ describe('鉴权 fail-closed（401 闭集）', () => {
     expect(res.status).toBe(401);
   });
 
+  it('GET /healthz 免鉴权 200（容器存活探针）；业务路由不受影响', async () => {
+    const res = await api('/healthz', { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    // 仅 GET 放行：其他方法走后续路由判定（POST /healthz 非已知路由 → 先撞鉴权 401）。
+    const post = await api('/healthz', { method: 'POST' });
+    expect(post.status).toBe(401);
+  });
+
   it('坏签名（其它 secret 签发）→ 401', async () => {
     const token = await signToken({ secret: new TextEncoder().encode('other-secret') });
     const res = await api('/v1/sessions', { method: 'POST', headers: authHeaders(token) });

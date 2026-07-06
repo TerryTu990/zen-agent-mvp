@@ -31,6 +31,8 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
   console.error('ZA_PORT 不是合法端口号，拒绝启动');
   process.exit(1);
 }
+// 监听地址：默认仅本机；容器/对外部署显式设 ZA_HOST=0.0.0.0（对外暴露是有意决策，不做默认）。
+const host = process.env['ZA_HOST'] ?? '127.0.0.1';
 const maxTurnRounds = Number(process.env['ZA_MAX_TURN_ROUNDS'] ?? 12);
 if (!Number.isInteger(maxTurnRounds) || maxTurnRounds < 1) {
   console.error('ZA_MAX_TURN_ROUNDS 不是正整数，拒绝启动');
@@ -57,6 +59,7 @@ if (!process.env['ZA_LLM_BASE_URL']) {
 
 startServer({
   port,
+  host,
   jwtSecret,
   signingSecret,
   issAllowlist: (process.env['ZA_JWT_ISS_ALLOWLIST'] ?? 'zen-agent-demo')
@@ -80,7 +83,7 @@ startServer({
   resolveCredential,
 }).then(
   ({ port: boundPort }) => {
-    console.log(`zen-agent server listening on http://127.0.0.1:${boundPort}`);
+    console.log(`zen-agent server listening on http://${host}:${boundPort}`);
   },
   (cause) => {
     console.error(`启动失败：${cause instanceof Error ? cause.message : String(cause)}`);
