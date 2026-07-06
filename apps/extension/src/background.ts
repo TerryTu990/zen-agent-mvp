@@ -397,7 +397,9 @@ async function handleRequestActivate(
       await chrome.tabs.group({ tabIds: tabId, groupId: decision.groupId }).catch(() => {});
       break;
     case 'create': {
-      const groupId = await createZenGroup(tabId);
+      // tab 已属某标签组（用户既有分组，或宿主自动化的受控组）则采用该组当会话组——
+      // 会话键即 tabGroup id（groupIdOf），无需夺 tab 新建；仅未分组 tab 才建 zen 组。
+      const groupId = tabGroupId !== TAB_GROUP_ID_NONE ? tabGroupId : await createZenGroup(tabId);
       if (origin !== null && tab.windowId !== undefined) {
         await chrome.storage.session.set({ [autoGroupKey(tab.windowId, origin)]: groupId });
       }
@@ -407,11 +409,11 @@ async function handleRequestActivate(
   await sendActivate(tabId);
 }
 
-/** 图标点击：已在 zen 会话组则重连激活，否则新建独立组（同 origin 多组独立）。 */
+/** 图标点击：未分组 tab 新建独立 zen 组（同 origin 多组独立）；已属某组则采用该组当会话组。 */
 async function handleIconClick(tab: chrome.tabs.Tab): Promise<void> {
   if (tab.id === undefined) return;
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
-  if (tabGroupId === TAB_GROUP_ID_NONE || !(await isGroupMapped(tabGroupId))) {
+  if (tabGroupId === TAB_GROUP_ID_NONE) {
     await createZenGroup(tab.id);
   }
   await sendActivate(tab.id);

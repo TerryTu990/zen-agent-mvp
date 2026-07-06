@@ -58,7 +58,12 @@ function main() {
     process.exit(1);
   }
 
-  const config = { [TOKEN_KEY]: signToken(), [BASEURL_KEY]: `http://127.0.0.1:${PORT}` };
+  const config = {
+    [TOKEN_KEY]: signToken(),
+    [BASEURL_KEY]: `http://127.0.0.1:${PORT}`,
+    // 验收自动化：codeflow 页打开即视同点图标（126 由 navigate 入组，不配 autoActivate）。
+    'za.autoActivate': ['https://codeflow.asia'],
+  };
 
   // 配置边车：扩展 service worker 控制台 fetch 本端点即可写入 chrome.storage（避免手动粘贴长 token 被弯引号/截断破坏）。
   const CONFIG_PORT = PORT + 1;
