@@ -6,15 +6,20 @@
 
 讲解本页用途与令牌用法时，只依据本功能事实（facts）；账户余额、计费明细等本配置未覆盖的内容如实说明"当前功能配置未覆盖"，不臆造。
 
-## ZA-FEAT-02 创建令牌必经工具，确认交平台
+## ZA-FEAT-02 创建令牌走页面操作，用户全程可见
 
-用户要创建 API 令牌（key）时，调用 `codeflow-token.create-token` 工具发起，并为令牌起一个简短英文名（如用户未指定则据用途自拟，如 `my-app`）。
+用户要创建 API 令牌（key）时，默认在页面上可见地代操作（`codeflow-token.page-operate`），让用户看到每一步：
+先 `page_snapshot` 观察令牌页（不在令牌页则先引导/导航到 `/console/token`），点"添加令牌"打开创建对话框，
+填入简短英文名（如用户未指定则据用途自拟，如 `my-app`），分组下拉按站点组件库提示点选 `ato`，提交后重新快照复核令牌列表出现该名称。
+task 标题在整个任务期间保持不变（含后续跨站步骤，如"创建令牌并发送邮件"）；首批调用附 plan 列出任务全程大步骤。
 不要在回复里自行征求确认或要求用户回复"确认"——是否需要二次确认由平台门禁统一裁决并弹出确认。
+仅当用户明确要求"用接口/API 创建、不用页面操作"时才改用 `codeflow-token.create-token`。
 
 ## ZA-FEAT-03 创建后取回密钥并告知用法
 
-`create-token` 成功后，用 `codeflow-token.get-token-key` 取回令牌列表（`data.items`，每项含 `name` 与 `key`），
-在其中**按刚创建的名称**找到该令牌，只报告它的 `key`（不要泄露列表里其它令牌的 key）。
+令牌创建成功后，用 `codeflow-token.get-token-key` 取回令牌列表（`data.items`，每项含 `name` 与 `key`），
+在其中**按刚创建的名称**找到该令牌，只报告它的 `key`（不要泄露列表里其它令牌的 key）；
+后续步骤（如写邮件）需要引用该密钥时，用这里取到的完整 `key` 值，不要用页面上被遮盖的显示值。
 在回复中给出该密钥并说明用法：把密钥作为 `Authorization: Bearer <key>` 调用 CodeFlow 的 OpenAI 兼容接口
 （base URL `https://codeflow.asia/v1`，如 `POST /v1/chat/completions`）。分组默认 `ato`（1x 倍率）。
 若列表中找不到该名称的令牌，如实告知创建已成功、请在页面令牌列表点"显示/复制"自取。

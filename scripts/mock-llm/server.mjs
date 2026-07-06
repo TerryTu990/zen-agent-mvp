@@ -340,6 +340,15 @@ function decide(sys, u, body) {
     return { text: summarizeObs(obs) };
   }
 
+  // invalid-tool-args 自愈剧本：'模拟截断实参' 哨兵首轮产出截断 arguments（真实 LLM 输出截断的确定性替身），
+  // 网关回喂修正提示（含"实参 JSON 无效"）后本分支不再命中、走重试分支产出完整调用。
+  if (u.includes('模拟截断实参') && hasTool(body, TOOL_REFRESH)) {
+    return { toolCall: { id: 'call_broken', name: TOOL_REFRESH, arguments: '{"broken":' } };
+  }
+  if (u.includes('实参 JSON 无效') && hasTool(body, TOOL_REFRESH)) {
+    return { toolCall: { id: 'call_retry', name: TOOL_REFRESH, arguments: JSON.stringify({}) } };
+  }
+
   const toolCall = pickToolCall(u, body);
   if (toolCall) return { toolCall };
 

@@ -30,8 +30,8 @@ export function createLlmPort(options: LlmPortOptions): LlmPort {
   };
 }
 
-function doneError(error: string): LlmStreamEvent {
-  return { kind: 'done', stopReason: 'error', error };
+function doneError(error: string, errorKind?: 'invalid-tool-args'): LlmStreamEvent {
+  return { kind: 'done', stopReason: 'error', error, ...(errorKind !== undefined ? { errorKind } : {}) };
 }
 
 interface ToolCallDraft {
@@ -158,7 +158,13 @@ async function* chatStream(
       for (const [index, draft] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
         const params = parseToolParams(draft.args);
         if (params === null) {
-          yield doneError(`工具调用实参非法（${draft.name || `#${index}`}）`);
+          const name = wireNames.get(draft.name) ?? draft.name;
+          // 诊断只落服务端本地日志且不含实参内容（SEC-01：arguments 可能携带密钥等敏感值）：
+          // finish_reason=length + 大 args.length 即截断；否则为坏 JSON。
+          console.error(
+            `[llm-port] 工具实参非法：name=${name} finish_reason=${finishReason ?? 'null'} args.length=${draft.args.length}`,
+          );
+          yield doneError(`工具调用实参非法（${name || `#${index}`}）`, 'invalid-tool-args');
           return;
         }
         yield {

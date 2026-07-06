@@ -38,6 +38,11 @@ function isTextInput(el: Element): el is HTMLInputElement | HTMLTextAreaElement 
   return el instanceof realm.HTMLInputElement || el instanceof realm.HTMLTextAreaElement;
 }
 
+/** 富文本编辑区（如 126 正文 iframe 的 body[contenteditable]）：无 value 属性，走子节点重建写入。与快照器同口径按属性判定。 */
+function isEditable(el: Element): el is HTMLElement {
+  return el instanceof realmOf(el).HTMLElement && el.getAttribute('contenteditable') === 'true';
+}
+
 /**
  * React 受控输入兼容：框架以自有 value 描述符跟踪输入，直接赋值不触发其状态更新，
  * 须经原型 native setter 写值再派发 input/change 事件。setter 取自元素自身 realm 原型，兼容同源 iframe。
@@ -111,8 +116,22 @@ export function createDomStepRunner(
             (el as HTMLElement).click();
             break;
           case 'fill':
-            if (!isTextInput(el)) return fail('not-fillable');
-            setNativeValue(el, step.value ?? '');
+            if (isTextInput(el)) {
+              setNativeValue(el, step.value ?? '');
+            } else if (isEditable(el)) {
+              // 富文本编辑区无 value：按换行拆段写入（textContent 会把整段塞成单行），派发 input 通知编辑器状态。
+              el.replaceChildren(
+                ...(step.value ?? '').split('\n').map((line) => {
+                  const div = el.ownerDocument.createElement('div');
+                  if (line === '') div.appendChild(el.ownerDocument.createElement('br'));
+                  else div.textContent = line;
+                  return div;
+                }),
+              );
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            } else {
+              return fail('not-fillable');
+            }
             break;
           case 'select':
             if (!(el instanceof realmOf(el).HTMLSelectElement)) return fail('not-selectable');

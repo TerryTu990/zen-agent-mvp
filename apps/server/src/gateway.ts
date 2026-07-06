@@ -141,6 +141,9 @@ const GUIDE_TOOL_SPEC: LlmToolSpec = {
 
 const GUIDE_ACTIONS: ReadonlySet<string> = new Set(['highlight', 'scroll-to']);
 
+/** invalid-tool-args 自愈重试上限（每用户回合累计）：超过即视为不可自愈、按普通错误终结。 */
+const MAX_INVALID_ARGS_RETRIES = 2;
+
 /**
  * built-in 页面快照工具（adr-011 观察半程）：工具面含 dom 工具时注入；非终结动作——
  * 快照作为 observation 回喂后回合继续。不经 toolgate（只读观察，无副作用；快照按不可信观察对待）。
@@ -180,7 +183,7 @@ const SITE_NAVIGATE_TOOL_DEF: DomToolDefinition = {
   id: SITE_NAVIGATE_TOOL_ID,
   featureIds: [],
   description:
-    '当用户任务需要在其他站点协作完成时，用它导航到系统提示"已安装站点索引"中列出的目标站点。url 必须取自该索引中列出的可达 URL；只能导航到索引内的站点。task 填本次导航所属的任务标题（与页面操作工具的 task 保持一致）：已获用户授权的任务内导航无需再次确认。导航后你在新站点的可用功能与工具由该站点配置决定（下一轮换出），请到达后再继续任务。',
+    '当用户任务需要在其他站点协作完成时，用它导航到系统提示"已安装站点索引"中列出的目标站点。url 必须取自该索引中列出的可达 URL；只能导航到索引内的站点。task 填本次导航所属的任务标题（与页面操作工具的 task 保持一致）：已获用户授权的任务内导航无需再次确认。导航成功后你的可用功能与工具立即切换为新站点配置，直接继续当前任务（先 page_snapshot 观察新页面）。',
   params: SITE_NAVIGATE_PARAMS_SCHEMA,
   execution: 'client',
   riskTier: 'hitl',
@@ -522,51 +525,60 @@ export function createGateway(deps: GatewayDeps): Gateway {
     claims: IdentityClaims,
   ): Promise<void> {
     const { sessionId } = session;
-    const { packId, packVersion, featureId } = await deps.assembly.resolveFeature({
-      url: session.currentUrl ?? '',
-    });
-    const pack: PackRef = { packId, packVersion };
-    // 站点边界标记（ADR-013）：本回合激活 pack 与上回合不同 → 向历史注入一行边界标记，防跨站历史误导；
-    // 复用 compress.ts BOUNDARY_MARKER 常量，摘要器识别后整句保留。首回合（prev=null）不注入。
-    const prevPackId = session.lastPackId;
-    const boundaryMessages: LlmMessage[] = [];
-    if (prevPackId !== null && packId !== null && prevPackId !== packId) {
+    // 按 URL 装配一轮上下文（回合开始与 navigate 落点换装共用）：解析功能、组装注入、建工具面。
+    const assembleFor = async (url: string) => {
+      const { packId, packVersion, featureId } = await deps.assembly.resolveFeature({ url });
+      const pack: PackRef = { packId, packVersion };
+      const composed = await deps.assembly.compose({ sessionId, packId, featureId });
+      // 注入自省与 compose 同源：审计 assembly 事件记录本轮 agent 看到了什么（只记 id 与版本，不落全文）。
+      const injection = await deps.assembly.describeInjection({ sessionId, packId, featureId });
+      recordEvent(sessionId, claims, featureId, {
+        type: 'assembly',
+        data: {
+          snapshotVersion: injection.snapshotVersion,
+          featureId,
+          toolIds: injection.toolIds,
+          skillIds: composed.skills.map((skill) => skill.id),
+        },
+      }, pack);
+      const hostToolsById = new Map(composed.tools.map((tool) => [tool.id, tool]));
+      const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
+      // 快照工具只在工具面含 dom 工具时注入：无 dom 操作面就不给观察入口（最小工具面）。
+      const snapshotTools: LlmToolSpec[] = composed.tools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
+      // pack_doc 只在激活 pack 有 docs 索引时注入（渐进披露）：无索引则不给读取入口。
+      const docTools: LlmToolSpec[] = composed.docsIndex !== null ? [PACK_DOC_TOOL_SPEC] : [];
+      // site_navigate 与站点索引同门：仅当注入了"已安装站点索引"（≥2 site）时给跨站导航入口；单 site 无跨站意义。
+      const navTools: LlmToolSpec[] = composed.sitesIndex !== null ? [SITE_NAVIGATE_TOOL_SPEC] : [];
+      const tools: LlmToolSpec[] = [
+        ...guideTools,
+        ...snapshotTools,
+        ...docTools,
+        ...navTools,
+        ...composed.tools.map(toLlmToolSpec),
+      ];
+      return { pack, featureId, composed, hostToolsById, tools };
+    };
+    // 站点边界标记（ADR-013）：激活 pack 变更时向历史注入一行标记，防跨站历史误导；
+    // 复用 compress.ts BOUNDARY_MARKER 常量，摘要器识别后整句保留。prev=null（首回合）不注入。
+    const boundaryFor = async (
+      packId: string | null,
+      previousPackId: string | null,
+    ): Promise<LlmMessage | null> => {
+      if (previousPackId === null || packId === null || previousPackId === packId) return null;
       const origin = (await getSites()).find((s) => s.packId === packId)?.origin ?? packId;
-      boundaryMessages.push({ role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` });
-    }
-    if (packId !== null && packId !== prevPackId) deps.store.setLastPackId(sessionId, packId);
-    const composed = await deps.assembly.compose({ sessionId, packId, featureId });
-    // 注入自省与 compose 同源：审计 assembly 事件记录本轮 agent 看到了什么（只记 id 与版本，不落全文）。
-    const injection = await deps.assembly.describeInjection({ sessionId, packId, featureId });
-    recordEvent(sessionId, claims, featureId, {
-      type: 'assembly',
-      data: {
-        snapshotVersion: injection.snapshotVersion,
-        featureId,
-        toolIds: injection.toolIds,
-        skillIds: composed.skills.map((skill) => skill.id),
-      },
-    }, pack);
-    const hostToolsById = new Map(composed.tools.map((tool) => [tool.id, tool]));
+      return { role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` };
+    };
+
+    let { pack, featureId, composed, hostToolsById, tools } = await assembleFor(session.currentUrl ?? '');
+    const prevPackId = session.lastPackId;
+    const boundary = await boundaryFor(pack.packId, prevPackId);
+    const boundaryMessages: LlmMessage[] = boundary !== null ? [boundary] : [];
+    if (pack.packId !== null && pack.packId !== prevPackId) deps.store.setLastPackId(sessionId, pack.packId);
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemContent(composed) },
       ...session.history,
       ...boundaryMessages,
       { role: 'user', content: text },
-    ];
-    const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
-    // 快照工具只在工具面含 dom 工具时注入：无 dom 操作面就不给观察入口（最小工具面）。
-    const snapshotTools: LlmToolSpec[] = composed.tools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
-    // pack_doc 只在激活 pack 有 docs 索引时注入（渐进披露）：无索引则不给读取入口。
-    const docTools: LlmToolSpec[] = composed.docsIndex !== null ? [PACK_DOC_TOOL_SPEC] : [];
-    // site_navigate 与站点索引同门：仅当注入了"已安装站点索引"（≥2 site）时给跨站导航入口；单 site 无跨站意义。
-    const navTools: LlmToolSpec[] = composed.sitesIndex !== null ? [SITE_NAVIGATE_TOOL_SPEC] : [];
-    const tools: LlmToolSpec[] = [
-      ...guideTools,
-      ...snapshotTools,
-      ...docTools,
-      ...navTools,
-      ...composed.tools.map(toLlmToolSpec),
     ];
     // 本回合待落 history 的消息序列（含工具轮）：回合内只追加不回改，落盘边界统一瘦身。
     // 边界标记随本回合落 history（进入下回合上下文与 P1 摘要保留集）。
@@ -579,9 +591,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // 落盘边界压缩触发估算优先用它，缺省回退字符近似。
     let lastUsage: UsageTokens | undefined;
 
+    // invalid-tool-args 自愈重试预算：模型偶发产出截断/坏 JSON 实参时回喂修正提示重试，
+    // 连续超限则按不可自愈终结（防同因空转烧轮数；maxTurnRounds 仍是总兜底）。
+    let invalidArgsRetries = 0;
     for (let round = 0; round < deps.maxTurnRounds; round += 1) {
       let roundText = '';
       let call: { toolCallId: string; name: string; params: JsonObject } | null = null;
+      let recoverableError: string | null = null;
       for await (const event of deps.llm.chat(tools.length > 0 ? { messages, tools } : { messages })) {
         if (event.kind === 'text-delta') {
           roundText += event.delta;
@@ -592,12 +608,31 @@ export function createGateway(deps: GatewayDeps): Gateway {
         } else if (event.kind === 'done') {
           if (event.usage !== undefined) lastUsage = event.usage;
           if (event.stopReason === 'error') {
-            // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
-            const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;
-            roundText += notice;
-            notify(sessionId, notice);
+            if (event.errorKind === 'invalid-tool-args' && invalidArgsRetries < MAX_INVALID_ARGS_RETRIES) {
+              recoverableError = event.error ?? 'invalid-tool-args';
+            } else {
+              // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
+              const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;
+              roundText += notice;
+              notify(sessionId, notice);
+            }
           }
         }
+      }
+      // 可自愈错误（模型实参 JSON 非法/截断）：不终结回合——把失败与修正要求回喂，下一轮重新发起调用。
+      if (call === null && recoverableError !== null) {
+        invalidArgsRetries += 1;
+        const correction: LlmMessage = {
+          role: 'user',
+          content: `（系统提示）你上一次的工具调用未能执行：${recoverableError}。实参 JSON 无效或被截断。请重新发起该工具调用，输出完整合法的 JSON 实参；若内容过长，缩短本批内容、分多批完成。`,
+        };
+        if (roundText !== '') {
+          messages.push({ role: 'assistant', content: roundText });
+          turnMessages.push({ role: 'assistant', content: roundText });
+        }
+        messages.push(correction);
+        turnMessages.push(correction);
+        continue;
       }
       // 无工具调用（纯文本/错误收尾）：本回合终结，本轮文本即气泡。
       if (call === null) {
@@ -640,7 +675,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (call.name === PACK_DOC_TOOL_NAME) {
         // 渐进披露（非终结）：服务端读当前激活 pack 的 docs/ 正文，作 observation 回喂后继续本回合。
         const docPath = typeof call.params['path'] === 'string' ? call.params['path'] : '';
-        const doc = await deps.assembly.readPackDoc({ packId, docPath });
+        const doc = await deps.assembly.readPackDoc({ packId: pack.packId, docPath });
         const docEcho: LlmMessage = {
           role: 'assistant',
           content: roundText,
@@ -695,6 +730,25 @@ export function createGateway(deps: GatewayDeps): Gateway {
         };
         messages.push(navEcho, navObs);
         turnMessages.push(navEcho, navObs);
+        // 导航成功＝激活站点即刻切换：回合内按落点 URL 重新装配（规则/事实/工具面随站换出），
+        // 系统注入整段覆写、边界标记入历史——LLM 下一轮就持有新站上下文，不必等用户再发言。
+        if (observation.ok) {
+          const landedUrl = String((observation.content as JsonObject | null)?.['url'] ?? '');
+          if (landedUrl !== '') {
+            deps.store.setContext(sessionId, landedUrl);
+            const previousPackId = pack.packId;
+            ({ pack, featureId, composed, hostToolsById, tools } = await assembleFor(landedUrl));
+            messages[0] = { role: 'system', content: buildSystemContent(composed) };
+            const navBoundary = await boundaryFor(pack.packId, previousPackId);
+            if (navBoundary !== null) {
+              messages.push(navBoundary);
+              turnMessages.push(navBoundary);
+            }
+            if (pack.packId !== null && pack.packId !== previousPackId) {
+              deps.store.setLastPackId(sessionId, pack.packId);
+            }
+          }
+        }
         continue;
       }
 

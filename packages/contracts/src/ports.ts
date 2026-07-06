@@ -261,6 +261,8 @@ export type LlmStreamEvent =
       kind: 'done';
       stopReason: 'end' | 'tool-call' | 'error';
       error?: string;
+      /** 错误类别（stopReason=error 时可选）：invalid-tool-args=模型产出的实参 JSON 非法/截断，可回喂重试自愈。 */
+      errorKind?: 'invalid-tool-args';
       /** 上游返回 token 用量时透传（缺省=上游未报，消费侧回退字符近似估算）。 */
       usage?: { inputTokens: number; outputTokens: number };
     };

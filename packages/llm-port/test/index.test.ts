@@ -311,6 +311,55 @@ describe('createLlmPort · tool_calls 增量聚合', () => {
       await close();
     }
   });
+
+  it('实参 JSON 截断 → done error 带 errorKind=invalid-tool-args、文案用还原后点分名', async () => {
+    const chunks = [
+      {
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_1',
+                  type: 'function',
+                  // 出网 wire name（__ 分隔）：错误文案须还原成点分 toolId。
+                  function: { name: 'codeflow-token__page-operate', arguments: '{"task":"建令牌","st' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'length' }] },
+    ];
+    const { url, close } = await startSseServer((res) => {
+      for (const chunk of chunks) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    try {
+      pointAtMock();
+      process.env['ZA_LLM_BASE_URL'] = url;
+      const events = await collect(
+        port().chat({
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: [
+            { name: 'codeflow-token.page-operate', description: 'x', params: { type: 'object' } },
+          ],
+        }),
+      );
+      const done = doneOf(events);
+      expect(done.stopReason).toBe('error');
+      expect(done.errorKind).toBe('invalid-tool-args');
+      expect(done.error).toContain('codeflow-token.page-operate');
+    } finally {
+      await close();
+    }
+  });
 });
 
 describe('createLlmPort · 上游 usage 透传', () => {

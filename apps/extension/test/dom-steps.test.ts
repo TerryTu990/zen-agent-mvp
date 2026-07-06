@@ -72,6 +72,24 @@ describe('createDomStepRunner：闭集步骤解释执行', () => {
     expect(unsupported).toEqual({ ok: false, error: 'step-1-waitFor:action-not-supported' });
   });
 
+  it('fill 到 contenteditable 编辑区：按换行拆段写入并派发 input（126 正文场景）', async () => {
+    document.body.innerHTML = '<div contenteditable="true">旧内容</div>';
+    const editor = document.querySelector('div')!;
+    const inputEvents: string[] = [];
+    editor.addEventListener('input', () => inputEvents.push('input'));
+
+    const outcome = await runnerFor({ 'za-1': editor }).run([
+      { action: 'fill', ref: 'za-1', value: '第一行\n\n第三行' },
+    ]);
+
+    expect(outcome).toEqual({ ok: true, body: { reads: {}, completedSteps: 1 } });
+    expect(inputEvents).toEqual(['input']);
+    expect(editor.querySelectorAll('div').length).toBe(3);
+    expect(editor.textContent).toBe('第一行第三行');
+    // 空行以 <br> 占位保持段落结构。
+    expect(editor.querySelectorAll('br').length).toBe(1);
+  });
+
   it('navigate 步：免 ref、委托 navigate 回调、body 回目标 url（ADR-013 批次④）', async () => {
     const navigated: string[] = [];
     const navigate = async (url: string) => {

@@ -558,6 +558,35 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
     }
   });
 
+  it('模型实参 JSON 截断 → 回喂修正提示自愈重试，回合不终结（invalid-tool-args）', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      // mock-llm '模拟截断实参' 哨兵：首轮产出半截 arguments → llm-port 报 invalid-tool-args →
+      // 网关回喂修正提示 → mock 依提示产出完整调用 → 正常签发执行。
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '模拟截断实参 刷新订单列表' });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      // 自愈路径不向用户播报"服务暂时不可用"。
+      expect(textOf(sse.frames)).not.toContain('服务暂时不可用');
+      const instr = framesByType(sse.frames, 'exec-instruction')[0]!;
+      expect((instr['request'] as { url: string }).url).toBe('/api/orders');
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instr['nonce']),
+        ok: true,
+        status: 200,
+        body: { ok: true, count: 2 },
+      });
+      await sse.waitFor(() => textOf(sse.frames).includes(REPLY_REFRESH));
+      expect(lastCardStatus(sse.frames, 'order-list.refresh-orders')).toBe('succeeded');
+    } finally {
+      sse.close();
+    }
+  });
+
   it('hitl 工具（取消）→ hitl-request → approve → exec 闭环 → 成功总结', async () => {
     const token = await signToken();
     const sessionId = await createSession(token);
