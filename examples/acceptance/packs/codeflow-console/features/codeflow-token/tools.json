@@ -1,0 +1,186 @@
+[
+  {
+    "id": "codeflow-token.create-token",
+    "featureIds": [
+      "codeflow-token"
+    ],
+    "description": "为用户创建一个新的 API 令牌（key）。当用户要求创建/新建令牌或 key 时调用；需给令牌起一个简短名称 name（英文/数字/连字符）。默认分组 ato（1x 倍率）、永不过期、不限额度。创建成功后应再用 get-token-key 按同名取回密钥。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "令牌名称，简短且可辨识（如 my-app、test-key）"
+        }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "adapter": {
+      "method": "POST",
+      "urlTemplate": "/api/token/",
+      "headers": {
+        "New-Api-User": "{{hostUserId}}",
+        "Content-Type": "application/json"
+      },
+      "bodyTemplate": {
+        "name": "{{name}}",
+        "group": "ato",
+        "expired_time": -1,
+        "unlimited_quota": true,
+        "remain_quota": 0,
+        "model_limits_enabled": false,
+        "model_limits": "",
+        "allow_ips": "",
+        "count": 1
+      }
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": [
+        "success"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "id": "codeflow-token.get-token-key",
+    "featureIds": [
+      "codeflow-token"
+    ],
+    "description": "取回用户的令牌列表（含密钥 key），用于在创建令牌后向用户报告刚创建令牌的密钥。返回 data.items 数组，每项含 name 与 key；在其中按名称找到刚创建的那个令牌、报告它的 key，不要泄露其它令牌的 key。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "execution": "client",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "/api/token/?p=1&size=20",
+      "headers": {
+        "New-Api-User": "{{hostUserId}}"
+      }
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": [
+        "success"
+      ],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  {
+    "id": "codeflow-token.list-models",
+    "featureIds": [
+      "codeflow-token"
+    ],
+    "description": "查询 CodeFlow 平台当前可用的大模型列表（只读）。当用户问本平台支持哪些模型 / 有哪些可用模型时调用。这是「服务端发起」示例：由平台服务端以平台级凭证直接调用 CodeFlow 的 OpenAI 兼容 /v1/models 接口，不经过用户浏览器会话，返回 data 数组、每项含模型 id。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "execution": "server",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "https://codeflow.asia/v1/models",
+      "headers": {
+        "Authorization": "Bearer {{credential}}"
+      },
+      "credentialRef": "codeflowPlatformKey"
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": [
+        "data"
+      ],
+      "properties": {
+        "data": {
+          "type": "array"
+        }
+      }
+    }
+  },
+  {
+    "id": "codeflow-token.page-operate",
+    "featureIds": [
+      "codeflow-token"
+    ],
+    "description": "在 CodeFlow 控制台页面上可见地代用户操作（点击/填写/读取），用户能全程看到每一步高亮与执行。当用户明确要求\"在页面上操作/让我看到操作过程\"时使用；只能操作当前页面已有元素——使用前必须先调用 page_snapshot 获取可交互元素清单，steps 中每个 ref 都必须取自最近一次快照；需要向用户回报的页面值用 read 步骤（带 name 键）采集。不支持跳转页面（navigate 未开放）。 调用约定：先在文本中向用户说明将进行的功能级步骤；task 在整个任务期间保持不变（首批触发一次用户授权，其后同任务批次跨工具自动放行）；任务首批调用附 plan（本任务的功能级大步骤列表，展示在授权卡上供用户知情批准）；每批执行后必须重新调用 page_snapshot 复核，以页面证据（而非执行结果 ok）判定业务成败。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task",
+        "steps",
+        "summary"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "任务标题（功能级）。同一任务的所有批次与跨站步骤保持同一标题——用户按它授权一次后，本任务后续操作（含站点跳转后的续作）自动执行；跨站任务沿用发起时的标题（如\"创建令牌并发邮件给 231889617@qq.com\"），不要到新站点后另起标题"
+        },
+        "plan": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "本任务的功能级执行计划（人话大步骤，如[\"进入令牌页\",\"填写令牌名并创建\"]）。任务首批调用必附，展示在授权卡上；后续批次可省略"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object"
+          },
+          "description": "按序执行的操作步骤：{action: click|fill|select|read|scroll|highlight, ref, value?, name?}"
+        },
+        "summary": {
+          "type": "string",
+          "description": "面向用户的操作摘要，将展示在确认卡上"
+        }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": [
+        "/console"
+      ]
+    },
+    "resultSchema": {
+      "type": "object",
+      "properties": {
+        "reads": {
+          "type": "object"
+        },
+        "completedSteps": {
+          "type": "number"
+        },
+        "url": {
+          "type": "string"
+        }
+      }
+    }
+  }
+]

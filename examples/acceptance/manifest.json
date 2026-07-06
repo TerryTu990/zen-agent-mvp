@@ -1,0 +1,7 @@
+{
+  "version": "0.1.0",
+  "packs": [
+    { "packId": "codeflow-console", "version": "0.1.0" },
+    { "packId": "mail-126", "version": "0.1.0" }
+  ]
+}

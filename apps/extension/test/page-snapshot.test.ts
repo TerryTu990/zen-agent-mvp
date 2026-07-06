@@ -102,6 +102,53 @@ describe('createSnapshotter：可交互元素采集与 ref 映射', () => {
   });
 });
 
+describe('createSnapshotter：同源 iframe 下钻（ADR-013 批次④ 方案 A）', () => {
+  it('顶层 ref 维持 za-N 不变；同源 iframe 元素带 f<idx>: 前缀且 resolve 命中子文档元素', () => {
+    document.body.innerHTML = '<button>顶层写信</button>';
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    const childDoc = frame.contentDocument!;
+    childDoc.body.innerHTML = '<div contenteditable="true">正文编辑器</div><button>子按钮</button>';
+
+    const snapshotter = createSnapshotter();
+    const { elements } = snapshotter.collect();
+
+    // 顶层格式不变（za-N，host-demo 回归零影响）；iframe 内元素带 f1: 前缀，全局配额续编号。
+    expect(elements.map((e) => e.ref)).toEqual(['za-1', 'f1:za-2', 'f1:za-3']);
+    expect(elements.map((e) => e.label)).toEqual(['顶层写信', '正文编辑器', '子按钮']);
+    expect(snapshotter.resolve('f1:za-2')).toBe(childDoc.querySelector('[contenteditable]'));
+    expect(snapshotter.resolve('za-1')).toBe(document.querySelector('button'));
+  });
+
+  it('跨源 iframe（contentDocument 不可达）跳过、不阻断顶层采集', () => {
+    document.body.innerHTML = '<button>顶层</button>';
+    const crossOrigin = document.createElement('iframe');
+    document.body.appendChild(crossOrigin);
+    // 模拟跨源：contentDocument 访问抛安全错误 → sameOriginDoc 捕获返回 null → 跳过。
+    Object.defineProperty(crossOrigin, 'contentDocument', {
+      get() {
+        throw new Error('cross-origin frame access denied');
+      },
+    });
+
+    const { elements } = createSnapshotter().collect();
+    expect(elements.map((e) => e.ref)).toEqual(['za-1']);
+    expect(elements[0]).toMatchObject({ label: '顶层' });
+  });
+
+  it('iframe 下钻共享全局 150 配额：顶层占满后子文档元素不再采集', () => {
+    const filler = Array.from({ length: MAX_ELEMENTS }, (_, i) => `<button>主体${i}</button>`).join('');
+    document.body.innerHTML = filler;
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    frame.contentDocument!.body.innerHTML = '<button>子文档按钮</button>';
+
+    const { elements } = createSnapshotter().collect();
+    expect(elements).toHaveLength(MAX_ELEMENTS);
+    expect(elements.every((e) => !e.ref.startsWith('f'))).toBe(true);
+  });
+});
+
 describe('createSnapshotter：模态层优先采集', () => {
   it('页面主体占满配额时弹层内按钮仍拿到 ref：模态元素 ref 前置，总量不超上限', () => {
     const filler = Array.from({ length: MAX_ELEMENTS }, (_, i) => `<button>主体${i}</button>`).join('');

@@ -28,6 +28,15 @@
       "type": "string"
     },
     "tenant": { "type": "string" },
+    "packId": {
+      "$comment": "事件发生时会话激活的站点包（ADR-013）；无 pack 命中（仅基座）或 legacy 缺省时按落点处理，未激活 pack 时省略。",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "packVersion": {
+      "$comment": "激活 pack 的 semver；随 packId 一同记录，缺省省略。",
+      "type": "string"
+    },
     "featureId": {
       "$comment": "事件发生时会话所处功能；未命中任何功能时省略。",
       "type": "string",

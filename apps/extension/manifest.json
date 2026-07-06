@@ -22,11 +22,23 @@
       "128": "icons/icon-128.png"
     }
   },
-  "permissions": ["storage", "activeTab", "tabGroups"],
-  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "https://codeflow.asia/*"],
+  "permissions": ["storage", "activeTab", "tabGroups", "tabs"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://codeflow.asia/*",
+    "https://mail.126.com/*",
+    "https://*.126.com/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["http://127.0.0.1/*", "http://localhost/*", "https://codeflow.asia/*"],
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*",
+        "https://codeflow.asia/*",
+        "https://mail.126.com/*",
+        "https://*.126.com/*"
+      ],
       "js": ["dist/content.js"]
     }
   ]

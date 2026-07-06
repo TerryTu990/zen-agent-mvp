@@ -30,14 +30,41 @@ export function createLlmPort(options: LlmPortOptions): LlmPort {
   };
 }
 
-function doneError(error: string): LlmStreamEvent {
-  return { kind: 'done', stopReason: 'error', error };
+function doneError(error: string, errorKind?: 'invalid-tool-args'): LlmStreamEvent {
+  return { kind: 'done', stopReason: 'error', error, ...(errorKind !== undefined ? { errorKind } : {}) };
 }
 
 interface ToolCallDraft {
   id?: string;
   name: string;
   args: string;
+}
+
+interface LlmUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * 从流帧解析上游 token 用量（OpenAI `stream_options.include_usage` 末帧：choices 空、带 usage）。
+ * 字段缺失/类型不符 → undefined，由消费侧回退字符近似（usage 是可选透传，非硬要求）。
+ */
+function parseUsage(data: string): LlmUsage | undefined {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(data);
+  } catch {
+    return undefined;
+  }
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const usage = (payload as { usage?: unknown }).usage;
+  if (typeof usage !== 'object' || usage === null) return undefined;
+  const { prompt_tokens, completion_tokens } = usage as {
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+  };
+  if (typeof prompt_tokens !== 'number' || typeof completion_tokens !== 'number') return undefined;
+  return { inputTokens: prompt_tokens, outputTokens: completion_tokens };
 }
 
 /**
@@ -72,6 +99,19 @@ async function* chatStream(
     return;
   }
 
+  // OpenAI 函数名合法集 ^[a-zA-Z0-9_-]+$ 不含点；toolId 以点分命名空间（<featureId>.<tool>），
+  // 出网前点替换为 '__'、tool-call 回程还原，平台内部命名不变。映射冲突 fail-closed。
+  const wireNames = new Map<string, string>();
+  for (const tool of request.tools ?? []) {
+    const wire = toWireName(tool.name);
+    const existing = wireNames.get(wire);
+    if (existing !== undefined && existing !== tool.name) {
+      yield doneError(`工具名出网映射冲突：${existing} / ${tool.name}`);
+      return;
+    }
+    wireNames.set(wire, tool.name);
+  }
+
   try {
     const response = await fetchWithOneRetry(config, `${baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -79,6 +119,8 @@ async function* chatStream(
       body: JSON.stringify(buildBody(model, request)),
     });
     if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      console.error(`[llm-port] 上游 ${response.status}：${detail.slice(0, 800)}`);
       yield doneError(`上游响应异常（HTTP ${response.status}）`);
       return;
     }
@@ -90,11 +132,14 @@ async function* chatStream(
     const toolCalls = new Map<number, ToolCallDraft>();
     let finishReason: string | null = null;
     let sawDone = false;
+    let usage: LlmUsage | undefined;
     for await (const data of sseDataLines(response.body)) {
       if (data === '[DONE]') {
         sawDone = true;
         break;
       }
+      const parsedUsage = parseUsage(data);
+      if (parsedUsage !== undefined) usage = parsedUsage;
       const choice = parseChoice(data);
       if (choice === null) continue;
       if (typeof choice.finish_reason === 'string') finishReason = choice.finish_reason;
@@ -113,20 +158,26 @@ async function* chatStream(
       for (const [index, draft] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
         const params = parseToolParams(draft.args);
         if (params === null) {
-          yield doneError(`工具调用实参非法（${draft.name || `#${index}`}）`);
+          const name = wireNames.get(draft.name) ?? draft.name;
+          // 诊断只落服务端本地日志且不含实参内容（SEC-01：arguments 可能携带密钥等敏感值）：
+          // finish_reason=length + 大 args.length 即截断；否则为坏 JSON。
+          console.error(
+            `[llm-port] 工具实参非法：name=${name} finish_reason=${finishReason ?? 'null'} args.length=${draft.args.length}`,
+          );
+          yield doneError(`工具调用实参非法（${name || `#${index}`}）`, 'invalid-tool-args');
           return;
         }
         yield {
           kind: 'tool-call',
           toolCallId: draft.id ?? `tool-call-${index}`,
-          name: draft.name,
+          name: wireNames.get(draft.name) ?? draft.name,
           params,
         };
       }
-      yield { kind: 'done', stopReason: 'tool-call' };
+      yield { kind: 'done', stopReason: 'tool-call', ...(usage !== undefined ? { usage } : {}) };
       return;
     }
-    yield { kind: 'done', stopReason: 'end' };
+    yield { kind: 'done', stopReason: 'end', ...(usage !== undefined ? { usage } : {}) };
   } catch (err) {
     yield doneError(`上游请求失败（${err instanceof Error ? err.name : 'unknown'}）`);
   }
@@ -149,6 +200,11 @@ async function fetchWithOneRetry(
   }
 }
 
+/** OpenAI 兼容端点函数名不允许点；点分 toolId 出网替换为 '__'（当前 toolId 文法小写+连字符，无原生 '__'，可逆） */
+function toWireName(name: string): string {
+  return name.replace(/\./g, '__');
+}
+
 function buildHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   const apiKey = process.env['ZA_LLM_API_KEY'];
@@ -160,6 +216,8 @@ function buildBody(model: string, request: LlmChatRequest): JsonObject {
   const body: JsonObject = {
     model,
     stream: true,
+    // 请求上游在流末追加 token 用量帧（choices 为空、带 usage）；上游不支持时静默忽略、无 usage 帧。
+    stream_options: { include_usage: true },
     messages: request.messages.map((m) => ({
       role: m.role,
       content: m.content,
@@ -169,7 +227,7 @@ function buildBody(model: string, request: LlmChatRequest): JsonObject {
             tool_calls: m.toolCalls.map((tc) => ({
               id: tc.id,
               type: 'function',
-              function: { name: tc.name, arguments: JSON.stringify(tc.params) },
+              function: { name: toWireName(tc.name), arguments: JSON.stringify(tc.params) },
             })),
           }
         : {}),
@@ -178,7 +236,7 @@ function buildBody(model: string, request: LlmChatRequest): JsonObject {
   if (request.tools !== undefined && request.tools.length > 0) {
     body['tools'] = request.tools.map((t) => ({
       type: 'function',
-      function: { name: t.name, description: t.description, parameters: t.params },
+      function: { name: toWireName(t.name), description: t.description, parameters: t.params },
     }));
   }
   return body;

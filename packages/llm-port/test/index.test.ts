@@ -311,6 +311,210 @@ describe('createLlmPort · tool_calls 增量聚合', () => {
       await close();
     }
   });
+
+  it('实参 JSON 截断 → done error 带 errorKind=invalid-tool-args、文案用还原后点分名', async () => {
+    const chunks = [
+      {
+        choices: [
+          {
+            index: 0,
+            delta: {
+              role: 'assistant',
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_1',
+                  type: 'function',
+                  // 出网 wire name（__ 分隔）：错误文案须还原成点分 toolId。
+                  function: { name: 'codeflow-token__page-operate', arguments: '{"task":"建令牌","st' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'length' }] },
+    ];
+    const { url, close } = await startSseServer((res) => {
+      for (const chunk of chunks) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    try {
+      pointAtMock();
+      process.env['ZA_LLM_BASE_URL'] = url;
+      const events = await collect(
+        port().chat({
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: [
+            { name: 'codeflow-token.page-operate', description: 'x', params: { type: 'object' } },
+          ],
+        }),
+      );
+      const done = doneOf(events);
+      expect(done.stopReason).toBe('error');
+      expect(done.errorKind).toBe('invalid-tool-args');
+      expect(done.error).toContain('codeflow-token.page-operate');
+    } finally {
+      await close();
+    }
+  });
+});
+
+describe('createLlmPort · 上游 usage 透传', () => {
+  it('末帧带 usage（choices 空）→ done 事件透传 inputTokens/outputTokens', async () => {
+    const chunks = [
+      { choices: [{ index: 0, delta: { content: '好' }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+      { choices: [], usage: { prompt_tokens: 1200, completion_tokens: 34, total_tokens: 1234 } },
+    ];
+    const { url, close } = await startSseServer((res) => {
+      for (const chunk of chunks) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    try {
+      pointAtMock();
+      process.env['ZA_LLM_BASE_URL'] = url;
+      const events = await collect(port().chat({ messages: [{ role: 'user', content: 'hi' }] }));
+      const done = doneOf(events);
+      expect(done.stopReason).toBe('end');
+      expect(done.usage).toEqual({ inputTokens: 1200, outputTokens: 34 });
+    } finally {
+      await close();
+    }
+  });
+
+  it('上游无 usage 帧 → done 事件不含 usage 字段（缺省）', async () => {
+    const chunks = [
+      { choices: [{ index: 0, delta: { content: '好' }, finish_reason: null }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+    ];
+    const { url, close } = await startSseServer((res) => {
+      for (const chunk of chunks) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    try {
+      pointAtMock();
+      process.env['ZA_LLM_BASE_URL'] = url;
+      const events = await collect(port().chat({ messages: [{ role: 'user', content: 'hi' }] }));
+      expect(doneOf(events).usage).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  it('请求体带 stream_options.include_usage', async () => {
+    let seenBody: unknown;
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      seenBody = JSON.parse(String(init?.body ?? '{}'));
+      return new Response(
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: '好' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`,
+        { status: 200 },
+      );
+    };
+    pointAtMock();
+    await collect(
+      createLlmPort({ allowedProviders: ['openai-compatible'], fetchImpl }).chat({
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    );
+    expect((seenBody as { stream_options?: unknown }).stream_options).toEqual({
+      include_usage: true,
+    });
+  });
+});
+
+describe('createLlmPort · 点分 toolId 出网净化', () => {
+  const TOOL_CALL_SSE = [
+    `data: ${JSON.stringify({
+      choices: [
+        {
+          index: 0,
+          delta: {
+            role: 'assistant',
+            tool_calls: [
+              {
+                index: 0,
+                id: 'call_1',
+                type: 'function',
+                function: { name: 'codeflow-token__page-operate', arguments: '{"task":"t"}' },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    })}`,
+    `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}`,
+    'data: [DONE]',
+    '',
+  ].join('\n\n');
+
+  it('出网 tools 与 tool_calls 回声名点转 __，tool-call 事件还原点分名', async () => {
+    pointAtMock();
+    let seenBody: unknown;
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      seenBody = JSON.parse(String(init?.body));
+      return new Response(TOOL_CALL_SSE, { status: 200 });
+    };
+    const events = await collect(
+      createLlmPort({ allowedProviders: ['openai-compatible'], fetchImpl }).chat({
+        messages: [
+          { role: 'user', content: '继续' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'prev_1', name: 'codeflow-token.get-token-key', params: {} }],
+          },
+          { role: 'tool', content: '{}', toolCallId: 'prev_1' },
+        ],
+        tools: [
+          { name: 'codeflow-token.page-operate', description: 'd', params: { type: 'object' } },
+          { name: 'site_navigate', description: 'd', params: { type: 'object' } },
+        ],
+      }),
+    );
+    const body = seenBody as {
+      tools: Array<{ function: { name: string } }>;
+      messages: Array<{ tool_calls?: Array<{ function: { name: string } }> }>;
+    };
+    expect(body.tools.map((t) => t.function.name)).toEqual([
+      'codeflow-token__page-operate',
+      'site_navigate',
+    ]);
+    const echo = body.messages.find((m) => m.tool_calls !== undefined);
+    expect(echo?.tool_calls?.[0]?.function.name).toBe('codeflow-token__get-token-key');
+    for (const t of body.tools) expect(t.function.name).toMatch(/^[a-zA-Z0-9_-]+$/);
+    const toolCall = events.find(
+      (e): e is Extract<LlmStreamEvent, { kind: 'tool-call' }> => e.kind === 'tool-call',
+    );
+    expect(toolCall?.name).toBe('codeflow-token.page-operate');
+  });
+
+  it('出网映射冲突 fail-closed（done error，不发请求）', async () => {
+    pointAtMock();
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      return new Response('', { status: 200 });
+    };
+    const events = await collect(
+      createLlmPort({ allowedProviders: ['openai-compatible'], fetchImpl }).chat({
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [
+          { name: 'a.b', description: 'd', params: { type: 'object' } },
+          { name: 'a__b', description: 'd', params: { type: 'object' } },
+        ],
+      }),
+    );
+    expect(calls).toBe(0);
+    const done = doneOf(events);
+    expect(done.stopReason).toBe('error');
+    expect(done.error).toContain('映射冲突');
+  });
 });
 
 async function startSseServer(

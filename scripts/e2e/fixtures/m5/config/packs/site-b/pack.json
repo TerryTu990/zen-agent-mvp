@@ -1,0 +1,13 @@
+{
+  "packId": "site-b",
+  "version": "0.1.0",
+  "summary": "演示站点乙：表单填写与提交演练",
+  "site": {
+    "origin": "http://127.0.0.1:4174",
+    "locations": ["/"]
+  },
+  "featureIdRules": [
+    { "urlPattern": "site-b\\.html", "featureId": "site-b" }
+  ],
+  "features": ["site-b"]
+}

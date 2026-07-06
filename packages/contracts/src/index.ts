@@ -2,6 +2,7 @@ export type { JsonPrimitive, JsonValue, JsonObject } from './json.js';
 export type {
   ToolExecution,
   RiskTier,
+  HitlMode,
   HttpMethod,
   ClientAdapter,
   DomAdapter,
@@ -11,7 +12,12 @@ export type {
   ServerToolDefinition,
   ToolDefinition,
 } from './tool-definition.js';
-export { isDomTool } from './tool-definition.js';
+export {
+  isDomTool,
+  SITE_NAVIGATE_TOOL_ID,
+  SITE_NAVIGATE_PARAMS_SCHEMA,
+  SITE_NAVIGATE_RESULT_SCHEMA,
+} from './tool-definition.js';
 export type { IdentityClaims } from './identity-claims.js';
 export type {
   ClientCapability,
@@ -38,7 +44,13 @@ export type {
   DownstreamFrame,
   ClientAccessFrame,
 } from './client-access-layer.js';
-export type { FeatureIdRule, ConfigSnapshotManifest } from './config-snapshot.js';
+export type {
+  FeatureIdRule,
+  ConfigSnapshotManifest,
+  SiteFence,
+  PackManifest,
+  RegistryManifest,
+} from './config-snapshot.js';
 export type {
   AuditEventType,
   GateVerdict,
@@ -60,6 +72,10 @@ export type {
   ComposeResult,
   InjectionBlock,
   InjectionDescription,
+  ReadPackDocInput,
+  ReadPackDocResult,
+  SiteDescriptor,
+  ToolOwnership,
   AssemblyPort,
   DomGateContext,
   GateDecisionInput,

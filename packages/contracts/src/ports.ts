@@ -17,13 +17,20 @@ export interface ResolveFeatureInput {
 }
 
 export interface ResolveFeatureResult {
-  /** null = manifest.featureIdRules 无命中，仅装配稳定基座（fail-safe）。 */
+  /** 激活 pack（ADR-013）：origin 精确 + 最长 location 前缀命中的唯一 pack；null = 无 pack 命中（仅基座）。legacy 快照恒为 "default"。 */
+  packId: string | null;
+  /** 激活 pack 的 semver；packId=null 时为 null。 */
+  packVersion: string | null;
+  /** null = 激活 pack 的 featureIdRules 无命中（或无 pack），仅装配稳定基座（fail-safe）。 */
   featureId: string | null;
+  /** registry/legacy 根版本（区别于 pack 独立版本 packVersion）。 */
   snapshotVersion: string;
 }
 
 export interface ComposeInput {
   sessionId: string;
+  /** 激活 pack；null = 仅基座（skills/docs/工具面均为空）。取自 resolveFeature 判定，装配对 agent 透明。 */
+  packId: string | null;
   featureId: string | null;
 }
 
@@ -32,20 +39,34 @@ export interface SkillAsset {
   content: string;
 }
 
-/** 每轮换出的装配产物：稳定基座 + 功能块 + skills + 工具白名单（装配对 agent 透明）。 */
+/**
+ * 每轮换出的装配产物：稳定基座 + 功能块 + pack 作用域 skills + 工具白名单 + docs 索引（装配对 agent 透明）。
+ * skills/docsIndex 收敛到激活 pack；packId=null 时均为空/null。
+ */
 export interface ComposeResult {
   snapshotVersion: string;
+  /** 激活 pack（ADR-013）；null = 仅基座。 */
+  packId: string | null;
+  packVersion: string | null;
   systemPrompt: string;
-  /** assets/features/<id>/feature.md；无功能命中时为 null。 */
+  /** features/<id>/feature.md；无功能命中时为 null。 */
   featureRules: string | null;
-  /** assets/features/<id>/facts.md；无功能命中时为 null。 */
+  /** features/<id>/facts.md；无功能命中时为 null。 */
   facts: string | null;
+  /** 激活 pack 的 skills（pack 作用域，非全局）。 */
   skills: SkillAsset[];
   tools: ToolDefinition[];
+  /** 激活 pack 的 docs/ 渐进披露索引（frontmatter 标题+摘要）；docs/ 为空或无 pack 时为 null。 */
+  docsIndex: string | null;
+  /**
+   * 已安装站点索引（渐进披露第一层，跨功能稳定）：列出平台可辅助的全部带 site 的 pack（用途+可达 URL），
+   * 当前激活 pack 标注（当前）。仅 ≥2 个带 site 的 pack 时非 null（单 site/legacy 无跨站意义 → null）。
+   */
+  sitesIndex: string | null;
 }
 
 export interface InjectionBlock {
-  kind: 'system-prompt' | 'feature-rules' | 'facts' | 'skill';
+  kind: 'system-prompt' | 'sites-index' | 'feature-rules' | 'facts' | 'skill' | 'docs-index';
   id?: string;
   bytes: number;
 }
@@ -53,15 +74,60 @@ export interface InjectionBlock {
 /** 注入自省：与 compose 同源产出，供审计 assembly 事件与调试查看。 */
 export interface InjectionDescription {
   snapshotVersion: string;
+  /** 激活 pack；null = 仅基座。 */
+  packId: string | null;
   featureId: string | null;
   blocks: InjectionBlock[];
   toolIds: string[];
+}
+
+/** pack docs 正文按需读取（渐进披露的 pack_doc 内建工具后端）：只读当前激活 pack 的 docs/。 */
+export interface ReadPackDocInput {
+  /** 当前激活 pack（网关注入，agent 不可跨 pack 指定——只读当前激活 pack 的 docs/）。 */
+  packId: string | null;
+  /** docs/ 内相对路径（如 "guide.md"）；路径穿越出 docs/ → fail-closed 拒读。 */
+  docPath: string;
+}
+
+export interface ReadPackDocResult {
+  ok: boolean;
+  /** ok=true 时的正文（单次截断上限内）。 */
+  content?: string;
+  /** true = 正文超单次上限被截断。 */
+  truncated?: boolean;
+  /** ok=false 时的失败原因（不含敏感路径细节）。 */
+  error?: string;
+}
+
+/** 已安装带 site 围栏的 pack 描述（ADR-013 任务组）：per-origin 身份路由与 navigate 越界校验的依据；legacy 无 site 的 pack 不列入。 */
+export interface SiteDescriptor {
+  packId: string;
+  /** 精确匹配的页面 origin（scheme://host[:port]）。 */
+  origin: string;
+  /** claims.tenant → origin 路由键；缺省=该 pack 不参与 per-origin 身份路由（宿主身份回退平台 claims）。 */
+  tenant?: string;
+  /** 已归一路径前缀围栏（'/' 表整站）。 */
+  locations: string[];
+}
+
+/** 工具→归属 pack 登记（未去重，逐 pack 列出）：toolgate 载入期据此建立命名空间纪律、检测跨 pack 同名 toolId。 */
+export interface ToolOwnership {
+  packId: string;
+  toolId: string;
 }
 
 export interface AssemblyPort {
   resolveFeature(input: ResolveFeatureInput): Promise<ResolveFeatureResult>;
   compose(input: ComposeInput): Promise<ComposeResult>;
   describeInjection(input: ComposeInput): Promise<InjectionDescription>;
+  /** 读当前激活 pack 的 docs/ 单篇正文；只可读该 pack、路径穿越 fail-closed、单次截断上限。 */
+  readPackDoc(input: ReadPackDocInput): Promise<ReadPackDocResult>;
+  /** 全 pack 工具并集（toolgate fail-closed 判定的工具闭集来源，U7）；跨 pack 按 toolId 去重。 */
+  allTools(): Promise<ToolDefinition[]>;
+  /** 已安装带 site 围栏的 pack 列表（ADR-013）：per-origin 身份路由 + navigate 围栏校验用。 */
+  listSites(): Promise<SiteDescriptor[]>;
+  /** 逐 pack 列出工具归属（未去重）：toolgate 载入期命名空间纪律检测用。 */
+  listToolOwnership(): Promise<ToolOwnership[]>;
 }
 
 // ---- ToolGatePort（③工具执行层：唯一决策点 + 代执行指令签发/回收）----
@@ -72,9 +138,25 @@ export interface DomGateContext {
   refs: string[];
   /** 快照页 URL 路径：不在 DomAdapter.pathPrefixes 围栏内即 deny。 */
   path: string;
+  /** 快照页 origin（ADR-013）：site pack 的非 navigate dom 步须 === 工具所属 pack origin，越界即 deny。 */
+  origin?: string;
 }
 
-export interface GateDecisionInput {
+/**
+ * ADR-013 任务组：工具所属激活 pack 的 site 上下文（网关按激活 pack 计算传入）。
+ * packOrigin 缺省=legacy 无 site pack（沿用平台 claims 身份、不校 origin 围栏）。
+ */
+interface PackScopeInput {
+  /** 工具所属激活 pack 的 site.origin；有值即启用 origin 围栏 + per-origin 身份口径。 */
+  packOrigin?: string;
+  /**
+   * packOrigin 对应的宿主身份：tenant'd pack 取 per-origin 路由 claims（缺失/过期即 fail-closed），
+   * no-tenant site pack 由网关回退为平台 claims。http/server 工具据此渲染与校验；dom 工具不用。
+   */
+  claimsForOrigin?: IdentityClaims;
+}
+
+export interface GateDecisionInput extends PackScopeInput {
   sessionId: string;
   toolCallId: string;
   toolId: string;
@@ -90,7 +172,7 @@ export interface GateDecision {
   reason?: string;
 }
 
-export interface IssueExecInstructionInput {
+export interface IssueExecInstructionInput extends PackScopeInput {
   sessionId: string;
   toolCallId: string;
   toolId: string;
@@ -114,10 +196,9 @@ export interface Observation {
   error?: string;
 }
 
-/** 任务级 HITL 授权登记：dom 工具 hitl 获批后记 grant，同任务后续批次 decide 直接放行（adr-011 一任务一确认）。 */
+/** 任务级 HITL 授权登记：hitl 获批后记 grant，同会话同任务的后续调用（跨工具）decide 直接放行（一任务一授权）。 */
 export interface HitlGrantInput {
   sessionId: string;
-  toolId: string;
   /** agent 声明的任务标题（params.task）：授权作用域即用户在确认卡上看到并批准的这个任务。 */
   task: string;
 }
@@ -125,7 +206,7 @@ export interface HitlGrantInput {
 export interface ToolGatePort {
   decide(input: GateDecisionInput): Promise<GateDecision>;
   /**
-   * 登记任务级授权（仅 dom 工具语义）：同 (sessionId,toolId,task) 的后续 decide 放行，
+   * 登记任务级授权：同 (sessionId,task) 的后续 decide 放行（跨工具共享，every-call 工具除外），
    * 滑动 TTL 过期 / exec-result=user-stopped 吊销后回到 hitl。
    */
   grantHitl(input: HitlGrantInput): Promise<void>;
@@ -176,7 +257,15 @@ export interface LlmChatRequest {
 export type LlmStreamEvent =
   | { kind: 'text-delta'; delta: string }
   | { kind: 'tool-call'; toolCallId: string; name: string; params: JsonObject }
-  | { kind: 'done'; stopReason: 'end' | 'tool-call' | 'error'; error?: string };
+  | {
+      kind: 'done';
+      stopReason: 'end' | 'tool-call' | 'error';
+      error?: string;
+      /** 错误类别（stopReason=error 时可选）：invalid-tool-args=模型产出的实参 JSON 非法/截断，可回喂重试自愈。 */
+      errorKind?: 'invalid-tool-args';
+      /** 上游返回 token 用量时透传（缺省=上游未报，消费侧回退字符近似估算）。 */
+      usage?: { inputTokens: number; outputTokens: number };
+    };
 
 export interface LlmPort {
   chat(request: LlmChatRequest): AsyncIterable<LlmStreamEvent>;

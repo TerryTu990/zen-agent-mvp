@@ -1,0 +1,20 @@
+{
+  "packId": "site-a",
+  "version": "1.0.0",
+  "summary": "站点 A 用途摘要",
+  "site": {
+    "origin": "http://a.example",
+    "locations": [
+      "/"
+    ]
+  },
+  "featureIdRules": [
+    {
+      "urlPattern": "/list",
+      "featureId": "alpha"
+    }
+  ],
+  "features": [
+    "alpha"
+  ]
+}

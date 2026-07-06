@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zen-agent.dev/schema/pack/v1.json",
+  "title": "zen-agent 站点包契约 C4（pack manifest，SSOT）",
+  "description": "站点包清单（packs/<packId>/pack.json）的权威契约。【pack = 分发单元】布局同构于 legacy 快照子树（features/<id>/{feature.md,facts.md,tools.json} + skills/<fn>/SKILL.md + docs/ + eval/），额外挂 packId 命名空间与 site 围栏。【激活键】site.origin 精确匹配 + site.locations 路径前缀（缺省 [\"/\"]，同 origin 多 pack 最长前缀胜出；同 origin 前缀重复 → 载入期 fail-closed 拒载）。featureIdRules 降为 pack 内规则，仅在 pack 激活后参与匹配。【版本化不可变（U4）】pack 独立 semver、发布后不可变；registry 登记其 packId+version。pack.json JSON 可序列化，跨端口传递满足 U1。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["packId", "version", "site", "featureIdRules"],
+  "properties": {
+    "packId": {
+      "$comment": "pack 命名空间标识，与 packs/<packId>/ 目录名一致；featureId/toolId 审计与端口定位以 {packId, featureId} 二元组限定。",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "version": {
+      "$comment": "pack 版本（semver，可全序比较）；registry 登记同值，装配与审计事件回写该版本。",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+    },
+    "summary": {
+      "$comment": "一句话站点用途（渐进披露第一层，批次④后续）：进入'已安装站点索引'供 agent 跨站发现；缺省=索引回退用 packId。",
+      "type": "string",
+      "minLength": 1
+    },
+    "site": {
+      "$comment": "激活围栏：origin 精确匹配（scheme://host[:port]，无路径无尾斜杠）+ locations 路径前缀。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin"],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "pattern": "^https?://[^/]+$"
+        },
+        "locations": {
+          "$comment": "路径前缀数组（各以 / 起）；省略时装配器按缺省 [\"/\"]（整站）处理。",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^/" }
+        }
+      }
+    },
+    "tenant": {
+      "$comment": "claims.tenant → origin 路由用（任务组，批次④）；MVP 单租户 demo 可省。",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "featureIdRules": {
+      "$comment": "pack 内 url → featureId 映射规则表（有序，首个命中生效）；仅在本 pack 激活后参与匹配。",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/featureIdRule" }
+    },
+    "features": {
+      "$comment": "可选·pack 内功能闭单（featureId 列表）；声明时装配器启动校验各 features/<id>/ 目录齐备，缺失 fail-closed 拒载。",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/featureId" }
+    }
+  },
+  "$defs": {
+    "featureId": {
+      "$comment": "功能标识文法，与 config-snapshot / tool-definition 及 features/<id>/ 目录名一致（跨契约对齐）。",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "featureIdRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["urlPattern", "featureId"],
+      "properties": {
+        "urlPattern": {
+          "$comment": "ECMAScript 正则源串，对页面完整 URL 做 test 匹配（不含斜杠定界符与 flags）。",
+          "type": "string",
+          "minLength": 1
+        },
+        "featureId": { "$ref": "#/$defs/featureId" }
+      }
+    }
+  }
+}

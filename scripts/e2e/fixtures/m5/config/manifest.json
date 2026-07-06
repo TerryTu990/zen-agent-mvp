@@ -1,0 +1,7 @@
+{
+  "version": "0.1.0",
+  "packs": [
+    { "packId": "host-a", "version": "0.1.0" },
+    { "packId": "site-b", "version": "0.1.0" }
+  ]
+}

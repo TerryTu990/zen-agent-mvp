@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -551,6 +552,35 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       });
       expect(accepted.status).toBe(202);
       await sse.waitFor(() => textOf(sse.frames) === REPLY_REFRESH);
+      expect(lastCardStatus(sse.frames, 'order-list.refresh-orders')).toBe('succeeded');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('模型实参 JSON 截断 → 回喂修正提示自愈重试，回合不终结（invalid-tool-args）', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      // mock-llm '模拟截断实参' 哨兵：首轮产出半截 arguments → llm-port 报 invalid-tool-args →
+      // 网关回喂修正提示 → mock 依提示产出完整调用 → 正常签发执行。
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '模拟截断实参 刷新订单列表' });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      // 自愈路径不向用户播报"服务暂时不可用"。
+      expect(textOf(sse.frames)).not.toContain('服务暂时不可用');
+      const instr = framesByType(sse.frames, 'exec-instruction')[0]!;
+      expect((instr['request'] as { url: string }).url).toBe('/api/orders');
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instr['nonce']),
+        ok: true,
+        status: 200,
+        body: { ok: true, count: 2 },
+      });
+      await sse.waitFor(() => textOf(sse.frames).includes(REPLY_REFRESH));
       expect(lastCardStatus(sse.frames, 'order-list.refresh-orders')).toBe('succeeded');
     } finally {
       sse.close();
@@ -1117,5 +1147,130 @@ describe('审计事件链（M4 全链路 + 脱敏 + 旁路）', () => {
     } finally {
       await badServer.close();
     }
+  });
+});
+
+/**
+ * ADR-013 渐进披露第一层：装配注入"已安装站点索引"+ 内建 site_navigate 工具面（≥2 带 site 的 pack 才注入）。
+ * 用捕获式 mock LLM 断言送达 LLM 的 system 与 tools：acceptance 根（codeflow+mail 双 site）注入索引与 site_navigate；
+ * host-demo 根（单 site）两者皆无——直接验证 gateway 的 buildSystemContent 与工具面装配。
+ */
+interface CapturingMock {
+  port: number;
+  requests: Array<Record<string, unknown>>;
+  close(): Promise<void>;
+}
+
+function startCapturingMock(): Promise<CapturingMock> {
+  const requests: Array<Record<string, unknown>> = [];
+  const httpServer = createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
+      res.writeHead(404).end();
+      return;
+    }
+    let raw = '';
+    req.on('data', (chunk) => {
+      raw += chunk;
+    });
+    req.on('end', () => {
+      try {
+        requests.push(JSON.parse(raw) as Record<string, unknown>);
+      } catch {
+        /* 非 JSON 请求体（不应发生），忽略 */
+      }
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+      });
+      const base = { id: 'x', object: 'chat.completion.chunk', created: 0, model: 'mock-model' };
+      const send = (choice: unknown): void => {
+        res.write(`data: ${JSON.stringify({ ...base, choices: [choice] })}\n\n`);
+      };
+      send({ index: 0, delta: { role: 'assistant' }, finish_reason: null });
+      send({ index: 0, delta: { content: 'ok' }, finish_reason: null });
+      send({ index: 0, delta: {}, finish_reason: 'stop' });
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  return new Promise((resolve) => {
+    httpServer.listen(0, '127.0.0.1', () => {
+      const addr = httpServer.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      resolve({ port, requests, close: () => new Promise((r) => httpServer.close(() => r())) });
+    });
+  });
+}
+
+describe('ADR-013 渐进披露：站点索引 + site_navigate 注入（≥2 site 装配）', () => {
+  let capturing: CapturingMock;
+  let acceptanceServer: RunningServer;
+  let demoServer: RunningServer;
+  let prevBaseUrl: string | undefined;
+
+  beforeAll(async () => {
+    capturing = await startCapturingMock();
+    prevBaseUrl = process.env['ZA_LLM_BASE_URL'];
+    process.env['ZA_LLM_BASE_URL'] = `http://127.0.0.1:${capturing.port}/v1`;
+    acceptanceServer = await startServer(
+      serverOptions({ snapshotRoot: join(repoRoot, 'examples/acceptance') }),
+    );
+    demoServer = await startServer(serverOptions());
+  });
+
+  afterAll(async () => {
+    await acceptanceServer?.close();
+    await demoServer?.close();
+    await capturing?.close();
+    if (prevBaseUrl !== undefined) process.env['ZA_LLM_BASE_URL'] = prevBaseUrl;
+  });
+
+  /** 驱动一次会话到 LLM 调用，返回送达 LLM 的最近一次 system 文本与工具名清单。 */
+  async function driveOnce(srv: RunningServer, url: string): Promise<{ system: string; toolNames: string[] }> {
+    capturing.requests.length = 0;
+    const token = await signToken();
+    const base = `http://127.0.0.1:${srv.port}`;
+    const created = await fetch(`${base}/v1/sessions`, { method: 'POST', headers: authHeaders(token) });
+    const { sessionId } = (await created.json()) as { sessionId: string };
+    await fetch(`${base}/v1/sessions/${sessionId}/frames`, {
+      method: 'POST',
+      headers: authHeaders(token, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ type: 'context-report', sessionId, url }),
+    });
+    await fetch(`${base}/v1/sessions/${sessionId}/frames`, {
+      method: 'POST',
+      headers: authHeaders(token, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ type: 'user-message', sessionId, text: '你好' }),
+    });
+    const deadline = Date.now() + 8000;
+    while (capturing.requests.length === 0) {
+      if (Date.now() > deadline) throw new Error('等待 LLM 调用捕获超时');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const req = capturing.requests[capturing.requests.length - 1]!;
+    const messages = (req['messages'] ?? []) as Array<{ role: string; content: string }>;
+    const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+    const tools = (req['tools'] ?? []) as Array<{ name?: string; function?: { name?: string } }>;
+    const toolNames = tools.map((t) => t.function?.name ?? t.name ?? '');
+    return { system, toolNames };
+  }
+
+  // 判别注入的站点索引本体用其正文行"平台可辅助以下站点"——ZA-SYS-06 基座条款措辞不同（"平台能辅助"），
+  // 故基座恒含的说明句不会误判为已注入索引。
+  const INDEX_BODY_MARKER = '平台可辅助以下站点';
+
+  it('双 site 根（codeflow 会话）：system 含站点索引列两站，工具面含 site_navigate', async () => {
+    const { system, toolNames } = await driveOnce(acceptanceServer, 'https://codeflow.asia/console/log');
+    expect(system).toContain(INDEX_BODY_MARKER);
+    expect(system).toContain('codeflow.asia');
+    expect(system).toContain('mail.126.com');
+    expect(toolNames).toContain('site_navigate');
+  });
+
+  it('单 site 根（host-demo 会话）：无站点索引、工具面无 site_navigate（<2 site 不注入）', async () => {
+    const { system, toolNames } = await driveOnce(demoServer, ORDER_LIST_URL);
+    expect(system).not.toContain(INDEX_BODY_MARKER);
+    expect(toolNames).not.toContain('site_navigate');
   });
 });

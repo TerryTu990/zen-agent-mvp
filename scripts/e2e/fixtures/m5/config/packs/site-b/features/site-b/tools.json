@@ -1,0 +1,79 @@
+[
+  {
+    "id": "site-b.page-operate",
+    "featureIds": ["site-b"],
+    "description": "在站点乙表单页上可见地代用户操作（填写/点击/读取）。使用前必须先调用 page_snapshot 取得可交互元素 ref，steps 中的 ref 必须取自最近一次快照；需要向用户回报的值用 read 步骤采集。task 在整个任务期间保持不变——首批触发一次用户授权，其后同任务批次自动放行。提交请用 site-b.confirm-submit（本工具不做提交）。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "steps", "summary"],
+      "properties": {
+        "task": { "type": "string" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "type": "object" }
+        },
+        "summary": { "type": "string" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/"]
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": ["reads", "completedSteps"],
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "number" }
+      }
+    }
+  },
+  {
+    "id": "site-b.confirm-submit",
+    "featureIds": ["site-b"],
+    "description": "点击站点乙表单的提交按钮，把已填写的备注提交出去。这是对外不可撤回动作：每次调用都单独弹确认卡、须用户逐次批准（授权不复用）。使用前必须先调用 page_snapshot 取得提交按钮的 ref；steps 只允许包含一个 action=click 的步骤。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "steps", "summary"],
+      "properties": {
+        "task": { "type": "string" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["action", "ref"],
+            "properties": {
+              "action": { "enum": ["click"] },
+              "ref": { "type": "string" }
+            }
+          }
+        },
+        "summary": { "type": "string" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "hitlMode": "every-call",
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/"]
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": ["reads", "completedSteps"],
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "number" }
+      }
+    }
+  }
+]

@@ -17,30 +17,56 @@ export interface DomStepRunner {
   run(steps: DomStep[]): Promise<DomStepOutcome>;
 }
 
+/**
+ * navigate 步的执行委托（ADR-013 批次④）：dom 批次遇 navigate 时不在页面内跳转，
+ * 而是请 background 在本组窗口开目标页并入组；返回值即回喂服务端的结果本体。
+ */
+export type DomNavigate = (url: string) => Promise<{ ok: boolean; url?: string; error?: string }>;
+
 const HIGHLIGHT_STYLE = '3px solid #B4552F';
 
 /**
+ * 取元素所属 realm 的构造器：同源 iframe 内元素属子文档 realm，用顶层 window 的
+ * instanceof / prototype 会漏判（ADR-013 批次④ iframe 下钻）。缺 defaultView 时回退顶层。
+ */
+function realmOf(el: Element): typeof globalThis {
+  return (el.ownerDocument.defaultView ?? window) as unknown as typeof globalThis;
+}
+
+function isTextInput(el: Element): el is HTMLInputElement | HTMLTextAreaElement {
+  const realm = realmOf(el);
+  return el instanceof realm.HTMLInputElement || el instanceof realm.HTMLTextAreaElement;
+}
+
+/** 富文本编辑区（如 126 正文 iframe 的 body[contenteditable]）：无 value 属性，走子节点重建写入。与快照器同口径按属性判定。 */
+function isEditable(el: Element): el is HTMLElement {
+  return el instanceof realmOf(el).HTMLElement && el.getAttribute('contenteditable') === 'true';
+}
+
+/**
  * React 受控输入兼容：框架以自有 value 描述符跟踪输入，直接赋值不触发其状态更新，
- * 须经原型 native setter 写值再派发 input/change 事件。
+ * 须经原型 native setter 写值再派发 input/change 事件。setter 取自元素自身 realm 原型，兼容同源 iframe。
  */
 function setNativeValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
-  const proto = el instanceof HTMLTextAreaElement
-    ? HTMLTextAreaElement.prototype
-    : HTMLInputElement.prototype;
+  const realm = realmOf(el);
+  const proto = el instanceof realm.HTMLTextAreaElement
+    ? realm.HTMLTextAreaElement.prototype
+    : realm.HTMLInputElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
   if (setter !== undefined) setter.call(el, value);
-  else el.value = value;
+  else (el as HTMLInputElement | HTMLTextAreaElement).value = value;
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
 function readValueOf(el: Element): string {
+  const realm = realmOf(el);
   if (
-    el instanceof HTMLInputElement ||
-    el instanceof HTMLSelectElement ||
-    el instanceof HTMLTextAreaElement
+    el instanceof realm.HTMLInputElement ||
+    el instanceof realm.HTMLSelectElement ||
+    el instanceof realm.HTMLTextAreaElement
   ) {
-    return el.value;
+    return (el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).value;
   }
   return el.textContent?.trim().replace(/\s+/g, ' ') ?? '';
 }
@@ -50,6 +76,8 @@ export function createDomStepRunner(
   pace: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
   // 用户「停止」检查点（步间生效）：返回 true 即中止余下步骤，错误串固定 user-stopped（服务端据此吊销任务授权）。
   isStopped: () => boolean = () => false,
+  // navigate 步委托；未注入时遇 navigate 如实失败（不静默降级）。
+  navigate?: DomNavigate,
 ): DomStepRunner {
   async function spotlight(el: Element): Promise<void> {
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -72,6 +100,14 @@ export function createDomStepRunner(
           ok: false,
           error: `step-${index + 1}-${step.action}:${reason}`,
         });
+        // navigate 免 ref、服务端已保证单步：不解引用快照，直接委托 background 开页。
+        if (step.action === 'navigate') {
+          if (navigate === undefined) return fail('navigate-unavailable');
+          if (step.url === undefined || step.url === '') return fail('missing-url');
+          const outcome = await navigate(step.url);
+          if (!outcome.ok) return fail(outcome.error ?? 'navigate-failed');
+          return { ok: true, body: { url: outcome.url ?? step.url } };
+        }
         const el = step.ref !== undefined ? resolve(step.ref) : null;
         if (el === null) return fail('ref-not-found');
         await spotlight(el);
@@ -80,14 +116,26 @@ export function createDomStepRunner(
             (el as HTMLElement).click();
             break;
           case 'fill':
-            if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) {
+            if (isTextInput(el)) {
+              setNativeValue(el, step.value ?? '');
+            } else if (isEditable(el)) {
+              // 富文本编辑区无 value：按换行拆段写入（textContent 会把整段塞成单行），派发 input 通知编辑器状态。
+              el.replaceChildren(
+                ...(step.value ?? '').split('\n').map((line) => {
+                  const div = el.ownerDocument.createElement('div');
+                  if (line === '') div.appendChild(el.ownerDocument.createElement('br'));
+                  else div.textContent = line;
+                  return div;
+                }),
+              );
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            } else {
               return fail('not-fillable');
             }
-            setNativeValue(el, step.value ?? '');
             break;
           case 'select':
-            if (!(el instanceof HTMLSelectElement)) return fail('not-selectable');
-            el.value = step.value ?? '';
+            if (!(el instanceof realmOf(el).HTMLSelectElement)) return fail('not-selectable');
+            (el as HTMLSelectElement).value = step.value ?? '';
             el.dispatchEvent(new Event('change', { bubbles: true }));
             break;
           case 'read':

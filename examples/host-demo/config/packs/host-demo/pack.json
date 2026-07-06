@@ -1,0 +1,14 @@
+{
+  "packId": "host-demo",
+  "version": "0.2.0",
+  "summary": "订单管理演示站点：查看订单列表与详情、页面代操作",
+  "site": {
+    "origin": "http://127.0.0.1:4173",
+    "locations": ["/"]
+  },
+  "featureIdRules": [
+    { "urlPattern": "order-list\\.html", "featureId": "order-list" },
+    { "urlPattern": "order-detail\\.html", "featureId": "order-detail" }
+  ],
+  "features": ["order-list", "order-detail"]
+}

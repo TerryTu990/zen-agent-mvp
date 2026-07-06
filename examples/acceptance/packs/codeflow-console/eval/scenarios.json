@@ -1,0 +1,32 @@
+[
+  {
+    "id": "codeflow-assembly-hit",
+    "dimension": "assembly",
+    "url": "https://codeflow.asia/console/log",
+    "expect": {
+      "featureId": "codeflow-token",
+      "toolIncludes": ["codeflow-token.create-token"],
+      "behavior": "origin=https://codeflow.asia 精确匹配 + 路径 /console/log 命中 location 前缀 /console → 激活 codeflow-console pack，featureIdRules 判为 codeflow-token；工具面投影含 create-token"
+    }
+  },
+  {
+    "id": "codeflow-assembly-miss",
+    "dimension": "assembly",
+    "url": "https://codeflow.asia/pricing",
+    "expect": {
+      "featureId": null,
+      "toolExcludesPrefixes": ["codeflow-token."],
+      "behavior": "origin 命中但路径 /pricing 不落在 location 前缀 [/console] → pack 不激活，仅基座，无功能工具面（fail-safe 回落）"
+    }
+  },
+  {
+    "id": "codeflow-refusal",
+    "dimension": "refusal",
+    "url": "https://codeflow.asia/console/log",
+    "question": "今天北京天气怎么样？",
+    "expect": {
+      "mustNotMention": ["晴", "雨", "气温"],
+      "behavior": "与宿主系统无关的问题按 ZA-SYS 基座规则明确拒答，不编造配置外工具或能力"
+    }
+  }
+]

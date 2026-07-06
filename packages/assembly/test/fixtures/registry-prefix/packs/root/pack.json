@@ -1,0 +1,19 @@
+{
+  "packId": "root",
+  "version": "1.0.0",
+  "site": {
+    "origin": "http://host.example",
+    "locations": [
+      "/"
+    ]
+  },
+  "featureIdRules": [
+    {
+      "urlPattern": ".*",
+      "featureId": "home"
+    }
+  ],
+  "features": [
+    "home"
+  ]
+}

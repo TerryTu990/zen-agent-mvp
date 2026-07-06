@@ -1,0 +1,21 @@
+[
+  {
+    "id": "x.do",
+    "featureIds": [
+      "x"
+    ],
+    "description": "x.do 示例操作",
+    "params": {
+      "type": "object"
+    },
+    "execution": "client",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "/api/x"
+    },
+    "resultSchema": {
+      "type": "object"
+    }
+  }
+]

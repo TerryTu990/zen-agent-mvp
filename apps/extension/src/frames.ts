@@ -124,6 +124,8 @@ export type DomStepAction =
 export interface DomStep {
   action: DomStepAction;
   ref?: string;
+  /** navigate 目标绝对 URL（ADR-013 批次④）：服务端签发前已校验落在某 pack site 围栏内。 */
+  url?: string;
   to?: string;
   value?: string;
   name?: string;

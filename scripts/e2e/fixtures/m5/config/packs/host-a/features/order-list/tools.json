@@ -1,0 +1,36 @@
+[
+  {
+    "id": "order-list.page-operate",
+    "featureIds": ["order-list"],
+    "description": "在订单页面上可见地代用户操作（读取/点击/填写），或按需跳转到已授权的关联站点。使用前必须先调用 page_snapshot 取得可交互元素 ref，steps 中的 ref 必须取自最近一次快照；跳转用单独一个 navigate 步（带目标绝对 url，不与其它步混批）。task 在整个任务期间保持不变——首批触发一次用户授权，其后同任务批次自动放行。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "steps", "summary"],
+      "properties": {
+        "task": { "type": "string" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "type": "object" }
+        },
+        "summary": { "type": "string" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/order-list"]
+    },
+    "resultSchema": {
+      "type": "object",
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "number" },
+        "url": { "type": "string" }
+      }
+    }
+  }
+]

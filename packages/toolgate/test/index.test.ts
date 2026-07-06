@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { ExecResultFrame, IdentityClaims, ToolDefinition } from '@zen-agent/contracts';
+import { SITE_NAVIGATE_TOOL_ID } from '@zen-agent/contracts';
 import { computeExecSignature, createToolGatePort } from '../src/index.js';
 
 // 仅测试固定值，非真实密钥（真实密钥运行时经 env 注入，ZA-C-SEC-02）。
@@ -185,6 +186,27 @@ const domHitlTool: ToolDefinition = {
   riskTier: 'hitl',
 };
 
+/** 带 task 参数的 hitl 级 http 工具：任务级授权跨工具共享测试对象。 */
+const httpTaskHitlTool: ToolDefinition = {
+  id: 'order-list.cancel-order-task',
+  featureIds: ['order-list'],
+  description: '取消订单（隶属某任务）',
+  params: {
+    type: 'object',
+    required: ['task', 'orderId'],
+    properties: { task: { type: 'string' }, orderId: { type: 'string' } },
+    additionalProperties: false,
+  },
+  execution: 'client',
+  riskTier: 'hitl',
+  adapter: { method: 'POST', urlTemplate: '/api/orders/{{orderId}}/cancel' },
+  resultSchema: {
+    type: 'object',
+    required: ['ok'],
+    properties: { ok: { type: 'boolean' } },
+  },
+};
+
 /** dom 判定上下文夹具：快照页在围栏内、含 za-1/za-2 两个 ref。 */
 const domContext = { refs: ['za-1', 'za-2'], path: '/console/token' };
 
@@ -200,6 +222,7 @@ const allTools: ToolDefinition[] = [
   identityTool,
   domTool,
   domHitlTool,
+  httpTaskHitlTool,
 ];
 
 interface PortOverrides {
@@ -787,13 +810,13 @@ describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () 
     expect(d).toEqual({ verdict: 'deny', reason: 'ref-not-in-snapshot' });
   });
 
-  it('契约保留但未实现的动作（navigate/waitFor）→ deny action-not-implemented（锚点 ②-b）', async () => {
+  it('契约保留但未实现的动作（waitFor）→ deny action-not-implemented', async () => {
     const d = await makePort().decide({
       ...base,
-      params: { task: 't1', steps: [{ action: 'navigate', ref: 'za-1', to: '/console/token' }], summary: 'x' },
+      params: { task: 't1', steps: [{ action: 'waitFor', ref: 'za-1' }], summary: 'x' },
       domContext,
     });
-    expect(d).toEqual({ verdict: 'deny', reason: 'action-not-implemented:navigate' });
+    expect(d).toEqual({ verdict: 'deny', reason: 'action-not-implemented:waitFor' });
   });
 
   it('fill 缺 value / read 缺 name / 闭集外动作 / 空批次 → 各自 deny', async () => {
@@ -870,7 +893,7 @@ describe('toolgate 任务级 HITL 授权（grant，一任务一确认）', () =>
     const first = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
     expect(first.verdict).toBe('hitl');
 
-    await port.grantHitl({ sessionId: 's1', toolId: domHitlTool.id, task: '建令牌' });
+    await port.grantHitl({ sessionId: 's1', task: '建令牌' });
     const second = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
     expect(second.verdict).toBe('allow');
 
@@ -886,6 +909,44 @@ describe('toolgate 任务级 HITL 授权（grant，一任务一确认）', () =>
     expect(otherSession.verdict).toBe('hitl');
   });
 
+  it('授权跨工具共享：dom 工具获批后，同会话同任务的 http hitl 工具也 allow', async () => {
+    const port = makePort();
+    const httpBase = {
+      sessionId: 's1',
+      toolCallId: 'c-x',
+      toolId: httpTaskHitlTool.id,
+      params: { task: '建令牌', orderId: 'o-1' },
+      claims: validClaims,
+    };
+    const before = await port.decide(httpBase);
+    expect(before.verdict).toBe('hitl');
+    await port.grantHitl({ sessionId: 's1', task: '建令牌' });
+    const after = await port.decide(httpBase);
+    expect(after.verdict).toBe('allow');
+    // 同工具不同任务不共享。
+    const otherTask = await port.decide({ ...httpBase, params: { task: '删令牌', orderId: 'o-1' } });
+    expect(otherTask.verdict).toBe('hitl');
+  });
+
+  it('grant 不影响 forbidden 与 dom 批次校验：已授权任务的非法批次仍 deny（U7 fail-closed）', async () => {
+    const port = makePort();
+    await port.grantHitl({ sessionId: 's1', task: '建令牌' });
+    const forbidden = await port.decide({
+      sessionId: 's1',
+      toolCallId: 'c-f',
+      toolId: forbiddenTool.id,
+      params: {},
+      claims: validClaims,
+    });
+    expect(forbidden).toEqual({ verdict: 'deny', reason: 'forbidden' });
+    const badRef = await port.decide({
+      ...base,
+      params: { task: '建令牌', steps: [{ action: 'click', ref: 'not-in-snapshot' }], summary: 'x' },
+      domContext,
+    });
+    expect(badRef).toEqual({ verdict: 'deny', reason: 'ref-not-in-snapshot' });
+  });
+
   it('滑动闲置超时后授权失效，回到 hitl', async () => {
     let clock = 1_000_000;
     const port = createToolGatePort({
@@ -894,7 +955,7 @@ describe('toolgate 任务级 HITL 授权（grant，一任务一确认）', () =>
       hitlGrantTtlMs: 1000,
       now: () => clock,
     });
-    await port.grantHitl({ sessionId: 's1', toolId: domHitlTool.id, task: '建令牌' });
+    await port.grantHitl({ sessionId: 's1', task: '建令牌' });
     clock += 900;
     const fresh = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
     expect(fresh.verdict).toBe('allow');
@@ -907,9 +968,10 @@ describe('toolgate 任务级 HITL 授权（grant，一任务一确认）', () =>
     expect(expired.verdict).toBe('hitl');
   });
 
-  it('exec-result=user-stopped 吊销该工具全部任务授权（停止=收回自动执行）', async () => {
+  it('exec-result=user-stopped 吊销本会话全部任务授权（停止=收回自动执行）', async () => {
     const port = makePort();
-    await port.grantHitl({ sessionId: 's1', toolId: domHitlTool.id, task: '建令牌' });
+    await port.grantHitl({ sessionId: 's1', task: '建令牌' });
+    await port.grantHitl({ sessionId: 's1', task: '删令牌' });
     const instruction = await port.issueExecInstruction({
       ...base,
       params: taskParams('建令牌'),
@@ -928,5 +990,375 @@ describe('toolgate 任务级 HITL 授权（grant，一任务一确认）', () =>
     expect(stopped).toMatchObject({ ok: false, error: 'user-stopped' });
     const after = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
     expect(after.verdict).toBe('hitl');
+    // 停止吊销覆盖本会话全部任务，不只被停止的那个。
+    const otherTask = await port.decide({ ...base, params: taskParams('删令牌'), domContext });
+    expect(otherTask.verdict).toBe('hitl');
+  });
+});
+
+// ---- ADR-013 批次④：任务组治理面（per-origin 身份 / origin 围栏 / navigate / every-call / 命名空间纪律） ----
+
+/** codeflow http 工具（相对 URL，site pack 锚定 pack origin）：per-origin 身份口径测试对象。 */
+const siteHttpTool: ToolDefinition = {
+  id: 'codeflow-token.create-token',
+  featureIds: ['codeflow-token'],
+  description: '建 key',
+  params: {
+    type: 'object',
+    required: ['name'],
+    properties: { name: { type: 'string' } },
+    additionalProperties: false,
+  },
+  execution: 'client',
+  riskTier: 'auto',
+  adapter: { method: 'POST', urlTemplate: '/api/token/', headers: { 'New-Api-User': '{{hostUserId}}' } },
+  resultSchema: { type: 'object', required: ['success'], properties: { success: { type: 'boolean' } } },
+};
+
+/** mail 发送工具（dom + every-call）：dom 身份豁免 + 授权不复用测试对象。 */
+const siteDomSendTool: ToolDefinition = {
+  id: 'mail-126.send-email',
+  featureIds: ['mail-compose'],
+  description: '点击发送',
+  params: {
+    type: 'object',
+    required: ['task', 'steps', 'summary'],
+    properties: { task: { type: 'string' }, steps: { type: 'array' }, summary: { type: 'string' } },
+    additionalProperties: false,
+  },
+  execution: 'client',
+  riskTier: 'hitl',
+  hitlMode: 'every-call',
+  adapter: { kind: 'dom', pathPrefixes: ['/'] },
+  resultSchema: {
+    type: 'object',
+    required: ['reads', 'completedSteps'],
+    properties: { reads: { type: 'object' }, completedSteps: { type: 'number' } },
+  },
+};
+
+/** codeflow 页面操作工具（dom，含 navigate 能力）：navigate 围栏测试对象。 */
+const siteNavTool: ToolDefinition = {
+  id: 'codeflow-token.page-operate',
+  featureIds: ['codeflow-token'],
+  description: '页面操作/跳转',
+  params: {
+    type: 'object',
+    required: ['task', 'steps', 'summary'],
+    properties: { task: { type: 'string' }, steps: { type: 'array' }, summary: { type: 'string' } },
+    additionalProperties: false,
+  },
+  execution: 'client',
+  riskTier: 'auto',
+  adapter: { kind: 'dom', pathPrefixes: ['/console'] },
+  resultSchema: {
+    type: 'object',
+    required: ['reads', 'completedSteps'],
+    properties: { reads: { type: 'object' }, completedSteps: { type: 'number' } },
+  },
+};
+
+const CODEFLOW_ORIGIN = 'https://codeflow.asia';
+const MAIL_ORIGIN = 'https://mail.126.com';
+const siteFixtures = {
+  tools: [siteHttpTool, siteDomSendTool, siteNavTool],
+  sites: [
+    { packId: 'codeflow-console', origin: CODEFLOW_ORIGIN, tenant: 'codeflow', locations: ['/console'] },
+    { packId: 'mail-126', origin: MAIL_ORIGIN, locations: ['/'] },
+  ],
+  toolOwnership: [
+    { packId: 'codeflow-console', toolId: siteHttpTool.id },
+    { packId: 'codeflow-console', toolId: siteNavTool.id },
+    { packId: 'mail-126', toolId: siteDomSendTool.id },
+  ],
+};
+
+function makeSitePort(overrides?: PortOverrides) {
+  return createToolGatePort({
+    ...siteFixtures,
+    signingSecret: SIGN_FIXTURE,
+    ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
+  });
+}
+
+describe('toolgate ADR-013 — per-origin 身份口径（http/server 按目标 pack origin fail-closed）', () => {
+  const httpBase = { sessionId: 's', toolCallId: 'c', toolId: siteHttpTool.id, params: { name: 'k' } };
+
+  it('site pack http 工具缺目标 origin 身份 → deny，理由含「该站点身份缺失」（U7 fail-closed）', async () => {
+    const d = await makeSitePort().decide({ ...httpBase, claims: validClaims, packOrigin: CODEFLOW_ORIGIN });
+    expect(d.verdict).toBe('deny');
+    expect(d.reason).toContain('该站点身份缺失');
+    expect(d.reason).toContain(CODEFLOW_ORIGIN);
+  });
+
+  it('site pack http 工具有目标 origin 身份 → 放行', async () => {
+    const d = await makeSitePort().decide({
+      ...httpBase,
+      claims: validClaims,
+      packOrigin: CODEFLOW_ORIGIN,
+      claimsForOrigin: validClaims,
+    });
+    expect(d.verdict).toBe('allow');
+  });
+
+  it('site pack http 工具 per-origin 身份已过期 → deny，理由含「已过期」', async () => {
+    const expired = { ...validClaims, exp: 1 };
+    const d = await makeSitePort().decide({
+      ...httpBase,
+      claims: validClaims,
+      packOrigin: CODEFLOW_ORIGIN,
+      claimsForOrigin: expired,
+    });
+    expect(d.verdict).toBe('deny');
+    expect(d.reason).toContain('已过期');
+  });
+
+  it('dom 工具豁免宿主 hostUserId 要求（只需平台 JWT，网关已验签）', async () => {
+    const noHost = { ...validClaims, hostUserId: '' };
+    const d = await makeSitePort().decide({
+      sessionId: 's',
+      toolCallId: 'c',
+      toolId: siteDomSendTool.id,
+      params: { task: '发信', steps: [{ action: 'click', ref: 'za-1' }], summary: 'x' },
+      claims: noHost,
+      packOrigin: MAIL_ORIGIN,
+      claimsForOrigin: noHost,
+      domContext: { refs: ['za-1'], path: '/js6/main.jsp', origin: MAIL_ORIGIN },
+    });
+    // 身份不被拦（非 deny:identity）；send-email 为 hitl 故挂起确认。
+    expect(d.verdict).toBe('hitl');
+  });
+});
+
+describe('toolgate ADR-013 — dom origin 围栏（快照 origin 须 === 工具所属 pack origin）', () => {
+  const sendParams = { task: '发信', steps: [{ action: 'click', ref: 'za-1' }], summary: 'x' };
+  const sendBase = {
+    sessionId: 's',
+    toolCallId: 'c',
+    toolId: siteDomSendTool.id,
+    params: sendParams,
+    claims: validClaims,
+    packOrigin: MAIL_ORIGIN,
+    claimsForOrigin: validClaims,
+  };
+
+  it('快照 origin === pack origin → 命中围栏（放行到 hitl）', async () => {
+    const d = await makeSitePort().decide({
+      ...sendBase,
+      domContext: { refs: ['za-1'], path: '/js6/main.jsp', origin: MAIL_ORIGIN },
+    });
+    expect(d.verdict).toBe('hitl');
+  });
+
+  it('快照 origin !== pack origin → deny origin-fence-violation（越界）', async () => {
+    const d = await makeSitePort().decide({
+      ...sendBase,
+      domContext: { refs: ['za-1'], path: '/js6/main.jsp', origin: 'https://evil.example' },
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'origin-fence-violation' });
+  });
+});
+
+describe('toolgate ADR-013 — navigate 签发（单步 / 围栏 / 免 ref）', () => {
+  const navBase = {
+    sessionId: 's',
+    toolCallId: 'c',
+    toolId: siteNavTool.id,
+    claims: validClaims,
+    packOrigin: CODEFLOW_ORIGIN,
+    claimsForOrigin: validClaims,
+    // navigate 免除 origin 围栏：当前页在 codeflow，快照 origin 与 pack 一致即可。
+    domContext: { refs: [], path: '/console/token', origin: CODEFLOW_ORIGIN },
+  };
+
+  it('单步 navigate 到已安装 pack site 围栏内的 URL → 放行', async () => {
+    const d = await makeSitePort().decide({
+      ...navBase,
+      params: { task: '去邮箱', steps: [{ action: 'navigate', url: `${MAIL_ORIGIN}/js6/main.jsp` }], summary: 'x' },
+    });
+    expect(d.verdict).toBe('allow');
+  });
+
+  it('navigate 与其它步混批 → deny invalid-params（navigate 单步强制）', async () => {
+    const d = await makeSitePort().decide({
+      ...navBase,
+      params: {
+        task: '去邮箱',
+        steps: [{ action: 'navigate', url: `${MAIL_ORIGIN}/` }, { action: 'click', ref: 'za-1' }],
+        summary: 'x',
+      },
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'invalid-params' });
+  });
+
+  it('navigate 目标 URL 越出所有 pack site 围栏 → deny fence-violation', async () => {
+    const d = await makeSitePort().decide({
+      ...navBase,
+      params: { task: '去外站', steps: [{ action: 'navigate', url: 'https://evil.example/x' }], summary: 'x' },
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'fence-violation' });
+  });
+
+  it('navigate 目标 origin 命中但 location 前缀越界 → deny fence-violation', async () => {
+    const d = await makeSitePort().decide({
+      ...navBase,
+      // codeflow site locations=['/console']，/pricing 不在围栏内。
+      params: { task: '去定价', steps: [{ action: 'navigate', url: `${CODEFLOW_ORIGIN}/pricing` }], summary: 'x' },
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'fence-violation' });
+  });
+
+  it('navigate 缺 url → deny missing-navigate-url', async () => {
+    const d = await makeSitePort().decide({
+      ...navBase,
+      params: { task: '去哪', steps: [{ action: 'navigate' }], summary: 'x' },
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'missing-navigate-url' });
+  });
+
+  it('签发同源净化：navigate 指令只留 {action,url}（U7 治理终点重校验）', async () => {
+    const instruction = await makeSitePort().issueExecInstruction({
+      ...navBase,
+      params: {
+        task: '去邮箱',
+        steps: [{ action: 'navigate', url: `${MAIL_ORIGIN}/js6/main.jsp`, ref: 'za-9', bogus: 1 }],
+        summary: 'x',
+      },
+    });
+    expect(instruction.request).toEqual({
+      kind: 'dom',
+      steps: [{ action: 'navigate', url: `${MAIL_ORIGIN}/js6/main.jsp` }],
+    });
+  });
+});
+
+describe('toolgate ADR-013 — every-call 授权不复用', () => {
+  const sendBase = {
+    sessionId: 's',
+    toolCallId: 'c',
+    toolId: siteDomSendTool.id,
+    params: { task: '发信', steps: [{ action: 'click', ref: 'za-1' }], summary: 'x' },
+    claims: validClaims,
+    packOrigin: MAIL_ORIGIN,
+    claimsForOrigin: validClaims,
+    domContext: { refs: ['za-1'], path: '/js6/main.jsp', origin: MAIL_ORIGIN },
+  };
+
+  it('every-call 工具已 grant 同任务仍 hitl（不复用授权，次次单独确认）', async () => {
+    const port = makeSitePort();
+    const first = await port.decide(sendBase);
+    expect(first.verdict).toBe('hitl');
+    await port.grantHitl({ sessionId: 's', task: '发信' });
+    const second = await port.decide(sendBase);
+    expect(second.verdict).toBe('hitl');
+  });
+});
+
+describe('toolgate ADR-013 — 内建 site_navigate 跨站导航（渐进披露第一层配套）', () => {
+  const navBase = { sessionId: 's', toolCallId: 'c', toolId: SITE_NAVIGATE_TOOL_ID, claims: validClaims };
+  const mailUrl = `${MAIL_ORIGIN}/js6/main.jsp`;
+
+  it('目标在某已安装 pack 围栏内 → hitl（导航有感、单次确认）', async () => {
+    const d = await makeSitePort().decide({ ...navBase, params: { url: mailUrl } });
+    expect(d.verdict).toBe('hitl');
+  });
+
+  it('带 task 且该任务已获批 → allow（导航共享任务级授权）；无 task 仍 hitl', async () => {
+    const port = makeSitePort();
+    await port.grantHitl({ sessionId: 's', task: '发信' });
+    const withTask = await port.decide({ ...navBase, params: { url: mailUrl, task: '发信' } });
+    expect(withTask.verdict).toBe('allow');
+    const noTask = await port.decide({ ...navBase, params: { url: mailUrl } });
+    expect(noTask.verdict).toBe('hitl');
+    const otherTask = await port.decide({ ...navBase, params: { url: mailUrl, task: '别的任务' } });
+    expect(otherTask.verdict).toBe('hitl');
+  });
+
+  it('允许目标为别 pack 的 origin（跨站语义），只要已安装', async () => {
+    const d = await makeSitePort().decide({ ...navBase, params: { url: `${CODEFLOW_ORIGIN}/console/token` } });
+    expect(d.verdict).toBe('hitl');
+  });
+
+  it('目标 origin 未安装 → deny fence-violation', async () => {
+    const d = await makeSitePort().decide({ ...navBase, params: { url: 'https://evil.example/x' } });
+    expect(d).toEqual({ verdict: 'deny', reason: 'fence-violation' });
+  });
+
+  it('目标 origin 命中但 location 前缀越界 → deny fence-violation', async () => {
+    const d = await makeSitePort().decide({ ...navBase, params: { url: `${CODEFLOW_ORIGIN}/pricing` } });
+    expect(d).toEqual({ verdict: 'deny', reason: 'fence-violation' });
+  });
+
+  it('参数不过 schema（缺 url）→ deny invalid-params', async () => {
+    const d = await makeSitePort().decide({ ...navBase, params: {} });
+    expect(d).toEqual({ verdict: 'deny', reason: 'invalid-params' });
+  });
+
+  it('签发：构造一次性签名 navigate dom 指令，签名可同 secret 复算', async () => {
+    const frame = await makeSitePort().issueExecInstruction({
+      ...navBase,
+      params: { url: mailUrl, reason: '去发信' },
+    });
+    expect(frame.request).toEqual({ kind: 'dom', steps: [{ action: 'navigate', url: mailUrl }] });
+    const expected = computeExecSignature(SIGN_FIXTURE, {
+      nonce: frame.nonce,
+      ttl: frame.ttl,
+      toolCallId: frame.toolCallId,
+      request: frame.request,
+    });
+    expect(frame.signature).toBe(expected);
+  });
+
+  it('签发越界目标 → 抛错拒发（治理终点独立重校验，U7 fail-closed）', async () => {
+    await expect(
+      makeSitePort().issueExecInstruction({ ...navBase, params: { url: 'https://evil.example/x' } }),
+    ).rejects.toThrow(/越出/);
+  });
+
+  it('结果回收：{url} 过 resultSchema → ok；缺 url → invalid-result（U7）', async () => {
+    const port = makeSitePort();
+    const okFrame = await port.issueExecInstruction({ ...navBase, params: { url: mailUrl } });
+    const good = await port.acceptExecResult({
+      sessionId: 's',
+      result: { type: 'exec-result', sessionId: 's', nonce: okFrame.nonce, ok: true, body: { url: mailUrl } },
+    });
+    expect(good.ok).toBe(true);
+    expect(good.content).toEqual({ url: mailUrl });
+
+    const badFrame = await port.issueExecInstruction({ ...navBase, params: { url: mailUrl } });
+    const bad = await port.acceptExecResult({
+      sessionId: 's',
+      result: { type: 'exec-result', sessionId: 's', nonce: badFrame.nonce, ok: true, body: {} },
+    });
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toBe('invalid-result');
+  });
+});
+
+describe('toolgate ADR-013 — 命名空间纪律（跨 pack 同名 toolId 拒启）', () => {
+  it('两 pack 登记同一 toolId → createToolGatePort 载入期抛错拒启', () => {
+    expect(() =>
+      createToolGatePort({
+        tools: [siteHttpTool],
+        signingSecret: SIGN_FIXTURE,
+        toolOwnership: [
+          { packId: 'pack-a', toolId: siteHttpTool.id },
+          { packId: 'pack-b', toolId: siteHttpTool.id },
+        ],
+      }),
+    ).toThrow(/命名空间冲突/);
+  });
+
+  it('同 pack 内重复登记同一 toolId → 不视为冲突（正常构造）', () => {
+    expect(() =>
+      createToolGatePort({
+        tools: [siteHttpTool],
+        signingSecret: SIGN_FIXTURE,
+        toolOwnership: [
+          { packId: 'pack-a', toolId: siteHttpTool.id },
+          { packId: 'pack-a', toolId: siteHttpTool.id },
+        ],
+      }),
+    ).not.toThrow();
   });
 });

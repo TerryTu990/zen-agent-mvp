@@ -3,17 +3,20 @@ import { createIdentityProvider } from './identity.js';
 import { createSseParser } from './sse.js';
 import { createGroupMembers, routeForFrame, type FrameRoute } from './group-routing.js';
 import {
+  decideActivation,
+  sessionKeyForGroup,
+  autoGroupKey,
+  TAB_GROUP_ID_NONE,
+} from './activation.js';
+import {
   SESSION_PORT_NAME,
   type BackgroundToContentMessage,
   type ContentToBackgroundMessage,
+  type ContentRuntimeMessage,
+  type BackgroundRuntimeMessage,
 } from './messaging.js';
 
 const DEFAULT_SERVER_BASE_URL = 'http://127.0.0.1:8787';
-/**
- * 会话存根键按宿主源分组（adr-012 一组一会话）；存 storage.session：跨 SW 重启存活、
- * 随浏览器关闭清除，不残留死会话存根。键名拆写以免被开发期 secret 守卫误判。
- */
-const sessionKeyFor = (origin: string): string => 'za.' + 'sessionId.' + origin;
 
 interface Session {
   baseUrl: string;
@@ -27,22 +30,40 @@ async function readServerBaseUrl(): Promise<string> {
   return typeof value === 'string' && value !== '' ? value : DEFAULT_SERVER_BASE_URL;
 }
 
+/** groupId→sessionId 存根是否存在：判定某组是否已是 zen 会话组（激活决策与 onUpdated 复用）。 */
+async function isGroupMapped(groupId: number): Promise<boolean> {
+  const key = sessionKeyForGroup(groupId);
+  const stored = (await chrome.storage.session.get(key))[key];
+  return typeof stored === 'string' && stored !== '';
+}
+
+function originOf(url: string | undefined): string | null {
+  if (url === undefined) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
 type UpstreamContentMessage = Exclude<
   ContentToBackgroundMessage,
-  { kind: 'host-identity' } | { kind: 'ping' }
+  { kind: 'host-identity' } | { kind: 'ping' } | { kind: 'navigate-request' }
 >;
 
 /**
- * 一个宿主源标签页组的会话桥：组内共享一个服务端会话、一条 SSE；下行帧按
- * routeForFrame 路由（叙事帧全员镜像 / HITL·exec·guide 仅活跃页）。
+ * 一个 zen 标签页组的会话桥（ADR-013 批次④：键=tabGroup id，组内共享一个服务端会话、一条 SSE）；
+ * 下行帧按 routeForFrame 路由（叙事帧全员镜像 / HITL·exec·guide 仅活跃页）。
  */
-function createGroupBridge(origin: string, onEmpty: () => void) {
+function createGroupBridge(groupId: number, onEmpty: () => void) {
   const identity = createIdentityProvider();
   const abort = new AbortController();
   const members = createGroupMembers<chrome.runtime.Port>();
   let sessionPromise: Promise<Session | null> | null = null;
   // 组内任一页面同源读取的宿主用户 id；无 za.token 时用于向 demo-token 端点自取（P0-b）。
   let hostUserId: string | null = null;
+  // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
+  let expectedActiveTabId: number | null = null;
 
   const post = (target: chrome.runtime.Port, message: BackgroundToContentMessage): void => {
     try {
@@ -77,7 +98,7 @@ function createGroupBridge(origin: string, onEmpty: () => void) {
     }
     // 优先复用本组已存 sessionId：SW 被回收重启后，服务端会话及其挂起 HITL/代执行等待器仍在，
     // 复用即恢复 in-flight 流程、避免每次重连新建会话（会话风暴 + nonce↔会话错位 409）。
-    const key = sessionKeyFor(origin);
+    const key = sessionKeyForGroup(groupId);
     const storedId = (await chrome.storage.session.get(key))[key];
     if (typeof storedId === 'string' && storedId !== '') {
       const resumed: Session = { baseUrl, token, sessionId: storedId };
@@ -207,6 +228,39 @@ function createGroupBridge(origin: string, onEmpty: () => void) {
     }
   }
 
+  /**
+   * navigate 代执行（ADR-013 批次④）：在本组窗口开目标页并入本组，标其为待激活的活跃页。
+   * 入组触发 tabs.onUpdated → 新页收 activate 后接入同一会话（组内换站会话延续）。
+   * 客户端零治理：url 已由服务端签发前校验落在某已安装 pack site 围栏内（U7），此处只执行。
+   */
+  async function handleNavigate(
+    port: chrome.runtime.Port,
+    request: Extract<ContentToBackgroundMessage, { kind: 'navigate-request' }>,
+  ): Promise<void> {
+    const windowId = port.sender?.tab?.windowId;
+    try {
+      const created = await chrome.tabs.create({
+        url: request.url,
+        ...(windowId !== undefined ? { windowId } : {}),
+        active: true,
+      });
+      if (created.id !== undefined) {
+        await chrome.tabs.group({ tabIds: created.id, groupId });
+        expectedActiveTabId = created.id;
+        // 主动通知新页激活（content 已加载时即接入）；未加载时其自身 request-activate 走 reconnect 兜底。
+        void sendActivate(created.id);
+      }
+      post(port, { kind: 'navigate-result', requestId: request.requestId, ok: true, url: request.url });
+    } catch {
+      post(port, {
+        kind: 'navigate-result',
+        requestId: request.requestId,
+        ok: false,
+        error: 'navigate-open-failed',
+      });
+    }
+  }
+
   // 串行转发保证 context-report 先于后续 user-message 到达服务端（组内共用一条管线）。
   const UPSTREAM_KINDS: ReadonlySet<ContentToBackgroundMessage['kind']> = new Set([
     'context-report',
@@ -219,19 +273,32 @@ function createGroupBridge(origin: string, onEmpty: () => void) {
 
   function detach(port: chrome.runtime.Port): void {
     members.remove(port);
-    if (members.size() === 0) {
-      abort.abort();
-      onEmpty();
-    }
+    if (members.size() === 0) close();
+  }
+
+  /** 桥关闭：中止 SSE 并从组表移除；storage.session 存根不清（供组内换页重连恢复，见 openSession）。 */
+  function close(): void {
+    if (!abort.signal.aborted) abort.abort();
+    onEmpty();
   }
 
   function attach(port: chrome.runtime.Port): void {
     members.add(port);
+    // navigate 新开页接入即标为活跃：后续 exec/HITL 路由跟随导航到新站点页。
+    if (expectedActiveTabId !== null && port.sender?.tab?.id === expectedActiveTabId) {
+      members.markActive(port);
+      expectedActiveTabId = null;
+    }
     port.onMessage.addListener((raw) => {
       const message = raw as ContentToBackgroundMessage | null;
       if (message === null) return;
       if (message.kind === 'host-identity') {
         hostUserId = message.hostUserId;
+        return;
+      }
+      // navigate 代执行请求：本地处理（开页入组），不进上行转发管线。
+      if (message.kind === 'navigate-request') {
+        void handleNavigate(port, message);
         return;
       }
       // 保活心跳：其到达已重置 SW 空闲计时器，不转发、不入管线。
@@ -250,63 +317,137 @@ function createGroupBridge(origin: string, onEmpty: () => void) {
     port.onDisconnect.addListener(() => detach(port));
   }
 
-  return { attach };
+  return { attach, close };
 }
 
-const groups = new Map<string, ReturnType<typeof createGroupBridge>>();
-let fallbackGroupSeq = 0;
+type GroupBridge = ReturnType<typeof createGroupBridge>;
+const groups = new Map<number, GroupBridge>();
+let isolatedSeq = TAB_GROUP_ID_NONE;
 
-/** 组键 = 页面 origin；来源不可识别时按端口独立成组（宁可隔离，不可误并组）。 */
-function groupKeyOf(port: chrome.runtime.Port): string {
-  const url = port.sender?.tab?.url ?? port.sender?.url;
-  if (url !== undefined) {
-    try {
-      return new URL(url).origin;
-    } catch {
-      // 落到独立组
-    }
+/**
+ * 组键 = 页面所在 tabGroup id（显式发起模型：端口只在被激活入组后连接，故 groupId 有效）。
+ * 极端情形（无法识别所属组）按端口独立成负数键，宁可隔离不可误并组。
+ */
+function groupIdOf(port: chrome.runtime.Port): number {
+  const gid = port.sender?.tab?.groupId;
+  if (typeof gid === 'number' && gid !== TAB_GROUP_ID_NONE) return gid;
+  isolatedSeq -= 1;
+  return isolatedSeq;
+}
+
+function bridgeFor(groupId: number): GroupBridge {
+  let bridge = groups.get(groupId);
+  if (bridge === undefined) {
+    bridge = createGroupBridge(groupId, () => groups.delete(groupId));
+    groups.set(groupId, bridge);
   }
-  fallbackGroupSeq += 1;
-  return `za-isolated:${fallbackGroupSeq}`;
+  return bridge;
+}
+
+async function sendActivate(tabId: number): Promise<void> {
+  const message: BackgroundRuntimeMessage = { kind: 'activate' };
+  await chrome.tabs.sendMessage(tabId, message).catch(() => {});
+}
+
+/** 新建 zen 标签页组并命名（同 origin 多组各自独立）；返回新组 id。 */
+async function createZenGroup(tabId: number): Promise<number> {
+  const groupId = await chrome.tabs.group({ tabIds: tabId });
+  await chrome.tabGroups.update(groupId, { title: 'zen', color: 'purple' }).catch(() => {});
+  return groupId;
+}
+
+/** 同窗同源 autoActivate 既有组（须仍映射会话）：供 autoJoin，避免既有多页场景重复建组。 */
+async function findAutoJoinGroup(windowId: number, origin: string): Promise<number | null> {
+  const key = autoGroupKey(windowId, origin);
+  const stored = (await chrome.storage.session.get(key))[key];
+  if (typeof stored !== 'number') return null;
+  return (await isGroupMapped(stored)) ? stored : null;
 }
 
 /**
- * 可视化：agent 已连接的 tab 并入本窗口的「zen」标签组（原生可折叠；关组即关全部成员页）。
- * 仅视觉投影，失败（特殊窗口/不支持）静默降级，不影响会话。
+ * content 加载后的激活握手：按 decideActivation 决定组内换页恢复 / autoActivate 加入既有组 / 新建组 / 不激活。
+ * 决策后统一以 chrome.tabs.sendMessage 通知该页挂面板连接（content 侧 activate 幂等）。
  */
-async function addToZenTabGroup(port: chrome.runtime.Port): Promise<void> {
-  const tabId = port.sender?.tab?.id;
-  const windowId = port.sender?.tab?.windowId;
-  if (tabId === undefined) return;
-  // 已在任何分组（用户自建/其它工具组）的 tab 不动：zen 组只收未分组页，不抢占既有组织。
-  const groupId = port.sender?.tab?.groupId;
-  if (groupId !== undefined && groupId !== -1) return;
-  try {
-    const existing = await chrome.tabGroups.query({
-      title: 'zen',
-      ...(windowId !== undefined ? { windowId } : {}),
-    });
-    const groupId = existing[0]?.id;
-    const joined = await chrome.tabs.group({
-      tabIds: tabId,
-      ...(groupId !== undefined ? { groupId } : {}),
-    });
-    if (groupId === undefined) {
-      await chrome.tabGroups.update(joined, { title: 'zen', color: 'purple' });
-    }
-  } catch {
-    // 分组失败不影响会话
+async function handleRequestActivate(
+  request: ContentRuntimeMessage,
+  sender: chrome.runtime.MessageSender,
+): Promise<void> {
+  const tab = sender.tab;
+  if (tab?.id === undefined) return;
+  const tabId = tab.id;
+  const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
+  const origin = originOf(tab.url);
+  const groupIsMapped = tabGroupId !== TAB_GROUP_ID_NONE && (await isGroupMapped(tabGroupId));
+  let autoJoinGroupId: number | null = null;
+  if (request.autoActivate && origin !== null && tab.windowId !== undefined) {
+    autoJoinGroupId = await findAutoJoinGroup(tab.windowId, origin);
   }
+  const decision = decideActivation({
+    tabGroupId,
+    groupIsMapped,
+    autoActivate: request.autoActivate,
+    autoJoinGroupId,
+  });
+  switch (decision.kind) {
+    case 'none':
+      return;
+    case 'reconnect':
+      break;
+    case 'join':
+      await chrome.tabs.group({ tabIds: tabId, groupId: decision.groupId }).catch(() => {});
+      break;
+    case 'create': {
+      // tab 已属某标签组（用户既有分组，或宿主自动化的受控组）则采用该组当会话组——
+      // 会话键即 tabGroup id（groupIdOf），无需夺 tab 新建；仅未分组 tab 才建 zen 组。
+      const groupId = tabGroupId !== TAB_GROUP_ID_NONE ? tabGroupId : await createZenGroup(tabId);
+      if (origin !== null && tab.windowId !== undefined) {
+        await chrome.storage.session.set({ [autoGroupKey(tab.windowId, origin)]: groupId });
+      }
+      break;
+    }
+  }
+  await sendActivate(tabId);
+}
+
+/** 图标点击：未分组 tab 新建独立 zen 组（同 origin 多组独立）；已属某组则采用该组当会话组。 */
+async function handleIconClick(tab: chrome.tabs.Tab): Promise<void> {
+  if (tab.id === undefined) return;
+  const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
+  if (tabGroupId === TAB_GROUP_ID_NONE) {
+    await createZenGroup(tab.id);
+  }
+  await sendActivate(tab.id);
 }
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== SESSION_PORT_NAME) return;
-  const key = groupKeyOf(port);
-  let bridge = groups.get(key);
-  if (bridge === undefined) {
-    bridge = createGroupBridge(key, () => groups.delete(key));
-    groups.set(key, bridge);
+  bridgeFor(groupIdOf(port)).attach(port);
+});
+
+chrome.runtime.onMessage.addListener((raw, sender) => {
+  const message = raw as ContentRuntimeMessage | null;
+  if (message?.kind === 'request-activate') void handleRequestActivate(message, sender);
+});
+
+chrome.action.onClicked.addListener((tab) => {
+  void handleIconClick(tab);
+});
+
+// 拖 tab 入某 zen 会话组（groupId 变为已映射组）→ 通知该页激活并接入同一会话。
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  const groupId = changeInfo.groupId;
+  if (groupId === undefined || groupId === TAB_GROUP_ID_NONE) return;
+  void isGroupMapped(groupId).then((mapped) => {
+    if (mapped) void sendActivate(tabId);
+  });
+});
+
+// 组关闭=关会话：清 groupId→sessionId 存根并关桥（storage.session 存根在此才清，区别于组内换页重连）。
+chrome.tabGroups.onRemoved.addListener((group) => {
+  void chrome.storage.session.remove(sessionKeyForGroup(group.id)).catch(() => {});
+  const bridge = groups.get(group.id);
+  if (bridge !== undefined) {
+    bridge.close();
+    groups.delete(group.id);
   }
-  bridge.attach(port);
-  void addToZenTabGroup(port);
 });

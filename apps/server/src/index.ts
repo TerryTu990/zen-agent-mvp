@@ -2,23 +2,19 @@
  * 模块化单体的唯一组装点（U2）：全仓只有本包同时 import 全部模块包；
  * 模块间彼此零依赖，只经 @zen-agent/contracts 端口类型在此接线。
  */
-import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { join } from 'node:path';
-import type {
-  AssemblyPort,
-  AuditPort,
-  ConfigSnapshotManifest,
-  LlmPort,
-  ToolDefinition,
-  ToolGatePort,
-} from '@zen-agent/contracts';
+import type { AssemblyPort, AuditPort, LlmPort, ToolGatePort } from '@zen-agent/contracts';
 import { createAssemblyPort } from '@zen-agent/assembly';
 import { createToolGatePort } from '@zen-agent/toolgate';
 import { createLlmPort } from '@zen-agent/llm-port';
 import { createAuditPort } from '@zen-agent/audit';
 import { createTokenVerifier } from './auth.js';
-import { createMemorySessionStore } from './sessions.js';
+import {
+  createMemorySessionStore,
+  createPersistentSessionStore,
+  type PersistentSessionStore,
+  type SessionStore,
+} from './sessions.js';
 import { createGateway } from './gateway.js';
 
 export interface ServerOptions {
@@ -38,6 +34,10 @@ export interface ServerOptions {
   heartbeatMs?: number;
   /** agent loop 单回合轮数上限，默认 12；dom 代操作一批页面操作固定耗 2 轮（操作+复核快照）。 */
   maxTurnRounds?: number;
+  /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW），默认 200000。 */
+  compressContextWindow?: number;
+  /** 历史压缩触发阈值比例（ZA_LLM_COMPRESS_THRESHOLD），默认 0.6。 */
+  compressThreshold?: number;
   /** Access-Control-Allow-Origin 响应头值，默认 '*'。 */
   corsOrigin?: string;
   /**
@@ -50,6 +50,13 @@ export interface ServerOptions {
    * 缺省或解析不到时 executeServer 返回 credential-unresolved。
    */
   resolveCredential?: (ref: string) => string | undefined;
+  /**
+   * 会话持久化落盘目录（P2）：设置即启用 `.za/sessions/<id>.jsonl` 落盘 + 重启重放 + 闲置清理；
+   * 缺省=纯内存态（不落盘）。存储故障 fail-open、不进控制流。
+   */
+  sessionDir?: string;
+  /** 会话闲置 TTL 毫秒，默认 3600000（1 小时）；仅在 sessionDir 启用时生效。 */
+  sessionTtlMs?: number;
 }
 
 export interface ServerPorts {
@@ -59,39 +66,24 @@ export interface ServerPorts {
   audit: AuditPort;
 }
 
-/**
- * 汇总快照内全部功能的工具并集，作为 toolgate 分级判定的工具闭集（fail-closed 依据，U7）。
- * 组装层逻辑（唯一组装点在此，不违 U2）：读 manifest 取功能清单，逐功能 compose 收其工具、按 id 去重。
- * 前提：assembly 快照已成功载入（否则 compose 抛快照拒载错误，在此之前触发）。
- */
-async function collectHostTools(
-  assembly: AssemblyPort,
-  snapshotRoot: string,
-): Promise<ToolDefinition[]> {
-  const manifest = JSON.parse(
-    readFileSync(join(snapshotRoot, 'manifest.json'), 'utf8'),
-  ) as ConfigSnapshotManifest;
-  const featureIds = manifest.features ?? manifest.featureIdRules.map((rule) => rule.featureId);
-  const byId = new Map<string, ToolDefinition>();
-  for (const featureId of featureIds) {
-    const composed = await assembly.compose({ sessionId: '__bootstrap__', featureId });
-    for (const tool of composed.tools) byId.set(tool.id, tool);
-  }
-  return [...byId.values()];
-}
-
 export async function assemblePorts(options: ServerOptions): Promise<ServerPorts> {
   const assembly = createAssemblyPort({
     snapshotRoot: options.snapshotRoot,
     systemPromptPath: options.systemPromptPath,
   });
-  // 触发快照惰性载入：坏快照 fail-fast（快照拒载错误），先于按 manifest 读工具并集。
+  // 触发快照惰性载入：坏快照 fail-fast（快照拒载错误），先于读全 pack 工具并集。
   await assembly.resolveFeature({ url: '' });
-  const tools = await collectHostTools(assembly, options.snapshotRoot);
+  // toolgate 分级判定的工具闭集（fail-closed 依据，U7）：全 pack 工具并集，按 toolId 去重。
+  const tools = await assembly.allTools();
+  // ADR-013：site 围栏（navigate 校验）+ 逐 pack 工具归属（命名空间纪律，跨 pack 同名 toolId 载入即拒启）。
+  const sites = await assembly.listSites();
+  const toolOwnership = await assembly.listToolOwnership();
   return {
     assembly,
     toolgate: createToolGatePort({
       tools,
+      sites,
+      toolOwnership,
       signingSecret: options.signingSecret,
       ...(options.resolveCredential ? { resolveCredential: options.resolveCredential } : {}),
     }),
@@ -114,6 +106,15 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   }
   // 组装即触发快照载入 + 工具并集汇总：坏快照/坏工具在启动期 fail-fast，而非首轮对话才暴露。
   const ports = await assemblePorts(options);
+  const memoryStore = createMemorySessionStore();
+  const persistentStore: PersistentSessionStore | undefined =
+    options.sessionDir !== undefined
+      ? createPersistentSessionStore(memoryStore, {
+          dir: options.sessionDir,
+          ...(options.sessionTtlMs !== undefined ? { ttlMs: options.sessionTtlMs } : {}),
+        })
+      : undefined;
+  const store: SessionStore = persistentStore ?? memoryStore;
   const gateway = createGateway({
     assembly: ports.assembly,
     llm: ports.llm,
@@ -123,9 +124,11 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       jwtSecret: options.jwtSecret,
       issAllowlist: options.issAllowlist,
     }),
-    store: createMemorySessionStore(),
+    store,
     heartbeatMs: options.heartbeatMs ?? 15_000,
     maxTurnRounds: options.maxTurnRounds ?? 12,
+    compressContextWindow: options.compressContextWindow ?? 200_000,
+    compressThreshold: options.compressThreshold ?? 0.6,
     corsOrigin: options.corsOrigin ?? '*',
     ...(options.demoToken?.enabled
       ? { demoToken: { jwtSecret: options.jwtSecret, iss: options.demoToken.iss } }
@@ -145,6 +148,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     close: () =>
       new Promise<void>((resolve, reject) => {
         gateway.shutdown();
+        persistentStore?.stop();
         server.close((cause) => (cause ? reject(cause) : resolve()));
         server.closeAllConnections();
       }),

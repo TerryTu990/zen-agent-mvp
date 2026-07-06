@@ -1,0 +1,13 @@
+{
+  "version": "3.0.0",
+  "packs": [
+    {
+      "packId": "site-a",
+      "version": "1.0.0"
+    },
+    {
+      "packId": "site-b",
+      "version": "2.0.0"
+    }
+  ]
+}

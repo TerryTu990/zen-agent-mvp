@@ -1,0 +1,14 @@
+{
+  "packId": "codeflow-console",
+  "version": "0.1.0",
+  "summary": "CodeFlow 大模型 API 控制台：创建/查询调用令牌",
+  "site": {
+    "origin": "https://codeflow.asia",
+    "locations": ["/console"]
+  },
+  "tenant": "codeflow",
+  "featureIdRules": [
+    { "urlPattern": "codeflow\\.asia/console", "featureId": "codeflow-token" }
+  ],
+  "features": ["codeflow-token"]
+}

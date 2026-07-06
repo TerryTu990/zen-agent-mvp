@@ -23,23 +23,34 @@ const TOOL_REFRESH = 'order-list.refresh-orders';
 const TOOL_PURGE = 'order-list.purge-orders';
 const TOOL_PAGE_OPERATE = 'order-list.page-operate';
 const TOOL_SNAPSHOT = 'page_snapshot';
+const TOOL_SEND_EMAIL = 'mail-126.send-email';
 
-/** 请求 tools 是否携带指定 name 的工具（OpenAI function 形态或裸 name）。 */
+/** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
+function normalizeToolName(name) {
+  return typeof name === 'string' ? name.replaceAll('__', '.') : name;
+}
+
+/** 请求 tools 是否携带指定 name 的工具（OpenAI function 形态或裸 name；wire 名归一后比对）。 */
 function hasTool(body, name) {
   return (
     Array.isArray(body?.tools) &&
-    body.tools.some((t) => t?.function?.name === name || t?.name === name)
+    body.tools.some(
+      (t) => normalizeToolName(t?.function?.name) === name || normalizeToolName(t?.name) === name,
+    )
   );
 }
 
 /**
- * 最后一条 role:tool 观察的文本内容——代执行回喂轮才存在（服务端把 observation 追加为 role:tool）；
- * 非 null 即"第二轮"，据此产出总结文本而非再次触发工具。
+ * 代执行回喂轮的 observation 文本——仅当消息尾部就是 role:tool（其后无更新 user 消息）才成立。
+ * 契约感知：服务端把 execEcho(assistant)+observation(role:tool) 追加在末尾后立即再调本轮，
+ * 故回喂轮的最后一条必是 role:tool；而 history 现持久化历史工具轮，新 user 回合的尾部是 role:user，
+ * 若只取"数组中最后一条 role:tool"会误把上一回合的陈旧观测当作本回合回喂，令新 user 指令走不到工具触发。
+ * 非 null 即"回喂轮"，据此产出总结文本而非再次触发工具。
  */
 function lastToolObs(body) {
   const msgs = Array.isArray(body?.messages) ? body.messages : [];
-  const obs = [...msgs].reverse().find((m) => m?.role === 'tool');
-  return obs ? String(obs.content ?? '') : null;
+  const last = msgs[msgs.length - 1];
+  return last?.role === 'tool' ? String(last.content ?? '') : null;
 }
 
 /** 首轮工具触发：按关键词 + 工具可见性产出 tool_call；无命中返回 null。 */
@@ -58,7 +69,32 @@ function pickToolCall(u, body) {
   if (u.includes('在页面上') && hasTool(body, TOOL_SNAPSHOT)) {
     return { id: 'call_snapshot', name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) };
   }
+  // 126 发送邮件（ADR-013 every-call）：先观察快照取发送按钮 ref，后续轮走 sendEmailCall。
+  if (u.includes('发送邮件') && hasTool(body, TOOL_SEND_EMAIL) && hasTool(body, TOOL_SNAPSHOT)) {
+    return { id: 'call_snapshot', name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) };
+  }
   return null;
+}
+
+/** 快照观察轮 → send-email 单步点击批次：从快照取按钮 ref，task 固定（同任务连发以判别 every-call 不复用）。 */
+function sendEmailCall(obs) {
+  let snap;
+  try {
+    snap = JSON.parse(obs);
+  } catch {
+    snap = { elements: [] };
+  }
+  const elements = Array.isArray(snap.elements) ? snap.elements : [];
+  const button = elements.find((e) => e?.role === 'button') ?? elements[0];
+  return {
+    id: 'call_send_email',
+    name: TOOL_SEND_EMAIL,
+    arguments: JSON.stringify({
+      task: '发送邮件给测试收件人',
+      steps: [{ action: 'click', ref: button?.ref ?? 'za-0' }],
+      summary: '点击发送按钮发送邮件',
+    }),
+  };
 }
 
 /** 快照观察 notices 首条；无提示返回 null——有提示即"被页面校验拦截"，不再继续操作。 */
@@ -124,6 +160,154 @@ function summarizeObs(obs) {
   return 'MOCK-OBS-DEFAULT';
 }
 
+// ---- ADR-013 批次④ M5 跨站任务组剧本（run-m5.mjs 专用，加法式；仅在夹具工具/哨兵命中时触发）----
+const TOOL_A_OPERATE = 'order-list.page-operate';
+const TOOL_B_OPERATE = 'site-b.page-operate';
+const TOOL_B_SUBMIT = 'site-b.confirm-submit';
+const SITE_B_URL = 'http://127.0.0.1:4174/site-b.html';
+// 越界目标：不属任何已安装 pack 的 origin（4199 无 pack）→ toolgate 签发前 fence-violation 拒绝。
+const FENCE_URL = 'http://127.0.0.1:4199/blocked.html';
+
+const snapshotCall = () => ({ id: 'call_snapshot', name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) });
+
+/** 某工具名是否在本请求历史里被 assistant 调用过（OpenAI tool_calls 形态）——判跨站流程已推进到哪一步。 */
+function calledTool(body, name) {
+  return (body?.messages ?? []).some(
+    (m) => m?.role === 'assistant' && Array.isArray(m.tool_calls) &&
+      m.tool_calls.some((tc) => normalizeToolName(tc?.function?.name) === name),
+  );
+}
+
+/** 消息序列里最近一条含 elements 的快照观测的 elements 数组（供跨轮取 ref）。 */
+function lastSnapshotElements(body) {
+  const msgs = body?.messages ?? [];
+  for (let i = msgs.length - 1; i >= 0; i -= 1) {
+    const m = msgs[i];
+    if (m?.role !== 'tool') continue;
+    const content = String(m.content ?? '');
+    if (!content.includes('"elements"')) continue;
+    try {
+      const snap = JSON.parse(content);
+      if (Array.isArray(snap.elements)) return snap.elements;
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+const inputRefOf = (els) => (els.find((e) => String(e?.role ?? '').startsWith('input')) ?? els[0])?.ref ?? 'za-1';
+const buttonRefOf = (els) => (els.find((e) => e?.role === 'button') ?? els[els.length - 1])?.ref ?? 'za-1';
+const firstRefOf = (els) => els[0]?.ref ?? 'za-1';
+
+/** 站点甲（pack A）侧：快照 → 读一格数据（任务级授权）→ 同任务 navigate 去站点乙 → 收尾。 */
+function driveCrossPackA(body) {
+  const obs = lastToolObs(body);
+  if (obs === null) return { toolCall: snapshotCall() };
+  // 快照观测同时含 url 与 elements：先判 elements（当前页快照），避免误入 navigate 结果分支。
+  if (obs.includes('"elements"')) {
+    const ref = firstRefOf(lastSnapshotElements(body));
+    return {
+      toolCall: {
+        id: 'call_a_read',
+        name: TOOL_A_OPERATE,
+        arguments: JSON.stringify({
+          task: '跨站读单',
+          steps: [{ action: 'read', ref, name: 'cellValue' }],
+          summary: '读取一格订单数据',
+        }),
+      },
+    };
+  }
+  if (obs.includes('"reads"')) {
+    return {
+      toolCall: {
+        id: 'call_a_nav',
+        name: TOOL_A_OPERATE,
+        arguments: JSON.stringify({
+          task: '跨站读单',
+          steps: [{ action: 'navigate', url: SITE_B_URL }],
+          summary: '打开站点乙页面',
+        }),
+      },
+    };
+  }
+  if (obs.includes('"url"')) return { text: '已打开站点乙页面，请在该页告诉我要提交的备注内容。' };
+  return { text: '跨站演练在站点甲侧未能继续。' };
+}
+
+/** 越界路径：快照 → navigate 去无 pack 的 origin → toolgate fence-violation 拒绝 → 如实回报（不重试）。 */
+function driveFence(body) {
+  const obs = lastToolObs(body);
+  if (obs === null) return { toolCall: snapshotCall() };
+  if (obs.includes('"elements"')) {
+    return {
+      toolCall: {
+        id: 'call_fence_nav',
+        name: TOOL_A_OPERATE,
+        arguments: JSON.stringify({
+          task: '越界演练',
+          steps: [{ action: 'navigate', url: FENCE_URL }],
+          summary: '尝试跳转到站外地址',
+        }),
+      },
+    };
+  }
+  // deny 回喂（obs 含 fence-violation）：不再跳转，如实告知被围栏拦截。
+  return { text: '已阻止跳转：目标站点不在允许访问范围内（越界围栏拦截）。' };
+}
+
+/** 站点乙（pack B）侧：快照 → 填表（任务级授权）→ confirm-submit 单独确认（every-call）→ 收尾。 */
+function driveSiteB(body) {
+  if (calledTool(body, TOOL_B_SUBMIT)) return { text: '已在站点乙提交表单，跨站演练完成。' };
+  const obs = lastToolObs(body);
+  if (obs === null) return { toolCall: snapshotCall() };
+  if (!calledTool(body, TOOL_B_OPERATE)) {
+    if (obs.includes('"elements"')) {
+      const ref = inputRefOf(lastSnapshotElements(body));
+      return {
+        toolCall: {
+          id: 'call_b_fill',
+          name: TOOL_B_OPERATE,
+          arguments: JSON.stringify({
+            task: '站点乙填表',
+            steps: [
+              { action: 'fill', ref, value: '跨站演练备注' },
+              { action: 'read', ref, name: 'fieldValue' },
+            ],
+            summary: '在站点乙填写备注',
+          }),
+        },
+      };
+    }
+    return { toolCall: snapshotCall() };
+  }
+  // 已填表未提交：以最近快照的按钮 ref 点提交（confirm-submit 为 every-call，仍单独弹卡）。
+  const ref = buttonRefOf(lastSnapshotElements(body));
+  return {
+    toolCall: {
+      id: 'call_b_submit',
+      name: TOOL_B_SUBMIT,
+      arguments: JSON.stringify({
+        task: '站点乙提交',
+        steps: [{ action: 'click', ref }],
+        summary: '点击提交按钮',
+      }),
+    },
+  };
+}
+
+/**
+ * M5 跨站任务组剧本分派：站点乙工具在场（回合已切到 pack B）优先走 driveSiteB；
+ * 否则按当前回合驱动语（u）判越界/跨站演练。非 M5 上下文返回 null 走既有决策。
+ */
+function driveDrill(u, body) {
+  if (hasTool(body, TOOL_B_OPERATE) || hasTool(body, TOOL_B_SUBMIT)) return driveSiteB(body);
+  if (u.includes('越界演练')) return driveFence(body);
+  if (u.includes('跨站演练')) return driveCrossPackA(body);
+  return null;
+}
+
 /**
  * 返回 { text } 或 { toolCall:{ name, arguments } }。
  * R5 先判：定位问句时，仅当请求带引导工具、facts 登记了 #btn-export、且问句确指该锚点（问"导出"）
@@ -132,6 +316,9 @@ function summarizeObs(obs) {
  * 无法把"打印发票"这类无登记锚点的定位问句判为降级——它是失配/降级路径唯一可判据。
  */
 function decide(sys, u, body) {
+  // M5 跨站任务组剧本（加法式）：命中即接管，不影响既有场景。
+  const drill = driveDrill(u, body);
+  if (drill !== null) return drill;
   const obs = lastToolObs(body);
   if (obs !== null) {
     // 快照观察轮：据 elements 决策 dom 批次（agent-in-the-loop 的确定性替身）；
@@ -141,12 +328,25 @@ function decide(sys, u, body) {
       if (notice !== null) return { text: `页面提示：${notice}，已停止操作，请先处理该提示。` };
       return { toolCall: pageOperateCall(obs) };
     }
+    // 126 发送邮件快照观察轮：取发送按钮 ref，走 send-email（每次单独确认）。
+    if (obs.includes('"elements"') && hasTool(body, TOOL_SEND_EMAIL)) {
+      return { toolCall: sendEmailCall(obs) };
+    }
     // dom 结果回喂轮：报告 read 采集值。
     if (obs.includes('"reads"')) {
       const m = obs.match(/"noteValue":"([^"]*)"/);
       return { text: `已在页面上完成操作，备注为 ${m ? m[1] : ''}。` };
     }
     return { text: summarizeObs(obs) };
+  }
+
+  // invalid-tool-args 自愈剧本：'模拟截断实参' 哨兵首轮产出截断 arguments（真实 LLM 输出截断的确定性替身），
+  // 网关回喂修正提示（含"实参 JSON 无效"）后本分支不再命中、走重试分支产出完整调用。
+  if (u.includes('模拟截断实参') && hasTool(body, TOOL_REFRESH)) {
+    return { toolCall: { id: 'call_broken', name: TOOL_REFRESH, arguments: '{"broken":' } };
+  }
+  if (u.includes('实参 JSON 无效') && hasTool(body, TOOL_REFRESH)) {
+    return { toolCall: { id: 'call_retry', name: TOOL_REFRESH, arguments: JSON.stringify({}) } };
   }
 
   const toolCall = pickToolCall(u, body);

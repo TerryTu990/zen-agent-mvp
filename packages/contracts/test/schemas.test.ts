@@ -19,12 +19,14 @@ function compile(ajv: Ajv2020, file: string) {
 }
 
 describe('C1-C5 schema 契约', () => {
-  it('schemas/ 下五份契约齐备', () => {
+  it('schemas/ 下契约齐备（含 ADR-013 pack/registry 扩展）', () => {
     expect(schemaFiles.sort()).toEqual([
       'audit-event.schema.json',
       'client-access-layer.schema.json',
       'config-snapshot.schema.json',
       'identity-claims.schema.json',
+      'pack.schema.json',
+      'registry.schema.json',
       'tool-definition.schema.json',
     ]);
   });
@@ -35,30 +37,42 @@ describe('C1-C5 schema 契约', () => {
   });
 });
 
-describe('examples/host-demo 锚定样例过契约校验', () => {
-  const manifest = loadJson(join(demoConfigDir, 'manifest.json')) as { features: string[] };
+describe('examples/host-demo 锚定样例过契约校验（ADR-013 registry + pack）', () => {
+  const registry = loadJson(join(demoConfigDir, 'manifest.json')) as {
+    packs: Array<{ packId: string; version: string }>;
+  };
+  const packDir = join(demoConfigDir, 'packs', 'host-demo');
+  const packManifest = loadJson(join(packDir, 'pack.json')) as { features: string[] };
+  const featuresDir = join(packDir, 'features');
 
-  it('manifest.json 通过 config-snapshot 校验', () => {
-    const validate = compile(new Ajv2020({ strict: true }), 'config-snapshot.schema.json');
-    expect(validate(manifest), JSON.stringify(validate.errors)).toBe(true);
+  it('根 manifest.json 通过 registry 校验', () => {
+    const validate = compile(new Ajv2020({ strict: true }), 'registry.schema.json');
+    expect(validate(registry), JSON.stringify(validate.errors)).toBe(true);
   });
 
-  it('manifest.features 闭单非空且覆盖 order-list 与 order-detail', () => {
-    expect(manifest.features).toContain('order-list');
-    expect(manifest.features).toContain('order-detail');
+  it('registry 登记 host-demo pack', () => {
+    expect(registry.packs.map((p) => p.packId)).toContain('host-demo');
   });
 
-  it.each(manifest.features)('features/%s/ 三件套齐备', (featureId) => {
+  it('packs/host-demo/pack.json 通过 pack 校验', () => {
+    const validate = compile(new Ajv2020({ strict: true }), 'pack.schema.json');
+    expect(validate(packManifest), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('pack.features 闭单非空且覆盖 order-list 与 order-detail', () => {
+    expect(packManifest.features).toContain('order-list');
+    expect(packManifest.features).toContain('order-detail');
+  });
+
+  it.each(packManifest.features)('features/%s/ 三件套齐备', (featureId) => {
     for (const file of ['feature.md', 'facts.md', 'tools.json']) {
-      expect(existsSync(join(demoConfigDir, 'features', featureId, file)), `缺 ${featureId}/${file}`).toBe(
-        true,
-      );
+      expect(existsSync(join(featuresDir, featureId, file)), `缺 ${featureId}/${file}`).toBe(true);
     }
   });
 
-  it.each(manifest.features)('features/%s/tools.json 为数组且逐元素通过 tool-definition 校验', (featureId) => {
+  it.each(packManifest.features)('features/%s/tools.json 为数组且逐元素通过 tool-definition 校验', (featureId) => {
     const validate = compile(new Ajv2020({ strict: true }), 'tool-definition.schema.json');
-    const tools = loadJson(join(demoConfigDir, 'features', featureId, 'tools.json'));
+    const tools = loadJson(join(featuresDir, featureId, 'tools.json'));
     expect(Array.isArray(tools)).toBe(true);
     for (const tool of tools as unknown[]) {
       expect(validate(tool), JSON.stringify(validate.errors)).toBe(true);
@@ -66,7 +80,7 @@ describe('examples/host-demo 锚定样例过契约校验', () => {
   });
 
   it('order-detail tools.json 空数组同样合法（零工具功能）', () => {
-    const tools = loadJson(join(demoConfigDir, 'features/order-detail/tools.json'));
+    const tools = loadJson(join(featuresDir, 'order-detail/tools.json'));
     expect(tools).toEqual([]);
   });
 });

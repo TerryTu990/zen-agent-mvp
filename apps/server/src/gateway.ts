@@ -9,13 +9,19 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
-import { isDomTool } from '@zen-agent/contracts';
+import {
+  isDomTool,
+  SITE_NAVIGATE_PARAMS_SCHEMA,
+  SITE_NAVIGATE_RESULT_SCHEMA,
+  SITE_NAVIGATE_TOOL_ID,
+} from '@zen-agent/contracts';
 import type {
   AssemblyPort,
   AuditEvent,
   AuditPort,
   ComposeResult,
   DomGateContext,
+  DomToolDefinition,
   DownstreamFrame,
   ExecResultFrame,
   GuideActionKind,
@@ -27,6 +33,7 @@ import type {
   LlmPort,
   LlmToolSpec,
   Observation,
+  SiteDescriptor,
   SnapshotReportFrame,
   ToolCardStatus,
   ToolDefinition,
@@ -35,6 +42,14 @@ import type {
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
 import { signDemoToken, type DemoTokenSigner } from './demo-token.js';
+import {
+  BOUNDARY_MARKER,
+  compressHistory,
+  estimateHistoryTokens,
+  shouldCompress,
+  type UsageTokens,
+} from './compress.js';
+import { pruneStaleSnapshots, SNAPSHOT_TOOL_NAME } from './history.js';
 import type { SessionState, SessionStore } from './sessions.js';
 
 export interface GatewayDeps {
@@ -47,6 +62,10 @@ export interface GatewayDeps {
   heartbeatMs: number;
   /** agent loop 轮数上限：防 LLM 反复触发工具无法收敛而失控烧配额；dom 代操作一批页面操作固定耗 2 轮（操作+复核快照）。 */
   maxTurnRounds: number;
+  /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW）。 */
+  compressContextWindow: number;
+  /** 历史压缩触发阈值比例（ZA_LLM_COMPRESS_THRESHOLD）：估算 token 达 窗口×阈值 即压缩。 */
+  compressThreshold: number;
   /** Access-Control-Allow-Origin 响应头值。 */
   corsOrigin: string;
   /** 存在即启用 POST /demo-token（P0-b，env 门控）；缺省=端点关闭（404）。 */
@@ -122,12 +141,13 @@ const GUIDE_TOOL_SPEC: LlmToolSpec = {
 
 const GUIDE_ACTIONS: ReadonlySet<string> = new Set(['highlight', 'scroll-to']);
 
+/** invalid-tool-args 自愈重试上限（每用户回合累计）：超过即视为不可自愈、按普通错误终结。 */
+const MAX_INVALID_ARGS_RETRIES = 2;
+
 /**
  * built-in 页面快照工具（adr-011 观察半程）：工具面含 dom 工具时注入；非终结动作——
  * 快照作为 observation 回喂后回合继续。不经 toolgate（只读观察，无副作用；快照按不可信观察对待）。
  */
-const SNAPSHOT_TOOL_NAME = 'page_snapshot';
-
 const SNAPSHOT_TOOL_SPEC: LlmToolSpec = {
   name: SNAPSHOT_TOOL_NAME,
   description:
@@ -135,10 +155,61 @@ const SNAPSHOT_TOOL_SPEC: LlmToolSpec = {
   params: { type: 'object', additionalProperties: false, properties: {} },
 };
 
+/**
+ * built-in 文档读取工具（ADR-013 渐进披露）：仅当激活 pack 有 docs 索引时注入。
+ * 服务端执行——调 assembly.readPackDoc 读当前激活 pack 的 docs/（只读该 pack、路径穿越 fail-closed、单次截断）；
+ * 非终结动作：正文作 observation 回喂后回合继续。不经 toolgate（只读本地文档、无副作用、无凭证面）。
+ */
+const PACK_DOC_TOOL_NAME = 'pack_doc';
+
+const PACK_DOC_TOOL_SPEC: LlmToolSpec = {
+  name: PACK_DOC_TOOL_NAME,
+  description:
+    '按需读取当前站点操作文档的正文。path 取自系统提示中"站点操作文档索引"列出的文件名（如 guide.md）；用于获取索引未展开的详细操作步骤/参考信息。仅能读当前站点自带的文档。',
+  params: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['path'],
+    properties: { path: { type: 'string' } },
+  },
+};
+
+/**
+ * built-in 跨站导航工具（ADR-013 渐进披露第一层配套）：不入 pack tools.json，仅当装配注入了"已安装站点索引"
+ * （≥2 个带 site 的 pack）时随之注入。经 toolgate 专路裁决（hitl + 目标围栏 fail-closed）与一次性签名下发，
+ * 构造 navigate dom 指令复用客户端跨窗口开页入组（U7）。dom 形态使 toolgate 免要求宿主身份、结果过 resultSchema 回收。
+ */
+const SITE_NAVIGATE_TOOL_DEF: DomToolDefinition = {
+  id: SITE_NAVIGATE_TOOL_ID,
+  featureIds: [],
+  description:
+    '当用户任务需要在其他站点协作完成时，用它导航到系统提示"已安装站点索引"中列出的目标站点。url 必须取自该索引中列出的可达 URL；只能导航到索引内的站点。task 填本次导航所属的任务标题（与页面操作工具的 task 保持一致）：已获用户授权的任务内导航无需再次确认。导航成功后你的可用功能与工具立即切换为新站点配置，直接继续当前任务（先 page_snapshot 观察新页面）。',
+  params: SITE_NAVIGATE_PARAMS_SCHEMA,
+  execution: 'client',
+  riskTier: 'hitl',
+  adapter: { kind: 'dom', pathPrefixes: ['/'] },
+  resultSchema: SITE_NAVIGATE_RESULT_SCHEMA,
+};
+
+const SITE_NAVIGATE_TOOL_SPEC: LlmToolSpec = {
+  name: SITE_NAVIGATE_TOOL_DEF.id,
+  description: SITE_NAVIGATE_TOOL_DEF.description,
+  params: SITE_NAVIGATE_TOOL_DEF.params,
+};
+
 /** 快照 URL → 围栏比对用路径；解析失败返回 ''（围栏必不匹配，fail-closed）。 */
 function pathOf(url: string): string {
   try {
     return new URL(url).pathname;
+  } catch {
+    return '';
+  }
+}
+
+/** 快照 URL → origin（dom origin 围栏比对用）；解析失败返回 ''（围栏必不匹配，fail-closed）。 */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
   } catch {
     return '';
   }
@@ -166,10 +237,19 @@ function guideFrame(sessionId: string, params: Record<string, unknown>): GuideAc
 
 function buildSystemContent(composed: ComposeResult): string {
   const parts = [composed.systemPrompt];
+  // 站点索引居基座之后、功能块之前：跨功能稳定的跨站发现层（渐进披露第一层）。
+  if (composed.sitesIndex !== null) parts.push(composed.sitesIndex);
   if (composed.featureRules !== null) parts.push(composed.featureRules);
   if (composed.facts !== null) parts.push(composed.facts);
   for (const skill of composed.skills) parts.push(skill.content);
+  if (composed.docsIndex !== null) parts.push(composed.docsIndex);
   return parts.join('\n\n');
+}
+
+/** 激活 pack 定位（审计与 docs 读取用）；packId=null 表仅基座。 */
+interface PackRef {
+  packId: string | null;
+  packVersion: string | null;
 }
 
 /** 宿主 API 工具定义 → LLM 工具面：name=toolId，装配对 agent 透明（LLM 不感知分级/通道）。 */
@@ -196,6 +276,32 @@ export function createGateway(deps: GatewayDeps): Gateway {
   const runtimes = new Map<string, SessionRuntime>();
   const openStreams = new Map<ServerResponse, () => void>();
   const corsHeaders = { 'access-control-allow-origin': deps.corsOrigin } as const;
+
+  // 已安装 site 列表（快照不可变，惰性载入一次缓存）：per-origin 身份路由 + navigate 围栏 + 边界标记 origin 用。
+  let sitesPromise: Promise<SiteDescriptor[]> | undefined;
+  const getSites = (): Promise<SiteDescriptor[]> => (sitesPromise ??= deps.assembly.listSites());
+
+  /**
+   * 计算工具所属激活 pack 的 site 作用域（ADR-013）：
+   *  - packOrigin：激活 pack 的 site.origin（有 site 才有值），驱动 toolgate 的 origin 围栏与 per-origin 身份口径；
+   *  - claimsForOrigin：tenant'd pack 取会话 per-origin 身份（路由命中才有），no-tenant site pack 回退平台 claims。
+   * legacy 无 site pack → 两者皆空，toolgate 沿用平台 claims、不校 origin。
+   */
+  async function packScope(
+    session: SessionState,
+    packId: string | null,
+    claims: IdentityClaims,
+  ): Promise<{ packOrigin?: string; claimsForOrigin?: IdentityClaims }> {
+    if (packId === null) return {};
+    const site = (await getSites()).find((s) => s.packId === packId);
+    if (site === undefined) return {};
+    const claimsForOrigin =
+      site.tenant !== undefined ? session.claimsByOrigin[site.origin] : claims;
+    return {
+      packOrigin: site.origin,
+      ...(claimsForOrigin !== undefined ? { claimsForOrigin } : {}),
+    };
+  }
 
   const sendJson = (res: ServerResponse, status: number, body: unknown): void => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...corsHeaders });
@@ -243,6 +349,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     claims: IdentityClaims,
     featureId: string | null,
     body: Pick<AuditEvent, 'type' | 'data'>,
+    pack?: PackRef,
   ): void => {
     deps.audit.record({
       eventId: randomUUID(),
@@ -250,6 +357,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
       sessionId,
       userId: claims.hostUserId,
       tenant: claims.tenant,
+      ...(pack?.packId != null ? { packId: pack.packId } : {}),
+      ...(pack?.packVersion != null ? { packVersion: pack.packVersion } : {}),
       ...(featureId !== null ? { featureId } : {}),
       ...body,
     } as AuditEvent);
@@ -282,6 +391,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     session: SessionState,
     claims: IdentityClaims,
     featureId: string | null,
+    pack: PackRef,
     tool: ToolDefinition,
     call: { toolCallId: string; params: JsonObject },
   ): Promise<Observation> {
@@ -304,12 +414,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
 
     // dom 工具判定上下文来自最近一次快照（未观察不操作：无快照 toolgate 即 deny）。
     const domContext = isDomTool(tool) ? (runtimeOf(sessionId).domContext ?? undefined) : undefined;
+    // 工具所属激活 pack 的 site 作用域（ADR-013）：origin 围栏 + per-origin 身份口径。
+    const scope = await packScope(session, pack.packId, claims);
     const decision = await deps.toolgate.decide({
       sessionId,
       toolCallId,
       toolId: tool.id,
       params,
       claims,
+      ...scope,
       ...(domContext !== undefined ? { domContext } : {}),
     });
     recordEvent(sessionId, claims, featureId, {
@@ -321,7 +434,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         verdict: decision.verdict,
         ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
       },
-    });
+    }, pack);
     if (decision.verdict === 'deny') {
       finish('failed');
       return { toolCallId, ok: false, content: null, error: decision.reason ?? 'denied' };
@@ -342,14 +455,20 @@ export function createGateway(deps: GatewayDeps): Gateway {
       recordEvent(sessionId, claims, featureId, {
         type: 'hitl-verdict',
         data: { hitlId, toolCallId, decision: verdict },
-      });
+      }, pack);
       if (verdict === 'reject') {
         finish('failed');
         return { toolCallId, ok: false, content: null, error: 'user-rejected' };
       }
-      // dom 工具的批准是任务级授权：登记 grant，同任务后续批次 decide 直接放行（adr-011 一任务一确认）。
-      if (isDomTool(tool) && typeof params['task'] === 'string') {
-        await deps.toolgate.grantHitl({ sessionId, toolId: tool.id, task: params['task'] });
+      // 批准即任务级授权：登记 grant，同会话同任务的后续调用（跨工具，含 navigate）decide 直接放行。
+      // 两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得顺带解锁同名任务）；
+      // site_navigate（导航卡只呈现目标 URL，用户未见任务计划，不构成任务级知情授权）。
+      if (
+        tool.hitlMode !== 'every-call' &&
+        tool.id !== SITE_NAVIGATE_TOOL_ID &&
+        typeof params['task'] === 'string'
+      ) {
+        await deps.toolgate.grantHitl({ sessionId, task: params['task'] });
       }
     }
 
@@ -365,6 +484,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         toolId: tool.id,
         params,
         claims,
+        ...scope,
       });
     } else {
       const instruction = await deps.toolgate.issueExecInstruction({
@@ -373,6 +493,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         toolId: tool.id,
         params,
         claims,
+        ...scope,
         ...(domContext !== undefined ? { domContext } : {}),
       });
       nonce = instruction.nonce;
@@ -394,7 +515,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...(status !== undefined ? { status } : {}),
         durationMs: Date.now() - startedAt,
       },
-    });
+    }, pack);
     return observation;
   }
 
@@ -404,54 +525,118 @@ export function createGateway(deps: GatewayDeps): Gateway {
     claims: IdentityClaims,
   ): Promise<void> {
     const { sessionId } = session;
-    const { featureId } = await deps.assembly.resolveFeature({ url: session.currentUrl ?? '' });
-    const composed = await deps.assembly.compose({ sessionId, featureId });
-    // 注入自省与 compose 同源：审计 assembly 事件记录本轮 agent 看到了什么（只记 id 与版本，不落全文）。
-    const injection = await deps.assembly.describeInjection({ sessionId, featureId });
-    recordEvent(sessionId, claims, featureId, {
-      type: 'assembly',
-      data: {
-        snapshotVersion: injection.snapshotVersion,
-        featureId,
-        toolIds: injection.toolIds,
-        skillIds: composed.skills.map((skill) => skill.id),
-      },
-    });
-    const hostToolsById = new Map(composed.tools.map((tool) => [tool.id, tool]));
+    // 按 URL 装配一轮上下文（回合开始与 navigate 落点换装共用）：解析功能、组装注入、建工具面。
+    const assembleFor = async (url: string) => {
+      const { packId, packVersion, featureId } = await deps.assembly.resolveFeature({ url });
+      const pack: PackRef = { packId, packVersion };
+      const composed = await deps.assembly.compose({ sessionId, packId, featureId });
+      // 注入自省与 compose 同源：审计 assembly 事件记录本轮 agent 看到了什么（只记 id 与版本，不落全文）。
+      const injection = await deps.assembly.describeInjection({ sessionId, packId, featureId });
+      recordEvent(sessionId, claims, featureId, {
+        type: 'assembly',
+        data: {
+          snapshotVersion: injection.snapshotVersion,
+          featureId,
+          toolIds: injection.toolIds,
+          skillIds: composed.skills.map((skill) => skill.id),
+        },
+      }, pack);
+      const hostToolsById = new Map(composed.tools.map((tool) => [tool.id, tool]));
+      const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
+      // 快照工具只在工具面含 dom 工具时注入：无 dom 操作面就不给观察入口（最小工具面）。
+      const snapshotTools: LlmToolSpec[] = composed.tools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
+      // pack_doc 只在激活 pack 有 docs 索引时注入（渐进披露）：无索引则不给读取入口。
+      const docTools: LlmToolSpec[] = composed.docsIndex !== null ? [PACK_DOC_TOOL_SPEC] : [];
+      // site_navigate 与站点索引同门：仅当注入了"已安装站点索引"（≥2 site）时给跨站导航入口；单 site 无跨站意义。
+      const navTools: LlmToolSpec[] = composed.sitesIndex !== null ? [SITE_NAVIGATE_TOOL_SPEC] : [];
+      const tools: LlmToolSpec[] = [
+        ...guideTools,
+        ...snapshotTools,
+        ...docTools,
+        ...navTools,
+        ...composed.tools.map(toLlmToolSpec),
+      ];
+      return { pack, featureId, composed, hostToolsById, tools };
+    };
+    // 站点边界标记（ADR-013）：激活 pack 变更时向历史注入一行标记，防跨站历史误导；
+    // 复用 compress.ts BOUNDARY_MARKER 常量，摘要器识别后整句保留。prev=null（首回合）不注入。
+    const boundaryFor = async (
+      packId: string | null,
+      previousPackId: string | null,
+    ): Promise<LlmMessage | null> => {
+      if (previousPackId === null || packId === null || previousPackId === packId) return null;
+      const origin = (await getSites()).find((s) => s.packId === packId)?.origin ?? packId;
+      return { role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` };
+    };
+
+    let { pack, featureId, composed, hostToolsById, tools } = await assembleFor(session.currentUrl ?? '');
+    const prevPackId = session.lastPackId;
+    const boundary = await boundaryFor(pack.packId, prevPackId);
+    const boundaryMessages: LlmMessage[] = boundary !== null ? [boundary] : [];
+    if (pack.packId !== null && pack.packId !== prevPackId) deps.store.setLastPackId(sessionId, pack.packId);
     const messages: LlmMessage[] = [
       { role: 'system', content: buildSystemContent(composed) },
       ...session.history,
+      ...boundaryMessages,
       { role: 'user', content: text },
     ];
-    const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
-    // 快照工具只在工具面含 dom 工具时注入：无 dom 操作面就不给观察入口（最小工具面）。
-    const snapshotTools: LlmToolSpec[] = composed.tools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
-    const tools: LlmToolSpec[] = [...guideTools, ...snapshotTools, ...composed.tools.map(toLlmToolSpec)];
-    // 全回合累积的用户可见文本：多轮中只有最终一轮产出气泡文本，作为本回合 assistant 历史。
-    let visibleText = '';
+    // 本回合待落 history 的消息序列（含工具轮）：回合内只追加不回改，落盘边界统一瘦身。
+    // 边界标记随本回合落 history（进入下回合上下文与 P1 摘要保留集）。
+    const turnMessages: LlmMessage[] = [...boundaryMessages, { role: 'user', content: text }];
+    // 终结轮（纯文本/引导/未知工具/截断）的气泡文本；工具轮的 roundText 进各自 assistant 回声，不入此。
+    let tailText = '';
     // 回合是否自然收尾（纯文本/引导/未知工具终结）；false=轮数耗尽被截断，须显式告知用户而非静默停。
     let settled = false;
+    // 本回合最近一次完整消费到 done 的 usage 实数（工具轮在 tool-call 处提前 break、不含 usage）；
+    // 落盘边界压缩触发估算优先用它，缺省回退字符近似。
+    let lastUsage: UsageTokens | undefined;
 
+    // invalid-tool-args 自愈重试预算：模型偶发产出截断/坏 JSON 实参时回喂修正提示重试，
+    // 连续超限则按不可自愈终结（防同因空转烧轮数；maxTurnRounds 仍是总兜底）。
+    let invalidArgsRetries = 0;
     for (let round = 0; round < deps.maxTurnRounds; round += 1) {
       let roundText = '';
       let call: { toolCallId: string; name: string; params: JsonObject } | null = null;
+      let recoverableError: string | null = null;
       for await (const event of deps.llm.chat(tools.length > 0 ? { messages, tools } : { messages })) {
         if (event.kind === 'text-delta') {
           roundText += event.delta;
-          visibleText += event.delta;
           broadcast(sessionId, { type: 'text-delta', sessionId, delta: event.delta });
         } else if (event.kind === 'tool-call') {
           call = { toolCallId: event.toolCallId, name: event.name, params: event.params };
           break;
-        } else if (event.kind === 'done' && event.stopReason === 'error') {
-          // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
-          const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;
-          visibleText += notice;
-          notify(sessionId, notice);
+        } else if (event.kind === 'done') {
+          if (event.usage !== undefined) lastUsage = event.usage;
+          if (event.stopReason === 'error') {
+            if (event.errorKind === 'invalid-tool-args' && invalidArgsRetries < MAX_INVALID_ARGS_RETRIES) {
+              recoverableError = event.error ?? 'invalid-tool-args';
+            } else {
+              // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
+              const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;
+              roundText += notice;
+              notify(sessionId, notice);
+            }
+          }
         }
       }
-      // 无工具调用（纯文本/错误收尾）：本回合终结。
+      // 可自愈错误（模型实参 JSON 非法/截断）：不终结回合——把失败与修正要求回喂，下一轮重新发起调用。
+      if (call === null && recoverableError !== null) {
+        invalidArgsRetries += 1;
+        const correction: LlmMessage = {
+          role: 'user',
+          content: `（系统提示）你上一次的工具调用未能执行：${recoverableError}。实参 JSON 无效或被截断。请重新发起该工具调用，输出完整合法的 JSON 实参；若内容过长，缩短本批内容、分多批完成。`,
+        };
+        if (roundText !== '') {
+          messages.push({ role: 'assistant', content: roundText });
+          turnMessages.push({ role: 'assistant', content: roundText });
+        }
+        messages.push(correction);
+        turnMessages.push(correction);
+        continue;
+      }
+      // 无工具调用（纯文本/错误收尾）：本回合终结，本轮文本即气泡。
       if (call === null) {
+        tailText += roundText;
         settled = true;
         break;
       }
@@ -465,13 +650,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
         runtimeOf(sessionId).domContext = {
           refs: report.elements.map((element) => element.ref),
           path: pathOf(report.url),
+          origin: originOf(report.url),
         };
-        messages.push({
+        const snapshotEcho: LlmMessage = {
           role: 'assistant',
           content: roundText,
           toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
-        });
-        messages.push({
+        };
+        const snapshotObs: LlmMessage = {
           role: 'tool',
           toolCallId: call.toolCallId,
           content: JSON.stringify({
@@ -480,59 +666,138 @@ export function createGateway(deps: GatewayDeps): Gateway {
             elements: report.elements,
             ...(report.notices !== undefined ? { notices: report.notices } : {}),
           }),
-        });
+        };
+        messages.push(snapshotEcho, snapshotObs);
+        turnMessages.push(snapshotEcho, snapshotObs);
+        continue;
+      }
+
+      if (call.name === PACK_DOC_TOOL_NAME) {
+        // 渐进披露（非终结）：服务端读当前激活 pack 的 docs/ 正文，作 observation 回喂后继续本回合。
+        const docPath = typeof call.params['path'] === 'string' ? call.params['path'] : '';
+        const doc = await deps.assembly.readPackDoc({ packId: pack.packId, docPath });
+        const docEcho: LlmMessage = {
+          role: 'assistant',
+          content: roundText,
+          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
+        };
+        const docObs: LlmMessage = {
+          role: 'tool',
+          toolCallId: call.toolCallId,
+          content: JSON.stringify(
+            doc.ok ? { content: doc.content ?? '', truncated: doc.truncated === true } : { error: doc.error ?? '读取失败' },
+          ),
+        };
+        messages.push(docEcho, docObs);
+        turnMessages.push(docEcho, docObs);
         continue;
       }
 
       if (call.name === GUIDE_TOOL_NAME) {
         // 引导是终结动作：直接下发页面动作帧，本回合结束——不回喂 observation、不再等 LLM。
+        tailText += roundText;
         const frame = guideFrame(sessionId, call.params);
         if (frame !== null) {
           broadcast(sessionId, frame);
         } else {
           const notice = '未能定位到目标元素。';
-          visibleText += notice;
+          tailText += notice;
           notify(sessionId, notice);
         }
         settled = true;
         break;
       }
 
+      if (call.name === SITE_NAVIGATE_TOOL_ID) {
+        // 跨站导航（非终结）：经 toolgate 专路裁决 hitl + 一次性签名 navigate 指令，结果 {url} 过 resultSchema 回收后回喂本回合。
+        const observation = await runExecSubflow(
+          session,
+          claims,
+          featureId,
+          pack,
+          SITE_NAVIGATE_TOOL_DEF,
+          call,
+        );
+        const navEcho: LlmMessage = {
+          role: 'assistant',
+          content: roundText,
+          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
+        };
+        const navObs: LlmMessage = {
+          role: 'tool',
+          toolCallId: call.toolCallId,
+          content: JSON.stringify(observation.ok ? observation.content : { error: observation.error }),
+        };
+        messages.push(navEcho, navObs);
+        turnMessages.push(navEcho, navObs);
+        // 导航成功＝激活站点即刻切换：回合内按落点 URL 重新装配（规则/事实/工具面随站换出），
+        // 系统注入整段覆写、边界标记入历史——LLM 下一轮就持有新站上下文，不必等用户再发言。
+        if (observation.ok) {
+          const landedUrl = String((observation.content as JsonObject | null)?.['url'] ?? '');
+          if (landedUrl !== '') {
+            deps.store.setContext(sessionId, landedUrl);
+            const previousPackId = pack.packId;
+            ({ pack, featureId, composed, hostToolsById, tools } = await assembleFor(landedUrl));
+            messages[0] = { role: 'system', content: buildSystemContent(composed) };
+            const navBoundary = await boundaryFor(pack.packId, previousPackId);
+            if (navBoundary !== null) {
+              messages.push(navBoundary);
+              turnMessages.push(navBoundary);
+            }
+            if (pack.packId !== null && pack.packId !== previousPackId) {
+              deps.store.setLastPackId(sessionId, pack.packId);
+            }
+          }
+        }
+        continue;
+      }
+
       const tool = hostToolsById.get(call.name);
       if (tool === undefined) {
         // 白名单外的工具名（LLM 幻觉）：如实告知不支持，回合终结、不 fail。
         const notice = '该操作暂未支持。';
-        visibleText += notice;
+        tailText += roundText + notice;
         notify(sessionId, notice);
         settled = true;
         break;
       }
 
-      const observation = await runExecSubflow(session, claims, featureId, tool, call);
+      const observation = await runExecSubflow(session, claims, featureId, pack, tool, call);
       // 回喂 agent：assistant 调用轮回声本轮 tool_calls（OpenAI 兼容 API 要求 role:tool 须有前置
       // 带 tool_calls 的 assistant 消息，否则拒绝孤儿 tool 消息）+ observation（仅规整结果，U7）。
-      messages.push({
+      const execEcho: LlmMessage = {
         role: 'assistant',
         content: roundText,
         toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
-      });
-      messages.push({
+      };
+      const execObs: LlmMessage = {
         role: 'tool',
         toolCallId: call.toolCallId,
         content: JSON.stringify(observation.ok ? observation.content : { error: observation.error }),
-      });
+      };
+      messages.push(execEcho, execObs);
+      turnMessages.push(execEcho, execObs);
     }
 
     if (!settled) {
       // 轮数耗尽被截断：显式收尾而非静默停（用户视角"卡住"），并留在历史里供下回合衔接。
       const notice = '本轮操作步数已达上限，我先停在这里；回复「继续」可接着做。';
-      visibleText += notice;
+      tailText += notice;
       notify(sessionId, notice);
     }
-    deps.store.appendHistory(sessionId, { role: 'user', content: text });
-    if (visibleText !== '') {
-      deps.store.appendHistory(sessionId, { role: 'assistant', content: visibleText });
+    if (tailText !== '') {
+      turnMessages.push({ role: 'assistant', content: tailText });
     }
+    // 回合落盘边界：追加工具轮并瘦身（仅留最近一次快照观测全文），护 prompt 缓存前缀不回改。
+    const pruned = pruneStaleSnapshots([...session.history, ...turnMessages]);
+    // 达阈值再压缩：较早回合压滚动摘要、最近 K 轮留原文；摘要生成失败 fail-open（原样落盘，下回合再试）。
+    const estimate = estimateHistoryTokens(
+      lastUsage !== undefined ? { history: pruned, usage: lastUsage } : { history: pruned },
+    );
+    const toStore = shouldCompress(estimate, deps.compressContextWindow, deps.compressThreshold)
+      ? await compressHistory(pruned, { llm: deps.llm })
+      : pruned;
+    deps.store.setHistory(sessionId, toStore);
   }
 
   async function handleFrames(
@@ -646,9 +911,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
   }
 
   async function handleInjection(res: ServerResponse, session: SessionState): Promise<void> {
-    const { featureId } = await deps.assembly.resolveFeature({ url: session.currentUrl ?? '' });
+    const { packId, featureId } = await deps.assembly.resolveFeature({
+      url: session.currentUrl ?? '',
+    });
     const description = await deps.assembly.describeInjection({
       sessionId: session.sessionId,
+      packId,
       featureId,
     });
     sendJson(res, 200, description);
@@ -719,6 +987,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
       // 每次请求以当前验签结果刷新会话身份，代执行门禁始终按最新有效 claims 判定（U7）。
       deps.store.refreshClaims(sessionId, claims);
+      // per-origin 身份路由（ADR-013 任务组）：claims.tenant 匹配 pack.tenant 的 site → 记该 origin 的宿主身份；
+      // 无 tenant 的 pack 不参与（其 http/server 工具由 toolgate 回退平台 claims）。
+      for (const site of await getSites()) {
+        if (site.tenant !== undefined && site.tenant === claims.tenant) {
+          deps.store.setOriginClaims(sessionId, site.origin, claims);
+        }
+      }
       if (match[2] === 'frames' && req.method === 'POST') return handleFrames(req, res, session, claims);
       if (match[2] === 'events' && req.method === 'GET') return handleEvents(res, session);
       if (match[2] === 'injection' && req.method === 'GET') return handleInjection(res, session);

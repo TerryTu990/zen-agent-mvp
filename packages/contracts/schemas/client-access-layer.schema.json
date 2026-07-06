@@ -210,7 +210,7 @@
       }
     },
     "domStep": {
-      "$comment": "动作闭集：navigate/waitFor 契约保留、②-a 未实现（toolgate 拒绝，锚点=②-b 跨导航续跑）。ref 取自最近一次 snapshot-report；read 以 name 键回传采集值。",
+      "$comment": "动作闭集：navigate 于 ADR-013 批次④启用（单步、免 ref、url 须落在某已安装 pack site 围栏内）；waitFor 契约保留、未实现（toolgate 拒绝）。ref 取自最近一次 snapshot-report；read 以 name 键回传采集值；url 为 navigate 目标绝对 URL。",
       "type": "object",
       "additionalProperties": false,
       "required": ["action"],
@@ -220,6 +220,7 @@
           "enum": ["navigate", "waitFor", "click", "fill", "select", "read", "scroll", "highlight"]
         },
         "ref": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "minLength": 1 },
         "to": { "type": "string", "minLength": 1 },
         "value": { "type": "string" },
         "name": { "type": "string", "pattern": "^[\\w-]{1,64}$" }

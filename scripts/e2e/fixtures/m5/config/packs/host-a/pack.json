@@ -1,0 +1,13 @@
+{
+  "packId": "host-a",
+  "version": "0.1.0",
+  "summary": "演示站点甲：订单页可见代操作与跨站导航演练",
+  "site": {
+    "origin": "http://127.0.0.1:4173",
+    "locations": ["/"]
+  },
+  "featureIdRules": [
+    { "urlPattern": "order-list\\.html", "featureId": "order-list" }
+  ],
+  "features": ["order-list"]
+}
