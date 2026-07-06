@@ -10,11 +10,13 @@
 
 | 文档 | 内容 | 何时读 |
 |---|---|---|
-| [00-design-brief.md](reference/00-design-brief.md) | 设计基准（奠基期 SSOT）：定位、双版本定义、七系统速览、升级不变量 U1-U7、契约清单、决策清单、目录规划、验收基准 | 一切产物的对齐起点；与其他文档冲突时以它为准 |
-| [01-architecture.md](reference/01-architecture.md) | 双版本架构（MVP 模块化单体 ↔ 标准版七系统）、七系统职责边界、三条关键时序、U1-U7 升级路径展开、风险与权衡 | 需要理解系统怎么组织、边界在哪、如何升级时 |
-| [02-contracts.md](reference/02-contracts.md) | C1-C6 契约总览（指向各 `.schema.json`） | 实现或消费任一契约前 |
+| [00-design-brief.md](reference/00-design-brief.md) | 设计基准（奠基期 SSOT，头部附奠基后演进勘误）：定位、双版本定义、七系统速览、升级不变量 U1-U7、契约清单、决策清单 D1-D13 | 对齐项目定位与不变量时；历史原貌保留，现状以勘误与 01/02/03 为准 |
+| [01-architecture.md](reference/01-architecture.md) | 双版本架构、七系统职责边界、六条关键时序（含 dom 代操作/跨站任务组/上下文治理）、U1-U7 升级路径、**模块边界与扩展点清单**（§7） | 需要理解系统怎么组织、边界在哪、怎么扩展时 |
+| [02-contracts.md](reference/02-contracts.md) | C1-C6 契约总览（adapter 三形 × hitlMode、registry/pack 两级快照、六端口现签名、内建工具） | 实现或消费任一契约前 |
+| [03-configuration.md](reference/03-configuration.md) | 配置参考：站点包目录树与字段表、**新增站点完整示例**、环境变量全表、凭证注入、运行数据落点 | 新增/修改站点配置、部署配置排障时 |
+| [04-deployment.md](reference/04-deployment.md) | 部署参考：Docker 镜像构建、卷规划（站点包外挂不进镜像）、secret 注入、日志双通道、健康检查 | 发布服务端到容器环境时 |
 
-事实权威递变：奠基期以 00-design-brief 为准；奠基完成后逐步移交代码与各 `.schema.json`，reference 文档随之降为解释性描述。
+事实权威递变：奠基期以 00-design-brief 为准；奠基已完成，**事实权威在代码与各 `.schema.json` / `ports.ts`**，reference 文档为解释性描述（与代码冲突时以代码为准）；站点包/任务组/上下文治理的决策推理以 adr-013 为准。
 
 ### adr/ — 架构决策记录（为什么这么选）
 
@@ -31,6 +33,10 @@
 | [adr-007](adr/adr-007-config-files-before-ui.md) | D7 配置先文件后 UI：数据模型先于编辑界面稳定 |
 | [adr-008](adr/adr-008-explanation-quality-first.md) | D8 讲解质量为第一验证目标，eval 纪律先于规模化 |
 | [adr-009](adr/adr-009-no-dom-automation-in-mvp.md) | D9 MVP 不做 UI 自动化替点（DOM 级填表/点按钮） |
+| [adr-010](adr/adr-010-api-invocation-forms.md) | D10 API 调用形式：server 直调在 MVP 落地（credentialRef 凭证注入），双通道并存 |
+| [adr-011](adr/adr-011-visible-dom-operation.md) | D11 可见页面代操作：dom 通道（每步高亮 + 闭集步骤 + 任务级授权），取代 D9 的"不做" |
+| [adr-012](adr/adr-012-session-tab-group.md) | D12 会话=标签组：显式点图标建组（会话组语义被 adr-013 吸收） |
+| [adr-013](adr/adr-013-site-pack-and-cross-site-task-group.md) | D13 站点包与跨站任务组：registry/pack 两级、site 围栏、per-origin 身份、上下文治理 P0-P2 |
 
 新增非显然决策（架构/接口/依赖层）时按同格式续编号；已接受的 ADR 不改写，推翻用新 ADR 标注取代关系。
 
