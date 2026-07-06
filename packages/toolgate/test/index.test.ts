@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { ExecResultFrame, IdentityClaims, ToolDefinition } from '@zen-agent/contracts';
+import { SITE_NAVIGATE_TOOL_ID } from '@zen-agent/contracts';
 import { computeExecSignature, createToolGatePort } from '../src/index.js';
 
 // 仅测试固定值，非真实密钥（真实密钥运行时经 env 注入，ZA-C-SEC-02）。
@@ -1186,6 +1187,76 @@ describe('toolgate ADR-013 — every-call 授权不复用', () => {
     await port.grantHitl({ sessionId: 's', toolId: siteDomSendTool.id, task: '发信' });
     const second = await port.decide(sendBase);
     expect(second.verdict).toBe('hitl');
+  });
+});
+
+describe('toolgate ADR-013 — 内建 site_navigate 跨站导航（渐进披露第一层配套）', () => {
+  const navBase = { sessionId: 's', toolCallId: 'c', toolId: SITE_NAVIGATE_TOOL_ID, claims: validClaims };
+  const mailUrl = `${MAIL_ORIGIN}/js6/main.jsp`;
+
+  it('目标在某已安装 pack 围栏内 → hitl（导航有感、单次确认）', async () => {
+    const d = await makeSitePort().decide({ ...navBase, params: { url: mailUrl } });
+    expect(d.verdict).toBe('hitl');
+  });
+
+  it('允许目标为别 pack 的 origin（跨站语义），只要已安装', async () => {
+    const d = await makeSitePort().decide({ ...navBase, params: { url: `${CODEFLOW_ORIGIN}/console/token` } });
+    expect(d.verdict).toBe('hitl');
+  });
+
+  it('目标 origin 未安装 → deny fence-violation', async () => {
+    const d = await makeSitePort().decide({ ...navBase, params: { url: 'https://evil.example/x' } });
+    expect(d).toEqual({ verdict: 'deny', reason: 'fence-violation' });
+  });
+
+  it('目标 origin 命中但 location 前缀越界 → deny fence-violation', async () => {
+    const d = await makeSitePort().decide({ ...navBase, params: { url: `${CODEFLOW_ORIGIN}/pricing` } });
+    expect(d).toEqual({ verdict: 'deny', reason: 'fence-violation' });
+  });
+
+  it('参数不过 schema（缺 url）→ deny invalid-params', async () => {
+    const d = await makeSitePort().decide({ ...navBase, params: {} });
+    expect(d).toEqual({ verdict: 'deny', reason: 'invalid-params' });
+  });
+
+  it('签发：构造一次性签名 navigate dom 指令，签名可同 secret 复算', async () => {
+    const frame = await makeSitePort().issueExecInstruction({
+      ...navBase,
+      params: { url: mailUrl, reason: '去发信' },
+    });
+    expect(frame.request).toEqual({ kind: 'dom', steps: [{ action: 'navigate', url: mailUrl }] });
+    const expected = computeExecSignature(SIGN_FIXTURE, {
+      nonce: frame.nonce,
+      ttl: frame.ttl,
+      toolCallId: frame.toolCallId,
+      request: frame.request,
+    });
+    expect(frame.signature).toBe(expected);
+  });
+
+  it('签发越界目标 → 抛错拒发（治理终点独立重校验，U7 fail-closed）', async () => {
+    await expect(
+      makeSitePort().issueExecInstruction({ ...navBase, params: { url: 'https://evil.example/x' } }),
+    ).rejects.toThrow(/越出/);
+  });
+
+  it('结果回收：{url} 过 resultSchema → ok；缺 url → invalid-result（U7）', async () => {
+    const port = makeSitePort();
+    const okFrame = await port.issueExecInstruction({ ...navBase, params: { url: mailUrl } });
+    const good = await port.acceptExecResult({
+      sessionId: 's',
+      result: { type: 'exec-result', sessionId: 's', nonce: okFrame.nonce, ok: true, body: { url: mailUrl } },
+    });
+    expect(good.ok).toBe(true);
+    expect(good.content).toEqual({ url: mailUrl });
+
+    const badFrame = await port.issueExecInstruction({ ...navBase, params: { url: mailUrl } });
+    const bad = await port.acceptExecResult({
+      sessionId: 's',
+      result: { type: 'exec-result', sessionId: 's', nonce: badFrame.nonce, ok: true, body: {} },
+    });
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toBe('invalid-result');
   });
 });
 

@@ -46,6 +46,8 @@ interface CompiledRule {
 interface LoadedPack {
   packId: string;
   version: string;
+  /** 一句话站点用途（渐进披露第一层）；缺省 null，站点索引回退用 packId。 */
+  summary: string | null;
   /** null = legacy 无 site 围栏（不校 origin）。 */
   origin: string | null;
   /** claims.tenant → origin 路由键（ADR-013）；缺省=不参与 per-origin 身份路由。 */
@@ -275,6 +277,7 @@ function loadPack(
   return {
     packId: pack.packId,
     version: pack.version,
+    summary: pack.summary ?? null,
     origin: pack.site.origin,
     tenant: pack.tenant,
     locations: (pack.site.locations ?? ['/']).map(normalizeLocation),
@@ -353,6 +356,7 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
   const defaultPack: LoadedPack = {
     packId: 'default',
     version: manifest.version,
+    summary: null,
     origin: null,
     tenant: undefined,
     locations: [],
@@ -400,6 +404,32 @@ function resolvePack(snapshot: LoadedSnapshot, url: string): LoadedPack | null {
   return best;
 }
 
+/** pack 的可达入口 URL（origin + 首个 location 前缀）：site_navigate 的导航目标即取自此清单。 */
+function navigableUrl(pack: LoadedPack): string {
+  const loc = pack.locations[0] ?? '/';
+  return `${pack.origin}${loc === '/' ? '/' : loc}`;
+}
+
+/**
+ * 已安装站点索引（渐进披露第一层）：列出全部带 site 的 pack（用途+可达 URL），当前激活 pack 标注（当前）。
+ * <2 个带 site 的 pack → null（单 site/legacy 无跨站发现意义，保持现状不注入）。
+ */
+function buildSitesIndex(snapshot: LoadedSnapshot, currentPackId: string | null): string | null {
+  const sitePacks = [...snapshot.packs.values()].filter((pack) => pack.origin !== null);
+  if (sitePacks.length < 2) return null;
+  const lines = [
+    '# 已安装站点索引',
+    '平台可辅助以下站点。你当前所在的站点已标注（当前）；需要在其他站点完成的任务，用 site_navigate 导航到对应 URL：',
+    '',
+  ];
+  for (const pack of sitePacks) {
+    const label = pack.summary ?? pack.packId;
+    const current = pack.packId === currentPackId ? '（当前）' : '';
+    lines.push(`- ${label}：${navigableUrl(pack)}${current}`);
+  }
+  return lines.join('\n');
+}
+
 interface AssembledInjection {
   compose: ComposeResult;
   description: InjectionDescription;
@@ -416,7 +446,10 @@ function assembleInjection(
   featureId: string | null,
 ): AssembledInjection {
   const bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
+  // 站点索引跨功能稳定（不随 featureId 变），全局计算、只按当前激活 pack 标注（当前）；<2 site → null。
+  const sitesIndex = buildSitesIndex(snapshot, packId);
   const blocks: InjectionBlock[] = [{ kind: 'system-prompt', bytes: bytes(snapshot.systemPrompt) }];
+  if (sitesIndex !== null) blocks.push({ kind: 'sites-index', bytes: bytes(sitesIndex) });
 
   if (packId === null) {
     return {
@@ -430,6 +463,7 @@ function assembleInjection(
         skills: [],
         tools: [],
         docsIndex: null,
+        sitesIndex,
       },
       description: { snapshotVersion: snapshot.version, packId: null, featureId, blocks, toolIds: [] },
     };
@@ -472,6 +506,7 @@ function assembleInjection(
       skills: structuredClone(pack.skills),
       tools: structuredClone(tools),
       docsIndex: pack.docsIndex,
+      sitesIndex,
     },
     description: {
       snapshotVersion: snapshot.version,

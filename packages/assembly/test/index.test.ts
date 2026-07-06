@@ -91,6 +91,8 @@ describe('compose（examples/host-demo 真实快照）', () => {
     expect(result.packId).toBe('host-demo');
     expect(result.packVersion).toBe('0.2.0');
     expect(result.docsIndex).toBeNull();
+    // 单 site pack（host-demo 仅一个带 site 的 pack）→ 无跨站发现意义，不注入站点索引。
+    expect(result.sitesIndex).toBeNull();
     expect(result.systemPrompt).toBe(readFileSync(baseSystemPromptPath, 'utf8'));
     expect(result.featureRules).toBe(
       readFileSync(join(demoFeaturesDir, 'order-list/feature.md'), 'utf8'),
@@ -153,6 +155,12 @@ describe('compose（fixture：skills 与工具过滤）', () => {
     const port = fixturePort('valid');
     const result = await port.compose({ sessionId: 's1', packId: 'default', featureId: 'alpha' });
     expect(result.tools.map((t) => t.id)).toEqual(['alpha.do']);
+  });
+
+  it('legacy 快照（无 site 围栏）→ 不注入站点索引', async () => {
+    const port = fixturePort('valid');
+    const result = await port.compose({ sessionId: 's1', packId: 'default', featureId: 'alpha' });
+    expect(result.sitesIndex).toBeNull();
   });
 
   it('返回值可被调用方安全变更，缓存快照不受影响（U4）', async () => {
@@ -293,6 +301,27 @@ describe('registry 形态：两级激活（origin + 最长 location 前缀）', 
     const port = fixturePort('registry-valid');
     const tools = await port.allTools();
     expect(tools.map((t) => t.id).sort()).toEqual(['alpha.do', 'beta.do']);
+  });
+
+  it('站点索引：≥2 带 site 的 pack → 列全站（用途/可达 URL）+ 标注当前，含 sites-index 块', async () => {
+    const port = fixturePort('registry-valid');
+    const a = await port.compose({ sessionId: 's', packId: 'site-a', featureId: 'alpha' });
+    expect(a.sitesIndex).not.toBeNull();
+    // site-a 有 summary → 用摘要；site-b 无 summary → 回退 packId。可达 URL = origin + 首个 location。
+    expect(a.sitesIndex).toContain('站点 A 用途摘要：http://a.example/');
+    expect(a.sitesIndex).toContain('site-b：http://b.example/');
+    // 当前激活 pack（site-a）标注（当前），非当前（site-b）不标注。
+    expect(a.sitesIndex).toMatch(/站点 A 用途摘要：http:\/\/a\.example\/（当前）/);
+    expect(a.sitesIndex).not.toMatch(/site-b：http:\/\/b\.example\/（当前）/);
+    const desc = await port.describeInjection({ sessionId: 's', packId: 'site-a', featureId: 'alpha' });
+    expect(desc.blocks.map((x) => x.kind)).toContain('sites-index');
+    // 换 pack 激活 → 当前标注随之移动到 site-b。
+    const b = await port.compose({ sessionId: 's', packId: 'site-b', featureId: 'beta' });
+    expect(b.sitesIndex).toMatch(/site-b：http:\/\/b\.example\/（当前）/);
+    // packId=null（无 pack 命中）但仍 ≥2 site → 注入索引、任何站点条目都不标注当前（表头说明句除外）。
+    const none = await port.compose({ sessionId: 's', packId: null, featureId: null });
+    expect(none.sitesIndex).not.toBeNull();
+    expect(none.sitesIndex).not.toMatch(/https?:\/\/[^\n]*（当前）/);
   });
 });
 

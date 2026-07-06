@@ -9,13 +9,19 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
-import { isDomTool } from '@zen-agent/contracts';
+import {
+  isDomTool,
+  SITE_NAVIGATE_PARAMS_SCHEMA,
+  SITE_NAVIGATE_RESULT_SCHEMA,
+  SITE_NAVIGATE_TOOL_ID,
+} from '@zen-agent/contracts';
 import type {
   AssemblyPort,
   AuditEvent,
   AuditPort,
   ComposeResult,
   DomGateContext,
+  DomToolDefinition,
   DownstreamFrame,
   ExecResultFrame,
   GuideActionKind,
@@ -165,6 +171,29 @@ const PACK_DOC_TOOL_SPEC: LlmToolSpec = {
   },
 };
 
+/**
+ * built-in 跨站导航工具（ADR-013 渐进披露第一层配套）：不入 pack tools.json，仅当装配注入了"已安装站点索引"
+ * （≥2 个带 site 的 pack）时随之注入。经 toolgate 专路裁决（hitl + 目标围栏 fail-closed）与一次性签名下发，
+ * 构造 navigate dom 指令复用客户端跨窗口开页入组（U7）。dom 形态使 toolgate 免要求宿主身份、结果过 resultSchema 回收。
+ */
+const SITE_NAVIGATE_TOOL_DEF: DomToolDefinition = {
+  id: SITE_NAVIGATE_TOOL_ID,
+  featureIds: [],
+  description:
+    '当用户任务需要在其他站点协作完成时，用它导航到系统提示"已安装站点索引"中列出的目标站点。url 必须取自该索引中列出的可达 URL；只能导航到索引内的站点。导航后你在新站点的可用功能与工具由该站点配置决定（下一轮换出），请到达后再继续任务。',
+  params: SITE_NAVIGATE_PARAMS_SCHEMA,
+  execution: 'client',
+  riskTier: 'hitl',
+  adapter: { kind: 'dom', pathPrefixes: ['/'] },
+  resultSchema: SITE_NAVIGATE_RESULT_SCHEMA,
+};
+
+const SITE_NAVIGATE_TOOL_SPEC: LlmToolSpec = {
+  name: SITE_NAVIGATE_TOOL_DEF.id,
+  description: SITE_NAVIGATE_TOOL_DEF.description,
+  params: SITE_NAVIGATE_TOOL_DEF.params,
+};
+
 /** 快照 URL → 围栏比对用路径；解析失败返回 ''（围栏必不匹配，fail-closed）。 */
 function pathOf(url: string): string {
   try {
@@ -205,6 +234,8 @@ function guideFrame(sessionId: string, params: Record<string, unknown>): GuideAc
 
 function buildSystemContent(composed: ComposeResult): string {
   const parts = [composed.systemPrompt];
+  // 站点索引居基座之后、功能块之前：跨功能稳定的跨站发现层（渐进披露第一层）。
+  if (composed.sitesIndex !== null) parts.push(composed.sitesIndex);
   if (composed.featureRules !== null) parts.push(composed.featureRules);
   if (composed.facts !== null) parts.push(composed.facts);
   for (const skill of composed.skills) parts.push(skill.content);
@@ -522,10 +553,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const snapshotTools: LlmToolSpec[] = composed.tools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
     // pack_doc 只在激活 pack 有 docs 索引时注入（渐进披露）：无索引则不给读取入口。
     const docTools: LlmToolSpec[] = composed.docsIndex !== null ? [PACK_DOC_TOOL_SPEC] : [];
+    // site_navigate 与站点索引同门：仅当注入了"已安装站点索引"（≥2 site）时给跨站导航入口；单 site 无跨站意义。
+    const navTools: LlmToolSpec[] = composed.sitesIndex !== null ? [SITE_NAVIGATE_TOOL_SPEC] : [];
     const tools: LlmToolSpec[] = [
       ...guideTools,
       ...snapshotTools,
       ...docTools,
+      ...navTools,
       ...composed.tools.map(toLlmToolSpec),
     ];
     // 本回合待落 history 的消息序列（含工具轮）：回合内只追加不回改，落盘边界统一瘦身。
@@ -631,6 +665,31 @@ export function createGateway(deps: GatewayDeps): Gateway {
         }
         settled = true;
         break;
+      }
+
+      if (call.name === SITE_NAVIGATE_TOOL_ID) {
+        // 跨站导航（非终结）：经 toolgate 专路裁决 hitl + 一次性签名 navigate 指令，结果 {url} 过 resultSchema 回收后回喂本回合。
+        const observation = await runExecSubflow(
+          session,
+          claims,
+          featureId,
+          pack,
+          SITE_NAVIGATE_TOOL_DEF,
+          call,
+        );
+        const navEcho: LlmMessage = {
+          role: 'assistant',
+          content: roundText,
+          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
+        };
+        const navObs: LlmMessage = {
+          role: 'tool',
+          toolCallId: call.toolCallId,
+          content: JSON.stringify(observation.ok ? observation.content : { error: observation.error }),
+        };
+        messages.push(navEcho, navObs);
+        turnMessages.push(navEcho, navObs);
+        continue;
       }
 
       const tool = hostToolsById.get(call.name);

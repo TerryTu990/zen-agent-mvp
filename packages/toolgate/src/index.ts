@@ -1,6 +1,11 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
-import { isDomTool } from '@zen-agent/contracts';
+import {
+  isDomTool,
+  SITE_NAVIGATE_PARAMS_SCHEMA,
+  SITE_NAVIGATE_RESULT_SCHEMA,
+  SITE_NAVIGATE_TOOL_ID,
+} from '@zen-agent/contracts';
 import type {
   DomExecRequest,
   DomGateContext,
@@ -254,6 +259,9 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     paramsValidators.set(tool.id, ajv.compile(tool.params));
     resultValidators.set(tool.id, ajv.compile(tool.resultSchema));
   }
+  // 内建跨站导航工具（ADR-013 渐进披露）：不在 options.tools 闭集内，专路裁决/签发；此处只备其入/出参校验器。
+  const siteNavigateParamsValidator = ajv.compile(SITE_NAVIGATE_PARAMS_SCHEMA);
+  const siteNavigateResultValidator = ajv.compile(SITE_NAVIGATE_RESULT_SCHEMA);
 
   // 命名空间纪律（ADR-013 批次②遗留）：跨 pack 同名 toolId 载入期即 fail-closed 拒启——
   // 同一 toolId 归属两个不同 pack 会使门禁/审计的工具归属含糊，MVP 直接拒绝启动而非静默择一。
@@ -335,8 +343,47 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     return { verdict: 'deny', reason };
   }
 
+  /** 一次性签名并登记 nonce（U7）：签名精确覆盖将执行的 {nonce,ttl,toolCallId,request}，客户端执行前校验完整性。 */
+  function signInstruction(
+    input: IssueExecInstructionInput,
+    request: ExecRequest | DomExecRequest,
+  ): ExecInstructionFrame {
+    const nonce = randomUUID();
+    const signature = computeExecSignature(options.signingSecret, {
+      nonce,
+      ttl: ttlMs,
+      toolCallId: input.toolCallId,
+      request: request as unknown as JsonValue,
+    });
+    store.put(nonce, {
+      toolId: input.toolId,
+      toolCallId: input.toolCallId,
+      issuedAt: now(),
+      ttl: ttlMs,
+      consumed: false,
+    });
+    return {
+      type: 'exec-instruction',
+      sessionId: input.sessionId,
+      nonce,
+      ttl: ttlMs,
+      signature,
+      toolCallId: input.toolCallId,
+      request,
+    };
+  }
+
   return {
     async decide(input: GateDecisionInput): Promise<GateDecision> {
+      // 内建跨站导航（ADR-013 渐进披露）：不在工具闭集内，专路裁决——参数不过即 deny；
+      // 目标 URL 须落在某已安装 pack 的 site 围栏内（跨站允许别 pack origin，但必须已安装），否则 fence-violation；
+      // 不套用 dom 工具"快照 origin===pack origin"校验。导航有感，riskTier 固定 hitl（单次确认即可）。
+      if (input.toolId === SITE_NAVIGATE_TOOL_ID) {
+        if (!siteNavigateParamsValidator(input.params)) return deny('invalid-params');
+        const url = input.params['url'];
+        if (typeof url !== 'string' || !urlInFence(url)) return deny('fence-violation');
+        return { verdict: 'hitl' };
+      }
       // fail-closed 判定链：任一前置不过即 deny，reason 只述依据、不含实参值（U7 / SEC-04）。
       const tool = toolsById.get(input.toolId);
       if (!tool) return deny('unknown-tool');
@@ -371,6 +418,15 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     },
 
     async issueExecInstruction(input: IssueExecInstructionInput): Promise<ExecInstructionFrame> {
+      // 内建跨站导航：签发是治理终点，签名前独立重校验（参数 + 目标围栏），构造一次性 navigate dom 指令。
+      if (input.toolId === SITE_NAVIGATE_TOOL_ID) {
+        if (!siteNavigateParamsValidator(input.params)) {
+          throw new Error('site_navigate 签发前提破坏：参数校验未过');
+        }
+        const url = String(input.params['url'] ?? '');
+        if (!urlInFence(url)) throw new Error('site_navigate 签发拒绝：目标 URL 越出已安装站点围栏');
+        return signInstruction(input, { kind: 'dom', steps: [{ action: 'navigate', url }] });
+      }
       const tool = toolsById.get(input.toolId);
       if (!tool) throw new Error(`issueExecInstruction 前提破坏：未知 toolId`);
       let request: ExecRequest | DomExecRequest;
@@ -403,29 +459,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
             : {}),
         };
       }
-      const nonce = randomUUID();
-      const signature = computeExecSignature(options.signingSecret, {
-        nonce,
-        ttl: ttlMs,
-        toolCallId: input.toolCallId,
-        request: request as unknown as JsonValue,
-      });
-      store.put(nonce, {
-        toolId: input.toolId,
-        toolCallId: input.toolCallId,
-        issuedAt: now(),
-        ttl: ttlMs,
-        consumed: false,
-      });
-      return {
-        type: 'exec-instruction',
-        sessionId: input.sessionId,
-        nonce,
-        ttl: ttlMs,
-        signature,
-        toolCallId: input.toolCallId,
-        request,
-      };
+      return signInstruction(input, request);
     },
 
     async acceptExecResult(input: AcceptExecResultInput): Promise<Observation> {
@@ -451,8 +485,11 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
           error: result.error ?? 'exec-failed',
         };
       }
-      // 不采信客户端上报原文：唯有过服务端 resultSchema 校验才回喂 agent（U7）。
-      const validateResult = resultValidators.get(record.toolId);
+      // 不采信客户端上报原文：唯有过服务端 resultSchema 校验才回喂 agent（U7）。内建 site_navigate 用其专属结果校验器。
+      const validateResult =
+        record.toolId === SITE_NAVIGATE_TOOL_ID
+          ? siteNavigateResultValidator
+          : resultValidators.get(record.toolId);
       const body = result.body ?? null;
       if (!validateResult || !validateResult(body)) {
         return { toolCallId: record.toolCallId, ok: false, content: null, error: 'invalid-result' };

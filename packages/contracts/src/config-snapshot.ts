@@ -38,6 +38,8 @@ export interface PackManifest {
   packId: string;
   /** pack 独立 semver，发布后不可变（改配置=发新版本）。 */
   version: string;
+  /** 一句话站点用途（渐进披露第一层）：进入"已安装站点索引"供 agent 跨站发现；缺省=索引回退用 packId。 */
+  summary?: string;
   site: SiteFence;
   /** claims.tenant → origin 路由用（任务组）；MVP 单租户 demo 可省。 */
   tenant?: string;

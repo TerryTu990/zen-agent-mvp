@@ -81,3 +81,26 @@ export type ToolDefinition = ClientToolDefinition | DomToolDefinition | ServerTo
 export function isDomTool(tool: ToolDefinition): tool is DomToolDefinition {
   return 'kind' in tool.adapter && tool.adapter.kind === 'dom';
 }
+
+/**
+ * 内建跨站导航工具的结构契约（ADR-013 渐进披露第一层配套）：不入 pack tools.json，由网关注入工具面、
+ * toolgate 专路裁决与签发。此处只放结构（id + 入/出参 schema）——面向 LLM 的说明属运行期提示，随注入点定义，
+ * 不落此结构契约。params.url 为索引中已安装站点的目标绝对 URL；result.url 与 navigate dom 步的回传本体同构（U7 回收）。
+ */
+export const SITE_NAVIGATE_TOOL_ID = 'site_navigate';
+
+export const SITE_NAVIGATE_PARAMS_SCHEMA: JsonObject = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['url'],
+  properties: {
+    url: { type: 'string' },
+    reason: { type: 'string' },
+  },
+};
+
+export const SITE_NAVIGATE_RESULT_SCHEMA: JsonObject = {
+  type: 'object',
+  required: ['url'],
+  properties: { url: { type: 'string' } },
+};

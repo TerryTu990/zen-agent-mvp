@@ -58,10 +58,15 @@ export interface ComposeResult {
   tools: ToolDefinition[];
   /** 激活 pack 的 docs/ 渐进披露索引（frontmatter 标题+摘要）；docs/ 为空或无 pack 时为 null。 */
   docsIndex: string | null;
+  /**
+   * 已安装站点索引（渐进披露第一层，跨功能稳定）：列出平台可辅助的全部带 site 的 pack（用途+可达 URL），
+   * 当前激活 pack 标注（当前）。仅 ≥2 个带 site 的 pack 时非 null（单 site/legacy 无跨站意义 → null）。
+   */
+  sitesIndex: string | null;
 }
 
 export interface InjectionBlock {
-  kind: 'system-prompt' | 'feature-rules' | 'facts' | 'skill' | 'docs-index';
+  kind: 'system-prompt' | 'sites-index' | 'feature-rules' | 'facts' | 'skill' | 'docs-index';
   id?: string;
   bytes: number;
 }
