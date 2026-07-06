@@ -96,6 +96,7 @@ export const SITE_NAVIGATE_PARAMS_SCHEMA: JsonObject = {
   properties: {
     url: { type: 'string' },
     reason: { type: 'string' },
+    task: { type: 'string' },
   },
 };
 

@@ -107,6 +107,7 @@ const PANEL_CSS = `
   .za-hitl { align-self: stretch; padding: 11px 13px; border-radius: 14px; background: var(--clay-soft); border: 1px solid color-mix(in srgb, var(--clay) 38%, var(--line-2)); display: flex; flex-direction: column; gap: 7px; animation: za-rise .24s cubic-bezier(.16, 1, .3, 1) both; }
   .za-hitl-title { font-weight: 600; color: var(--clay); }
   .za-hitl-detail, .za-hitl-reason { font-size: 12.5px; color: var(--ink-soft); word-break: break-word; }
+  .za-hitl-plan { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--ink-soft); display: flex; flex-direction: column; gap: 3px; }
   .za-hitl-hint { font-size: 11.5px; color: var(--pencil); }
   .za-stop { position: absolute; right: 14px; bottom: 76px; z-index: 3; display: none; padding: 7px 14px; border: none; border-radius: 999px; font: inherit; font-size: 12.5px; cursor: pointer; background: var(--ink); color: var(--paper); box-shadow: 0 4px 14px rgba(28, 27, 24, .28); }
   .za-stop[data-on] { display: block; }

@@ -180,7 +180,7 @@ const SITE_NAVIGATE_TOOL_DEF: DomToolDefinition = {
   id: SITE_NAVIGATE_TOOL_ID,
   featureIds: [],
   description:
-    '当用户任务需要在其他站点协作完成时，用它导航到系统提示"已安装站点索引"中列出的目标站点。url 必须取自该索引中列出的可达 URL；只能导航到索引内的站点。导航后你在新站点的可用功能与工具由该站点配置决定（下一轮换出），请到达后再继续任务。',
+    '当用户任务需要在其他站点协作完成时，用它导航到系统提示"已安装站点索引"中列出的目标站点。url 必须取自该索引中列出的可达 URL；只能导航到索引内的站点。task 填本次导航所属的任务标题（与页面操作工具的 task 保持一致）：已获用户授权的任务内导航无需再次确认。导航后你在新站点的可用功能与工具由该站点配置决定（下一轮换出），请到达后再继续任务。',
   params: SITE_NAVIGATE_PARAMS_SCHEMA,
   execution: 'client',
   riskTier: 'hitl',
@@ -457,9 +457,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
         finish('failed');
         return { toolCallId, ok: false, content: null, error: 'user-rejected' };
       }
-      // dom 工具的批准是任务级授权：登记 grant，同任务后续批次 decide 直接放行（adr-011 一任务一确认）。
-      if (isDomTool(tool) && typeof params['task'] === 'string') {
-        await deps.toolgate.grantHitl({ sessionId, toolId: tool.id, task: params['task'] });
+      // 批准即任务级授权：登记 grant，同会话同任务的后续调用（跨工具，含 navigate）decide 直接放行。
+      // 两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得顺带解锁同名任务）；
+      // site_navigate（导航卡只呈现目标 URL，用户未见任务计划，不构成任务级知情授权）。
+      if (
+        tool.hitlMode !== 'every-call' &&
+        tool.id !== SITE_NAVIGATE_TOOL_ID &&
+        typeof params['task'] === 'string'
+      ) {
+        await deps.toolgate.grantHitl({ sessionId, task: params['task'] });
       }
     }
 

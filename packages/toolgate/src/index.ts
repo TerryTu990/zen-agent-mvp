@@ -54,7 +54,7 @@ export interface ToolGateOptions {
 
 const DEFAULT_TTL_MS = 60000;
 const DEFAULT_HITL_GRANT_TTL_MS = 900000;
-/** 客户端解释器对用户点「停止」的约定错误串：命中即吊销该工具在本会话的全部任务授权。 */
+/** 客户端解释器对用户点「停止」的约定错误串：命中即吊销本会话的全部任务授权。 */
 const USER_STOPPED_ERROR = 'user-stopped';
 
 /** 递归按键名升序序列化，使签名不受对象键序影响（防篡改稳定基线）。 */
@@ -226,13 +226,13 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   const grantTtlMs = options.hitlGrantTtlMs ?? DEFAULT_HITL_GRANT_TTL_MS;
   const now = options.now ?? Date.now;
   const store = new InMemoryNonceStore();
-  // 任务级 HITL 授权：key=(sessionId,toolId,task) → 最近使用时刻（滑动 TTL）。进程内即可，随会话生命周期。
+  // 任务级 HITL 授权：key=(sessionId,task) → 最近使用时刻（滑动 TTL）。同任务跨工具共享授权
+  // （用户批准的是任务，不是某个工具）；进程内即可，随会话生命周期。
   const hitlGrants = new Map<string, number>();
-  const grantKey = (sessionId: string, toolId: string, task: string): string =>
-    `${sessionId} ${toolId} ${task}`;
+  const grantKey = (sessionId: string, task: string): string => `${sessionId} ${task}`;
   /** 命中且未过滑动闲置期则续期并放行；过期即清除（回到 hitl）。 */
-  const consumeGrant = (sessionId: string, toolId: string, task: string): boolean => {
-    const key = grantKey(sessionId, toolId, task);
+  const consumeGrant = (sessionId: string, task: string): boolean => {
+    const key = grantKey(sessionId, task);
     const lastUsed = hitlGrants.get(key);
     if (lastUsed === undefined) return false;
     if (now() - lastUsed > grantTtlMs) {
@@ -242,9 +242,9 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     hitlGrants.set(key, now());
     return true;
   };
-  /** 用户停止：吊销该会话该工具的全部任务授权（不区分 task——停止表达的是对自动执行整体的收回）。 */
-  const revokeGrants = (sessionId: string, toolId: string): void => {
-    const prefix = `${sessionId} ${toolId} `;
+  /** 用户停止：吊销本会话全部任务授权（停止表达的是对自动执行整体的收回，不区分任务与工具）。 */
+  const revokeGrants = (sessionId: string): void => {
+    const prefix = `${sessionId} `;
     for (const key of hitlGrants.keys()) {
       if (key.startsWith(prefix)) hitlGrants.delete(key);
     }
@@ -376,12 +376,16 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   return {
     async decide(input: GateDecisionInput): Promise<GateDecision> {
       // 内建跨站导航（ADR-013 渐进披露）：不在工具闭集内，专路裁决——参数不过即 deny；
-      // 目标 URL 须落在某已安装 pack 的 site 围栏内（跨站允许别 pack origin，但必须已安装），否则 fence-violation；
-      // 不套用 dom 工具"快照 origin===pack origin"校验。导航有感，riskTier 固定 hitl（单次确认即可）。
+      // 目标 URL 须落在某已安装 pack 的 site 围栏内（跨站允许别 pack origin，但必须已安装），否则 fence-violation。
+      // 带 task 且该任务已获批 → 放行（导航是任务的一步，共享任务级授权）；无 task 或未获批仍 hitl。
       if (input.toolId === SITE_NAVIGATE_TOOL_ID) {
         if (!siteNavigateParamsValidator(input.params)) return deny('invalid-params');
         const url = input.params['url'];
         if (typeof url !== 'string' || !urlInFence(url)) return deny('fence-violation');
+        const navTask = input.params['task'];
+        if (typeof navTask === 'string' && consumeGrant(input.sessionId, navTask)) {
+          return { verdict: 'allow' };
+        }
         return { verdict: 'hitl' };
       }
       // fail-closed 判定链：任一前置不过即 deny，reason 只述依据、不含实参值（U7 / SEC-04）。
@@ -400,21 +404,24 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       if (isDomTool(tool)) {
         const validated = validateDomSteps(tool, input.params, input.domContext, input.packOrigin, urlInFence);
         if ('reason' in validated) return deny(validated.reason);
-        // 任务级授权：same task 已获批且未闲置过期 → 本批放行（adr-011 一任务一确认）；
-        // every-call 工具跳过复用查询（对外不可撤回动作次次单独确认，不复用授权）。
-        if (
-          tool.riskTier === 'hitl' &&
-          tool.hitlMode !== 'every-call' &&
-          consumeGrant(input.sessionId, tool.id, String(input.params['task']))
-        ) {
-          return { verdict: 'allow' };
-        }
+      }
+      // 任务级授权（跨工具共享）：带 task 且同会话该任务已获批未闲置过期 → 放行（一任务一确认）。
+      // 复用判定必须在 dom 步骤校验之后——已授权任务的非法批次仍 deny（U7 fail-closed）；
+      // every-call 工具跳过复用查询（对外不可撤回动作次次单独确认，不复用授权）。
+      const grantTask = input.params['task'];
+      if (
+        tool.riskTier === 'hitl' &&
+        tool.hitlMode !== 'every-call' &&
+        typeof grantTask === 'string' &&
+        consumeGrant(input.sessionId, grantTask)
+      ) {
+        return { verdict: 'allow' };
       }
       return { verdict: tool.riskTier === 'hitl' ? 'hitl' : 'allow' };
     },
 
     async grantHitl(input: HitlGrantInput): Promise<void> {
-      hitlGrants.set(grantKey(input.sessionId, input.toolId, input.task), now());
+      hitlGrants.set(grantKey(input.sessionId, input.task), now());
     },
 
     async issueExecInstruction(input: IssueExecInstructionInput): Promise<ExecInstructionFrame> {
@@ -476,8 +483,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       }
       store.markConsumed(result.nonce);
       if (!result.ok) {
-        // 用户点停止＝收回自动执行授权：吊销该工具全部任务 grant，后续批次回到 hitl。
-        if (result.error === USER_STOPPED_ERROR) revokeGrants(input.sessionId, record.toolId);
+        // 用户点停止＝收回自动执行授权：吊销本会话全部任务 grant，后续批次回到 hitl。
+        if (result.error === USER_STOPPED_ERROR) revokeGrants(input.sessionId);
         return {
           toolCallId: record.toolCallId,
           ok: false,

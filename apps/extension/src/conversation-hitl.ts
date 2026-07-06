@@ -35,13 +35,18 @@ function summarizeParams(params: JsonObject): string {
 }
 
 /** dom 任务授权卡的功能级摘要：只呈现任务/摘要/步数，不铺字段细节（一任务一确认，adr-011）。 */
-function summarizeDomTask(params: JsonObject): { title: string; detail: string } {
+function summarizeDomTask(params: JsonObject): { title: string; detail: string; plan: string[] } {
   const summary = typeof params['summary'] === 'string' ? params['summary'] : '';
   const steps = Array.isArray(params['steps']) ? params['steps'].length : 0;
   const count = `共 ${steps} 步页面操作`;
+  // plan＝agent 声明的任务级执行计划（人话大步骤）：授权卡列出，让用户知悉批准后将自动执行的全貌。
+  const plan = Array.isArray(params['plan'])
+    ? params['plan'].filter((item): item is string => typeof item === 'string')
+    : [];
   return {
     title: String(params['task']),
     detail: summary === '' ? count : `${summary}（${count}）`,
+    plan,
   };
 }
 
@@ -177,10 +182,20 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         detail.className = 'za-hitl-detail';
         detail.textContent = domTask === null ? summarizeParams(frame.params) : domTask.detail;
 
+        const planList = domTask !== null && domTask.plan.length > 0 ? document.createElement('ol') : null;
+        if (planList !== null && domTask !== null) {
+          planList.className = 'za-hitl-plan';
+          for (const step of domTask.plan) {
+            const li = document.createElement('li');
+            li.textContent = step;
+            planList.append(li);
+          }
+        }
+
         const hint = domTask === null ? null : document.createElement('div');
         if (hint !== null) {
           hint.className = 'za-hitl-hint';
-          hint.textContent = '授权后本任务内的后续页面操作将自动执行；执行中可随时点「停止」。';
+          hint.textContent = '授权后本任务内的后续操作（含页面操作与站点跳转）将自动执行；执行中可随时点「停止」。';
         }
 
         const actions = document.createElement('div');
@@ -196,6 +211,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         actions.append(approve, reject);
 
         card.append(title, detail);
+        if (planList !== null) card.append(planList);
         if (hint !== null) card.append(hint);
         if (frame.reason !== undefined) {
           const reason = document.createElement('div');

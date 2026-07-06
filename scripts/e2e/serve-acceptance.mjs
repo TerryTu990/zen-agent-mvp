@@ -61,8 +61,10 @@ function main() {
   const config = {
     [TOKEN_KEY]: signToken(),
     [BASEURL_KEY]: `http://127.0.0.1:${PORT}`,
-    // 验收自动化：codeflow 页打开即视同点图标（126 由 navigate 入组，不配 autoActivate）。
-    'za.autoActivate': ['https://codeflow.asia'],
+    // ZA_AUTO_ACTIVATE=1 时才下发验收自动化开关（codeflow 页打开即视同点图标；126 由 navigate 入组）；
+    // 缺省不下发，保持产品默认「点图标才激活」。曾吃过 autoActivate 的浏览器需清残留键：
+    // chrome.storage.local.remove('za.autoActivate')
+    ...(process.env.ZA_AUTO_ACTIVATE === '1' ? { 'za.autoActivate': ['https://codeflow.asia'] } : {}),
   };
 
   // 配置边车：扩展 service worker 控制台 fetch 本端点即可写入 chrome.storage（避免手动粘贴长 token 被弯引号/截断破坏）。
