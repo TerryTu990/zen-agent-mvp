@@ -52,8 +52,11 @@ release/
 
 平台不建账号；用户须持管理员签发的短期 JWT 方可使用（服务端验签 fail-closed）。宿主 SSO 接入是终局形态，届时由其签发、本流程退场。
 
+签发脚本随发布同步到服务器（`remote/sign-token.sh` → `/root/zen-agent/sign-token.sh`），在服务器上执行：
+
 ```bash
-release/sign-token.sh -u <宿主用户id> [-d 有效天数，默认30]   # 容器内签发，secret 不出服务器
+ssh lingm2
+cd /root/zen-agent && ./sign-token.sh <宿主用户id>        # 默认 30 天；第二参数可改天数
 ```
 把输出的令牌发给用户 → 用户在扩展**选项页**（chrome://extensions → zen-agent → 扩展选项）粘贴保存。
 令牌过期重签重配；`/demo-token` 自签端点在生产保持关闭。

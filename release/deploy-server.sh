@@ -26,9 +26,10 @@ ssh "${HOST}" "test -f ${REMOTE_DIR}/.env" || {
 echo "[1/5] 传输镜像 ${IMAGE}（gzip 流式）…"
 docker save "${IMAGE}" | gzip | ssh "${HOST}" 'gunzip | docker load'
 
-echo "[2/5] 同步 compose 与目录骨架…"
+echo "[2/5] 同步 compose、签发脚本与目录骨架…"
 scp -q release/remote/docker-compose.yml "${HOST}:${REMOTE_DIR}/docker-compose.yml"
-ssh "${HOST}" "mkdir -p ${REMOTE_DIR}/snapshot ${REMOTE_DIR}/data/za"
+scp -q release/remote/sign-token.sh "${HOST}:${REMOTE_DIR}/sign-token.sh"
+ssh "${HOST}" "chmod +x ${REMOTE_DIR}/sign-token.sh && mkdir -p ${REMOTE_DIR}/snapshot ${REMOTE_DIR}/data/za"
 
 if [[ -n "${SNAPSHOT_DIR}" ]]; then
   echo "[3/5] 同步快照根 ${SNAPSHOT_DIR} → ${REMOTE_DIR}/snapshot/ …"
