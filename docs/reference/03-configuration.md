@@ -192,8 +192,10 @@
 | 变量 | 默认 | 作用 |
 |---|---|---|
 | `ZA_CRED_<UPPER_SNAKE(ref)>` | 无 | server 通道凭证真值：`credentialRef` 驼峰转大写蛇形（`wikiPlatformKey → ZA_CRED_WIKI_PLATFORM_KEY`）；解析不到 → `credential-unresolved`，真值不落配置/日志/审计 |
-| `ZA_DEMO_TOKEN_ENABLED` | 关（`==="1"` 才开） | `/demo-token` 自签端点（仅演示环境） |
+| `ZA_DEMO_TOKEN_ENABLED` | 关（`==="1"` 才开） | `/demo-token` 自签端点（仅本机开发/E2E；生产保持关闭） |
 | `ZA_JWT_ISS` | `zen-agent-demo` | demo-token 签发的 iss |
+
+生产的用户令牌不走 demo-token：由管理员经 `release/sign-token.sh` 在服务器容器内签发（iss=`zen-agent`，须列入 `ZA_JWT_ISS_ALLOWLIST`），用户在扩展选项页配置。
 
 ### 客户端（扩展）配置
 

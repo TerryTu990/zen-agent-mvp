@@ -45,8 +45,18 @@ release/
 | 形态 | 产物 | 分发 |
 |---|---|---|
 | 服务端 | docker 镜像 `zen-agent-server:<git-sha>` | `deploy-server.sh` 到 lingm2 |
-| Chrome 插件 | `artifacts/zen-agent-extension-<version>.zip` | 手工分发/企业策略/商店（用户安装后配 `za.serverBaseUrl=https://agent.flash-api.com`） |
+| Chrome 插件 | `artifacts/zen-agent-extension-<version>.zip`（生产服务端地址已烤入缺省值） | 手工分发/企业策略/商店 |
 | 嵌入 SDK / 浏览器壳 | （未有产物） | 锚点：S3 多形态客户端落地时补 `build-sdk.sh` 等 |
+
+## 用户认证（当前形态：管理员签发令牌）
+
+平台不建账号；用户须持管理员签发的短期 JWT 方可使用（服务端验签 fail-closed）。宿主 SSO 接入是终局形态，届时由其签发、本流程退场。
+
+```bash
+release/sign-token.sh -u <宿主用户id> [-d 有效天数，默认30]   # 容器内签发，secret 不出服务器
+```
+把输出的令牌发给用户 → 用户在扩展**选项页**（chrome://extensions → zen-agent → 扩展选项）粘贴保存。
+令牌过期重签重配；`/demo-token` 自签端点在生产保持关闭。
 
 ## 快速发布
 
@@ -54,6 +64,7 @@ release/
 release/build-server-image.sh          # 1. 构建 amd64 镜像
 release/deploy-server.sh               # 2. 传输 + 远端 up -d + healthz 冒烟
 release/build-extension.sh             # 3. （插件有变更时）打 zip
+release/sign-token.sh -u <用户id>      # 4. 给新用户签发访问令牌
 ```
 
 首次部署前提（人工，一次性）：服务器 `/root/zen-agent/.env` 按 `remote/env.example` 填好真值；

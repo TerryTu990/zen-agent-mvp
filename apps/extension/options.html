@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>zen-agent 设置</title>
+  <style>
+    body { font: 14px/1.6 system-ui, -apple-system, sans-serif; color: #1c1b18; background: #faf9f6; margin: 0; padding: 32px; }
+    .card { max-width: 560px; margin: 0 auto; background: #fff; border: 1px solid #e4e1da; border-radius: 14px; padding: 24px 28px; }
+    h1 { font-size: 17px; margin: 0 0 4px; }
+    .sub { color: #8a867d; font-size: 12.5px; margin: 0 0 20px; }
+    label { display: block; font-weight: 600; font-size: 13px; margin: 14px 0 6px; }
+    .hint { font-weight: 400; color: #8a867d; font-size: 12px; margin-left: 6px; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d8d4cb; border-radius: 8px; font: inherit; font-size: 13px; }
+    textarea { height: 88px; resize: vertical; font-family: ui-monospace, monospace; word-break: break-all; }
+    .row { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
+    button { padding: 8px 18px; border: none; border-radius: 8px; font: inherit; cursor: pointer; background: #1c1b18; color: #faf9f6; }
+    #status { font-size: 12.5px; color: #4a7c59; }
+    #status.err { color: #b4552f; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>zen-agent 设置</h1>
+    <p class="sub">访问令牌由管理员签发；令牌仅存于本浏览器（chrome.storage.local），不会发给服务端以外的任何地方。</p>
+    <label>访问令牌<span class="hint">向管理员获取，过期后重新获取并更新</span></label>
+    <textarea id="token" placeholder="粘贴管理员发给你的令牌（eyJ 开头的一长串）"></textarea>
+    <label>服务端地址<span class="hint">一般无需修改</span></label>
+    <input id="baseUrl" placeholder="留空使用默认" />
+    <div class="row">
+      <button id="save">保存</button>
+      <span id="status"></span>
+    </div>
+  </div>
+  <script src="dist/options.js"></script>
+</body>
+</html>

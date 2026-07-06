@@ -16,7 +16,13 @@ import {
   type BackgroundRuntimeMessage,
 } from './messaging.js';
 
-const DEFAULT_SERVER_BASE_URL = 'http://127.0.0.1:8787';
+// 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
+// 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
+declare const __ZA_SERVER_BASE_URL__: string | undefined;
+const DEFAULT_SERVER_BASE_URL =
+  typeof __ZA_SERVER_BASE_URL__ === 'string' && __ZA_SERVER_BASE_URL__ !== ''
+    ? __ZA_SERVER_BASE_URL__
+    : 'http://127.0.0.1:8787';
 
 interface Session {
   baseUrl: string;
