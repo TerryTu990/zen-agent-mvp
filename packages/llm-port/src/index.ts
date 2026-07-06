@@ -99,6 +99,19 @@ async function* chatStream(
     return;
   }
 
+  // OpenAI 函数名合法集 ^[a-zA-Z0-9_-]+$ 不含点；toolId 以点分命名空间（<featureId>.<tool>），
+  // 出网前点替换为 '__'、tool-call 回程还原，平台内部命名不变。映射冲突 fail-closed。
+  const wireNames = new Map<string, string>();
+  for (const tool of request.tools ?? []) {
+    const wire = toWireName(tool.name);
+    const existing = wireNames.get(wire);
+    if (existing !== undefined && existing !== tool.name) {
+      yield doneError(`工具名出网映射冲突：${existing} / ${tool.name}`);
+      return;
+    }
+    wireNames.set(wire, tool.name);
+  }
+
   try {
     const response = await fetchWithOneRetry(config, `${baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -151,7 +164,7 @@ async function* chatStream(
         yield {
           kind: 'tool-call',
           toolCallId: draft.id ?? `tool-call-${index}`,
-          name: draft.name,
+          name: wireNames.get(draft.name) ?? draft.name,
           params,
         };
       }
@@ -181,6 +194,11 @@ async function fetchWithOneRetry(
   }
 }
 
+/** OpenAI 兼容端点函数名不允许点；点分 toolId 出网替换为 '__'（当前 toolId 文法小写+连字符，无原生 '__'，可逆） */
+function toWireName(name: string): string {
+  return name.replace(/\./g, '__');
+}
+
 function buildHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   const apiKey = process.env['ZA_LLM_API_KEY'];
@@ -203,7 +221,7 @@ function buildBody(model: string, request: LlmChatRequest): JsonObject {
             tool_calls: m.toolCalls.map((tc) => ({
               id: tc.id,
               type: 'function',
-              function: { name: tc.name, arguments: JSON.stringify(tc.params) },
+              function: { name: toWireName(tc.name), arguments: JSON.stringify(tc.params) },
             })),
           }
         : {}),
@@ -212,7 +230,7 @@ function buildBody(model: string, request: LlmChatRequest): JsonObject {
   if (request.tools !== undefined && request.tools.length > 0) {
     body['tools'] = request.tools.map((t) => ({
       type: 'function',
-      function: { name: t.name, description: t.description, parameters: t.params },
+      function: { name: toWireName(t.name), description: t.description, parameters: t.params },
     }));
   }
   return body;

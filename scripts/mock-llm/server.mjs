@@ -25,11 +25,18 @@ const TOOL_PAGE_OPERATE = 'order-list.page-operate';
 const TOOL_SNAPSHOT = 'page_snapshot';
 const TOOL_SEND_EMAIL = 'mail-126.send-email';
 
-/** 请求 tools 是否携带指定 name 的工具（OpenAI function 形态或裸 name）。 */
+/** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
+function normalizeToolName(name) {
+  return typeof name === 'string' ? name.replaceAll('__', '.') : name;
+}
+
+/** 请求 tools 是否携带指定 name 的工具（OpenAI function 形态或裸 name；wire 名归一后比对）。 */
 function hasTool(body, name) {
   return (
     Array.isArray(body?.tools) &&
-    body.tools.some((t) => t?.function?.name === name || t?.name === name)
+    body.tools.some(
+      (t) => normalizeToolName(t?.function?.name) === name || normalizeToolName(t?.name) === name,
+    )
   );
 }
 
@@ -167,7 +174,7 @@ const snapshotCall = () => ({ id: 'call_snapshot', name: TOOL_SNAPSHOT, argument
 function calledTool(body, name) {
   return (body?.messages ?? []).some(
     (m) => m?.role === 'assistant' && Array.isArray(m.tool_calls) &&
-      m.tool_calls.some((tc) => tc?.function?.name === name),
+      m.tool_calls.some((tc) => normalizeToolName(tc?.function?.name) === name),
   );
 }
 
