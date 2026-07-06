@@ -106,6 +106,8 @@ async function* chatStream(
       body: JSON.stringify(buildBody(model, request)),
     });
     if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      console.error(`[llm-port] 上游 ${response.status}：${detail.slice(0, 800)}`);
       yield doneError(`上游响应异常（HTTP ${response.status}）`);
       return;
     }
