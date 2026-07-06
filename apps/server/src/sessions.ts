@@ -110,8 +110,7 @@ type SessionEvent =
   | { t: 'history'; history: LlmMessage[] }
   | { t: 'claims'; claims: IdentityClaims }
   | { t: 'origin-claims'; origin: string; claims: IdentityClaims }
-  | { t: 'last-pack'; packId: string }
-  | { t: 'summary'; summary: string };
+  | { t: 'last-pack'; packId: string };
 
 export interface PersistentSessionStore extends SessionStore {
   /** 逐出闲置超时的会话（内存项 + 落盘文件）；由内部定时器驱动，测试可直接调用。 */
