@@ -5,3 +5,4 @@ dist/
 credentials.local.json
 .za/
 *.tsbuildinfo
+release/artifacts/
