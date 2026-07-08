@@ -1,0 +1,48 @@
+[
+  {
+    "id": "resume.page-operate",
+    "featureIds": ["resume"],
+    "description": "在 BOSS直聘\"我的简历\"页可见地读取用户简历，采集求职画像（工作经历、期望岗位/城市/薪资、技能）供后续职位筛选与沟通起草使用。只做读取与高亮，MUST NOT 修改简历——steps 只含 read/scroll/highlight，不得含 fill/select 等修改动作。使用前必须先 page_snapshot，steps 中每个 ref 取自最近一次快照；需回报的字段用 read 步骤（带 name 键）采集。调用约定：先在文本中说明将读取哪些简历信息；task 在整个求职任务期间保持同一标题（含后续搜索/详情/沟通步骤）；任务首批调用附 plan（功能级大步骤），展示在授权卡上供用户知情批准。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "steps", "summary"],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "任务标题（功能级）。同一求职任务的所有批次与跨功能页步骤保持同一标题——用户按它授权一次后，本任务后续操作（含搜索/详情/沟通页续作）自动执行；不要到新功能页后另起标题"
+        },
+        "plan": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "本任务的功能级执行计划（人话大步骤，如[\"读取简历了解画像\",\"按画像筛选职位\",\"就合适职位与HR打招呼\"]）。任务首批调用必附，展示在授权卡上；后续批次可省略"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "type": "object" },
+          "description": "按序执行的只读步骤：{action: read|scroll|highlight, ref, name?}——read 步骤带 name 键采集字段值；不得含 fill/select/click 等修改类动作"
+        },
+        "summary": {
+          "type": "string",
+          "description": "面向用户的操作摘要，将展示在确认卡上（如\"读取你的求职期望与工作经历\"）"
+        }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/web/geek/resume"]
+    },
+    "resultSchema": {
+      "type": "object",
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "number" },
+        "url": { "type": "string" }
+      }
+    }
+  }
+]

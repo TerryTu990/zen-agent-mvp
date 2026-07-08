@@ -1,0 +1,52 @@
+[
+  {
+    "id": "job-detail.page-operate",
+    "featureIds": ["job-detail"],
+    "description": "在 BOSS直聘职位详情页可见地读取与高亮：采集职位职责/任职要求/薪资/地点供对照用户画像评估匹配度，或高亮关键要求供用户查看。只做读取/高亮/滚动，MUST NOT 点击\"立即沟通/投递\"——打招呼走 job-detail.greet。使用前必须先 page_snapshot，steps 中每个 ref 取自最近一次快照；需回报的字段用 read 步骤（带 name 键）采集。task 在整个求职任务期间保持同一标题；任务首批附 plan。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "steps", "summary"],
+      "properties": {
+        "task": { "type": "string", "description": "任务标题（功能级），与本求职任务其它功能页保持同一标题，不另起" },
+        "plan": { "type": "array", "items": { "type": "string" }, "description": "本任务的功能级执行计划。任务首批必附，展示在授权卡上；后续批次可省略" },
+        "steps": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "object" }, "description": "按序执行的只读/引导步骤：{action: read|scroll|highlight, ref, name?}——不得含 fill/select/click 修改或发起对外联系的动作" },
+        "summary": { "type": "string", "description": "面向用户的操作摘要，将展示在确认卡上" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "adapter": { "kind": "dom", "pathPrefixes": ["/job_detail"] },
+    "resultSchema": {
+      "type": "object",
+      "properties": { "reads": { "type": "object" }, "completedSteps": { "type": "number" }, "url": { "type": "string" } }
+    }
+  },
+  {
+    "id": "job-detail.greet",
+    "featureIds": ["job-detail"],
+    "description": "在职位详情页点\"立即沟通\"按钮打招呼（系统自动发默认招呼语，对外不可撤回动作）。仅在基于详情页完整 JD 判定该职位满足匹配门槛后调用（判定见功能规则）；逐家单独调用、MUST NOT 群发；per-task 授权，用户首批授权本求职任务后同任务自动放行。使用前先 page_snapshot 取\"立即沟通\"按钮 ref；steps 只含一次对该按钮的 click。company/position/matchReason/strengths 为留痕字段，随审计事件流留存供事后查看。达用户设定的数量上限即停止调用。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "summary", "company", "position", "matchReason", "steps"],
+      "properties": {
+        "task": { "type": "string", "description": "任务标题（功能级），与本求职任务其它功能页保持同一标题，不另起" },
+        "summary": { "type": "string", "description": "面向用户的操作摘要（如\"向 XX 公司 后端工程师 岗打招呼\"）" },
+        "company": { "type": "string", "description": "留痕：目标企业名" },
+        "position": { "type": "string", "description": "留痕：目标职位名" },
+        "matchReason": { "type": "string", "description": "留痕：为什么向这家打招呼——完整 JD 如何匹配画像的判断依据" },
+        "strengths": { "type": "string", "description": "留痕：用户相对该职位的核心优势（可选）" },
+        "steps": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "type": "object" }, "description": "只含一次对\"立即沟通\"按钮的 click：{action: click, ref}" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "hitlMode": "per-task",
+    "adapter": { "kind": "dom", "pathPrefixes": ["/job_detail"] },
+    "resultSchema": {
+      "type": "object",
+      "properties": { "completedSteps": { "type": "number" }, "url": { "type": "string" } }
+    }
+  }
+]

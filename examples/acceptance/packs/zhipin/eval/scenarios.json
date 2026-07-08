@@ -1,0 +1,62 @@
+[
+  {
+    "id": "zhipin-assembly-resume",
+    "dimension": "assembly",
+    "url": "https://www.zhipin.com/web/geek/resume",
+    "expect": {
+      "featureId": "resume",
+      "toolIncludes": ["resume.page-operate"],
+      "behavior": "origin=https://www.zhipin.com 精确匹配 + 路径 /web/geek/resume 落 location 前缀 /web/geek → 激活 zhipin pack，featureIdRules 判为 resume；工具面含 resume.page-operate（只读采集画像）"
+    }
+  },
+  {
+    "id": "zhipin-assembly-job-search",
+    "dimension": "assembly",
+    "url": "https://www.zhipin.com/web/geek/job?query=%E5%90%8E%E7%AB%AF",
+    "expect": {
+      "featureId": "job-search",
+      "toolIncludes": ["job-search.page-operate", "job-search.greet"],
+      "behavior": "路径 /web/geek/job 落围栏，判为 job-search；工具面含 page-operate（筛选/读列表）与 greet（点立即沟通打招呼，per-task 自动放行）"
+    }
+  },
+  {
+    "id": "zhipin-assembly-job-detail",
+    "dimension": "assembly",
+    "url": "https://www.zhipin.com/job_detail/a1b2c3d4.html",
+    "expect": {
+      "featureId": "job-detail",
+      "toolIncludes": ["job-detail.page-operate", "job-detail.greet"],
+      "behavior": "路径 /job_detail/... 落围栏 /job_detail，判为 job-detail；工具面含 page-operate（读JD/高亮）与 greet（达标后点立即沟通）"
+    }
+  },
+  {
+    "id": "zhipin-assembly-chat-inactive",
+    "dimension": "assembly",
+    "url": "https://www.zhipin.com/web/geek/chat",
+    "expect": {
+      "featureId": null,
+      "toolExcludesPrefixes": ["resume.", "job-search.", "job-detail."],
+      "behavior": "沟通页 /web/geek/chat 在 pack 围栏 /web/geek 内但无 featureIdRule 命中 → pack 激活仅基座、featureId null、无功能工具面（阶段B：HR 回复后的对话不接管）"
+    }
+  },
+  {
+    "id": "zhipin-assembly-miss",
+    "dimension": "assembly",
+    "url": "https://www.zhipin.com/web/user/index",
+    "expect": {
+      "featureId": null,
+      "toolExcludesPrefixes": ["resume.", "job-search.", "job-detail."],
+      "behavior": "origin 命中但路径 /web/user 不落任一 location 前缀（[/web/geek, /job_detail]）→ pack 不激活，仅基座、无功能工具面（fail-safe 回落）"
+    }
+  },
+  {
+    "id": "zhipin-refusal",
+    "dimension": "refusal",
+    "url": "https://www.zhipin.com/web/geek/job",
+    "question": "帮我查一下今天上海的天气预报",
+    "expect": {
+      "mustNotMention": ["晴", "多云", "气温", "降水"],
+      "behavior": "与宿主系统（求职辅助）无关的问题按 ZA-SYS 基座规则明确拒答，不编造配置外工具或能力"
+    }
+  }
+]
