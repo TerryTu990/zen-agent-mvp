@@ -2,7 +2,7 @@
   {
     "id": "job-detail.page-operate",
     "featureIds": ["job-detail"],
-    "description": "在 BOSS直聘职位详情页可见地读取与高亮：采集职位职责/任职要求/薪资/地点供对照用户画像评估匹配度，或高亮关键要求供用户查看。只做读取/高亮/滚动，MUST NOT 点击\"立即沟通/投递\"——打招呼走 job-detail.greet。使用前必须先 page_snapshot，steps 中每个 ref 取自最近一次快照；需回报的字段用 read 步骤（带 name 键）采集。task 在整个求职任务期间保持同一标题；任务首批附 plan。",
+    "description": "在 BOSS直聘职位详情页可见地读取与高亮：采集职位职责/任职要求/薪资/地点/公司信息供对照画像评估匹配度，或高亮关键要求供用户查看。只做读取/高亮/滚动，MUST NOT 点击\"立即沟通/投递\"——打招呼走 job-detail.greet、正式投递走 job-detail.formal-apply。使用前必须先 page_snapshot，steps 中每个 ref 取自最近一次快照；需回报的字段用 read 步骤（带 name 键）采集。task 在整个求职任务期间保持同一标题；任务首批附 plan。",
     "params": {
       "type": "object",
       "additionalProperties": false,
@@ -25,24 +25,101 @@
   {
     "id": "job-detail.greet",
     "featureIds": ["job-detail"],
-    "description": "在职位详情页点\"立即沟通\"按钮打招呼（系统自动发默认招呼语，对外不可撤回动作）。仅在基于详情页完整 JD 判定该职位满足匹配门槛后调用（判定见功能规则）；逐家单独调用、MUST NOT 群发；per-task 授权，用户首批授权本求职任务后同任务自动放行。使用前先 page_snapshot 取\"立即沟通\"按钮 ref；steps 只含一次对该按钮的 click。company/position/matchReason/strengths 为留痕字段，随审计事件流留存供事后查看。达用户设定的数量上限即停止调用。",
+    "description": "在职位详情页点\"立即沟通\"按钮打招呼（系统自动发默认招呼语，对外不可撤回动作）。仅在基于详情页完整 JD 按 skills/jd-match 判定该职位达标（匹配度高且回复概率≥中）后调用；逐家单独调用、MUST NOT 群发；per-task 授权，用户首批授权本求职任务后同任务自动放行。使用前先 page_snapshot 取\"立即沟通\"按钮 ref；steps 只含一次对该按钮的 click。打招呼成功后须另调内建工具 record_application 落盘（本工具自身不写持久记录）。达用户设定的数量上限即停止调用。",
     "params": {
       "type": "object",
       "additionalProperties": false,
       "required": ["task", "summary", "company", "position", "matchReason", "steps"],
       "properties": {
         "task": { "type": "string", "description": "任务标题（功能级），与本求职任务其它功能页保持同一标题，不另起" },
-        "summary": { "type": "string", "description": "面向用户的操作摘要（如\"向 XX 公司 后端工程师 岗打招呼\"）" },
-        "company": { "type": "string", "description": "留痕：目标企业名" },
-        "position": { "type": "string", "description": "留痕：目标职位名" },
-        "matchReason": { "type": "string", "description": "留痕：为什么向这家打招呼——完整 JD 如何匹配画像的判断依据" },
-        "strengths": { "type": "string", "description": "留痕：用户相对该职位的核心优势（可选）" },
+        "summary": { "type": "string", "description": "面向用户的操作摘要（如\"向 XX 公司 AI工程师 岗打招呼\"）" },
+        "company": { "type": "string", "description": "动作摘要：目标企业名（供工具卡/记录用）" },
+        "position": { "type": "string", "description": "动作摘要：目标职位名" },
+        "matchReason": { "type": "string", "description": "动作摘要：为什么向这家打招呼——完整 JD 如何匹配画像的判断依据" },
+        "strengths": { "type": "string", "description": "动作摘要：用户相对该职位的核心优势（可选）" },
         "steps": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "type": "object" }, "description": "只含一次对\"立即沟通\"按钮的 click：{action: click, ref}" }
       }
     },
     "execution": "client",
     "riskTier": "hitl",
     "hitlMode": "per-task",
+    "adapter": { "kind": "dom", "pathPrefixes": ["/job_detail"] },
+    "resultSchema": {
+      "type": "object",
+      "properties": { "completedSteps": { "type": "number" }, "url": { "type": "string" } }
+    }
+  },
+  {
+    "id": "job-detail.salary-benchmark",
+    "featureIds": ["job-detail"],
+    "description": "查询某职位/城市的行业薪资参考（server 通道：平台服务端以平台级凭证直调第三方只读接口，不经用户浏览器会话，auto 直执）。用于辅助判断本职位薪资是否合理、是否达用户 35K 底线。只读、不产生写动作、结果仅作判断参考。⚠真实第三方薪资接口地址与查询结构为待核占位；凭证经 credentialRef 运行时注入、真值不入配置。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position", "city"],
+      "properties": {
+        "position": { "type": "string", "description": "职位名（如 AI工程师/大模型算法）" },
+        "city": { "type": "string", "description": "城市" }
+      }
+    },
+    "execution": "server",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "https://api.example-salary.com/v1/benchmark?position={{position}}&city={{city}}",
+      "headers": { "Authorization": "Bearer {{credential}}" },
+      "credentialRef": "zhipinSalaryKey"
+    },
+    "resultSchema": {
+      "type": "object",
+      "properties": {
+        "median": { "type": "number" },
+        "p25": { "type": "number" },
+        "p75": { "type": "number" }
+      }
+    }
+  },
+  {
+    "id": "job-detail.formal-apply",
+    "featureIds": ["job-detail"],
+    "description": "在职位详情页点\"投递简历/正式申请\"按钮正式投递（对外不可撤回，比\"立即沟通\"打招呼更重的动作）。every-call 分级：每次投递单独弹确认、授权不复用（不并入 per-task 打招呼授权）。仅在用户明确要正式投递该职位时使用；MUST NOT 用 greet/page-operate 夹带投递。使用前先 page_snapshot 取投递按钮 ref；steps 只含一次对投递按钮的 click。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "summary", "company", "position", "steps"],
+      "properties": {
+        "task": { "type": "string", "description": "任务标题（功能级）" },
+        "summary": { "type": "string", "description": "面向用户的操作摘要（如\"向 XX 公司 正式投递简历\"）" },
+        "company": { "type": "string", "description": "目标企业名" },
+        "position": { "type": "string", "description": "目标职位名" },
+        "steps": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "type": "object" }, "description": "只含一次对\"投递/正式申请\"按钮的 click：{action: click, ref}" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "hitlMode": "every-call",
+    "adapter": { "kind": "dom", "pathPrefixes": ["/job_detail"] },
+    "resultSchema": {
+      "type": "object",
+      "properties": { "completedSteps": { "type": "number" }, "url": { "type": "string" } }
+    }
+  },
+  {
+    "id": "job-detail.auto-accept-offer",
+    "featureIds": ["job-detail"],
+    "description": "【声明存在但永久拒绝——示范 forbidden 红线，不要调用】代替用户接受 offer / 承诺到岗时间 / 报价期望薪资等实质承诺的能力入口。此类越权、对用户利益不可撤回，服务端一律 fail-closed 拒绝执行（forbidden 分级）：即使用户要求也 MUST NOT 尝试调用本工具，也 MUST NOT 用其它工具夹带此类承诺，应回到用户自行决定。本条目仅用于让治理面显式登记\"自动接 offer=永拒\"，其定义永不会被执行。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "steps", "summary"],
+      "properties": {
+        "task": { "type": "string", "description": "任务标题——仅为契约完整性保留；本工具永久拒绝，不会执行" },
+        "steps": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "object" }, "description": "拟执行的承诺动作步骤——仅为契约完整性声明；本工具永久拒绝，任何步骤都不会执行" },
+        "summary": { "type": "string", "description": "面向用户的操作摘要——本工具永久拒绝，不会展示执行" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "forbidden",
     "adapter": { "kind": "dom", "pathPrefixes": ["/job_detail"] },
     "resultSchema": {
       "type": "object",

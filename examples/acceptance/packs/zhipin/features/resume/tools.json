@@ -2,7 +2,7 @@
   {
     "id": "resume.page-operate",
     "featureIds": ["resume"],
-    "description": "在 BOSS直聘\"我的简历\"页可见地读取用户简历，采集求职画像（工作经历、期望岗位/城市/薪资、技能）供后续职位筛选与沟通起草使用。只做读取与高亮，MUST NOT 修改简历——steps 只含 read/scroll/highlight，不得含 fill/select 等修改动作。使用前必须先 page_snapshot，steps 中每个 ref 取自最近一次快照；需回报的字段用 read 步骤（带 name 键）采集。调用约定：先在文本中说明将读取哪些简历信息；task 在整个求职任务期间保持同一标题（含后续搜索/详情/沟通步骤）；任务首批调用附 plan（功能级大步骤），展示在授权卡上供用户知情批准。",
+    "description": "在 BOSS直聘\"我的简历\"页可见地读取用户简历，采集求职画像（工作经历、期望岗位/城市/薪资、技能）供后续职位筛选与沟通起草使用。本工具为只读采集、免授权直接执行（auto 分级）：只做读取/滚动/高亮，MUST NOT 修改简历——steps 只含 read/scroll/highlight，绝不含 fill/select/click 等修改动作（改简历另有 resume.modify-resume，且被永久拒绝）。使用前必须先 page_snapshot，steps 中每个 ref 取自最近一次快照；需回报的字段用 read 步骤（带 name 键）采集。调用约定：先在文本中说明将读取哪些简历信息；task 在整个求职任务期间保持同一标题（含后续搜索/详情/沟通步骤）——后续 hitl 工具（打招呼等）按同一 task 复用一次授权，故此处即定标题、勿到新功能页另起。若用户已在 docs/profile.md 维护画像或简历页信息不足，可另用 pack_doc 读取 profile.md 补全画像。",
     "params": {
       "type": "object",
       "additionalProperties": false,
@@ -10,12 +10,12 @@
       "properties": {
         "task": {
           "type": "string",
-          "description": "任务标题（功能级）。同一求职任务的所有批次与跨功能页步骤保持同一标题——用户按它授权一次后，本任务后续操作（含搜索/详情/沟通页续作）自动执行；不要到新功能页后另起标题"
+          "description": "任务标题（功能级）。同一求职任务的所有批次与跨功能页步骤保持同一标题——本工具虽免授权，但后续 hitl 工具（打招呼/正式投递）按同一 task 复用授权；不要到新功能页后另起标题"
         },
         "plan": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "本任务的功能级执行计划（人话大步骤，如[\"读取简历了解画像\",\"按画像筛选职位\",\"就合适职位与HR打招呼\"]）。任务首批调用必附，展示在授权卡上；后续批次可省略"
+          "description": "本求职任务的功能级执行计划（人话大步骤，如[\"读取简历了解画像\",\"按画像筛选职位\",\"就合适职位与HR打招呼\"]），供用户知情本 agent 的整体动作；首批调用附上，后续批次可省略"
         },
         "steps": {
           "type": "array",
@@ -26,12 +26,53 @@
         },
         "summary": {
           "type": "string",
-          "description": "面向用户的操作摘要，将展示在确认卡上（如\"读取你的求职期望与工作经历\"）"
+          "description": "面向用户的操作摘要（如\"读取你的求职期望与工作经历\"）"
         }
       }
     },
     "execution": "client",
-    "riskTier": "hitl",
+    "riskTier": "auto",
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/web/geek/resume"]
+    },
+    "resultSchema": {
+      "type": "object",
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "number" },
+        "url": { "type": "string" }
+      }
+    }
+  },
+  {
+    "id": "resume.modify-resume",
+    "featureIds": ["resume"],
+    "description": "【声明存在但永久拒绝——示范 forbidden 红线，不要调用】在\"我的简历\"页修改简历内容（编辑/删除/新增字段）的能力入口。本功能对简历只读，改简历为对外不可撤回、越权动作，服务端一律 fail-closed 拒绝执行（forbidden 分级）：即使用户要求代改简历也 MUST NOT 尝试调用本工具，应说明本 agent 不代改简历、引导用户自行在页面编辑。本条目仅用于让治理面显式登记\"改简历=永拒\"，其定义永不会被执行。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "steps", "summary"],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "任务标题（功能级）——仅为契约完整性保留；本工具永久拒绝，不会执行"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "type": "object" },
+          "description": "拟修改简历的操作步骤：{action: fill|select|click, ref, value?}——仅为契约完整性声明；本工具永久拒绝，任何步骤都不会执行"
+        },
+        "summary": {
+          "type": "string",
+          "description": "面向用户的操作摘要——本工具永久拒绝，不会展示执行"
+        }
+      }
+    },
+    "execution": "client",
+    "riskTier": "forbidden",
     "adapter": {
       "kind": "dom",
       "pathPrefixes": ["/web/geek/resume"]

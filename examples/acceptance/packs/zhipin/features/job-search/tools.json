@@ -25,7 +25,7 @@
   {
     "id": "job-search.greet",
     "featureIds": ["job-search"],
-    "description": "在职位列表页对某个达标职位点\"立即沟通\"按钮打招呼（系统自动发默认招呼语，对外不可撤回动作）。仅对满足匹配门槛的职位调用（判定见功能规则）；列表卡片信息不足以确认硬性能力要求时 MUST NOT 仅凭列表打招呼，先进详情页判定或跳过。逐家单独调用、MUST NOT 群发；per-task 授权，用户首批授权本求职任务后同任务自动放行。使用前先 page_snapshot 取该职位\"立即沟通\"按钮 ref；steps 只含一次对该按钮的 click。company/position/matchReason/strengths 为留痕字段，随审计事件流留存供事后查看。达用户设定的数量上限即停止调用。",
+    "description": "在职位列表页对某个达标职位点\"立即沟通\"按钮打招呼（系统自动发默认招呼语，对外不可撤回动作）。仅对满足匹配门槛的职位调用（判定见功能规则）；列表卡片信息不足以确认硬性能力要求时 MUST NOT 仅凭列表打招呼，先进详情页判定或跳过。逐家单独调用、MUST NOT 群发；per-task 授权，用户首批授权本求职任务后同任务自动放行。使用前先 page_snapshot 取该职位\"立即沟通\"按钮 ref；steps 只含一次对该按钮的 click。company/position/matchReason/strengths 为面向用户的动作摘要字段（展示在工具卡/回复中）；打招呼成功后须另调内建工具 record_application 把这些信息落盘（本工具自身不写持久记录）。达用户设定的数量上限即停止调用。",
     "params": {
       "type": "object",
       "additionalProperties": false,
@@ -47,6 +47,35 @@
     "resultSchema": {
       "type": "object",
       "properties": { "completedSteps": { "type": "number" }, "url": { "type": "string" } }
+    }
+  },
+  {
+    "id": "job-search.query-jobs",
+    "featureIds": ["job-search"],
+    "description": "只读查询职位清单作为 skills/jd-match 的评估输入（client-http 通道：平台签发一次性签名指令，插件在页面以用户既有会话代发宿主查询请求）。当需要按关键词/城市/薪资等条件批量拉取候选职位、而不想逐屏 page_snapshot 时使用。只读、auto 直执、不改变页面、不产生任何写动作；是否打招呼一律回到功能规则的匹配门槛判定。⚠真实职位查询接口地址与查询参数为待核占位（urlTemplate 暂用相对路径 /api/...），未核实前以实际返回字段为准、不臆造。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query", "city"],
+      "properties": {
+        "query": { "type": "string", "description": "职位关键词（如 AI工程/大模型落地）" },
+        "city": { "type": "string", "description": "城市（武汉/上海/苏州/杭州之一）" },
+        "salaryMin": { "type": "string", "description": "薪资下限（如 35K），可选" },
+        "page": { "type": "string", "description": "页码，可选，缺省第一页" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "auto",
+    "adapter": {
+      "method": "GET",
+      "urlTemplate": "/api/zpgeek/search/joblist?query={{query}}&city={{city}}&salary={{salaryMin}}&page={{page}}"
+    },
+    "resultSchema": {
+      "type": "object",
+      "properties": {
+        "code": { "type": "number" },
+        "zpData": { "type": "object" }
+      }
     }
   }
 ]

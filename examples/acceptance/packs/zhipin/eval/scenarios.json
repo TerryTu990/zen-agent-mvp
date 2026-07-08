@@ -5,8 +5,8 @@
     "url": "https://www.zhipin.com/web/geek/resume",
     "expect": {
       "featureId": "resume",
-      "toolIncludes": ["resume.page-operate"],
-      "behavior": "origin=https://www.zhipin.com 精确匹配 + 路径 /web/geek/resume 落 location 前缀 /web/geek → 激活 zhipin pack，featureIdRules 判为 resume；工具面含 resume.page-operate（只读采集画像）"
+      "toolIncludes": ["resume.page-operate", "resume.modify-resume"],
+      "behavior": "origin=https://www.zhipin.com 精确匹配 + 路径 /web/geek/resume 落 location 前缀 /web/geek → 激活 zhipin pack，featureIdRules 判为 resume；工具面含 resume.page-operate（只读采集画像，auto 免授权）与 resume.modify-resume（forbidden 红线，注入工具面但服务端永拒）"
     }
   },
   {
@@ -15,8 +15,8 @@
     "url": "https://www.zhipin.com/web/geek/job?query=%E5%90%8E%E7%AB%AF",
     "expect": {
       "featureId": "job-search",
-      "toolIncludes": ["job-search.page-operate", "job-search.greet"],
-      "behavior": "路径 /web/geek/job 落围栏，判为 job-search；工具面含 page-operate（筛选/读列表）与 greet（点立即沟通打招呼，per-task 自动放行）"
+      "toolIncludes": ["job-search.page-operate", "job-search.greet", "job-search.query-jobs"],
+      "behavior": "路径 /web/geek/job 落围栏，判为 job-search；工具面含 page-operate（筛选/读列表）、greet（点立即沟通打招呼，per-task 自动放行）、query-jobs（client-http 只读查职位，auto）"
     }
   },
   {
@@ -25,8 +25,8 @@
     "url": "https://www.zhipin.com/job_detail/a1b2c3d4.html",
     "expect": {
       "featureId": "job-detail",
-      "toolIncludes": ["job-detail.page-operate", "job-detail.greet"],
-      "behavior": "路径 /job_detail/... 落围栏 /job_detail，判为 job-detail；工具面含 page-operate（读JD/高亮）与 greet（达标后点立即沟通）"
+      "toolIncludes": ["job-detail.page-operate", "job-detail.greet", "job-detail.salary-benchmark", "job-detail.formal-apply", "job-detail.auto-accept-offer"],
+      "behavior": "路径 /job_detail/... 落围栏 /job_detail，判为 job-detail；工具面含 page-operate（读JD/高亮）、greet（达标点立即沟通）、salary-benchmark（server 直调薪资参考）、formal-apply（every-call 正式投递）、auto-accept-offer（forbidden 红线注入但永拒）"
     }
   },
   {
