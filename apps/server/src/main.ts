@@ -74,6 +74,7 @@ startServer({
   systemPromptPath: process.env['ZA_SYSTEM_PROMPT_PATH'] ?? 'assets/system-prompt.md',
   auditSinkPath: process.env['ZA_AUDIT_SINK'] ?? '.za/events.jsonl',
   sessionDir: process.env['ZA_SESSION_DIR'] ?? '.za/sessions',
+  applicationsDir: process.env['ZA_APPLICATIONS_DIR'] ?? '.za/applications',
   sessionTtlMs,
   allowedProviders: ['openai-compatible'],
   demoToken: {

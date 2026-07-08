@@ -1,0 +1,15 @@
+{
+  "packId": "zhipin",
+  "version": "0.1.0",
+  "summary": "BOSS直聘（求职者端）：从简历读画像，据此搜索筛选职位，并对达标职位自动点\"立即沟通\"打招呼（阶段A）",
+  "site": {
+    "origin": "https://www.zhipin.com",
+    "locations": ["/web/geek", "/job_detail"]
+  },
+  "featureIdRules": [
+    { "urlPattern": "zhipin\\.com/web/geek/resume", "featureId": "resume" },
+    { "urlPattern": "zhipin\\.com/job_detail", "featureId": "job-detail" },
+    { "urlPattern": "zhipin\\.com/web/geek/job", "featureId": "job-search" }
+  ],
+  "features": ["resume", "job-search", "job-detail"]
+}

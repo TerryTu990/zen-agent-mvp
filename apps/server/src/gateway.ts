@@ -50,6 +50,7 @@ import {
   type UsageTokens,
 } from './compress.js';
 import { pruneStaleSnapshots, SNAPSHOT_TOOL_NAME } from './history.js';
+import { listApplications, recordApplication } from './applications.js';
 import type { SessionState, SessionStore } from './sessions.js';
 
 export interface GatewayDeps {
@@ -70,6 +71,8 @@ export interface GatewayDeps {
   corsOrigin: string;
   /** 存在即启用 POST /demo-token（P0-b，env 门控）；缺省=端点关闭（404）。 */
   demoToken?: DemoTokenSigner;
+  /** 投递记录（求职 agent 业务日志）落盘目录：record_application 按天写 `<dir>/<date>.jsonl`。 */
+  applicationsDir: string;
 }
 
 /** 执行结局 → 审计 outcome 闭集映射；deny/reject 不产 tool-execution（未执行），故只映射已执行结果。 */
@@ -171,6 +174,49 @@ const PACK_DOC_TOOL_SPEC: LlmToolSpec = {
     additionalProperties: false,
     required: ['path'],
     properties: { path: { type: 'string' } },
+  },
+};
+
+/**
+ * built-in 投递记录工具（求职 agent 业务日志）：pack 激活即注入。非终结、record-only 旁路——
+ * 不经 toolgate（写本地业务日志、无宿主副作用、无凭证面），写失败 fail-open 不阻断打招呼主流程。
+ * 与审计取证流分立（审计不收工具 params，业务记录需留 company/reason）。
+ */
+const RECORD_APPLICATION_TOOL_NAME = 'record_application';
+
+const RECORD_APPLICATION_TOOL_SPEC: LlmToolSpec = {
+  name: RECORD_APPLICATION_TOOL_NAME,
+  description:
+    '在成功向某职位打招呼（greet）或用户确认投递后，把这次投递落盘记录，供事后按天回溯"投了哪些公司、JD 摘要、为何判断可投"。逐次一条、每次打招呼成功后调用一次。记录为 record-only 旁路：写失败不影响打招呼流程。',
+  params: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['company', 'position'],
+    properties: {
+      company: { type: 'string' },
+      position: { type: 'string' },
+      jdDigest: { type: 'string' },
+      score: { type: 'string' },
+      replyOdds: { type: 'string' },
+      reason: { type: 'string' },
+      decision: { type: 'string' },
+    },
+  },
+};
+
+/**
+ * built-in 投递记录查询工具：pack 激活即注入。读某天投递记录并汇总回喂，用于回答"今天/某天投了哪些"。
+ */
+const LIST_APPLICATIONS_TOOL_NAME = 'list_applications';
+
+const LIST_APPLICATIONS_TOOL_SPEC: LlmToolSpec = {
+  name: LIST_APPLICATIONS_TOOL_NAME,
+  description:
+    '查询某一天的投递记录并汇总。当用户问"今天/某天投了哪些公司、都是些什么岗位、为什么投"时调用。date 可选，格式 YYYY-MM-DD，缺省为今天；给定值须为合法日期。',
+  params: {
+    type: 'object',
+    additionalProperties: false,
+    properties: { date: { type: 'string' } },
   },
 };
 
@@ -549,11 +595,17 @@ export function createGateway(deps: GatewayDeps): Gateway {
       const docTools: LlmToolSpec[] = composed.docsIndex !== null ? [PACK_DOC_TOOL_SPEC] : [];
       // site_navigate 与站点索引同门：仅当注入了"已安装站点索引"（≥2 site）时给跨站导航入口；单 site 无跨站意义。
       const navTools: LlmToolSpec[] = composed.sitesIndex !== null ? [SITE_NAVIGATE_TOOL_SPEC] : [];
+      // 投递记录（业务日志）：pack 激活即注入读写入口，供求职 agent 落盘/回溯投递。
+      const appTools: LlmToolSpec[] =
+        composed.packId !== null
+          ? [RECORD_APPLICATION_TOOL_SPEC, LIST_APPLICATIONS_TOOL_SPEC]
+          : [];
       const tools: LlmToolSpec[] = [
         ...guideTools,
         ...snapshotTools,
         ...docTools,
         ...navTools,
+        ...appTools,
         ...composed.tools.map(toLlmToolSpec),
       ];
       return { pack, featureId, composed, hostToolsById, tools };
@@ -690,6 +742,63 @@ export function createGateway(deps: GatewayDeps): Gateway {
         };
         messages.push(docEcho, docObs);
         turnMessages.push(docEcho, docObs);
+        continue;
+      }
+
+      if (call.name === RECORD_APPLICATION_TOOL_NAME) {
+        // 业务日志（非终结、record-only 旁路）：把投递落盘当天文件，结果作 observation 回喂后继续本回合。
+        const p = call.params;
+        const str = (k: string): string => (typeof p[k] === 'string' ? (p[k] as string) : '');
+        const optStr = (k: string): string | undefined =>
+          typeof p[k] === 'string' ? (p[k] as string) : undefined;
+        const result = recordApplication(deps.applicationsDir, {
+          company: str('company'),
+          position: str('position'),
+          ...(optStr('jdDigest') !== undefined ? { jdDigest: optStr('jdDigest')! } : {}),
+          ...(optStr('score') !== undefined ? { score: optStr('score')! } : {}),
+          ...(optStr('replyOdds') !== undefined ? { replyOdds: optStr('replyOdds')! } : {}),
+          ...(optStr('reason') !== undefined ? { reason: optStr('reason')! } : {}),
+          ...(optStr('decision') !== undefined ? { decision: optStr('decision')! } : {}),
+        });
+        const recEcho: LlmMessage = {
+          role: 'assistant',
+          content: roundText,
+          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
+        };
+        const recObs: LlmMessage = {
+          role: 'tool',
+          toolCallId: call.toolCallId,
+          content: JSON.stringify(
+            result.ok
+              ? { recorded: true, date: result.date }
+              : { recorded: false, note: result.error ?? '记录失败，不影响打招呼' },
+          ),
+        };
+        messages.push(recEcho, recObs);
+        turnMessages.push(recEcho, recObs);
+        continue;
+      }
+
+      if (call.name === LIST_APPLICATIONS_TOOL_NAME) {
+        // 业务日志查询（非终结）：读某天投递记录汇总回喂后继续本回合。
+        const date = typeof call.params['date'] === 'string' ? (call.params['date'] as string) : undefined;
+        const result = listApplications(deps.applicationsDir, date);
+        const listEcho: LlmMessage = {
+          role: 'assistant',
+          content: roundText,
+          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
+        };
+        const listObs: LlmMessage = {
+          role: 'tool',
+          toolCallId: call.toolCallId,
+          content: JSON.stringify(
+            result.ok
+              ? { date: result.date, count: result.count, items: result.items }
+              : { error: result.error ?? '查询失败' },
+          ),
+        };
+        messages.push(listEcho, listObs);
+        turnMessages.push(listEcho, listObs);
         continue;
       }
 
