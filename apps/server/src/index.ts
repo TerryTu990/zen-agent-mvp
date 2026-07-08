@@ -59,6 +59,8 @@ export interface ServerOptions {
   sessionDir?: string;
   /** 会话闲置 TTL 毫秒，默认 3600000（1 小时）；仅在 sessionDir 启用时生效。 */
   sessionTtlMs?: number;
+  /** 投递记录（求职 agent 业务日志）落盘目录；缺省 `.za/applications`。record-only 旁路、写失败 fail-open。 */
+  applicationsDir?: string;
 }
 
 export interface ServerPorts {
@@ -132,6 +134,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     compressContextWindow: options.compressContextWindow ?? 200_000,
     compressThreshold: options.compressThreshold ?? 0.6,
     corsOrigin: options.corsOrigin ?? '*',
+    applicationsDir: options.applicationsDir ?? '.za/applications',
     ...(options.demoToken?.enabled
       ? { demoToken: { jwtSecret: options.jwtSecret, iss: options.demoToken.iss } }
       : {}),
