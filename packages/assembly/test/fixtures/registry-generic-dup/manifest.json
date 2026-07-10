@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "packs": [
+    { "packId": "gen-a", "version": "1.0.0" },
+    { "packId": "gen-b", "version": "1.0.0" }
+  ]
+}

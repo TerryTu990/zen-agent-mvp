@@ -34,10 +34,11 @@ describe('zhipin pack 装配（examples/acceptance registry，阶段A 找工作�
     expect(result.featureId).toBeNull();
   });
 
-  it('围栏外路径 /web/user → pack 不激活（fail-safe 仅装配基座）', async () => {
+  it('围栏外路径 /web/user → 回落 generic-web 兜底', async () => {
     const result = await port.resolveFeature({ url: 'https://www.zhipin.com/web/user/index' });
-    expect(result.packId).toBeNull();
-    expect(result.featureId).toBeNull();
+    expect(result.packId).toBe('generic-web');
+    expect(result.featureId).toBe('browse');
+    expect(result.generic).toBe(true);
   });
 
   it('resume 工具面 = 只读采集(auto) + 改简历红线(forbidden)', async () => {

@@ -24,6 +24,7 @@ const TOOL_PURGE = 'order-list.purge-orders';
 const TOOL_PAGE_OPERATE = 'order-list.page-operate';
 const TOOL_SNAPSHOT = 'page_snapshot';
 const TOOL_SEND_EMAIL = 'mail-126.send-email';
+const TOOL_BROWSE = 'browse.page-operate';
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {
@@ -93,6 +94,28 @@ function sendEmailCall(obs) {
       task: '发送邮件给测试收件人',
       steps: [{ action: 'click', ref: button?.ref ?? 'za-0' }],
       summary: '点击发送按钮发送邮件',
+    }),
+  };
+}
+
+/** 快照观察轮 → generic browse 单步点击批次：从快照取首个 button（缺省首元素）ref，task 固定（同任务连发以判别 every-call 不复用）。 */
+function browseOperateCall(obs) {
+  let snap;
+  try {
+    snap = JSON.parse(obs);
+  } catch {
+    snap = { elements: [] };
+  }
+  const elements = Array.isArray(snap.elements) ? snap.elements : [];
+  const button = elements.find((e) => e?.role === 'button') ?? elements[0];
+  return {
+    id: 'call_browse',
+    name: TOOL_BROWSE,
+    arguments: JSON.stringify({
+      task: '通用页面代操作演练',
+      plan: ['先 page_snapshot 观察', '单步点击目标元素'],
+      steps: [{ action: 'click', ref: button?.ref ?? 'za-0' }],
+      summary: '点击页面上的目标按钮（通用站点，无专属配置）',
     }),
   };
 }
@@ -332,6 +355,12 @@ function decide(sys, u, body) {
     if (obs.includes('"elements"') && hasTool(body, TOOL_SEND_EMAIL)) {
       return { toolCall: sendEmailCall(obs) };
     }
+    // generic browse 快照观察轮：有拦截提示即停，否则单步点击批次（每批单独确认）。
+    if (obs.includes('"elements"') && hasTool(body, TOOL_BROWSE)) {
+      const notice = firstNotice(obs);
+      if (notice !== null) return { text: `页面提示：${notice}，已停止操作。` };
+      return { toolCall: browseOperateCall(obs) };
+    }
     // dom 结果回喂轮：报告 read 采集值。
     if (obs.includes('"reads"')) {
       const m = obs.match(/"noteValue":"([^"]*)"/);
@@ -385,6 +414,10 @@ function pickReply(sys, u) {
   }
   if (/天气|写.*诗/.test(u)) {
     return sys.includes('拒答') ? REPLY_R3_REFUSE : 'MOCK-BASE-MISSING';
+  }
+  if (u.includes('报告当前站点身份')) {
+    // 仅基座附注探针：断言无 pack 命中时 system 已注入"无专属配置、不得臆断站点身份"上下文。
+    return sys.includes('无专属功能配置（仅基座）') ? 'MOCK-BASEONLY-NOTICE-HIT' : 'MOCK-BASEONLY-NOTICE-MISS';
   }
   if (u.includes('为什么') && (u.includes('待发货') || u.includes('状态'))) {
     // 讲解正确之"不编造"：业务原因不在配置内，据 facts/feature 规则引导联系订单管理员（ZA-FEAT-01）。

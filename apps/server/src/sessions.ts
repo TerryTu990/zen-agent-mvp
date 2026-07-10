@@ -29,6 +29,8 @@ export interface SessionState {
   currentUrl: string | null;
   /** 上一回合激活的 packId（ADR-013）：回合开始若 packId 变化则向历史注入站点边界标记；初始 null。 */
   lastPackId: string | null;
+  /** 上一回合 generic pack 绑定的活跃页 origin：与 lastPackId 共同构成边界标记判据（generic 多 origin 切换可检测）；非 generic 为 null。 */
+  lastGenericOrigin: string | null;
   /** 用户/助手文本轮 + 工具轮（assistant toolCalls 回声 + role:tool 观测）；system 注入每轮整段重建，不进历史。 */
   history: LlmMessage[];
 }
@@ -44,8 +46,8 @@ export interface SessionStore {
   refreshClaims(sessionId: string, claims: IdentityClaims): void;
   /** 记某 origin 的 per-origin 宿主身份（ADR-013 任务组：claims.tenant→pack.tenant 路由命中时写入）。 */
   setOriginClaims(sessionId: string, origin: string, claims: IdentityClaims): void;
-  /** 记本回合激活 packId（站点边界标记判据）。 */
-  setLastPackId(sessionId: string, packId: string): void;
+  /** 记本回合激活 packId 与 generic 绑定 origin（站点边界标记判据）。 */
+  setLastPackId(sessionId: string, packId: string, genericOrigin?: string): void;
   /** 逐出会话（TTL 清理用）；不存在即无操作。 */
   delete(sessionId: string): void;
   /** 载入既有会话状态（持久化重放恢复用）；覆盖同 id 内存项。 */
@@ -68,6 +70,7 @@ export function createMemorySessionStore(): SessionStore {
         claimsByOrigin: {},
         currentUrl: null,
         lastPackId: null,
+        lastGenericOrigin: null,
         history: [],
       };
       sessions.set(session.sessionId, session);
@@ -91,8 +94,10 @@ export function createMemorySessionStore(): SessionStore {
     setOriginClaims(sessionId, origin, claims) {
       mustGet(sessionId).claimsByOrigin[origin] = claims;
     },
-    setLastPackId(sessionId, packId) {
-      mustGet(sessionId).lastPackId = packId;
+    setLastPackId(sessionId, packId, genericOrigin) {
+      const session = mustGet(sessionId);
+      session.lastPackId = packId;
+      session.lastGenericOrigin = genericOrigin ?? null;
     },
     delete(sessionId) {
       sessions.delete(sessionId);
@@ -110,7 +115,7 @@ type SessionEvent =
   | { t: 'history'; history: LlmMessage[] }
   | { t: 'claims'; claims: IdentityClaims }
   | { t: 'origin-claims'; origin: string; claims: IdentityClaims }
-  | { t: 'last-pack'; packId: string };
+  | { t: 'last-pack'; packId: string; genericOrigin?: string };
 
 export interface PersistentSessionStore extends SessionStore {
   /** 逐出闲置超时的会话（内存项 + 落盘文件）；由内部定时器驱动，测试可直接调用。 */
@@ -192,6 +197,7 @@ export function createPersistentSessionStore(
             claimsByOrigin: {},
             currentUrl: null,
             lastPackId: null,
+            lastGenericOrigin: null,
             history: [],
           };
         } else if (state === undefined) {
@@ -206,6 +212,7 @@ export function createPersistentSessionStore(
           state.claimsByOrigin[event.origin] = event.claims;
         } else if (event.t === 'last-pack') {
           state.lastPackId = event.packId;
+          state.lastGenericOrigin = event.genericOrigin ?? null;
         }
       }
     } catch (cause) {
@@ -305,11 +312,19 @@ export function createPersistentSessionStore(
         append(sessionId, { t: 'origin-claims', origin, claims });
       }
     },
-    setLastPackId(sessionId, packId) {
-      const before = inner.get(sessionId)?.lastPackId;
-      inner.setLastPackId(sessionId, packId);
+    setLastPackId(sessionId, packId, genericOrigin) {
+      const state = inner.get(sessionId);
+      const beforePackId = state?.lastPackId;
+      const beforeGenericOrigin = state?.lastGenericOrigin;
+      inner.setLastPackId(sessionId, packId, genericOrigin);
       touch(sessionId);
-      if (before !== packId) append(sessionId, { t: 'last-pack', packId });
+      if (beforePackId !== packId || beforeGenericOrigin !== (genericOrigin ?? null)) {
+        append(sessionId, {
+          t: 'last-pack',
+          packId,
+          ...(genericOrigin !== undefined ? { genericOrigin } : {}),
+        });
+      }
     },
     delete(sessionId) {
       inner.delete(sessionId);

@@ -325,6 +325,56 @@ describe('registry 形态：两级激活（origin + 最长 location 前缀）', 
   });
 });
 
+describe('registry 形态：generic 兜底 pack', () => {
+  it('generic pack 载入成功，站点命中永远优先（返回体不带 generic 键）', async () => {
+    const port = fixturePort('registry-generic');
+    const result = await port.resolveFeature({ url: 'http://site-a.example/x' });
+    expect(result.packId).toBe('site-a');
+    expect(result.featureId).toBe('alpha');
+    expect(result).not.toHaveProperty('generic');
+  });
+
+  it('无站点 pack 命中 → 回落 generic 兜底（generic:true）', async () => {
+    const port = fixturePort('registry-generic');
+    await expect(
+      port.resolveFeature({ url: 'https://elsewhere.example/p' }),
+    ).resolves.toEqual({
+      packId: 'gen',
+      packVersion: '1.0.0',
+      featureId: 'browse',
+      snapshotVersion: '1.0.0',
+      generic: true,
+    });
+  });
+
+  it('URL 不可解析 → 不兜底，仅基座（packId=null）', async () => {
+    const port = fixturePort('registry-generic');
+    const result = await port.resolveFeature({ url: '' });
+    expect(result.packId).toBeNull();
+    expect(result.featureId).toBeNull();
+  });
+
+  it('registry 存在两个 generic pack → 拒载', async () => {
+    const port = fixturePort('registry-generic-dup');
+    await expect(port.resolveFeature({ url: 'http://x.example/' })).rejects.toThrow(
+      /两个 generic pack/,
+    );
+  });
+
+  it('generic pack 同时声明 site → 拒载（schema 互斥先拦）', async () => {
+    const port = fixturePort('registry-generic-site');
+    await expect(port.resolveFeature({ url: 'http://gen.example/' })).rejects.toThrow(
+      /pack 契约|site/,
+    );
+  });
+
+  it('listSites 排除 generic pack（无 origin，不进站点清单）', async () => {
+    const port = fixturePort('registry-generic');
+    const sites = await port.listSites();
+    expect(sites.map((s) => s.packId)).toEqual(['site-a']);
+  });
+});
+
 describe('registry 形态：载入期 fail-closed 拒载', () => {
   it('同 origin location 前缀重复 → 拒载', async () => {
     const port = fixturePort('registry-dup');

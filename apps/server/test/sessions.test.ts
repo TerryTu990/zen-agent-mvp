@@ -142,4 +142,23 @@ describe('createPersistentSessionStore（P2 会话持久化）', () => {
     expect(restored!.claimsByOrigin['https://codeflow.asia']?.hostUserId).toBe('host-u1');
     expect(restored!.lastPackId).toBe('codeflow-console');
   });
+
+  it('generic 绑定 origin：同 packId+origin 不重复落盘，origin 变化落盘并重放恢复', () => {
+    const dir = freshDir();
+    const first = persistent(dir);
+    const { sessionId } = first.create(CLAIMS);
+    const file = join(dir, `${sessionId}.jsonl`);
+    first.setLastPackId(sessionId, 'generic-web', 'https://a.example');
+    const linesAfter1 = readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
+    first.setLastPackId(sessionId, 'generic-web', 'https://a.example');
+    expect(readFileSync(file, 'utf8').split('\n').filter(Boolean).length).toBe(linesAfter1);
+    // packId 不变、origin 变化 → 视为变更落盘（边界标记判据含 origin）。
+    first.setLastPackId(sessionId, 'generic-web', 'https://b.example');
+    expect(readFileSync(file, 'utf8').split('\n').filter(Boolean).length).toBe(linesAfter1 + 1);
+
+    const revived = persistent(dir);
+    const restored = revived.get(sessionId);
+    expect(restored!.lastPackId).toBe('generic-web');
+    expect(restored!.lastGenericOrigin).toBe('https://b.example');
+  });
 });

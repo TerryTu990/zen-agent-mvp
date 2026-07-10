@@ -1,0 +1,8 @@
+{
+  "packId": "gen",
+  "version": "1.0.0",
+  "generic": true,
+  "site": { "origin": "http://gen.example", "locations": ["/"] },
+  "featureIdRules": [{ "urlPattern": ".*", "featureId": "browse" }],
+  "features": ["browse"]
+}

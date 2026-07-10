@@ -133,6 +133,7 @@ function startServer(snapshotRoot = SNAPSHOT_ROOT) {
       ZA_LLM_BASE_URL: `http://127.0.0.1:${MOCK_LLM_PORT}/v1`,
       ZA_LLM_MODEL: 'mock-model',
       ZA_AUDIT_SINK: AUDIT_SINK_PATH,
+      ZA_GENERIC_ALLOWLIST: HOST_BASE,
     },
   });
   child.stdout.on('data', (d) => process.stdout.write(`[server] ${d}`));

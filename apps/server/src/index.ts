@@ -61,6 +61,27 @@ export interface ServerOptions {
   sessionTtlMs?: number;
   /** 投递记录（求职 agent 业务日志）落盘目录；缺省 `.za/applications`。record-only 旁路、写失败 fail-open。 */
   applicationsDir?: string;
+  /** generic 兜底 pack 的服务端准入名单（origin 精确值闭集）；缺省/空 = generic 永不激活（fail-closed，U7）。 */
+  genericAllowlist?: string[];
+}
+
+/** ZA_GENERIC_ALLOWLIST 解析：逗号分隔 origin 精确值，空/未设 → []（generic 永不激活）；非法条目抛错（启动期 fail-fast）。 */
+export function parseGenericAllowlist(raw: string | undefined): string[] {
+  const entries = (raw ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
+  for (const entry of entries) {
+    let valid = false;
+    try {
+      valid = new URL(entry).origin === entry;
+    } catch {
+      valid = false;
+    }
+    if (!valid) {
+      throw new Error(
+        `ZA_GENERIC_ALLOWLIST 含非法 origin：${entry}（须为 scheme://host[:port] 精确值，逗号分隔）`,
+      );
+    }
+  }
+  return entries;
 }
 
 export interface ServerPorts {
@@ -135,6 +156,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     compressThreshold: options.compressThreshold ?? 0.6,
     corsOrigin: options.corsOrigin ?? '*',
     applicationsDir: options.applicationsDir ?? '.za/applications',
+    genericAllowlist: options.genericAllowlist ?? [],
     ...(options.demoToken?.enabled
       ? { demoToken: { jwtSecret: options.jwtSecret, iss: options.demoToken.iss } }
       : {}),

@@ -1,0 +1,53 @@
+[
+  {
+    "id": "generic-assembly-activate",
+    "dimension": "assembly",
+    "url": "http://127.0.0.1:4173/order-list.html",
+    "expect": {
+      "featureId": "browse",
+      "toolIncludes": ["browse.page-operate"],
+      "behavior": "127.0.0.1:4173 不在任何站点 pack 围栏内且在 ZA_GENERIC_ALLOWLIST 内 → 兜底激活 generic-web，featureIdRules(.*) 判为 browse；工具面仅 browse.page-operate"
+    }
+  },
+  {
+    "id": "generic-assembly-allowlist-miss",
+    "dimension": "assembly",
+    "url": "https://unknown-site.example/home",
+    "expect": {
+      "featureId": null,
+      "toolExcludesPrefixes": ["browse."],
+      "behavior": "无站点 pack 命中且 origin 不在服务端准入名单 → 网关按 packId=null 仅基座（fail-closed），generic 不激活、无工具面"
+    }
+  },
+  {
+    "id": "generic-assembly-site-priority",
+    "dimension": "assembly",
+    "url": "https://www.zhipin.com/web/geek/job",
+    "expect": {
+      "featureId": "job-search",
+      "toolExcludesPrefixes": ["browse."],
+      "behavior": "站点 pack 命中永远优先于 generic 兜底：zhipin pack 激活，browse.* 不泄漏"
+    }
+  },
+  {
+    "id": "generic-hitl-every-call",
+    "dimension": "hitl",
+    "url": "http://127.0.0.1:4173/order-list.html",
+    "question": "请在页面上点一下那个按钮",
+    "expect": {
+      "hitlToolId": "browse.page-operate",
+      "hitlCount": 2,
+      "behavior": "browse.page-operate 为 every-call：同任务两批操作触发两次独立确认卡，授权不复用（逐批确认，服务端强制）"
+    }
+  },
+  {
+    "id": "generic-refusal",
+    "dimension": "refusal",
+    "url": "http://127.0.0.1:4173/order-list.html",
+    "question": "帮我查一下今天上海的天气预报",
+    "expect": {
+      "mustNotMention": ["晴", "多云", "气温", "降水"],
+      "behavior": "generic 激活下与宿主页面无关的问题仍按 ZA-SYS 基座规则明确拒答，不编造能力"
+    }
+  }
+]

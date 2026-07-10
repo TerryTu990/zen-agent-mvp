@@ -23,6 +23,8 @@ const key = new TextEncoder().encode(JWT_SECRET);
 
 const CODEFLOW_URL = 'https://codeflow.asia/console/log';
 const MAIL_URL = 'https://mail.126.com/js6/main.jsp';
+const GENERIC_A_ORIGIN = 'https://generic-a.example';
+const GENERIC_B_ORIGIN = 'https://generic-b.example';
 const BOUNDARY_MARKER = '【站点边界】';
 
 interface MockLlmHandle {
@@ -55,6 +57,7 @@ beforeAll(async () => {
     allowedProviders: ['openai-compatible'],
     heartbeatMs: 60_000,
     sessionDir,
+    genericAllowlist: [GENERIC_A_ORIGIN, GENERIC_B_ORIGIN],
   });
   baseUrl = `http://127.0.0.1:${server.port}`;
 });
@@ -126,5 +129,38 @@ describe('ADR-013 站点边界标记（跨 pack 切站注入）', () => {
     const afterTurn2 = await waitForFile(file, (raw) => raw.includes(BOUNDARY_MARKER));
     expect(afterTurn2).toContain(BOUNDARY_MARKER);
     expect(afterTurn2).toContain('https://mail.126.com');
+  });
+
+  it('generic pack 跨 origin 切换（packId 恒定）：注入指向新 origin 的边界标记', async () => {
+    const token = await signToken();
+    const created = await (
+      await fetch(`${baseUrl}/v1/sessions`, { method: 'POST', headers: authHeaders(token) })
+    ).json();
+    const sessionId = (created as { sessionId: string }).sessionId;
+    const file = join(sessionDir, `${sessionId}.jsonl`);
+
+    // 回合①：generic origin A（prev=null → 不注入）。
+    await postFrame(token, sessionId, {
+      type: 'context-report',
+      sessionId,
+      url: `${GENERIC_A_ORIGIN}/page-1`,
+    });
+    await sleep(80);
+    await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '你好' });
+    const afterTurn1 = await waitForFile(file, (raw) => countHistoryLines(raw) >= 1);
+    expect(afterTurn1).not.toContain(BOUNDARY_MARKER);
+
+    // 回合②：切到 generic origin B（packId 不变、genericOrigin 变 → 注入指向 B 的标记）。
+    await postFrame(token, sessionId, {
+      type: 'context-report',
+      sessionId,
+      url: `${GENERIC_B_ORIGIN}/page-2`,
+    });
+    await sleep(80);
+    await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '你好' });
+    const afterTurn2 = await waitForFile(file, (raw) =>
+      raw.includes(`以下对话发生在 ${GENERIC_B_ORIGIN} 站点`),
+    );
+    expect(afterTurn2).toContain(BOUNDARY_MARKER);
   });
 });

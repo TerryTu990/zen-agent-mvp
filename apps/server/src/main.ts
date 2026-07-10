@@ -2,7 +2,7 @@
  * CLI 入口：env → ServerOptions → startServer。
  * ZA_LLM_BASE_URL / ZA_LLM_API_KEY / ZA_LLM_MODEL 由 llm-port 在调用时读取，此处只做启动期提示。
  */
-import { startServer } from './index.js';
+import { parseGenericAllowlist, startServer } from './index.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -53,6 +53,13 @@ if (!Number.isFinite(compressThreshold) || compressThreshold <= 0 || compressThr
   console.error('ZA_LLM_COMPRESS_THRESHOLD 不是 (0,1] 区间小数，拒绝启动');
   process.exit(1);
 }
+let genericAllowlist: string[] = [];
+try {
+  genericAllowlist = parseGenericAllowlist(process.env['ZA_GENERIC_ALLOWLIST']);
+} catch (cause) {
+  console.error(`${cause instanceof Error ? cause.message : String(cause)}，拒绝启动`);
+  process.exit(1);
+}
 if (!process.env['ZA_LLM_BASE_URL']) {
   console.warn('ZA_LLM_BASE_URL 未设置：LLM 调用将以"服务暂时不可用"降级');
 }
@@ -75,6 +82,7 @@ startServer({
   auditSinkPath: process.env['ZA_AUDIT_SINK'] ?? '.za/events.jsonl',
   sessionDir: process.env['ZA_SESSION_DIR'] ?? '.za/sessions',
   applicationsDir: process.env['ZA_APPLICATIONS_DIR'] ?? '.za/applications',
+  genericAllowlist,
   sessionTtlMs,
   allowedProviders: ['openai-compatible'],
   demoToken: {

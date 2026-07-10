@@ -48,8 +48,10 @@ interface LoadedPack {
   version: string;
   /** 一句话站点用途（渐进披露第一层）；缺省 null，站点索引回退用 packId。 */
   summary: string | null;
-  /** null = legacy 无 site 围栏（不校 origin）。 */
+  /** null = 无 site 围栏（legacy 缺省 pack / generic 兜底 pack），不参与 origin 匹配与站点索引。 */
   origin: string | null;
+  /** generic 兜底 pack：无站点 pack 命中时兜底激活（origin=null、locations=[]）。 */
+  generic: boolean;
   /** claims.tenant → origin 路由键（ADR-013）；缺省=不参与 per-origin 身份路由。 */
   tenant: string | undefined;
   /** 路径前缀（已归一去尾斜杠，'/' 表整站）；legacy 为空数组。 */
@@ -70,6 +72,8 @@ interface LoadedSnapshot {
   packs: Map<string, LoadedPack>;
   /** legacy 形态的缺省 pack id（"default"）；registry 形态为 null。 */
   legacyPackId: string | null;
+  /** registry 内至多一个的 generic 兜底 pack id；无则 null（legacy 恒 null）。 */
+  genericPackId: string | null;
 }
 
 const require = createRequire(import.meta.url);
@@ -271,6 +275,14 @@ function loadPack(
       `快照拒载：pack ${entry.packId} registry 版本 ${entry.version} 与 pack.json 版本 ${pack.version} 不一致`,
     );
   }
+  const generic = pack.generic === true;
+  const site = pack.site;
+  if (generic && site !== undefined) {
+    throw new Error(`快照拒载：generic pack ${entry.packId} 不得声明 site 围栏`);
+  }
+  if (!generic && site === undefined) {
+    throw new Error(`快照拒载：pack ${entry.packId} 缺 site 围栏`);
+  }
   const features = loadFeaturesOf(packRoot, pack.features, validateTool);
   const rules = compileRules(pack.featureIdRules, features, `pack ${pack.packId}`);
   const docs = loadDocs(packRoot);
@@ -278,9 +290,10 @@ function loadPack(
     packId: pack.packId,
     version: pack.version,
     summary: pack.summary ?? null,
-    origin: pack.site.origin,
+    origin: site === undefined ? null : site.origin,
+    generic,
     tenant: pack.tenant,
-    locations: (pack.site.locations ?? ['/']).map(normalizeLocation),
+    locations: site === undefined ? [] : (site.locations ?? ['/']).map(normalizeLocation),
     rules,
     features,
     skills: loadSkills(packRoot),
@@ -331,15 +344,25 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
     const registry = manifestRaw as RegistryManifest;
     const validatePack = createValidator('pack.schema.json');
     const packs = new Map<string, LoadedPack>();
+    let genericPackId: string | null = null;
     for (const entry of registry.packs) {
       if (packs.has(entry.packId)) {
         throw new Error(`快照拒载：registry 重复登记 pack ${entry.packId}`);
       }
       const packRoot = join(options.snapshotRoot, 'packs', entry.packId);
-      packs.set(entry.packId, loadPack(packRoot, entry, validatePack, validateTool));
+      const loaded = loadPack(packRoot, entry, validatePack, validateTool);
+      if (loaded.generic) {
+        if (genericPackId !== null) {
+          throw new Error(
+            `快照拒载：registry 存在两个 generic pack：${genericPackId} 与 ${entry.packId}（至多一个）`,
+          );
+        }
+        genericPackId = entry.packId;
+      }
+      packs.set(entry.packId, loaded);
     }
     assertNoDuplicateLocations([...packs.values()]);
-    return { version: registry.version, systemPrompt, packs, legacyPackId: null };
+    return { version: registry.version, systemPrompt, packs, legacyPackId: null, genericPackId };
   }
 
   // legacy 形态：现 featureIdRules 快照——按缺省 packId="default"、无 site 围栏载入（语义与现状一致）。
@@ -358,6 +381,7 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
     version: manifest.version,
     summary: null,
     origin: null,
+    generic: false,
     tenant: undefined,
     locations: [],
     rules,
@@ -371,10 +395,11 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
     systemPrompt,
     packs: new Map([['default', defaultPack]]),
     legacyPackId: 'default',
+    genericPackId: null,
   };
 }
 
-/** origin+最长 location 前缀 → 唯一激活 pack；无命中 → null。legacy 恒返回缺省 pack。 */
+/** origin+最长 location 前缀 → 唯一激活 pack；无站点命中回落 generic 兜底 pack（URL 不可解析不兜底）。legacy 恒返回缺省 pack。 */
 function resolvePack(snapshot: LoadedSnapshot, url: string): LoadedPack | null {
   if (snapshot.legacyPackId !== null) {
     return snapshot.packs.get(snapshot.legacyPackId) ?? null;
@@ -401,7 +426,8 @@ function resolvePack(snapshot: LoadedSnapshot, url: string): LoadedPack | null {
       }
     }
   }
-  return best;
+  if (best !== null) return best;
+  return snapshot.genericPackId !== null ? (snapshot.packs.get(snapshot.genericPackId) ?? null) : null;
 }
 
 /** pack 的可达入口 URL（origin + 首个 location 前缀）：site_navigate 的导航目标即取自此清单。 */
@@ -534,6 +560,7 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
         packVersion: pack.version,
         featureId: hit?.featureId ?? null,
         snapshotVersion: snap.version,
+        ...(pack.generic ? { generic: true } : {}),
       };
     },
     async compose({ packId, featureId }) {

@@ -85,6 +85,34 @@ describe('examples/host-demo 锚定样例过契约校验（ADR-013 registry + pa
   });
 });
 
+describe('C4 pack generic 兜底（与 site 互斥）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'pack.schema.json');
+  const genericPack = {
+    packId: 'generic-web',
+    version: '0.1.0',
+    generic: true,
+    featureIdRules: [{ urlPattern: '.*', featureId: 'browse' }],
+    features: ['browse'],
+  };
+
+  it('generic pack 清单合法（无 site）', () => {
+    expect(validate(genericPack), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('generic 与 site 并存拒绝', () => {
+    expect(validate({ ...genericPack, site: { origin: 'http://x.example' } })).toBe(false);
+  });
+
+  it('非 generic 缺 site 拒绝', () => {
+    const { generic: _generic, ...rest } = genericPack;
+    expect(validate(rest)).toBe(false);
+  });
+
+  it('generic:false 拒绝（const true）', () => {
+    expect(validate({ ...genericPack, generic: false })).toBe(false);
+  });
+});
+
 describe('C3 client-access-layer 消息帧', () => {
   const validate = compile(new Ajv2020({ strict: true }), 'client-access-layer.schema.json');
 

@@ -1,0 +1,7 @@
+{
+  "packId": "gen-a",
+  "version": "1.0.0",
+  "generic": true,
+  "featureIdRules": [{ "urlPattern": ".*", "featureId": "browse" }],
+  "features": ["browse"]
+}

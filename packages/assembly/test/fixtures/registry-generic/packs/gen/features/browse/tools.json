@@ -1,0 +1,12 @@
+[
+  {
+    "id": "gen.op",
+    "featureIds": ["browse"],
+    "description": "通用页面操作",
+    "params": { "type": "object", "properties": {} },
+    "execution": "client",
+    "riskTier": "hitl",
+    "adapter": { "kind": "dom", "pathPrefixes": ["/"] },
+    "resultSchema": { "type": "object" }
+  }
+]

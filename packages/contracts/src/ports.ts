@@ -25,6 +25,8 @@ export interface ResolveFeatureResult {
   featureId: string | null;
   /** registry/legacy 根版本（区别于 pack 独立版本 packVersion）。 */
   snapshotVersion: string;
+  /** true = 激活的是 generic 兜底 pack（无站点 pack 命中）：网关 MUST 按服务端准入名单以活跃页 origin 二次判定（不过即按 packId=null 仅基座，fail-closed）；缺省 = 站点/legacy pack 或无 pack。 */
+  generic?: boolean;
 }
 
 export interface ComposeInput {
@@ -147,7 +149,7 @@ export interface DomGateContext {
  * packOrigin 缺省=legacy 无 site pack（沿用平台 claims 身份、不校 origin 围栏）。
  */
 interface PackScopeInput {
-  /** 工具所属激活 pack 的 site.origin；有值即启用 origin 围栏 + per-origin 身份口径。 */
+  /** 工具所属激活 pack 的 origin 围栏：站点 pack = site.origin；generic pack = 网关以活跃页 origin 填充；有值即启用 origin 围栏 + per-origin 身份口径。 */
   packOrigin?: string;
   /**
    * packOrigin 对应的宿主身份：tenant'd pack 取 per-origin 路由 claims（缺失/过期即 fail-closed），

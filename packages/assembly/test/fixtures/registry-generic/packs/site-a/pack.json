@@ -1,0 +1,7 @@
+{
+  "packId": "site-a",
+  "version": "1.0.0",
+  "site": { "origin": "http://site-a.example", "locations": ["/"] },
+  "featureIdRules": [{ "urlPattern": "/x", "featureId": "alpha" }],
+  "features": ["alpha"]
+}

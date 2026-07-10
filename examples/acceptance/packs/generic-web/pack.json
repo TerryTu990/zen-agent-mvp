@@ -1,0 +1,9 @@
+{
+  "packId": "generic-web",
+  "version": "0.1.0",
+  "generic": true,
+  "featureIdRules": [
+    { "urlPattern": ".*", "featureId": "browse" }
+  ],
+  "features": ["browse"]
+}

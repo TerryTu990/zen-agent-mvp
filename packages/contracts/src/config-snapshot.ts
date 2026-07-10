@@ -40,9 +40,12 @@ export interface PackManifest {
   version: string;
   /** 一句话站点用途（渐进披露第一层）：进入"已安装站点索引"供 agent 跨站发现；缺省=索引回退用 packId。 */
   summary?: string;
-  site: SiteFence;
+  /** 激活围栏；generic pack MUST 省略（互斥），站点 pack 必填（schema allOf 强制）。 */
+  site?: SiteFence;
   /** claims.tenant → origin 路由用（任务组）；MVP 单租户 demo 可省。 */
   tenant?: string;
+  /** generic 兜底 pack 标记：无站点 pack 命中时兜底激活，围栏由网关运行时绑定活跃页 origin；与 site 互斥。 */
+  generic?: true;
   featureIdRules: FeatureIdRule[];
   features?: string[];
 }

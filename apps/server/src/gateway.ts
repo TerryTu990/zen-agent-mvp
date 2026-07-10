@@ -33,6 +33,7 @@ import type {
   LlmPort,
   LlmToolSpec,
   Observation,
+  ResolveFeatureResult,
   SiteDescriptor,
   SnapshotReportFrame,
   ToolCardStatus,
@@ -73,6 +74,8 @@ export interface GatewayDeps {
   demoToken?: DemoTokenSigner;
   /** 投递记录（求职 agent 业务日志）落盘目录：record_application 按天写 `<dir>/<date>.jsonl`。 */
   applicationsDir: string;
+  /** generic 兜底 pack 准入名单（origin 精确值）；空 = generic 永不激活（fail-closed）。 */
+  genericAllowlist: string[];
 }
 
 /** 执行结局 → 审计 outcome 闭集映射；deny/reject 不产 tool-execution（未执行），故只映射已执行结果。 */
@@ -292,10 +295,24 @@ function buildSystemContent(composed: ComposeResult): string {
   return parts.join('\n\n');
 }
 
+/**
+ * 回合 system 注入：仅基座（无 pack 命中）时附注当前站点上下文——
+ * 站点索引常驻注入，缺此附注时模型易从索引臆断所在站点。
+ */
+function systemContentFor(composed: ComposeResult, pack: PackRef, activeUrl: string): string {
+  const base = buildSystemContent(composed);
+  if (pack.packId !== null) return base;
+  const origin = originOf(activeUrl);
+  const where = origin === '' ? '当前站点' : `当前活跃页位于 ${origin}，该站点`;
+  return `${base}\n\n${where}无专属功能配置（仅基座）：没有本站点的专属知识与页面代操作工具；不得臆断当前站点的身份或归属，需要站点身份而未知时如实说明。`;
+}
+
 /** 激活 pack 定位（审计与 docs 读取用）；packId=null 表仅基座。 */
 interface PackRef {
   packId: string | null;
   packVersion: string | null;
+  /** generic pack 激活时绑定的活跃页 origin：packScope 以此作 packOrigin 围栏；缺省 = 站点/legacy pack。 */
+  genericOrigin?: string;
 }
 
 /** 宿主 API 工具定义 → LLM 工具面：name=toolId，装配对 agent 透明（LLM 不感知分级/通道）。 */
@@ -328,18 +345,41 @@ export function createGateway(deps: GatewayDeps): Gateway {
   const getSites = (): Promise<SiteDescriptor[]> => (sitesPromise ??= deps.assembly.listSites());
 
   /**
+   * generic 兜底的服务端准入（U7 fail-closed）：活跃页 origin 不在名单内（含取不到 origin）即回落仅基座。
+   */
+  function gateGeneric(
+    resolved: ResolveFeatureResult,
+    url: string,
+  ): {
+    packId: string | null;
+    packVersion: string | null;
+    featureId: string | null;
+    genericOrigin?: string;
+  } {
+    const { packId, packVersion, featureId } = resolved;
+    if (resolved.generic !== true) return { packId, packVersion, featureId };
+    const origin = originOf(url);
+    if (origin === '' || !deps.genericAllowlist.includes(origin)) {
+      return { packId: null, packVersion: null, featureId: null };
+    }
+    return { packId, packVersion, featureId, genericOrigin: origin };
+  }
+
+  /**
    * 计算工具所属激活 pack 的 site 作用域（ADR-013）：
    *  - packOrigin：激活 pack 的 site.origin（有 site 才有值），驱动 toolgate 的 origin 围栏与 per-origin 身份口径；
    *  - claimsForOrigin：tenant'd pack 取会话 per-origin 身份（路由命中才有），no-tenant site pack 回退平台 claims。
+   * generic pack → packOrigin 取激活时绑定的活跃页 origin、不带 claimsForOrigin（dom 免身份；混入 http/server 工具时 toolgate 因缺身份直接 deny）。
    * legacy 无 site pack → 两者皆空，toolgate 沿用平台 claims、不校 origin。
    */
   async function packScope(
     session: SessionState,
-    packId: string | null,
+    pack: PackRef,
     claims: IdentityClaims,
   ): Promise<{ packOrigin?: string; claimsForOrigin?: IdentityClaims }> {
-    if (packId === null) return {};
-    const site = (await getSites()).find((s) => s.packId === packId);
+    if (pack.packId === null) return {};
+    if (pack.genericOrigin !== undefined) return { packOrigin: pack.genericOrigin };
+    const site = (await getSites()).find((s) => s.packId === pack.packId);
     if (site === undefined) return {};
     const claimsForOrigin =
       site.tenant !== undefined ? session.claimsByOrigin[site.origin] : claims;
@@ -461,7 +501,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // dom 工具判定上下文来自最近一次快照（未观察不操作：无快照 toolgate 即 deny）。
     const domContext = isDomTool(tool) ? (runtimeOf(sessionId).domContext ?? undefined) : undefined;
     // 工具所属激活 pack 的 site 作用域（ADR-013）：origin 围栏 + per-origin 身份口径。
-    const scope = await packScope(session, pack.packId, claims);
+    const scope = await packScope(session, pack, claims);
     const decision = await deps.toolgate.decide({
       sessionId,
       toolCallId,
@@ -573,8 +613,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const { sessionId } = session;
     // 按 URL 装配一轮上下文（回合开始与 navigate 落点换装共用）：解析功能、组装注入、建工具面。
     const assembleFor = async (url: string) => {
-      const { packId, packVersion, featureId } = await deps.assembly.resolveFeature({ url });
-      const pack: PackRef = { packId, packVersion };
+      const resolved = await deps.assembly.resolveFeature({ url });
+      const { packId, packVersion, featureId, genericOrigin } = gateGeneric(resolved, url);
+      const pack: PackRef = {
+        packId,
+        packVersion,
+        ...(genericOrigin !== undefined ? { genericOrigin } : {}),
+      };
       const composed = await deps.assembly.compose({ sessionId, packId, featureId });
       // 注入自省与 compose 同源：审计 assembly 事件记录本轮 agent 看到了什么（只记 id 与版本，不落全文）。
       const injection = await deps.assembly.describeInjection({ sessionId, packId, featureId });
@@ -610,24 +655,38 @@ export function createGateway(deps: GatewayDeps): Gateway {
       ];
       return { pack, featureId, composed, hostToolsById, tools };
     };
-    // 站点边界标记（ADR-013）：激活 pack 变更时向历史注入一行标记，防跨站历史误导；
+    // 站点边界标记（ADR-013）：激活 pack 或 generic 绑定 origin 变更时向历史注入一行标记，
+    // 防跨站历史误导（generic pack 多 origin 间切换 packId 恒定，须并比 genericOrigin）；
     // 复用 compress.ts BOUNDARY_MARKER 常量，摘要器识别后整句保留。prev=null（首回合）不注入。
     const boundaryFor = async (
-      packId: string | null,
+      pack: PackRef,
       previousPackId: string | null,
+      previousGenericOrigin: string | null,
     ): Promise<LlmMessage | null> => {
-      if (previousPackId === null || packId === null || previousPackId === packId) return null;
-      const origin = (await getSites()).find((s) => s.packId === packId)?.origin ?? packId;
+      if (previousPackId === null || pack.packId === null) return null;
+      if (previousPackId === pack.packId && (pack.genericOrigin ?? null) === previousGenericOrigin) {
+        return null;
+      }
+      const origin =
+        pack.genericOrigin ??
+        (await getSites()).find((s) => s.packId === pack.packId)?.origin ??
+        pack.packId;
       return { role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` };
     };
 
     let { pack, featureId, composed, hostToolsById, tools } = await assembleFor(session.currentUrl ?? '');
     const prevPackId = session.lastPackId;
-    const boundary = await boundaryFor(pack.packId, prevPackId);
+    const prevGenericOrigin = session.lastGenericOrigin;
+    const boundary = await boundaryFor(pack, prevPackId, prevGenericOrigin);
     const boundaryMessages: LlmMessage[] = boundary !== null ? [boundary] : [];
-    if (pack.packId !== null && pack.packId !== prevPackId) deps.store.setLastPackId(sessionId, pack.packId);
+    if (
+      pack.packId !== null &&
+      (pack.packId !== prevPackId || (pack.genericOrigin ?? null) !== prevGenericOrigin)
+    ) {
+      deps.store.setLastPackId(sessionId, pack.packId, pack.genericOrigin);
+    }
     const messages: LlmMessage[] = [
-      { role: 'system', content: buildSystemContent(composed) },
+      { role: 'system', content: systemContentFor(composed, pack, session.currentUrl ?? '') },
       ...session.history,
       ...boundaryMessages,
       { role: 'user', content: text },
@@ -846,15 +905,19 @@ export function createGateway(deps: GatewayDeps): Gateway {
           if (landedUrl !== '') {
             deps.store.setContext(sessionId, landedUrl);
             const previousPackId = pack.packId;
+            const previousGenericOrigin = pack.genericOrigin ?? null;
             ({ pack, featureId, composed, hostToolsById, tools } = await assembleFor(landedUrl));
-            messages[0] = { role: 'system', content: buildSystemContent(composed) };
-            const navBoundary = await boundaryFor(pack.packId, previousPackId);
+            messages[0] = { role: 'system', content: systemContentFor(composed, pack, landedUrl) };
+            const navBoundary = await boundaryFor(pack, previousPackId, previousGenericOrigin);
             if (navBoundary !== null) {
               messages.push(navBoundary);
               turnMessages.push(navBoundary);
             }
-            if (pack.packId !== null && pack.packId !== previousPackId) {
-              deps.store.setLastPackId(sessionId, pack.packId);
+            if (
+              pack.packId !== null &&
+              (pack.packId !== previousPackId || (pack.genericOrigin ?? null) !== previousGenericOrigin)
+            ) {
+              deps.store.setLastPackId(sessionId, pack.packId, pack.genericOrigin);
             }
           }
         }
@@ -1020,9 +1083,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
   }
 
   async function handleInjection(res: ServerResponse, session: SessionState): Promise<void> {
-    const { packId, featureId } = await deps.assembly.resolveFeature({
-      url: session.currentUrl ?? '',
-    });
+    const url = session.currentUrl ?? '';
+    const resolved = await deps.assembly.resolveFeature({ url });
+    const { packId, featureId } = gateGeneric(resolved, url);
     const description = await deps.assembly.describeInjection({
       sessionId: session.sessionId,
       packId,

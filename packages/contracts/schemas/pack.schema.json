@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zen-agent.dev/schema/pack/v1.json",
   "title": "zen-agent 站点包契约 C4（pack manifest，SSOT）",
-  "description": "站点包清单（packs/<packId>/pack.json）的权威契约。【pack = 分发单元】布局同构于 legacy 快照子树（features/<id>/{feature.md,facts.md,tools.json} + skills/<fn>/SKILL.md + docs/ + eval/），额外挂 packId 命名空间与 site 围栏。【激活键】site.origin 精确匹配 + site.locations 路径前缀（缺省 [\"/\"]，同 origin 多 pack 最长前缀胜出；同 origin 前缀重复 → 载入期 fail-closed 拒载）。featureIdRules 降为 pack 内规则，仅在 pack 激活后参与匹配。【版本化不可变（U4）】pack 独立 semver、发布后不可变；registry 登记其 packId+version。pack.json JSON 可序列化，跨端口传递满足 U1。",
+  "description": "站点包清单（packs/<packId>/pack.json）的权威契约。【pack = 分发单元】布局同构于 legacy 快照子树（features/<id>/{feature.md,facts.md,tools.json} + skills/<fn>/SKILL.md + docs/ + eval/），额外挂 packId 命名空间与 site 围栏。【激活键】site.origin 精确匹配 + site.locations 路径前缀（缺省 [\"/\"]，同 origin 多 pack 最长前缀胜出；同 origin 前缀重复 → 载入期 fail-closed 拒载）。featureIdRules 降为 pack 内规则，仅在 pack 激活后参与匹配。【版本化不可变（U4）】pack 独立 semver、发布后不可变；registry 登记其 packId+version。pack.json JSON 可序列化，跨端口传递满足 U1。【generic 兜底】generic=true 声明本 pack 为无站点 pack 命中时的兜底（与 site 互斥）：不参与 origin/location 匹配与站点索引，激活与 origin 围栏由服务端网关按准入名单以活跃页 origin 运行时绑定；registry 至多登记一个 generic pack。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["packId", "version", "site", "featureIdRules"],
+  "required": ["packId", "version", "featureIdRules"],
   "properties": {
     "packId": {
       "$comment": "pack 命名空间标识，与 packs/<packId>/ 目录名一致；featureId/toolId 审计与端口定位以 {packId, featureId} 二元组限定。",
@@ -45,6 +45,11 @@
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*$"
     },
+    "generic": {
+      "$comment": "generic 兜底 pack 标记（const true）：无任何站点 pack 命中时兜底激活；与 site 互斥（allOf 条件强制）。激活围栏不来自本清单——由网关运行时以活跃页 origin 绑定（服务端准入名单 fail-closed）。",
+      "type": "boolean",
+      "const": true
+    },
     "featureIdRules": {
       "$comment": "pack 内 url → featureId 映射规则表（有序，首个命中生效）；仅在本 pack 激活后参与匹配。",
       "type": "array",
@@ -58,6 +63,14 @@
       "items": { "$ref": "#/$defs/featureId" }
     }
   },
+  "allOf": [
+    {
+      "$comment": "generic 与 site 互斥：声明 generic 则 MUST 省略 site；未声明则 site 必填（站点 pack 契约不变）。子模式内重复声明 properties 仅为满足 Ajv strictRequired，约束本体在根 properties。",
+      "if": { "properties": { "generic": { "const": true } }, "required": ["generic"] },
+      "then": { "properties": { "site": false } },
+      "else": { "properties": { "site": true }, "required": ["site"] }
+    }
+  ],
   "$defs": {
     "featureId": {
       "$comment": "功能标识文法，与 config-snapshot / tool-definition 及 features/<id>/ 目录名一致（跨契约对齐）。",
