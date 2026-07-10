@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { SignJWT } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parseGenericAllowlist, startServer, type RunningServer } from '../src/index.js';
+import { canonicalizeOrigin } from '../src/gateway.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/acceptance');
@@ -268,6 +269,19 @@ describe('parseGenericAllowlist（ZA_GENERIC_ALLOWLIST 解析）', () => {
   });
 });
 
+describe('canonicalizeOrigin（准入比对 www/裸域互认）', () => {
+  it('剥一层前导 www.，scheme/port 保留', () => {
+    expect(canonicalizeOrigin('https://www.example.com')).toBe('https://example.com');
+    expect(canonicalizeOrigin('https://example.com')).toBe('https://example.com');
+    expect(canonicalizeOrigin('http://www.example.com:8080')).toBe('http://example.com:8080');
+  });
+
+  it('非 www 子域不互认；解析失败原样返回', () => {
+    expect(canonicalizeOrigin('https://m.example.com')).toBe('https://m.example.com');
+    expect(canonicalizeOrigin('not-a-url')).toBe('not-a-url');
+  });
+});
+
 describe('generic 准入判定（服务端 fail-closed，U7）', () => {
   it('活跃页 origin 在名单内 → 激活 generic-web/browse，工具面含 browse.page-operate', async () => {
     const token = await signToken();
@@ -322,6 +336,35 @@ describe('generic 准入判定（服务端 fail-closed，U7）', () => {
       expect(joined()).toContain('MOCK-BASEONLY-NOTICE-HIT');
     } finally {
       sse.close();
+    }
+  });
+
+  it('名单配 www 形态可放行裸域页面（互认），非 www 子域仍拒', async () => {
+    const wwwServer = await startServer({
+      port: 0,
+      jwtSecret: JWT_SECRET,
+      signingSecret: SIGNING_SECRET,
+      issAllowlist: [ISS],
+      snapshotRoot,
+      systemPromptPath,
+      auditSinkPath: AUDIT_SINK,
+      allowedProviders: ['openai-compatible'],
+      heartbeatMs: 60_000,
+      genericAllowlist: ['https://www.canon-test.example'],
+    });
+    const wwwBase = `http://127.0.0.1:${wwwServer.port}`;
+    try {
+      const token = await signToken();
+      const probe = async (url: string): Promise<unknown> => {
+        const sessionId = await createSession(wwwBase, token);
+        await postFrame(wwwBase, token, sessionId, { type: 'context-report', sessionId, url });
+        return (await getInjection(wwwBase, token, sessionId))['packId'];
+      };
+      expect(await probe('https://canon-test.example/page')).toBe('generic-web');
+      expect(await probe('https://www.canon-test.example/page')).toBe('generic-web');
+      expect(await probe('https://m.canon-test.example/page')).toBeNull();
+    } finally {
+      await wwwServer.close();
     }
   });
 

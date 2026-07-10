@@ -65,7 +65,7 @@ export interface ServerOptions {
   genericAllowlist?: string[];
 }
 
-/** ZA_GENERIC_ALLOWLIST 解析：逗号分隔 origin 精确值，空/未设 → []（generic 永不激活）；非法条目抛错（启动期 fail-fast）。 */
+/** ZA_GENERIC_ALLOWLIST 解析：逗号分隔 origin 精确值，空/未设 → []（generic 永不激活）；非法条目抛错（启动期 fail-fast）。www/裸域互认在比对点归一（canonicalizeOrigin），此处只验值形。 */
 export function parseGenericAllowlist(raw: string | undefined): string[] {
   const entries = (raw ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
   for (const entry of entries) {

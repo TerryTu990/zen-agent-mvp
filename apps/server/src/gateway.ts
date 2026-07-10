@@ -255,6 +255,21 @@ function pathOf(url: string): string {
   }
 }
 
+/**
+ * 准入名单比对用 origin 归一：仅 www 与裸域互认（剥一层前导 www.），其余子域不互认——
+ * 站点常以两种形态对外服务，精确匹配会各挡一半；scheme/port 仍须精确。
+ * 只用于名单比对；dom 围栏与 genericOrigin 保持页面真实 origin。
+ */
+export function canonicalizeOrigin(origin: string): string {
+  try {
+    const url = new URL(origin);
+    url.hostname = url.hostname.replace(/^www\./, '');
+    return url.origin;
+  } catch {
+    return origin;
+  }
+}
+
 /** 快照 URL → origin（dom origin 围栏比对用）；解析失败返回 ''（围栏必不匹配，fail-closed）。 */
 function originOf(url: string): string {
   try {
@@ -359,7 +374,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const { packId, packVersion, featureId } = resolved;
     if (resolved.generic !== true) return { packId, packVersion, featureId };
     const origin = originOf(url);
-    if (origin === '' || !deps.genericAllowlist.includes(origin)) {
+    const admitted =
+      origin !== '' &&
+      deps.genericAllowlist.some((entry) => canonicalizeOrigin(entry) === canonicalizeOrigin(origin));
+    if (!admitted) {
       return { packId: null, packVersion: null, featureId: null };
     }
     return { packId, packVersion, featureId, genericOrigin: origin };
