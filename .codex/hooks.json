@@ -1,0 +1,58 @@
+{
+  "description": "zen-agent-mvp 开发期红线 hooks（Codex）。",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "apply_patch|Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/za-secret-guard.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Checking writes for secrets"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/za-secret-guard.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Checking credential read boundary"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/za-secret-guard.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Checking command for secrets"
+          },
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/za-bash-guard.mjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking commit quality gate"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/.codex/hooks/za-verify-on-stop.mjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking verification status"
+          }
+        ]
+      }
+    ]
+  }
+}

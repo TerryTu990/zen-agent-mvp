@@ -1,0 +1,5 @@
+# Codex 项目配置只在仓库被标记为 trusted 后加载。
+project_doc_max_bytes = 32768
+
+[features]
+hooks = true
