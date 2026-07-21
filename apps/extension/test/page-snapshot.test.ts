@@ -287,6 +287,25 @@ describe('createSnapshotter：页面提示文本 notices 采集', () => {
     expect(JSON.stringify(evidence)).not.toContain('已发送');
   });
 
+  it('itemSelector 同时命中消息外层与内层时只计最内层消息根', () => {
+    document.body.innerHTML = `
+      <div class="message-content-wrapper">
+        <div class="message-content">
+          <span class="read-status-text">已读</span>
+        </div>
+      </div>
+    `;
+    const { evidence } = createSnapshotter().collect([
+      {
+        id: 'message-receipts',
+        itemSelector: '[class*="message-content"]',
+        statusSelector: '[class*="read-status-text"]',
+        statuses: ['未读', '已读'],
+      },
+    ]);
+    expect(evidence).toEqual({ 'message-receipts': { count: 1, latest: '已读' } });
+  });
+
   it('没有 pack 证据配方时不解释同名 class，避免跨站污染', () => {
     document.body.innerHTML = `
       <div class="message-content"><span class="read-status">已读</span></div>

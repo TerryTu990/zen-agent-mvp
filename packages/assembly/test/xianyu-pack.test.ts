@@ -71,6 +71,8 @@ describe('xianyu-seller pack 装配', () => {
         snapshotEvidence: [
           {
             id: 'message-receipts',
+            itemSelector: '[class*="message-content"]',
+            statusSelector: '[class*="read-status-text"]',
             statuses: ['未读', '已读'],
           },
         ],

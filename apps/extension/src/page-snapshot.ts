@@ -176,6 +176,9 @@ function collectEvidence(
     } catch {
       continue;
     }
+    // 宽泛的 pack selector 可能同时命中 wrapper 与内层消息根。只保留最内层命中项，
+    // 避免同一个状态叶节点经祖先、后代容器重复计数；一个 wrapper 包含多条消息时也保留各消息根。
+    items = items.filter((item) => item.querySelector(rule.itemSelector) === null);
     const itemStatuses: string[] = [];
     for (const item of items) {
       let candidates: Element[];
