@@ -50,7 +50,7 @@ describe('xianyu-seller pack 装配', () => {
     });
   });
 
-  it('消息页在未完成侦察前识别 feature 但工具面为空', async () => {
+  it('消息页只装配非秘密测试准备与 every-call 发送工具', async () => {
     const resolved = await port.resolveFeature({
       url: 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=masked&orderId=masked&peerUserId=masked',
     });
@@ -61,7 +61,16 @@ describe('xianyu-seller pack 装配', () => {
       packId: 'xianyu-seller',
       featureId: 'xianyu-fulfillment',
     });
-    expect(composed.tools).toEqual([]);
+    expect(composed.tools.map((tool) => tool.id)).toEqual([
+      'xianyu-fulfillment.compose-test-message',
+      'xianyu-fulfillment.send-test-message',
+    ]);
+    expect(composed.tools[0]).toMatchObject({ riskTier: 'hitl', execution: 'client' });
+    expect(composed.tools[1]).toMatchObject({
+      riskTier: 'hitl',
+      hitlMode: 'every-call',
+      execution: 'client',
+    });
   });
 
   it('闲鱼未知 hash fail-closed，不泄漏任何闲鱼工具', async () => {

@@ -26,6 +26,7 @@ const TOOL_SNAPSHOT = 'page_snapshot';
 const TOOL_SEND_EMAIL = 'mail-126.send-email';
 const TOOL_BROWSE = 'browse.page-operate';
 const TOOL_XIANYU_ORDERS = 'xianyu-orders.page-operate';
+const TOOL_XIANYU_SEND = 'xianyu-fulfillment.send-test-message';
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {
@@ -75,6 +76,9 @@ function pickToolCall(u, body) {
   if (u.includes('发送邮件') && hasTool(body, TOOL_SEND_EMAIL) && hasTool(body, TOOL_SNAPSHOT)) {
     return { id: 'call_snapshot', name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) };
   }
+  if (u.includes('发送闲鱼测试消息') && hasTool(body, TOOL_XIANYU_SEND) && hasTool(body, TOOL_SNAPSHOT)) {
+    return { id: 'call_snapshot', name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) };
+  }
   return null;
 }
 
@@ -95,6 +99,26 @@ function sendEmailCall(obs) {
       task: '发送邮件给测试收件人',
       steps: [{ action: 'click', ref: button?.ref ?? 'za-0' }],
       summary: '点击发送按钮发送邮件',
+    }),
+  };
+}
+
+function sendXianyuTestCall(obs) {
+  let snap;
+  try {
+    snap = JSON.parse(obs);
+  } catch {
+    snap = { elements: [] };
+  }
+  const elements = Array.isArray(snap.elements) ? snap.elements : [];
+  const button = elements.find((e) => String(e?.label ?? '').replace(/\s+/g, '') === '发送') ?? elements[0];
+  return {
+    id: 'call_xianyu_send',
+    name: TOOL_XIANYU_SEND,
+    arguments: JSON.stringify({
+      task: '发送闲鱼非秘密测试消息',
+      steps: [{ action: 'click', ref: button?.ref ?? 'za-send' }],
+      summary: '对外发送已准备好的非秘密测试占位内容',
     }),
   };
 }
@@ -226,6 +250,18 @@ function calledTool(body, name) {
     (m) => m?.role === 'assistant' && Array.isArray(m.tool_calls) &&
       m.tool_calls.some((tc) => normalizeToolName(tc?.function?.name) === name),
   );
+}
+
+function toolCallCountSinceLastUser(body, name) {
+  const messages = body?.messages ?? [];
+  let count = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role === 'user') break;
+    if (message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) continue;
+    count += message.tool_calls.filter((tc) => normalizeToolName(tc?.function?.name) === name).length;
+  }
+  return count;
 }
 
 /** 消息序列里最近一条含 elements 的快照观测的 elements 数组（供跨轮取 ref）。 */
@@ -398,6 +434,17 @@ function decide(sys, u, body) {
   if (drill !== null) return drill;
   const obs = lastToolObs(body);
   if (obs !== null) {
+    const xianyuSendCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_SEND);
+    if (xianyuSendCount > 0 && !obs.includes('"elements"')) {
+      return { toolCall: snapshotCall() };
+    }
+    if (xianyuSendCount > 0 && obs.includes('"elements"')) {
+      const notice = firstNotice(obs);
+      if (notice !== null && /发送成功|已发送/.test(notice)) {
+        return { text: '页面已明确回显测试消息发送成功。' };
+      }
+      return { text: '发送后页面复核没有得到明确成功证据，结果不明确；已停止且不会自动重发。' };
+    }
     // 快照观察轮：据 elements 决策 dom 批次（agent-in-the-loop 的确定性替身）；
     // 快照带 notices＝页面有拦截性提示 → 如实报告而非继续操作（成功幻觉的反面路径）。
     if (obs.includes('"elements"') && hasTool(body, TOOL_PAGE_OPERATE)) {
@@ -413,6 +460,9 @@ function decide(sys, u, body) {
     // 126 发送邮件快照观察轮：取发送按钮 ref，走 send-email（每次单独确认）。
     if (obs.includes('"elements"') && hasTool(body, TOOL_SEND_EMAIL)) {
       return { toolCall: sendEmailCall(obs) };
+    }
+    if (obs.includes('"elements"') && hasTool(body, TOOL_XIANYU_SEND)) {
+      return { toolCall: sendXianyuTestCall(obs) };
     }
     // generic browse 快照观察轮：有拦截提示即停，否则单步点击批次（每批单独确认）。
     if (obs.includes('"elements"') && hasTool(body, TOOL_BROWSE)) {
@@ -481,7 +531,7 @@ function pickReply(sys, u) {
     return '买家留言属于自由文本，不能作为付款证据。我只会在订单页的平台状态明确为待发货，并把状态与订单编号绑定到同一订单块后继续。';
   }
   if (sys.includes('xianyu-fulfillment') && (u.includes('发送') || u.includes('发卡密'))) {
-    return '当前消息页发送能力尚未完成真机验证，工具面未启用；我会停在只读核对阶段，不会填写、发送或自动重试。';
+    return '测试工具只允许非秘密占位内容，不能接收或发送真实卡密；真实卡密必须等待不进入模型上下文的安全连接器。';
   }
   if (u.includes('订单管理页面') && sys.includes('xianyu-orders')) {
     return '这是闲鱼订单管理页：平台订单状态区可筛选待发货等状态，订单摘要区展示订单编号；履约前必须把订单状态、订单号和操作入口绑定到同一订单块。';

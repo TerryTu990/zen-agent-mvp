@@ -5,6 +5,6 @@
     { "packId": "mail-126", "version": "0.1.0" },
     { "packId": "zhipin", "version": "0.1.0" },
     { "packId": "generic-web", "version": "0.1.0" },
-    { "packId": "xianyu-seller", "version": "0.1.0" }
+    { "packId": "xianyu-seller", "version": "0.2.0" }
   ]
 }

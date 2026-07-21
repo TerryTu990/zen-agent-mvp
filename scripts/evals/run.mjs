@@ -308,6 +308,7 @@ async function driveTurn(sessionId, token, scenario, bus) {
           requestId: frame.requestId,
           url: scenario.url ?? `${HOST_BASE}/${scenario.page}`,
           elements: scenario.snapshotElements ?? [{ ref: 'za-send', role: 'button', label: '发送' }],
+          notices: scenario.snapshotNotices ?? [],
         });
       }
       if (frame.type === 'exec-instruction' && !handledExec.has(frame.nonce)) {
