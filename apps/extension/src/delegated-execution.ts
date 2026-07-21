@@ -15,6 +15,10 @@ export interface DelegatedExecutor {
 export function createDelegatedExecutor(
   fetchImpl: typeof fetch = fetch,
   domRunner?: DomStepRunner,
+  currentPage: () => { url: string; pageInstanceId: string } = () => ({
+    url: globalThis.location?.href ?? '',
+    pageInstanceId: '',
+  }),
 ): DelegatedExecutor {
   return {
     async execute(frame) {
@@ -24,6 +28,13 @@ export function createDelegatedExecutor(
       if ('kind' in request) {
         if (domRunner === undefined) {
           return { type: 'exec-result', sessionId, nonce, ok: false, error: 'dom-runner-unavailable' };
+        }
+        const page = currentPage();
+        if (
+          (request.expectedPageUrl !== undefined || request.expectedPageInstanceId !== undefined) &&
+          (request.expectedPageUrl !== page.url || request.expectedPageInstanceId !== page.pageInstanceId)
+        ) {
+          return { type: 'exec-result', sessionId, nonce, ok: false, error: 'context-mismatch' };
         }
         const outcome = await domRunner.run(request.steps);
         const result: ExecResultFrame = { type: 'exec-result', sessionId, nonce, ok: outcome.ok };

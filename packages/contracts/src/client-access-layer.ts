@@ -83,6 +83,8 @@ export interface SnapshotReportFrame {
   sessionId: string;
   requestId: string;
   url: string;
+  /** content script 本次页面生命周期的随机标识；导航/刷新/切换标签页后变化。 */
+  pageInstanceId?: string;
   title?: string;
   elements: SnapshotElement[];
   /** 页面当前可见的告警/校验/状态提示文本（客户端去重截断）：供 agent 识别表单校验等拦截性提示。 */
@@ -173,6 +175,9 @@ export interface DomStep {
 export interface DomExecRequest {
   kind: 'dom';
   steps: DomStep[];
+  /** 有界副作用指令的机械执行围栏；客户端只做等值比较，不承担治理判定。 */
+  expectedPageUrl?: string;
+  expectedPageInstanceId?: string;
 }
 
 export interface ExecInstructionFrame {

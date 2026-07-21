@@ -30,6 +30,7 @@ function makeDeps(overrides: Partial<DownstreamRouterDeps> = {}): {
       } satisfies ExecResultFrame),
     },
     send: (message) => sent.push(message),
+    pageInstanceId: 'page-instance-1',
     ...overrides,
   };
   return { deps, sent };
@@ -93,6 +94,7 @@ describe('routeDownstreamFrame 下行帧分发', () => {
         sessionId: 's1',
         requestId: 'r1',
         url: 'http://host/console',
+        pageInstanceId: 'page-instance-1',
         title: '控制台',
         elements: [],
       },
@@ -119,6 +121,7 @@ describe('routeDownstreamFrame 下行帧分发', () => {
         sessionId: 's1',
         requestId: 'r2',
         url: 'http://host/console',
+        pageInstanceId: 'page-instance-1',
         title: '控制台',
         elements: [],
         notices: ['请选择分组'],
@@ -156,6 +159,7 @@ describe('routeDownstreamFrame 下行帧分发', () => {
         sessionId: 's1',
         requestId: 'r3',
         url: 'https://seller.goofish.com/',
+        pageInstanceId: 'page-instance-1',
         title: '聊天',
         elements: [],
         evidence: { 'message-receipts': { count: 3, latest: '未读' } },

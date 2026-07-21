@@ -84,6 +84,7 @@ export interface SnapshotReportFrame {
   sessionId: string;
   requestId: string;
   url: string;
+  pageInstanceId?: string;
   title?: string;
   elements: SnapshotElement[];
   notices?: string[];
@@ -153,6 +154,8 @@ export interface DomStep {
 export interface DomExecRequest {
   kind: 'dom';
   steps: DomStep[];
+  expectedPageUrl?: string;
+  expectedPageInstanceId?: string;
 }
 
 export interface ExecInstructionFrame {

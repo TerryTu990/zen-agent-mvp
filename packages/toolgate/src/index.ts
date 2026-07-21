@@ -96,6 +96,7 @@ interface NonceRecord {
   ttl: number;
   consumed: boolean;
   fulfillmentReservationKey?: string;
+  fulfillmentCallKey?: string;
 }
 
 interface FulfillmentReservation {
@@ -111,7 +112,10 @@ interface FulfillmentReservation {
 interface FulfillmentIntent extends PrepareFulfillmentIntentInput {
   intentId: string;
   used: boolean;
+  steps: [DomStep, DomStep];
 }
+
+type FulfillmentCallState = 'reserved' | 'issued' | 'terminal';
 
 /**
  * nonce 登记存储抽象——MVP 进程内 Map；接口先行以便状态外置（Redis 等）。
@@ -291,6 +295,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   const fulfillmentIntents = new Map<string, FulfillmentIntent>();
   const intentByCall = new Map<string, string>();
   const reservationByCall = new Map<string, string>();
+  const fulfillmentCallStates = new Map<string, FulfillmentCallState>();
   const callKey = (sessionId: string, toolCallId: string): string => `${sessionId}\0${toolCallId}`;
   const dayKey = (timestamp: number, offsetMinutes: number): string =>
     new Date(timestamp + offsetMinutes * 60_000).toISOString().slice(0, 10);
@@ -340,7 +345,10 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     const mapping = tool.authorization;
     if (mapping?.kind !== 'bounded-fulfillment') return { allowed: false };
     expirePendingReservations();
-    if (reservationByCall.has(callKey(input.sessionId, input.toolCallId))) return { allowed: true };
+    const keyForCall = callKey(input.sessionId, input.toolCallId);
+    if (fulfillmentCallStates.has(keyForCall)) {
+      return { allowed: false, reason: 'bounded-call-already-used' };
+    }
     const rawIntentId = input.params[mapping.intentIdParam];
     if (typeof rawIntentId !== 'string') return { allowed: false, reason: 'bounded-intent-missing' };
     const intent = fulfillmentIntents.get(rawIntentId);
@@ -350,9 +358,23 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     if (
       input.claims.hostUserId !== intent.accountId ||
       input.toolId !== intent.toolId ||
-      input.domContext?.url !== intent.pageUrl
+      input.domContext?.url !== intent.pageUrl ||
+      input.domContext?.pageInstanceId !== intent.pageInstanceId
     ) {
       return { allowed: false, reason: 'bounded-intent-context-mismatch' };
+    }
+    const messageElement = input.domContext.elements?.find((element) => element.ref === intent.messageRef);
+    const sendElement = input.domContext.elements?.find((element) => element.ref === intent.sendRef);
+    const sendLabel = sendElement?.label.replace(/\s+/g, '').toLowerCase();
+    if (
+      messageElement === undefined ||
+      !['textarea', 'input:text', 'contenteditable'].includes(messageElement.role) ||
+      messageElement.disabled === true ||
+      sendElement?.role !== 'button' ||
+      sendElement.disabled === true ||
+      (sendLabel !== '发送' && sendLabel !== 'send')
+    ) {
+      return { allowed: false, reason: 'bounded-intent-target-mismatch' };
     }
     const validatedIntentSteps = validateDomSteps(
       tool as DomToolDefinition,
@@ -410,6 +432,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     });
     reservationByCall.set(callKey(input.sessionId, input.toolCallId), reservationKey);
     intentByCall.set(callKey(input.sessionId, input.toolCallId), intent.intentId);
+    fulfillmentCallStates.set(keyForCall, 'reserved');
     intent.used = true;
     return { allowed: true };
   };
@@ -468,6 +491,17 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   }
 
   const sites = options.sites ?? [];
+  for (const policy of fulfillmentPolicies) {
+    const ownerPackId = packOfTool.get(policy.toolId);
+    const ownedSites = sites.filter((site) => site.packId === ownerPackId);
+    if (
+      ownerPackId === undefined ||
+      ownedSites.length !== 1 ||
+      ownedSites[0]?.origin !== policy.siteOrigin
+    ) {
+      throw new Error(`有界履约策略 ${policy.id} 与工具所属站点不一致，拒绝启动`);
+    }
+  }
   /** navigate 目标 URL 是否落在某已安装 pack 的 site 围栏内（origin 精确 + location 前缀）。 */
   const urlInFence = (url: string): boolean => {
     let origin: string;
@@ -548,7 +582,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       toolCallId: input.toolCallId,
       request: request as unknown as JsonValue,
     });
-    const fulfillmentReservationKey = reservationByCall.get(callKey(input.sessionId, input.toolCallId));
+    const keyForCall = callKey(input.sessionId, input.toolCallId);
+    const fulfillmentReservationKey = reservationByCall.get(keyForCall);
     store.put(nonce, {
       toolId: input.toolId,
       toolCallId: input.toolCallId,
@@ -556,6 +591,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       ttl: ttlMs,
       consumed: false,
       ...(fulfillmentReservationKey !== undefined ? { fulfillmentReservationKey } : {}),
+      ...(fulfillmentReservationKey !== undefined ? { fulfillmentCallKey: keyForCall } : {}),
     });
     return {
       type: 'exec-instruction',
@@ -586,14 +622,14 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         input.accountId.trim() === '' ||
         input.productId.trim() === '' ||
         input.orderId.trim() === '' ||
+        input.pageInstanceId.trim() === '' ||
+        input.messageRef.trim() === '' ||
+        input.sendRef.trim() === '' ||
+        input.messageRef === input.sendRef ||
+        input.message === '' ||
         !Number.isInteger(input.quantity) ||
         input.quantity < 1 ||
-        input.expiresAt <= now() ||
-        !Array.isArray(input.steps) ||
-        input.steps.length < 2 ||
-        !input.steps.some((step) => step.action === 'fill') ||
-        input.steps.at(-1)?.action !== 'click' ||
-        input.steps.some((step) => step.action !== 'fill' && step.action !== 'click')
+        input.expiresAt <= now()
       ) {
         throw new Error('履约意图字段非法');
       }
@@ -608,7 +644,16 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       );
       if (eligible.length !== 1) throw new Error('履约意图未唯一命中预批准策略');
       const intentId = randomUUID();
-      fulfillmentIntents.set(intentId, { ...input, orderId: input.orderId.trim(), intentId, used: false });
+      fulfillmentIntents.set(intentId, {
+        ...input,
+        orderId: input.orderId.trim(),
+        intentId,
+        used: false,
+        steps: [
+          { action: 'fill', ref: input.messageRef, value: input.message },
+          { action: 'click', ref: input.sendRef },
+        ],
+      });
       return { intentId };
     },
 
@@ -681,6 +726,13 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       }
       const tool = toolsById.get(input.toolId);
       if (!tool) throw new Error(`issueExecInstruction 前提破坏：未知 toolId`);
+      const keyForCall = callKey(input.sessionId, input.toolCallId);
+      if (
+        tool.authorization?.kind === 'bounded-fulfillment' &&
+        fulfillmentCallStates.get(keyForCall) !== 'reserved'
+      ) {
+        throw new Error('有界履约签发拒绝：调用未预占或已签发');
+      }
       let request: ExecRequest | DomExecRequest;
       if (isDomTool(tool)) {
         // 有界工具只执行可信连接器登记的固定步骤；模型参数中的业务键或 steps 均不参与签发。
@@ -699,14 +751,25 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         }
         if (
           intent !== undefined &&
-          (input.claims.hostUserId !== intent.accountId || input.domContext?.url !== intent.pageUrl)
+          (input.claims.hostUserId !== intent.accountId ||
+            input.domContext?.url !== intent.pageUrl ||
+            input.domContext?.pageInstanceId !== intent.pageInstanceId)
         ) {
           throw new Error('有界履约签发拒绝：账号或页面已变化');
         }
         // 签发是治理终点：签名前独立重校验，不依赖 decide 已通过的假设（U7 fail-closed）。
         const validated = validateDomSteps(tool, domParams, input.domContext, input.packOrigin, urlInFence);
         if ('reason' in validated) throw new Error(`dom 批次校验未过：${validated.reason}`);
-        request = { kind: 'dom', steps: validated.steps };
+        request = {
+          kind: 'dom',
+          steps: validated.steps,
+          ...(intent !== undefined
+            ? {
+                expectedPageUrl: intent.pageUrl,
+                expectedPageInstanceId: intent.pageInstanceId,
+              }
+            : {}),
+        };
       } else {
         const adapter = tool.adapter;
         // 渲染上下文＝工具实参 + 已验签身份字段；身份后置覆盖，防工具经同名 param 冒充身份（如伪造 hostUserId）。
@@ -731,7 +794,11 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
             : {}),
         };
       }
-      return signInstruction(input, request);
+      const instruction = signInstruction(input, request);
+      if (tool.authorization?.kind === 'bounded-fulfillment') {
+        fulfillmentCallStates.set(keyForCall, 'issued');
+      }
+      return instruction;
     },
 
     async acceptExecResult(input: AcceptExecResultInput): Promise<Observation> {
@@ -744,6 +811,9 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       }
       if (now() - record.issuedAt > record.ttl) {
         store.markConsumed(result.nonce);
+        if (record.fulfillmentCallKey !== undefined) {
+          fulfillmentCallStates.set(record.fulfillmentCallKey, 'terminal');
+        }
         if (record.fulfillmentReservationKey !== undefined) {
           const reservation = fulfillmentReservations.get(record.fulfillmentReservationKey);
           if (reservation?.state === 'pending') reservation.state = 'uncertain';
@@ -751,6 +821,9 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         return { toolCallId: record.toolCallId, ok: false, content: null, error: 'timeout' };
       }
       store.markConsumed(result.nonce);
+      if (record.fulfillmentCallKey !== undefined) {
+        fulfillmentCallStates.set(record.fulfillmentCallKey, 'terminal');
+      }
       if (!result.ok) {
         if (record.fulfillmentReservationKey !== undefined) {
           const reservation = fulfillmentReservations.get(record.fulfillmentReservationKey);

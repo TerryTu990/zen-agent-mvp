@@ -206,6 +206,8 @@
       "required": ["kind", "steps"],
       "properties": {
         "kind": { "const": "dom" },
+        "expectedPageUrl": { "type": "string", "minLength": 1 },
+        "expectedPageInstanceId": { "type": "string", "minLength": 1 },
         "steps": {
           "type": "array",
           "minItems": 1,
@@ -274,6 +276,7 @@
         "sessionId": { "$ref": "#/$defs/sessionId" },
         "requestId": { "type": "string", "minLength": 1 },
         "url": { "type": "string", "minLength": 1 },
+        "pageInstanceId": { "type": "string", "minLength": 1 },
         "title": { "type": "string" },
         "elements": {
           "type": "array",

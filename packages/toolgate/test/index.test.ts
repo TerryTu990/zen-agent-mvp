@@ -245,6 +245,11 @@ const domContext = {
   path: '/console/token',
   origin: 'https://seller.example',
   url: 'https://seller.example/console/token?order=order-1',
+  pageInstanceId: 'page-instance-1',
+  elements: [
+    { ref: 'za-1', role: 'textarea', label: '请输入消息' },
+    { ref: 'za-2', role: 'button', label: '发送' },
+  ],
 };
 
 const allTools: ToolDefinition[] = [
@@ -274,6 +279,8 @@ interface PortOverrides {
 function makePort(overrides?: PortOverrides) {
   return createToolGatePort({
     tools: allTools,
+    sites: [{ packId: 'seller-pack', origin: 'https://seller.example', locations: ['/console'] }],
+    toolOwnership: [{ packId: 'seller-pack', toolId: boundedFulfillmentTool.id }],
     signingSecret: SIGN_FIXTURE,
     ...(overrides?.ttlMs !== undefined ? { ttlMs: overrides.ttlMs } : {}),
     ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
@@ -1066,10 +1073,10 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
       orderId,
       quantity: 1,
       pageUrl: contextFor(orderId).url,
-      steps: [
-        { action: 'fill', ref: 'za-1', value: '固定履约内容' },
-        { action: 'click', ref: 'za-2' },
-      ],
+      pageInstanceId: 'page-instance-1',
+      messageRef: 'za-1',
+      sendRef: 'za-2',
+      message: '固定履约内容',
       expiresAt: 1_500_000,
       ...overrides,
     });
@@ -1090,6 +1097,8 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
     const instruction = await port.issueExecInstruction(call);
     expect(instruction.request).toEqual({
       kind: 'dom',
+      expectedPageUrl: contextFor('order-1').url,
+      expectedPageInstanceId: 'page-instance-1',
       steps: [
         { action: 'fill', ref: 'za-1', value: '固定履约内容' },
         { action: 'click', ref: 'za-2' },
@@ -1109,6 +1118,85 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
       claims: { ...validClaims, hostUserId: 'other-account' },
     });
     expect(wrongAccount).toEqual({ verdict: 'deny', reason: 'bounded-intent-context-mismatch' });
+  });
+
+  it('同一 call key 在预占、签发和终态均不可再次放行或签发', async () => {
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }] });
+    const { intentId } = await prepare(port, 'order-call-state');
+    const call = input('order-call-state', intentId, 'same-call');
+    expect(await port.decide(call)).toEqual({ verdict: 'allow' });
+    await expect(port.decide(call)).resolves.toEqual({
+      verdict: 'deny',
+      reason: 'bounded-call-already-used',
+    });
+    const instruction = await port.issueExecInstruction(call);
+    await expect(port.issueExecInstruction(call)).rejects.toThrow(/已签发/);
+    await expect(port.decide(call)).resolves.toEqual({
+      verdict: 'deny',
+      reason: 'bounded-call-already-used',
+    });
+    await port.acceptExecResult({
+      sessionId: call.sessionId,
+      result: {
+        type: 'exec-result',
+        sessionId: call.sessionId,
+        nonce: instruction.nonce,
+        ok: true,
+        body: { ok: true },
+      },
+    });
+    await expect(port.decide(call)).resolves.toEqual({
+      verdict: 'deny',
+      reason: 'bounded-call-already-used',
+    });
+
+    const uncertainPort = makePort({
+      now: () => 1_000_000,
+      fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }],
+    });
+    const uncertainIntent = await prepare(uncertainPort, 'order-call-uncertain');
+    const uncertainCall = input('order-call-uncertain', uncertainIntent.intentId, 'same-call-uncertain');
+    expect(await uncertainPort.decide(uncertainCall)).toEqual({ verdict: 'allow' });
+    const uncertainInstruction = await uncertainPort.issueExecInstruction(uncertainCall);
+    await uncertainPort.acceptExecResult({
+      sessionId: uncertainCall.sessionId,
+      result: {
+        type: 'exec-result',
+        sessionId: uncertainCall.sessionId,
+        nonce: uncertainInstruction.nonce,
+        ok: false,
+        error: 'ambiguous',
+      },
+    });
+    await expect(uncertainPort.decide(uncertainCall)).resolves.toEqual({
+      verdict: 'deny',
+      reason: 'bounded-call-already-used',
+    });
+  });
+
+  it('页面生命周期与输入/发送控件语义不符时拒绝自动履约', async () => {
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }] });
+    const first = await prepare(port, 'order-page-instance');
+    await expect(
+      port.decide({
+        ...input('order-page-instance', first.intentId),
+        domContext: { ...contextFor('order-page-instance'), pageInstanceId: 'other-page' },
+      }),
+    ).resolves.toEqual({ verdict: 'deny', reason: 'bounded-intent-context-mismatch' });
+
+    const second = await prepare(port, 'order-wrong-target');
+    await expect(
+      port.decide({
+        ...input('order-wrong-target', second.intentId, 'wrong-target-call'),
+        domContext: {
+          ...contextFor('order-wrong-target'),
+          elements: [
+            { ref: 'za-1', role: 'button', label: '不是输入框' },
+            { ref: 'za-2', role: 'button', label: '删除' },
+          ],
+        },
+      }),
+    ).resolves.toEqual({ verdict: 'deny', reason: 'bounded-intent-target-mismatch' });
   });
 
   it('跨策略按站点+账号+工具+规范化订单全局去重，且日限额含预占', async () => {
@@ -1152,9 +1240,9 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
     await expect(prepare(port, 'order-x', { productId: 'product-b' })).rejects.toThrow(/未唯一命中/);
     await expect(prepare(port, 'order-x', { quantity: 2 })).rejects.toThrow(/未唯一命中/);
     await expect(prepare(port, 'order-x', { expiresAt: 2_000_001 })).rejects.toThrow(/未唯一命中/);
-    await expect(
-      prepare(port, 'order-x', { steps: [{ action: 'click', ref: 'za-2' }] }),
-    ).rejects.toThrow(/字段非法/);
+    await expect(prepare(port, 'order-x', { messageRef: 'za-2', sendRef: 'za-2' })).rejects.toThrow(
+      /字段非法/,
+    );
   });
 
   it('重复策略 id、非法产品与非法边界在启动期 fail-fast', () => {
@@ -1167,6 +1255,31 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
     expect(() =>
       makePort({ fulfillmentPolicies: [{ ...policy, productIds: [''] }] }),
     ).toThrow(/有界履约策略/);
+  });
+
+  it('运营日跨界后重置日额度，策略站点与工具所属 pack 不一致则拒绝启动', async () => {
+    let clock = Date.parse('2026-07-21T15:59:00Z');
+    const boundaryPolicy = {
+      ...policy,
+      validUntil: Date.parse('2026-07-23T00:00:00Z'),
+      dailyOrderLimit: 1,
+    };
+    const port = makePort({ now: () => clock, fulfillmentPolicies: [boundaryPolicy] });
+    const before = await prepare(port, 'order-before-boundary', { expiresAt: clock + 60_000 });
+    expect(await port.decide(input('order-before-boundary', before.intentId))).toEqual({ verdict: 'allow' });
+    clock = Date.parse('2026-07-21T16:01:00Z');
+    const after = await prepare(port, 'order-after-boundary', { expiresAt: clock + 60_000 });
+    expect(await port.decide(input('order-after-boundary', after.intentId))).toEqual({ verdict: 'allow' });
+
+    expect(() =>
+      createToolGatePort({
+        tools: [boundedFulfillmentTool],
+        signingSecret: SIGN_FIXTURE,
+        sites: [{ packId: 'seller-pack', origin: 'https://other.example', locations: ['/'] }],
+        toolOwnership: [{ packId: 'seller-pack', toolId: boundedFulfillmentTool.id }],
+        fulfillmentPolicies: [policy],
+      }),
+    ).toThrow(/工具所属站点不一致/);
   });
 
   it('工具分级、通道、every-call 与 intentId params 联合契约非法时拒绝启动', () => {

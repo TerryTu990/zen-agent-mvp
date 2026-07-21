@@ -623,10 +623,10 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       orderId: 'order-a',
       quantity: 1,
       pageUrl,
-      steps: [
-        { action: 'fill', ref: 'za-message', value: '固定履约消息' },
-        { action: 'click', ref: 'za-send' },
-      ],
+      pageInstanceId: 'page-instance-a',
+      messageRef: 'za-message',
+      sendRef: 'za-send',
+      message: '固定履约消息',
       expiresAt: Date.now() + 60_000,
     });
     const previousBaseUrl = baseUrl;
@@ -648,6 +648,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         sessionId,
         requestId: String(snapshot['requestId']),
         url: pageUrl,
+        pageInstanceId: 'page-instance-a',
         title: '买家联系',
         elements: [
           { ref: 'za-message', role: 'textarea', label: '请输入消息' },
@@ -659,6 +660,8 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       const instruction = framesByType(sse.frames, 'exec-instruction')[0]!;
       expect(instruction['request']).toEqual({
         kind: 'dom',
+        expectedPageUrl: pageUrl,
+        expectedPageInstanceId: 'page-instance-a',
         steps: [
           { action: 'fill', ref: 'za-message', value: '固定履约消息' },
           { action: 'click', ref: 'za-send' },

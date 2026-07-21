@@ -9,6 +9,7 @@ export interface DownstreamRouterDeps {
   executor: DelegatedExecutor;
   snapshot: Pick<Snapshotter, 'collect'>;
   send: (message: ContentToBackgroundMessage) => void;
+  pageInstanceId: string;
 }
 
 export type PageDownstreamFrame = Extract<
@@ -45,6 +46,7 @@ export function routeDownstreamFrame(frame: PageDownstreamFrame, deps: Downstrea
           sessionId: frame.sessionId,
           requestId: frame.requestId,
           url,
+          pageInstanceId: deps.pageInstanceId,
           ...(title !== '' ? { title } : {}),
           elements,
           ...(notices.length > 0 ? { notices } : {}),

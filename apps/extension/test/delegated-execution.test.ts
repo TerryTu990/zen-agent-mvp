@@ -26,6 +26,33 @@ function instruction(
 }
 
 describe('delegated-execution 页面环境代执行', () => {
+  it('有界 DOM 指令的 URL 或页面生命周期变化时机械拒绝且不执行步骤', async () => {
+    let runs = 0;
+    const exec = createDelegatedExecutor(
+      fetch,
+      {
+        run: async () => {
+          runs += 1;
+          return { ok: true, body: { completedSteps: 2 } };
+        },
+      },
+      () => ({ url: 'https://seller.example/chat/order-b', pageInstanceId: 'page-b' }),
+    );
+    const result = await exec.execute(
+      instruction({
+        kind: 'dom',
+        expectedPageUrl: 'https://seller.example/chat/order-a',
+        expectedPageInstanceId: 'page-a',
+        steps: [
+          { action: 'fill', ref: 'za-1', value: 'message' },
+          { action: 'click', ref: 'za-2' },
+        ],
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, error: 'context-mismatch' });
+    expect(runs).toBe(0);
+  });
+
   it('成功：以用户会话 fetch，解析 JSON body，回传 ok/status/body（无 error）', async () => {
     const capture: Capture = { url: undefined, init: undefined };
     const fetchImpl = ((url: unknown, init?: RequestInit) => {

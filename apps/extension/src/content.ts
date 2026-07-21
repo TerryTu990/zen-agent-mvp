@@ -28,6 +28,7 @@ function readHostUserId(): string | null {
 }
 
 let activated = false;
+const pageInstanceId = crypto.randomUUID();
 
 function activate(): void {
   if (activated) return;
@@ -85,7 +86,7 @@ function activate(): void {
         send({ kind: 'operation-state', running: false });
       }
     },
-  });
+  }, () => ({ url: location.href, pageInstanceId }));
 
   const routeMessage = (raw: unknown): void => {
     const message = raw as BackgroundToContentMessage;
@@ -106,7 +107,7 @@ function activate(): void {
       return;
     }
     if (message.kind === 'frame' && isPageDownstreamFrame(message.frame)) {
-      routeDownstreamFrame(message.frame, { pageAction, executor, snapshot, send });
+      routeDownstreamFrame(message.frame, { pageAction, executor, snapshot, send, pageInstanceId });
     }
   };
 

@@ -79,6 +79,7 @@ function isDeclaredHidden(el: Element): boolean {
 function roleOf(el: Element): string {
   const explicit = el.getAttribute('role')?.trim().toLowerCase() ?? '';
   if (explicit !== '') return explicit;
+  if (el.getAttribute('contenteditable') === 'true') return 'contenteditable';
   const tag = el.tagName.toLowerCase();
   return el instanceof HTMLInputElement ? `${tag}:${el.type}` : tag;
 }

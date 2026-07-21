@@ -7,7 +7,7 @@
 import type { JsonObject, JsonValue } from './json.js';
 import type { ToolDefinition } from './tool-definition.js';
 import type { IdentityClaims } from './identity-claims.js';
-import type { DomStep, ExecInstructionFrame, ExecResultFrame } from './client-access-layer.js';
+import type { ExecInstructionFrame, ExecResultFrame, SnapshotElement } from './client-access-layer.js';
 import type { AuditEvent, GateVerdict } from './audit-event.js';
 
 // ---- AssemblyPort（②会话网关 ← ⑤配置中心：featureId 定位 + 注入组合）----
@@ -144,6 +144,10 @@ export interface DomGateContext {
   origin?: string;
   /** 当前快照完整 URL：有界履约意图必须与其精确绑定，防在另一订单聊天页复用。 */
   url?: string;
+  /** 快照所属 content script 页面生命周期，防快照后切页/刷新再执行。 */
+  pageInstanceId?: string;
+  /** 最近快照元素的最小语义，用于有界履约固定校验输入框与发送按钮。 */
+  elements?: SnapshotElement[];
 }
 
 export interface PrepareFulfillmentIntentInput {
@@ -153,8 +157,12 @@ export interface PrepareFulfillmentIntentInput {
   orderId: string;
   quantity: number;
   pageUrl: string;
-  /** 可信连接器生成的固定 DOM 步骤；可含履约值，只存在 toolgate 内存与签名指令，不进模型/审计。 */
-  steps: DomStep[];
+  /** 可信连接器绑定的页面生命周期；必须与执行前最近快照一致。 */
+  pageInstanceId: string;
+  /** 可信连接器只提交语义字段；toolgate 固定构造恰好一组 fill→click。 */
+  messageRef: string;
+  sendRef: string;
+  message: string;
   expiresAt: number;
 }
 
