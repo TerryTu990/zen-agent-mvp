@@ -1,6 +1,6 @@
 # Zen Agent Chrome 形态与闲鱼站点能力实施方案
 
-> 状态：执行中（2026-07-22，分支 `codex/zen-agent-xianyu-plan`）；Phase 1、Phase 2A/2B/2C/2D、Phase 3A/3B 已完成并通过独立复审；Phase 3C 已实现并完成夹具 E2E，等待独立复审。订单发货状态更新与真实周期扫描激活仍等待一笔低价值待发货测试单。
+> 状态：当前范围已完成（2026-07-22，分支 `codex/zen-agent-xianyu-plan`）；Phase 1、Phase 2A/2B/2C/2D、Phase 3A/3B/3C 均已实现、通过分阶段 E2E 与独立复审。订单状态“发货”动作按约定保留占位；真实周期扫描的小额验收等待一笔明确授权的低价值待发货测试单，不阻塞本次消息通知与卡密履约能力交付。
 > 本文把产品讨论收敛为可逐批实施、验证和回滚的开发方案；产品主体始终是通用 **Zen Agent**，闲鱼是首个生产级站点能力包，不建立“闲鱼专用助手”分叉。
 > 各阶段只有通过本阶段验证门后才能进入下一阶段。
 
@@ -22,8 +22,8 @@
 - Phase 3A（2026-07-22）：按飞书 `general` user 身份精确查重后创建一张私有 `Zen Agent｜闲鱼卡密库存` Base，字段为计划定义的最小七列；导入 20 条记录并回读确认 1 条 `sent`、19 条 `available`。首条绑定附件中的历史订单号，Base 链接已登记到“Token 中转｜项目导航”，未开启外部分享。
 - Phase 3B（2026-07-22）：新增 ADR-017、`CardInventoryPort` 与 `FulfillmentCoordinatorPort`。`packages/card-inventory` 通过 `lark-cli --profile general --as user` 实现订单复用、available→reserved、reserved→sent/manual；每次重要写入前机械执行 `whoami`，写后按 `card_id` 回读 `status / order_id / note`，底层错误不回显 stdout/stderr。浏览器副作用前先持久化 `delivery-attempted`；该标记或 `manual` 会作为同商品跨重启暂停闩锁，避免点击后、回执前崩溃造成重复发送。`packages/fulfillment` 固定组装附件格式的订单号、兑换码与使用说明，模型及调用方只获得 opaque `intentId`。网关在闲鱼回执结束后同步回填，回填失败把整笔标记失败并停止。
 - Phase 3B 真实验证：运行时连接器按历史订单查到 `card-001` 的 `sent` 状态并完成幂等 settle，没有发送新的闲鱼消息、没有占用新卡、终端未输出兑换码。
-- Phase 3C（2026-07-22）：新增 ADR-018。扩展以默认关闭的 `chrome.alarms` 唤醒既有闲鱼订单/聊天工作页，一轮最多一笔，不自动开页；没有存活执行页、快照超时、出现 HITL、用户停止或扫描窗口内任一失败 tool-card 都会持久关闭扫描。服务端仅在履约 feature、库存、商品映射和 bounded 工具同时就绪时注入零参数 `prepare_xianyu_fulfillment`，从当前聊天 URL、JWT、最近快照和 `ZA_FULFILLMENT_PRODUCT_KEYS_JSON` 机械准备 intent；模型只得到 opaque `intentId`。未知商品、页面/控件/回执证据不唯一均零预占、零指令。
-- Phase 3 验证：全仓 dependency lint、build、491 项串行测试与 `git diff --check` 通过；闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件无回归。新增测试覆盖同订单复用、同商品跨订单持久化暂停、reserved 崩溃恢复、三类写后回读不一致、缺货、重复记录、身份失败、预占写失败、终态单向转换、intent 登记失败清理、页面成功/超时后的 sent/manual 回填、浏览器指令前 attempt 闩锁、默认关闭的周期扫描边界、零参数产品触发链，以及 attempt 写失败或闲鱼成功但飞书回填失败时零新增发送并停止下一单。
+- Phase 3C（2026-07-22）：新增 ADR-018。扩展以默认关闭的 `chrome.alarms` 唤醒既有闲鱼订单/聊天工作页，不自动开页；按候选 tab 精确绑定 content port，并在自动消息前先同步 Chrome 可信 URL。组级 run 锁持久化到 `chrome.storage.session`，服务端保存可鉴权查询的 `running/succeeded/failed` 状态，SW 重启或 SSE 丢帧后可恢复；业务失败完成态为 `failed`。服务端对所有回合统一执行一单 bounded intent 硬预算，历史 intent 直执也会占用本轮额度，治理不依赖客户端 `automationRunId`。库存访问前必须先由 toolgate 原子预授权策略、订单唯一键和日额度；未知商品、过期/不匹配策略、错误路由、页面/控件/回执证据不唯一均零库存、零指令。
+- Phase 3 验证：全仓 dependency lint、build、499 项串行测试与 `git diff --check` 通过；49 个 AI harness 场景各 3 跑全绿，闲鱼 18 个需求场景为 54/54，384 条审计事件无回归；真实 Chromium Side Panel E2E 通过。新增覆盖库存前授权、策略过期零库存、同轮第二次 prepare、历史 intent 执行后切新订单仍零新增库存/指令、重复 runId 409、运行态查询与失败完成态、候选 tab 上下文切换、SW 恢复决策，以及既有飞书幂等/崩溃/回读/回填边界。第三次独立复审结论 P0=0、P1=0，Phase 3C 可接受；保留的 P2 是后续补真实 SW 回收/双 content port 的 Chrome harness，以及自动 run 终态有界清理。
 
 ## 一、目标、边界与成功标准
 
@@ -342,4 +342,4 @@ page_snapshot
 | 第二步 | 闲鱼 pack、实测 facts、规则、skills、DOM 工具、评测、单订单闭环 | 飞书库存、周期全自动 |
 | 第三步 | 飞书单表连接器、预占/回填、幂等处理、周期扫描、小流量全自动 | 多表后台、多账号高并发 |
 
-下一执行锚点：用户确认本文后，从“批次 1A：Side Panel 壳”开始实施；在此之前不操作已登录的闲鱼页面，也不创建或修改飞书资源。
+后续执行锚点：出现一笔明确授权的低价值待发货测试单后，先在默认关闭状态下完成真机单笔周期触发验收，再决定是否启用小流量扫描；订单状态“发货”按钮继续作为独立后续批次。工程侧另补真实 SW 回收、SSE 丢帧、双 content port 的 Chrome harness，并为服务端自动 run 终态增加有界清理。
