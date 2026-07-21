@@ -204,6 +204,23 @@ describe('C3 snapshot-report 帧（含页面提示文本 notices）', () => {
     'snapshot-report 缺省 notices（向后兼容）': baseReport,
     'snapshot-report 含 notices': { ...baseReport, notices: ['请选择分组'] },
     'snapshot-report notices 空数组': { ...baseReport, notices: [] },
+    'snapshot-report 含结构化证据': {
+      ...baseReport,
+      evidence: { 'message-receipts': { count: 3, latest: '未读' } },
+    },
+    'snapshot-request 含 pack 证据配方': {
+      type: 'snapshot-request',
+      sessionId: 's-001',
+      requestId: 'r-02',
+      evidenceRules: [
+        {
+          id: 'message-receipts',
+          itemSelector: '[class*="message-content"]',
+          statusSelector: '[class*="read-status-text"]',
+          statuses: ['未读', '已读'],
+        },
+      ],
+    },
   };
 
   it.each(Object.keys(validFrames))('合法 %s 通过校验', (label) => {
@@ -218,6 +235,10 @@ describe('C3 snapshot-report 帧（含页面提示文本 notices）', () => {
     },
     'notices 含空串': { ...baseReport, notices: [''] },
     'notices 含非字符串项': { ...baseReport, notices: [{ text: '请选择分组' }] },
+    'evidence 含正文类额外字段': {
+      ...baseReport,
+      evidence: { 'message-receipts': { count: 3, latest: '未读', content: '禁止' } },
+    },
   };
 
   it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {
@@ -420,6 +441,27 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
       riskTier: 'forbidden',
       adapter: { method: 'DELETE', urlTemplate: '/api/orders' },
       resultSchema: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } },
+    },
+    'dom 工具含 pack 级结构化证据配方': {
+      id: 'chat.send-message',
+      featureIds: ['chat'],
+      description: '发送消息并复核回执',
+      params: { type: 'object', properties: {}, additionalProperties: false },
+      execution: 'client',
+      riskTier: 'hitl',
+      adapter: {
+        kind: 'dom',
+        pathPrefixes: ['/'],
+        snapshotEvidence: [
+          {
+            id: 'message-receipts',
+            itemSelector: '[class*="message-content"]',
+            statusSelector: '[class*="read-status-text"]',
+            statuses: ['未读', '已读'],
+          },
+        ],
+      },
+      resultSchema: { type: 'object' },
     },
   };
 

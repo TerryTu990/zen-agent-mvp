@@ -66,6 +66,16 @@ describe('xianyu-seller pack 装配', () => {
       'xianyu-fulfillment.send-test-message',
     ]);
     expect(composed.tools[0]).toMatchObject({ riskTier: 'hitl', execution: 'client' });
+    expect(composed.tools[0]).toMatchObject({
+      adapter: {
+        snapshotEvidence: [
+          {
+            id: 'message-receipts',
+            statuses: ['未读', '已读'],
+          },
+        ],
+      },
+    });
     expect(composed.tools[1]).toMatchObject({
       riskTier: 'hitl',
       hitlMode: 'every-call',

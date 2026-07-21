@@ -239,7 +239,29 @@
       "properties": {
         "type": { "const": "snapshot-request" },
         "sessionId": { "$ref": "#/$defs/sessionId" },
-        "requestId": { "type": "string", "minLength": 1 }
+        "requestId": { "type": "string", "minLength": 1 },
+        "evidenceRules": {
+          "$comment": "当前 feature 的 pack 级只读证据配方；由服务端从已装配 DOM 工具提取，客户端只执行采集、不据此做治理判定。",
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "itemSelector", "statusSelector", "statuses"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+              "itemSelector": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "statusSelector": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "statuses": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 10,
+                "uniqueItems": true,
+                "items": { "type": "string", "minLength": 1, "maxLength": 32 }
+              }
+            }
+          }
+        }
       }
     },
     "snapshotReport": {
@@ -274,6 +296,21 @@
           "type": "array",
           "maxItems": 10,
           "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        },
+        "evidence": {
+          "$comment": "按 pack 配方采集的结构化只读证据；键为配方 id，值只含唯一容器数量与最新状态枚举，不含正文。",
+          "type": "object",
+          "maxProperties": 10,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["count", "latest"],
+            "properties": {
+              "count": { "type": "integer", "minimum": 0 },
+              "latest": { "type": "string", "minLength": 1, "maxLength": 32 }
+            }
+          }
         }
       }
     },

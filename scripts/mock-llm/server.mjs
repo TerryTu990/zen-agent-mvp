@@ -207,10 +207,27 @@ function receiptCountsSinceLastUser(body) {
   }
   for (const message of messages.slice(start)) {
     if (message?.role !== 'tool') continue;
-    const match = String(message.content ?? '').match(/消息回执数：(\d+)；最新：(未读|已读|发送中|失败)/);
+    const match = String(message.content ?? '').match(
+      /"message-receipts":\{"count":(\d+),"latest":"(未读|已读)"\}/,
+    );
     if (match) counts.push(Number(match[1]));
   }
   return counts;
+}
+
+function messageReceiptEvidence(obs) {
+  try {
+    const evidence = JSON.parse(obs)?.evidence?.['message-receipts'];
+    if (
+      Number.isInteger(evidence?.count) &&
+      (evidence?.latest === '未读' || evidence?.latest === '已读')
+    ) {
+      return evidence;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 /**
@@ -475,12 +492,11 @@ function decide(sys, u, body) {
       const counts = receiptCountsSinceLastUser(body);
       const prior = counts[counts.length - 2];
       const current = counts[counts.length - 1];
-      const latestNotice = firstNotice(obs);
+      const currentEvidence = messageReceiptEvidence(obs);
       if (
         prior !== undefined &&
         current === prior + 1 &&
-        latestNotice !== null &&
-        /最新：(未读|已读)/.test(latestNotice)
+        currentEvidence !== null
       ) {
         return { text: '页面已明确回显测试消息发送成功。' };
       }

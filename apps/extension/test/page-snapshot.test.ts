@@ -245,7 +245,7 @@ describe('createSnapshotter：页面提示文本 notices 采集', () => {
     expect(createSnapshotter().collect().notices).toEqual(['请选择分组', '名称不能为空']);
   });
 
-  it('只汇总消息回执数量与最新状态，不采集相邻消息正文', () => {
+  it('按 pack 配方以唯一消息容器汇总回执，不采集相邻消息正文', () => {
     document.body.innerHTML = `
       <div class="message-content">
         <div class="message-body">兑换内容不应进入 notices</div>
@@ -254,24 +254,44 @@ describe('createSnapshotter：页面提示文本 notices 采集', () => {
       <span class="send-status">已发送</span>
       <span class="message-status">未读</span>
     `;
-    const { notices } = createSnapshotter().collect();
-    expect(notices).toEqual(['消息回执数：3；最新：未读']);
-    expect(JSON.stringify(notices)).not.toContain('兑换内容');
+    const { evidence, notices } = createSnapshotter().collect([
+      {
+        id: 'message-receipts',
+        itemSelector: '.message-content',
+        statusSelector: '.read-status-text--hash, .send-status, .message-status',
+        statuses: ['未读', '已读', '已发送'],
+      },
+    ]);
+    expect(evidence).toEqual({ 'message-receipts': { count: 1, latest: '已读' } });
+    expect(JSON.stringify({ evidence, notices })).not.toContain('兑换内容');
   });
 
-  it('回执只接受叶节点状态枚举，嵌套容器不重复计数也不泄漏正文', () => {
+  it('同一消息容器多个状态叶节点只计一次，取最后允许状态', () => {
     document.body.innerHTML = `
-      <div class="message-status">
+      <div class="message-content">
         兑换内容不应进入 notices
-        <span class="read-status">已读</span>
+        <span class="read-status">已发送</span>
+        <span class="read-status">未读</span>
       </div>
-      <span class="send-status">未知自定义状态</span>
-      <span class="message-status">未读</span>
     `;
-    const { notices } = createSnapshotter().collect();
-    expect(notices).toEqual(['消息回执数：2；最新：未读']);
-    expect(JSON.stringify(notices)).not.toContain('兑换内容');
-    expect(JSON.stringify(notices)).not.toContain('未知自定义状态');
+    const { evidence } = createSnapshotter().collect([
+      {
+        id: 'message-receipts',
+        itemSelector: '.message-content',
+        statusSelector: '.read-status',
+        statuses: ['未读', '已读'],
+      },
+    ]);
+    expect(evidence).toEqual({ 'message-receipts': { count: 1, latest: '未读' } });
+    expect(JSON.stringify(evidence)).not.toContain('兑换内容');
+    expect(JSON.stringify(evidence)).not.toContain('已发送');
+  });
+
+  it('没有 pack 证据配方时不解释同名 class，避免跨站污染', () => {
+    document.body.innerHTML = `
+      <div class="message-content"><span class="read-status">已读</span></div>
+    `;
+    expect(createSnapshotter().collect().evidence).toEqual({});
   });
 
   it('class 启发式跳过长容器与含表单控件的区块', () => {

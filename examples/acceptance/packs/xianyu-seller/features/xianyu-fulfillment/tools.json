@@ -31,7 +31,18 @@
     },
     "execution": "client",
     "riskTier": "hitl",
-    "adapter": { "kind": "dom", "pathPrefixes": ["/"] },
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/"],
+      "snapshotEvidence": [
+        {
+          "id": "message-receipts",
+          "itemSelector": "[class*=\"message-content\"]",
+          "statusSelector": "[class*=\"read-status-text\"]",
+          "statuses": ["未读", "已读"]
+        }
+      ]
+    },
     "resultSchema": {
       "type": "object",
       "required": ["reads", "completedSteps"],

@@ -37,6 +37,7 @@ import type {
   ResolveFeatureResult,
   SiteDescriptor,
   SnapshotReportFrame,
+  SnapshotEvidenceRule,
   ToolCardStatus,
   ToolDefinition,
   ToolGatePort,
@@ -661,6 +662,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }, pack);
       const selectedHostTools = selectToolsForPreference(composed.tools, executionPreference);
       const hostToolsById = new Map(selectedHostTools.map((tool) => [tool.id, tool]));
+      const evidenceById = new Map<string, SnapshotEvidenceRule>();
+      for (const tool of selectedHostTools) {
+        if (!isDomTool(tool)) continue;
+        for (const rule of tool.adapter.snapshotEvidence ?? []) {
+          if (!evidenceById.has(rule.id)) evidenceById.set(rule.id, rule);
+        }
+      }
+      const evidenceRules = [...evidenceById.values()];
       const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
       // 快照工具只在工具面含 dom 工具时注入：无 dom 操作面就不给观察入口（最小工具面）。
       const snapshotTools: LlmToolSpec[] = selectedHostTools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
@@ -685,7 +694,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...appTools,
         ...selectedHostTools.map(toLlmToolSpec),
       ];
-      return { pack, featureId, composed, hostToolsById, tools };
+      return { pack, featureId, composed, hostToolsById, tools, evidenceRules };
     };
     // 站点边界标记（ADR-013）：激活 pack 或 generic 绑定 origin 变更时向历史注入一行标记，
     // 防跨站历史误导（generic pack 多 origin 间切换 packId 恒定，须并比 genericOrigin）；
@@ -706,7 +715,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       return { role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` };
     };
 
-    let { pack, featureId, composed, hostToolsById, tools } = await assembleFor(session.currentUrl ?? '');
+    let { pack, featureId, composed, hostToolsById, tools, evidenceRules } = await assembleFor(session.currentUrl ?? '');
     const prevPackId = session.lastPackId;
     const prevGenericOrigin = session.lastGenericOrigin;
     const boundary = await boundaryFor(pack, prevPackId, prevGenericOrigin);
@@ -792,7 +801,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
         // 观察半程（非终结）：等活跃页回传快照，存判定上下文，快照作 observation 回喂后继续本回合。
         const requestId = randomUUID();
         const reported = waitForSnapshot(sessionId, requestId);
-        broadcast(sessionId, { type: 'snapshot-request', sessionId, requestId });
+        broadcast(sessionId, {
+          type: 'snapshot-request',
+          sessionId,
+          requestId,
+          ...(evidenceRules.length > 0 ? { evidenceRules } : {}),
+        });
         const report = await reported;
         runtimeOf(sessionId).domContext = {
           refs: report.elements.map((element) => element.ref),
@@ -812,6 +826,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             title: report.title ?? '',
             elements: report.elements,
             ...(report.notices !== undefined ? { notices: report.notices } : {}),
+            ...(report.evidence !== undefined ? { evidence: report.evidence } : {}),
           }),
         };
         messages.push(snapshotEcho, snapshotObs);
@@ -942,7 +957,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             deps.store.setContext(sessionId, landedUrl);
             const previousPackId = pack.packId;
             const previousGenericOrigin = pack.genericOrigin ?? null;
-            ({ pack, featureId, composed, hostToolsById, tools } = await assembleFor(landedUrl));
+            ({ pack, featureId, composed, hostToolsById, tools, evidenceRules } = await assembleFor(landedUrl));
             messages[0] = {
               role: 'system',
               content: withPreference(systemContentFor(composed, pack, landedUrl)),

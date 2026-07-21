@@ -67,6 +67,18 @@ export interface SnapshotElement {
   disabled?: boolean;
 }
 
+export interface SnapshotEvidenceRule {
+  id: string;
+  itemSelector: string;
+  statusSelector: string;
+  statuses: string[];
+}
+
+export interface SnapshotEvidence {
+  count: number;
+  latest: string;
+}
+
 export interface SnapshotReportFrame {
   type: 'snapshot-report';
   sessionId: string;
@@ -75,6 +87,7 @@ export interface SnapshotReportFrame {
   title?: string;
   elements: SnapshotElement[];
   notices?: string[];
+  evidence?: Record<string, SnapshotEvidence>;
 }
 
 export type UpstreamFrame =
@@ -164,6 +177,7 @@ export interface SnapshotRequestFrame {
   type: 'snapshot-request';
   sessionId: string;
   requestId: string;
+  evidenceRules?: SnapshotEvidenceRule[];
 }
 
 export type DownstreamFrame =

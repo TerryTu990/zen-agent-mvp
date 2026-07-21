@@ -4,7 +4,7 @@
  * 五能力与帧闭集不随客户端形态变（U5）；所有帧 JSON 可序列化（U1）。
  */
 import type { JsonObject, JsonValue } from './json.js';
-import type { HttpMethod } from './tool-definition.js';
+import type { HttpMethod, SnapshotEvidenceRule } from './tool-definition.js';
 
 /** 五能力闭集（U5）：任何客户端形态实现同一组能力。 */
 export type ClientCapability =
@@ -87,6 +87,12 @@ export interface SnapshotReportFrame {
   elements: SnapshotElement[];
   /** 页面当前可见的告警/校验/状态提示文本（客户端去重截断）：供 agent 识别表单校验等拦截性提示。 */
   notices?: string[];
+  evidence?: Record<string, SnapshotEvidence>;
+}
+
+export interface SnapshotEvidence {
+  count: number;
+  latest: string;
 }
 
 export type UpstreamFrame =
@@ -195,6 +201,7 @@ export interface SnapshotRequestFrame {
   type: 'snapshot-request';
   sessionId: string;
   requestId: string;
+  evidenceRules?: SnapshotEvidenceRule[];
 }
 
 export type DownstreamFrame =

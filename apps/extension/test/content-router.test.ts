@@ -17,7 +17,7 @@ function makeDeps(overrides: Partial<DownstreamRouterDeps> = {}): {
     snapshot: {
       collect: vi
         .fn()
-        .mockReturnValue({ url: 'http://host/console', title: '控制台', elements: [], notices: [] }),
+        .mockReturnValue({ url: 'http://host/console', title: '控制台', elements: [], notices: [], evidence: {} }),
     },
     executor: {
       execute: vi.fn().mockResolvedValue({
@@ -85,7 +85,7 @@ describe('routeDownstreamFrame 下行帧分发', () => {
   it('snapshot-request → snapshot.collect，快照经 send 回传 snapshot-report（requestId 关联）', () => {
     const { deps, sent } = makeDeps();
     routeDownstreamFrame({ type: 'snapshot-request', sessionId: 's1', requestId: 'r1' }, deps);
-    expect(deps.snapshot.collect).toHaveBeenCalled();
+    expect(deps.snapshot.collect).toHaveBeenCalledWith(undefined);
     expect(sent).toContainEqual({
       kind: 'snapshot-report',
       report: {
@@ -107,6 +107,7 @@ describe('routeDownstreamFrame 下行帧分发', () => {
           title: '控制台',
           elements: [],
           notices: ['请选择分组'],
+          evidence: {},
         }),
       },
     });
@@ -121,6 +122,43 @@ describe('routeDownstreamFrame 下行帧分发', () => {
         title: '控制台',
         elements: [],
         notices: ['请选择分组'],
+      },
+    });
+  });
+
+  it('snapshot-request：把 pack 证据配方交给采集器并回传结构化证据', () => {
+    const rule = {
+      id: 'message-receipts',
+      itemSelector: '[class*="message-content"]',
+      statusSelector: '[class*="read-status-text"]',
+      statuses: ['未读', '已读'],
+    };
+    const { deps, sent } = makeDeps({
+      snapshot: {
+        collect: vi.fn().mockReturnValue({
+          url: 'https://seller.goofish.com/',
+          title: '聊天',
+          elements: [],
+          notices: [],
+          evidence: { 'message-receipts': { count: 3, latest: '未读' } },
+        }),
+      },
+    });
+    routeDownstreamFrame(
+      { type: 'snapshot-request', sessionId: 's1', requestId: 'r3', evidenceRules: [rule] },
+      deps,
+    );
+    expect(deps.snapshot.collect).toHaveBeenCalledWith([rule]);
+    expect(sent).toContainEqual({
+      kind: 'snapshot-report',
+      report: {
+        type: 'snapshot-report',
+        sessionId: 's1',
+        requestId: 'r3',
+        url: 'https://seller.goofish.com/',
+        title: '聊天',
+        elements: [],
+        evidence: { 'message-receipts': { count: 3, latest: '未读' } },
       },
     });
   });

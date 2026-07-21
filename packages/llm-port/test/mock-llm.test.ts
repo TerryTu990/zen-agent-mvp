@@ -116,7 +116,7 @@ describe('mock LLM 确定性规则', () => {
       messages: [
         { role: 'system', content: 'xianyu-fulfillment' },
         { role: 'user', content: '上一回合发送闲鱼测试消息' },
-        { role: 'tool', content: '{"elements":[],"notices":["消息回执数：3；最新：已读"]}' },
+        { role: 'tool', content: '{"elements":[],"evidence":{"message-receipts":{"count":3,"latest":"已读"}}}' },
         { role: 'user', content: '本回合发送闲鱼测试消息' },
         { role: 'tool', content: '{"elements":[],"notices":[]}' },
         {
@@ -125,7 +125,7 @@ describe('mock LLM 确定性规则', () => {
           tool_calls: [{ function: { name: 'xianyu-fulfillment.send-test-message' } }],
         },
         { role: 'tool', content: '{"ok":true}' },
-        { role: 'tool', content: '{"elements":[],"notices":["消息回执数：4；最新：未读"]}' },
+        { role: 'tool', content: '{"elements":[],"evidence":{"message-receipts":{"count":4,"latest":"未读"}}}' },
       ],
     });
     expect(contentOf(payloads).join('')).toContain('结果不明确');

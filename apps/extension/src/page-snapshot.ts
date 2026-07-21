@@ -4,7 +4,7 @@
  * 可见性按声明式属性排除（hidden/aria-hidden/type=hidden）——不依赖布局测量，
  * 保证 jsdom 可测且不因宿主 CSS 花活漏采。
  */
-import type { SnapshotElement } from './frames.js';
+import type { SnapshotElement, SnapshotEvidence, SnapshotEvidenceRule } from './frames.js';
 import { MAX_ELEMENTS, MAX_LABEL_LENGTH, MAX_NOTICES, MAX_NOTICE_LENGTH } from './tuning.js';
 
 const INTERACTIVE_SELECTOR = [
@@ -47,12 +47,6 @@ const NOTICE_SELECTOR = [
   '[class*="invalid" i]',
 ].join(', ');
 
-const MESSAGE_RECEIPT_SELECTOR = [
-  '[class*="read-status" i]',
-  '[class*="send-status" i]',
-  '[class*="message-status" i]',
-].join(', ');
-
 /** 模态层根匹配：显式语义（role=dialog / aria-modal）优先；无命中再兜底 class 含 dialog/modal 的容器。 */
 const MODAL_SELECTOR = '[role="dialog"], [aria-modal="true"]';
 const MODAL_FALLBACK_SELECTOR = '[class*="dialog" i], [class*="modal" i]';
@@ -65,11 +59,13 @@ export interface PageSnapshot {
   elements: SnapshotElement[];
   /** 页面当前可见的告警/校验/状态提示文本（已去重截断）：agent 据此识别表单校验等拦截。 */
   notices: string[];
+  /** pack 配方产出的结构化证据；只含容器数量与状态枚举，不含正文。 */
+  evidence: Record<string, SnapshotEvidence>;
 }
 
 export interface Snapshotter {
   /** 重建 ref 映射并返回快照；旧 ref 全部作废。 */
-  collect(): PageSnapshot;
+  collect(evidenceRules?: SnapshotEvidenceRule[]): PageSnapshot;
   /** 解引用最近一次快照的 ref；未知/已作废返回 null。 */
   resolve(ref: string): Element | null;
 }
@@ -167,13 +163,43 @@ function collectNotices(doc: Document): string[] {
   return notices;
 }
 
-function collectMessageReceiptEvidence(doc: Document): string | null {
-  const receipts = findVisible(doc, MESSAGE_RECEIPT_SELECTOR)
-    .filter((el) => el.childElementCount === 0)
-    .map((el) => el.textContent?.trim().replace(/\s+/g, ' ') ?? '')
-    .filter((text) => /^(未读|已读|发送中|已发送|发送失败|失败)$/.test(text));
-  const latest = receipts.at(-1);
-  return latest === undefined ? null : `消息回执数：${receipts.length}；最新：${latest}`;
+function collectEvidence(
+  doc: Document,
+  rules: SnapshotEvidenceRule[],
+): Record<string, SnapshotEvidence> {
+  const evidence: Record<string, SnapshotEvidence> = {};
+  for (const rule of rules.slice(0, MAX_NOTICES)) {
+    const allowed = new Set(rule.statuses);
+    let items: Element[];
+    try {
+      items = findVisible(doc, rule.itemSelector);
+    } catch {
+      continue;
+    }
+    const itemStatuses: string[] = [];
+    for (const item of items) {
+      let candidates: Element[];
+      try {
+        candidates = [...item.querySelectorAll(rule.statusSelector)];
+      } catch {
+        candidates = [];
+      }
+      const statuses = candidates
+        .filter(
+          (el) =>
+            el.childElementCount === 0 &&
+            !isDeclaredHidden(el) &&
+            !isInlineHidden(el),
+        )
+        .map((el) => el.textContent?.trim().replace(/\s+/g, ' ') ?? '')
+        .filter((status) => allowed.has(status));
+      const latest = statuses.at(-1);
+      if (latest !== undefined) itemStatuses.push(latest);
+    }
+    const latest = itemStatuses.at(-1);
+    if (latest !== undefined) evidence[rule.id] = { count: itemStatuses.length, latest };
+  }
+  return evidence;
 }
 
 function valueOf(el: Element): string | undefined {
@@ -205,7 +231,7 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
   let refs = new Map<string, Element>();
 
   return {
-    collect() {
+    collect(evidenceRules = []) {
       refs = new Map();
       const elements: SnapshotElement[] = [];
       const taken = new Set<Element>();
@@ -247,9 +273,13 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
       };
       walk(doc, '');
       const notices = collectNotices(doc);
-      const receipt = collectMessageReceiptEvidence(doc);
-      if (receipt !== null && notices.length < MAX_NOTICES) notices.push(receipt);
-      return { url: doc.location?.href ?? '', title: doc.title, elements, notices };
+      return {
+        url: doc.location?.href ?? '',
+        title: doc.title,
+        elements,
+        notices,
+        evidence: collectEvidence(doc, evidenceRules),
+      };
     },
     resolve(ref) {
       const el = refs.get(ref);

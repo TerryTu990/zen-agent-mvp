@@ -321,6 +321,9 @@ async function driveTurn(sessionId, token, scenario, bus) {
           url: scenario.url ?? `${HOST_BASE}/${scenario.page}`,
           elements: snapshotFixture.snapshotElements ?? [{ ref: 'za-send', role: 'button', label: '发送' }],
           notices: snapshotFixture.snapshotNotices ?? [],
+          ...(snapshotFixture.snapshotEvidence !== undefined
+            ? { evidence: snapshotFixture.snapshotEvidence }
+            : {}),
         });
       }
       if (frame.type === 'exec-instruction' && !handledExec.has(frame.nonce)) {
@@ -385,16 +388,19 @@ function evaluateOutcome(scenario, outcome) {
   }
   const frames = outcome.frames ?? [];
   const expectedCounts = expect.frameCounts ?? {};
+  const targetCalls = frames.filter(
+    (frame) =>
+      frame.type === 'tool-card' &&
+      frame.status === 'running' &&
+      (expect.targetToolId === undefined || frame.toolId === expect.targetToolId),
+  );
+  const targetCallIds = new Set(targetCalls.map((frame) => frame.toolCallId));
+  const targetInstructions = frames.filter(
+    (frame) => frame.type === 'exec-instruction' && targetCallIds.has(frame.toolCallId),
+  );
   const actualCounts = {
-    targetToolCalls: frames.filter(
-      (frame) =>
-        frame.type === 'tool-card' &&
-        frame.status === 'running' &&
-        (expect.targetToolId === undefined || frame.toolId === expect.targetToolId),
-    ).length,
-    execInstructions: new Set(
-      frames.filter((frame) => frame.type === 'exec-instruction').map((frame) => frame.nonce),
-    ).size,
+    targetToolCalls: targetCalls.length,
+    execInstructions: new Set(targetInstructions.map((frame) => frame.nonce)).size,
     snapshotRequests: new Set(
       frames.filter((frame) => frame.type === 'snapshot-request').map((frame) => frame.requestId),
     ).size,
@@ -403,6 +409,31 @@ function evaluateOutcome(scenario, outcome) {
     if (actualCounts[name] !== expected) {
       reasons.push(`帧计数 ${name} 期望 ${expected}，实际 ${actualCounts[name] ?? '未知'}`);
     }
+  }
+  if (Array.isArray(expect.frameSequence)) {
+    const actualSequence = frames.flatMap((frame) => {
+      if (frame.type === 'snapshot-request') return ['snapshot'];
+      if (frame.type === 'tool-card' && frame.status === 'running' && targetCallIds.has(frame.toolCallId)) {
+        return ['target-tool'];
+      }
+      if (frame.type === 'exec-instruction' && targetCallIds.has(frame.toolCallId)) {
+        return ['target-exec'];
+      }
+      return [];
+    });
+    if (JSON.stringify(actualSequence) !== JSON.stringify(expect.frameSequence)) {
+      reasons.push(
+        `关键帧顺序期望 [${expect.frameSequence.join(' → ')}]，实际 [${actualSequence.join(' → ')}]`,
+      );
+    }
+  }
+  if (typeof expect.evidenceRuleId === 'string') {
+    const missing = frames.filter(
+      (frame) =>
+        frame.type === 'snapshot-request' &&
+        !(frame.evidenceRules ?? []).some((rule) => rule.id === expect.evidenceRuleId),
+    );
+    if (missing.length > 0) reasons.push(`有 ${missing.length} 个快照请求缺证据配方 ${expect.evidenceRuleId}`);
   }
   return { pass: reasons.length === 0, reasons };
 }

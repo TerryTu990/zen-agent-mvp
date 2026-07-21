@@ -43,6 +43,15 @@ export interface DomAdapter {
   kind: 'dom';
   /** URL 路径前缀围栏：快照页路径不在围栏内即 deny，操作面不越出功能页面范围。 */
   pathPrefixes: string[];
+  /** pack 声明的只读结构化证据配方；客户端按消息容器去重并只返回状态枚举，不返回正文。 */
+  snapshotEvidence?: SnapshotEvidenceRule[];
+}
+
+export interface SnapshotEvidenceRule {
+  id: string;
+  itemSelector: string;
+  statusSelector: string;
+  statuses: string[];
 }
 
 interface ToolDefinitionBase {
