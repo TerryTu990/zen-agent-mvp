@@ -266,6 +266,9 @@ export function createLarkBaseCardInventoryPort(
         if (prior.status !== 'reserved') {
           return { ok: true, cardId: prior.cardId, status: prior.status, reused: true };
         }
+        const paused = await productHasUncertainAttempt(productKey);
+        if (paused === null) return { ok: false, error: 'inventory-unavailable' };
+        if (paused) return { ok: false, error: 'inventory-paused' };
         return {
           ok: true,
           cardId: prior.cardId,

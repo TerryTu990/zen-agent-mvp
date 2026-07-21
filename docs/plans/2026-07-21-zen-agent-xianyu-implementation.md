@@ -22,7 +22,7 @@
 - Phase 3A（2026-07-22）：按飞书 `general` user 身份精确查重后创建一张私有 `Zen Agent｜闲鱼卡密库存` Base，字段为计划定义的最小七列；导入 20 条记录并回读确认 1 条 `sent`、19 条 `available`。首条绑定附件中的历史订单号，Base 链接已登记到“Token 中转｜项目导航”，未开启外部分享。
 - Phase 3B（2026-07-22）：新增 ADR-017、`CardInventoryPort` 与 `FulfillmentCoordinatorPort`。`packages/card-inventory` 通过 `lark-cli --profile general --as user` 实现订单复用、available→reserved、reserved→sent/manual；每次重要写入前机械执行 `whoami`，写后按 `card_id` 回读 `status / order_id / note`，底层错误不回显 stdout/stderr。浏览器副作用前先持久化 `delivery-attempted`；该标记或 `manual` 会作为同商品跨重启暂停闩锁，避免点击后、回执前崩溃造成重复发送。`packages/fulfillment` 固定组装附件格式的订单号、兑换码与使用说明，模型及调用方只获得 opaque `intentId`。网关在闲鱼回执结束后同步回填，回填失败把整笔标记失败并停止。
 - Phase 3B 真实验证：运行时连接器按历史订单查到 `card-001` 的 `sent` 状态并完成幂等 settle，没有发送新的闲鱼消息、没有占用新卡、终端未输出兑换码。
-- Phase 3 验证：全仓 dependency lint、build、478 项串行测试与 `git diff --check` 通过；闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件无回归。新增测试覆盖同订单复用、reserved 崩溃恢复、缺货、重复记录、身份失败、预占写失败、终态单向转换、intent 登记失败清理、页面成功/超时后的 sent/manual 回填，以及闲鱼成功但飞书回填失败时整体失败且不生成第二次发送。
+- Phase 3 验证：全仓 dependency lint、build、483 项串行测试与 `git diff --check` 通过；闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件无回归。新增测试覆盖同订单复用、同商品跨订单持久化暂停、reserved 崩溃恢复、三类写后回读不一致、缺货、重复记录、身份失败、预占写失败、终态单向转换、intent 登记失败清理、页面成功/超时后的 sent/manual 回填、浏览器指令前 attempt 闩锁，以及 attempt 写失败或闲鱼成功但飞书回填失败时零新增发送并停止下一单。
 
 ## 一、目标、边界与成功标准
 

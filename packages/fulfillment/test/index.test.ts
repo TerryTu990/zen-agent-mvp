@@ -213,4 +213,38 @@ describe('卡密履约编排', () => {
       error: 'outcome-conflict',
     });
   });
+
+  it('sent 回填失败后重建 coordinator，持久 attempt 仍阻止下一订单', async () => {
+    let attempted = false;
+    const inventory: CardInventoryPort = {
+      reserve: vi.fn(async ({ orderId }) => attempted && orderId !== 'order-a'
+        ? { ok: false as const, error: 'inventory-paused' as const }
+        : {
+            ok: true as const,
+            cardId: 'card-a',
+            cardSecret: 'fixture-value-not-real',
+            status: 'reserved' as const,
+            reused: orderId === 'order-a',
+          }),
+      beginDelivery: vi.fn(async () => {
+        attempted = true;
+        return { ok: true as const };
+      }),
+      settle: vi.fn(async () => ({ ok: false as const, error: 'inventory-write-failed' as const })),
+    };
+    const beforeRestart = coordinator(inventory);
+    await beforeRestart.port.prepare(input);
+    await beforeRestart.port.beginDelivery('intent-a');
+    await expect(beforeRestart.port.settle({ intentId: 'intent-a', outcome: 'sent' })).resolves.toEqual({
+      ok: false,
+      error: 'inventory-write-failed',
+    });
+
+    const afterRestart = coordinator(inventory, vi.fn(async () => ({ intentId: 'intent-after-restart' })));
+    await expect(afterRestart.port.prepare({ ...input, orderId: 'order-after-restart' })).resolves.toEqual({
+      ok: false,
+      error: 'inventory-paused',
+    });
+    expect(afterRestart.prepareFulfillmentIntent).not.toHaveBeenCalled();
+  });
 });

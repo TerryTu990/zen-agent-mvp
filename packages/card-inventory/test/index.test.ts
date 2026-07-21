@@ -51,6 +51,8 @@ describe('飞书卡密库存端口', () => {
           values: ['card-1', 'product-a', 'fixture-value-not-real', ['reserved'], 'order-1'],
         },
       ]),
+      listPayload([]),
+      listPayload([]),
     ]);
     await expect(port(runner).reserve({ productKey: 'product-a', orderId: 'order-1' })).resolves.toEqual({
       ok: true,
@@ -59,7 +61,7 @@ describe('飞书卡密库存端口', () => {
       status: 'reserved',
       reused: true,
     });
-    expect(runner.calls).toHaveLength(1);
+    expect(runner.calls).toHaveLength(3);
   });
 
   it('新订单先查重，再选择 available，whoami 通过后写 reserved', async () => {
@@ -194,6 +196,25 @@ describe('飞书卡密库存端口', () => {
     await expect(
       port(queuedRunner([attempted])).reserve({ productKey: 'product-a', orderId: 'order-7' }),
     ).resolves.toEqual({ ok: false, error: 'inventory-paused' });
+
+    const resumable = listPayload([
+      { id: 'r10', values: ['c10', 'product-a', 'fixture-j', ['reserved'], 'order-10', ''] },
+    ]);
+    const otherManual = listPayload([
+      { id: 'r11', values: ['c11', 'product-a', 'fixture-k', ['manual'], 'order-11', 'timeout'] },
+    ]);
+    await expect(port(queuedRunner([resumable, otherManual])).reserve({
+      productKey: 'product-a',
+      orderId: 'order-10',
+    })).resolves.toEqual({ ok: false, error: 'inventory-paused' });
+
+    const otherAttempted = listPayload([
+      { id: 'r12', values: ['c12', 'product-a', 'fixture-l', ['reserved'], 'order-12', 'delivery-attempted'] },
+    ]);
+    await expect(port(queuedRunner([resumable, listPayload([]), otherAttempted])).reserve({
+      productKey: 'product-a',
+      orderId: 'order-10',
+    })).resolves.toEqual({ ok: false, error: 'inventory-paused' });
   });
 
   it('写命令成功但回读字段不符时 fail-closed；manual 或未决 attempt 会暂停同商品下一单', async () => {
@@ -217,6 +238,34 @@ describe('飞书卡密库存端口', () => {
     await expect(port(queuedRunner([listPayload([]), manual])).reserve({
       productKey: 'product-a', orderId: 'order-9',
     })).resolves.toEqual({ ok: false, error: 'inventory-paused' });
+  });
+
+  it('beginDelivery 与 settle 的写后回读不一致也必须 fail-closed', async () => {
+    const before = listPayload([
+      { id: 'r13', values: ['c13', 'product-a', 'fixture-m', ['reserved'], 'order-13', ''] },
+    ]);
+    await expect(port(queuedRunner([
+      before,
+      { available: true, identity: 'user' },
+      { ok: true },
+      before,
+    ])).beginDelivery({ cardId: 'c13', orderId: 'order-13' })).resolves.toEqual({
+      ok: false,
+      error: 'inventory-write-failed',
+    });
+
+    const attempted = listPayload([
+      { id: 'r14', values: ['c14', 'product-a', 'fixture-n', ['reserved'], 'order-14', 'delivery-attempted'] },
+    ]);
+    await expect(port(queuedRunner([
+      attempted,
+      { available: true, identity: 'user' },
+      { ok: true },
+      attempted,
+    ])).settle({ cardId: 'c14', orderId: 'order-14', status: 'sent' })).resolves.toEqual({
+      ok: false,
+      error: 'inventory-write-failed',
+    });
   });
 
   it('CLI/响应异常只返回闭集错误，不回显底层内容', async () => {
