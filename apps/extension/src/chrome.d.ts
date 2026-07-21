@@ -9,6 +9,9 @@ declare namespace chrome {
     const local: StorageArea;
     /** 跨 SW 重启存活、随浏览器关闭清除；会话存根的正确层（adr-012）。 */
     const session: StorageArea;
+    const onChanged: {
+      addListener(callback: (changes: Record<string, unknown>, areaName: string) => void): void;
+    };
   }
 
   namespace tabs {
@@ -91,5 +94,14 @@ declare namespace chrome {
         ) => void,
       ): void;
     };
+    const onStartup: { addListener(callback: () => void): void };
+    const onInstalled: { addListener(callback: () => void): void };
+  }
+
+  namespace alarms {
+    interface Alarm { name: string }
+    function create(name: string, alarmInfo: { periodInMinutes: number }): void;
+    function clear(name: string): Promise<boolean>;
+    const onAlarm: { addListener(callback: (alarm: Alarm) => void): void };
   }
 }

@@ -60,12 +60,19 @@ import {
   executionPreferenceInstruction,
   selectToolsForPreference,
 } from './execution-preference.js';
+import {
+  deriveXianyuFulfillmentInput,
+  PREPARE_XIANYU_FULFILLMENT_TOOL_NAME,
+  PREPARE_XIANYU_FULFILLMENT_TOOL_SPEC,
+} from './xianyu-fulfillment.js';
 
 export interface GatewayDeps {
   assembly: AssemblyPort;
   llm: LlmPort;
   toolgate: ToolGatePort;
   fulfillment?: FulfillmentCoordinatorPort;
+  /** 闲鱼 itemId → 库存 productKey 的服务端闭集映射；客户端/模型不得覆盖。 */
+  fulfillmentProductKeys: Record<string, string>;
   audit: AuditPort;
   verifier: TokenVerifier;
   store: SessionStore;
@@ -821,12 +828,20 @@ export function createGateway(deps: GatewayDeps): Gateway {
         composed.packId !== null
           ? [RECORD_APPLICATION_TOOL_SPEC, LIST_APPLICATIONS_TOOL_SPEC]
           : [];
+      const fulfillmentPrepareTools: LlmToolSpec[] =
+        featureId === 'xianyu-fulfillment' &&
+        deps.fulfillment !== undefined &&
+        Object.keys(deps.fulfillmentProductKeys).length > 0 &&
+        selectedHostTools.some((tool) => tool.authorization?.kind === 'bounded-fulfillment')
+          ? [PREPARE_XIANYU_FULFILLMENT_TOOL_SPEC]
+          : [];
       const tools: LlmToolSpec[] = [
         ...guideTools,
         ...snapshotTools,
         ...docTools,
         ...navTools,
         ...appTools,
+        ...fulfillmentPrepareTools,
         ...selectedHostTools.map(toLlmToolSpec),
       ];
       return { pack, featureId, composed, hostToolsById, tools, evidenceRules };
@@ -967,6 +982,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           url: report.url,
           ...(report.pageInstanceId !== undefined ? { pageInstanceId: report.pageInstanceId } : {}),
           elements: safeElements,
+          ...(report.evidence !== undefined ? { evidence: report.evidence } : {}),
         };
         const snapshotEcho: LlmMessage = {
           role: 'assistant',
@@ -986,6 +1002,64 @@ export function createGateway(deps: GatewayDeps): Gateway {
         };
         messages.push(snapshotEcho, snapshotObs);
         turnMessages.push(snapshotEcho, snapshotObs);
+        continue;
+      }
+
+      if (call.name === PREPARE_XIANYU_FULFILLMENT_TOOL_NAME) {
+        broadcast(sessionId, {
+          type: 'tool-card',
+          sessionId,
+          toolCallId: call.toolCallId,
+          toolId: PREPARE_XIANYU_FULFILLMENT_TOOL_NAME,
+          status: 'running',
+          summary: PREPARE_XIANYU_FULFILLMENT_TOOL_NAME,
+          mode: 'server',
+        });
+        const context = runtimeOf(sessionId).domContext;
+        const boundedTools = [...hostToolsById.values()].filter(
+          (tool) => tool.authorization?.kind === 'bounded-fulfillment',
+        );
+        let prepared: Awaited<ReturnType<NonNullable<typeof deps.fulfillment>['prepare']>> | null = null;
+        if (deps.fulfillment !== undefined) {
+          try {
+            const derived = deriveXianyuFulfillmentInput({
+              claims,
+              context,
+              boundedTools,
+              evidenceRules,
+              productKeys: deps.fulfillmentProductKeys,
+              params: call.params,
+              now: Date.now(),
+            });
+            if (derived !== null) prepared = await deps.fulfillment.prepare(derived);
+          } catch {
+            prepared = null;
+          }
+        }
+        const prepareEcho: LlmMessage = {
+          role: 'assistant',
+          content: roundText,
+          toolCalls: [{ id: call.toolCallId, name: call.name, params: {} }],
+        };
+        const prepareObs: LlmMessage = {
+          role: 'tool',
+          toolCallId: call.toolCallId,
+          content: JSON.stringify(
+            prepared?.ok === true
+              ? { intentId: prepared.intentId }
+              : { error: prepared?.error ?? 'fulfillment-prepare-denied' },
+          ),
+        };
+        broadcast(sessionId, {
+          type: 'tool-card',
+          sessionId,
+          toolCallId: call.toolCallId,
+          toolId: PREPARE_XIANYU_FULFILLMENT_TOOL_NAME,
+          status: prepared?.ok === true ? 'succeeded' : 'failed',
+          mode: 'server',
+        });
+        messages.push(prepareEcho, prepareObs);
+        turnMessages.push(prepareEcho, prepareObs);
         continue;
       }
 

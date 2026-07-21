@@ -30,7 +30,7 @@
   "side_panel": {
     "default_path": "sidepanel.html"
   },
-  "permissions": ["storage", "activeTab", "sidePanel", "tabGroups", "tabs"],
+  "permissions": ["storage", "activeTab", "sidePanel", "tabGroups", "tabs", "alarms"],
   "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {

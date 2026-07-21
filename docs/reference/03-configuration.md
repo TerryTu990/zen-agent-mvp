@@ -190,6 +190,7 @@
 | `ZA_FEISHU_CARD_BASE_TOKEN` | 无 | 飞书卡密库存 Base token；与表 ID、使用说明 URL 三项同时配置才启用，不是应用凭证 |
 | `ZA_FEISHU_CARD_TABLE_ID` | 无 | 飞书卡密库存表 ID |
 | `ZA_FULFILLMENT_GUIDE_URL` | 无 | 固定写入履约通知的 HTTPS 使用说明链接，不接受模型或客户端覆盖 |
+| `ZA_FULFILLMENT_PRODUCT_KEYS_JSON` | `{}` | 闲鱼 `itemId` 到飞书 `product_key` 的服务端 JSON 对象；为空时不向模型注入零参数真实履约准备工具 |
 | `ZA_FEISHU_PROFILE` | `general` | `lark-cli` profile；运行时 token 获取/刷新复用飞书项目现有边界 |
 | `ZA_LARK_CLI_PATH` | `lark-cli` | 可选 CLI 可执行文件路径（容器/sidecar 部署时显式设置） |
 

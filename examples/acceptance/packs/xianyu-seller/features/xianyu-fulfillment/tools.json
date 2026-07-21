@@ -83,7 +83,18 @@
     "execution": "client",
     "riskTier": "hitl",
     "hitlMode": "every-call",
-    "adapter": { "kind": "dom", "pathPrefixes": ["/"] },
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/"],
+      "snapshotEvidence": [
+        {
+          "id": "message-receipts",
+          "itemSelector": "[class*=\"message-content\"]",
+          "statusSelector": "[class*=\"read-status-text\"]",
+          "statuses": ["未读", "已读"]
+        }
+      ]
+    },
     "resultSchema": {
       "type": "object",
       "required": ["reads", "completedSteps"],
@@ -110,7 +121,18 @@
     "riskTier": "hitl",
     "hitlMode": "every-call",
     "authorization": { "kind": "bounded-fulfillment", "intentIdParam": "intentId" },
-    "adapter": { "kind": "dom", "pathPrefixes": ["/"] },
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/"],
+      "snapshotEvidence": [
+        {
+          "id": "message-receipts",
+          "itemSelector": "[class*=\"message-content\"]",
+          "statusSelector": "[class*=\"read-status-text\"]",
+          "statuses": ["未读", "已读"]
+        }
+      ]
+    },
     "resultSchema": {
       "type": "object",
       "required": ["reads", "completedSteps"],

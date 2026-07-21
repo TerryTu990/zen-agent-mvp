@@ -2,7 +2,7 @@
  * CLI 入口：env → ServerOptions → startServer。
  * ZA_LLM_BASE_URL / ZA_LLM_API_KEY / ZA_LLM_MODEL 由 llm-port 在调用时读取，此处只做启动期提示。
  */
-import { parseGenericAllowlist, startServer } from './index.js';
+import { parseFulfillmentProductKeys, parseGenericAllowlist, startServer } from './index.js';
 import type { BoundedFulfillmentPolicy } from '@zen-agent/toolgate';
 
 function requireEnv(name: string): string {
@@ -73,6 +73,13 @@ try {
   console.error(`ZA_FULFILLMENT_POLICIES_JSON 非法：${cause instanceof Error ? cause.message : String(cause)}，拒绝启动`);
   process.exit(1);
 }
+let fulfillmentProductKeys: Record<string, string> = {};
+try {
+  fulfillmentProductKeys = parseFulfillmentProductKeys(process.env['ZA_FULFILLMENT_PRODUCT_KEYS_JSON']);
+} catch (cause) {
+  console.error(`${cause instanceof Error ? cause.message : String(cause)}，拒绝启动`);
+  process.exit(1);
+}
 const cardBaseToken = process.env['ZA_FEISHU_CARD_BASE_TOKEN'];
 const cardTableId = process.env['ZA_FEISHU_CARD_TABLE_ID'];
 const cardGuideUrl = process.env['ZA_FULFILLMENT_GUIDE_URL'];
@@ -107,6 +114,7 @@ startServer({
   applicationsDir: process.env['ZA_APPLICATIONS_DIR'] ?? '.za/applications',
   genericAllowlist,
   fulfillmentPolicies,
+  fulfillmentProductKeys,
   ...(cardBaseToken && cardTableId && cardGuideUrl
     ? {
         cardInventory: {

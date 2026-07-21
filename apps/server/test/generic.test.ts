@@ -10,7 +10,12 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SignJWT } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { parseGenericAllowlist, startServer, type RunningServer } from '../src/index.js';
+import {
+  parseFulfillmentProductKeys,
+  parseGenericAllowlist,
+  startServer,
+  type RunningServer,
+} from '../src/index.js';
 import { canonicalizeOrigin } from '../src/gateway.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
@@ -27,6 +32,16 @@ const GENERIC_ORIGIN = 'http://127.0.0.1:4173';
 const GENERIC_URL = `${GENERIC_ORIGIN}/order-list.html`;
 const OUTSIDE_URL = 'https://outside.example/page';
 const TOOL_BROWSE = 'browse.page-operate';
+
+describe('parseFulfillmentProductKeys（服务端商品闭集）', () => {
+  it('空值关闭工具；合法对象规范化值；数组、空键值和非字符串 fail-fast', () => {
+    expect(parseFulfillmentProductKeys(undefined)).toEqual({});
+    expect(parseFulfillmentProductKeys('{"item-a":" product-a "}')).toEqual({ 'item-a': 'product-a' });
+    for (const raw of ['[]', '{"":"p"}', '{" item":"p"}', '{"item":""}', '{"item":1}']) {
+      expect(() => parseFulfillmentProductKeys(raw)).toThrow(/ZA_FULFILLMENT_PRODUCT_KEYS_JSON/);
+    }
+  });
+});
 
 interface MockLlmHandle {
   port: number;

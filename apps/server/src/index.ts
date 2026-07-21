@@ -88,6 +88,26 @@ export interface ServerOptions {
   cardInventoryPort?: CardInventoryPort;
   /** cardInventoryPort 模式下的固定使用说明 URL。 */
   cardInventoryGuideUrl?: string;
+  /** 闲鱼 itemId → 飞书 product_key；仅服务端配置，用于零参数可信准备工具。 */
+  fulfillmentProductKeys?: Record<string, string>;
+}
+
+export function parseFulfillmentProductKeys(raw: string | undefined): Record<string, string> {
+  if (raw === undefined || raw.trim() === '') return {};
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('ZA_FULFILLMENT_PRODUCT_KEYS_JSON 必须是 JSON 对象');
+  }
+  const result: Record<string, string> = {};
+  for (const [productId, productKey] of Object.entries(parsed)) {
+    const normalizedId = productId.trim();
+    const normalizedKey = typeof productKey === 'string' ? productKey.trim() : '';
+    if (normalizedId === '' || normalizedKey === '' || normalizedId !== productId) {
+      throw new Error('ZA_FULFILLMENT_PRODUCT_KEYS_JSON 的键和值必须是非空规范字符串');
+    }
+    result[normalizedId] = normalizedKey;
+  }
+  return result;
 }
 
 /** ZA_GENERIC_ALLOWLIST 解析：逗号分隔 origin 精确值，空/未设 → []（generic 永不激活）；非法条目抛错（启动期 fail-fast）。www/裸域互认在比对点归一（canonicalizeOrigin），此处只验值形。 */
@@ -206,6 +226,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     llm: ports.llm,
     toolgate: ports.toolgate,
     ...(ports.fulfillment !== undefined ? { fulfillment: ports.fulfillment } : {}),
+    fulfillmentProductKeys: options.fulfillmentProductKeys ?? {},
     audit: ports.audit,
     verifier: createTokenVerifier({
       jwtSecret: options.jwtSecret,

@@ -923,6 +923,129 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
     }
   });
 
+  it('产品可达自动履约：零参数准备工具从当前快照机械派生并完成发送；未映射商品 fail-closed', async () => {
+    const pageUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-auto&orderId=order-auto&peerUserId=buyer-auto';
+    const reserve = vi.fn(async () => ({
+      ok: true as const,
+      cardId: 'card-auto',
+      cardSecret: 'fixture-value-not-real',
+      status: 'reserved' as const,
+      reused: false,
+    }));
+    const beginDelivery = vi.fn(async () => ({ ok: true as const }));
+    const settle = vi.fn(async () => ({ ok: true as const }));
+    const autoServer = await startServer(serverOptions({
+      snapshotRoot: acceptanceRoot,
+      cardInventoryPort: { reserve, beginDelivery, settle },
+      cardInventoryGuideUrl: 'https://example.test/guide',
+      fulfillmentProductKeys: { 'item-auto': 'product-auto' },
+      fulfillmentPolicies: [
+        {
+          id: 'auto-policy',
+          accountId: 'host-u1',
+          toolId: 'xianyu-fulfillment.execute-intent',
+          siteOrigin: 'https://seller.goofish.com',
+          productIds: ['item-auto'],
+          validUntil: Date.now() + 120_000,
+          maxCodesPerOrder: 1,
+          dailyOrderLimit: 5,
+          dayBoundaryOffsetMinutes: 480,
+        },
+      ],
+    }));
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${autoServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: pageUrl });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '执行闲鱼自动履约扫描。每轮最多处理一笔。',
+        executionPreference: 'dom-only',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      const before = framesByType(sse.frames, 'snapshot-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(before['requestId']),
+        url: pageUrl,
+        pageInstanceId: 'page-auto',
+        elements: [
+          { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send', role: 'button', label: '发 送' },
+        ],
+        evidence: { 'message-receipts': { count: 3, latest: '已读' } },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
+      expect(reserve).toHaveBeenCalledWith({ productKey: 'product-auto', orderId: 'order-auto' });
+      expect(beginDelivery).toHaveBeenCalledWith({ cardId: 'card-auto', orderId: 'order-auto' });
+      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
+      const instruction = framesByType(sse.frames, 'exec-instruction')[0]!;
+      expect(JSON.stringify(instruction)).toContain('fixture-value-not-real');
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instruction['nonce']),
+        ok: true,
+        body: { reads: {}, completedSteps: 2, url: pageUrl },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 2);
+      const receipt = framesByType(sse.frames, 'snapshot-request')[1]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(receipt['requestId']),
+        url: pageUrl,
+        pageInstanceId: 'page-auto',
+        elements: [],
+        evidence: { 'message-receipts': { count: 4, latest: '未读' } },
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-fulfillment.execute-intent') === 'succeeded');
+      expect(settle).toHaveBeenCalledWith({ cardId: 'card-auto', orderId: 'order-auto', status: 'sent' });
+      expect(textOf(sse.frames)).not.toContain('fixture-value-not-real');
+      expect(JSON.stringify(auditEventsFor(sessionId))).not.toContain('fixture-value-not-real');
+
+      const deniedUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-unknown&orderId=order-unknown';
+      const deniedSessionId = await createSession(token);
+      const deniedSse = await openSse(token, deniedSessionId);
+      try {
+        await postFrame(token, deniedSessionId, {
+          type: 'context-report', sessionId: deniedSessionId, url: deniedUrl,
+        });
+        await postFrame(token, deniedSessionId, {
+          type: 'user-message', sessionId: deniedSessionId, text: '执行闲鱼自动履约扫描。',
+        });
+        await deniedSse.waitFor(() => framesByType(deniedSse.frames, 'snapshot-request').length === 1);
+        const deniedSnapshot = framesByType(deniedSse.frames, 'snapshot-request')[0]!;
+        await postFrame(token, deniedSessionId, {
+          type: 'snapshot-report',
+          sessionId: deniedSessionId,
+          requestId: String(deniedSnapshot['requestId']),
+          url: deniedUrl,
+          pageInstanceId: 'page-denied',
+          elements: [
+            { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+            { ref: 'za-send', role: 'button', label: '发 送' },
+          ],
+          evidence: { 'message-receipts': { count: 1, latest: '已读' } },
+        });
+        await deniedSse.waitFor(() => textOf(deniedSse.frames).includes('MOCK-OBS-DEFAULT'));
+        expect(framesByType(deniedSse.frames, 'exec-instruction')).toHaveLength(0);
+        expect(reserve).toHaveBeenCalledTimes(1);
+      } finally {
+        deniedSse.close();
+      }
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await autoServer.close();
+    }
+  });
+
   it('闲鱼回执成功但库存 sent 回填失败：整体标记失败并停止，不生成第二次发送', async () => {
     const pageUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-backfill&orderId=order-backfill&peerUserId=buyer-backfill';
     const inventory: CardInventoryPort = {

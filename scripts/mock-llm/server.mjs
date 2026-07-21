@@ -28,6 +28,7 @@ const TOOL_BROWSE = 'browse.page-operate';
 const TOOL_XIANYU_ORDERS = 'xianyu-orders.page-operate';
 const TOOL_XIANYU_SEND = 'xianyu-fulfillment.send-test-message';
 const TOOL_XIANYU_INTENT = 'xianyu-fulfillment.execute-intent';
+const TOOL_XIANYU_PREPARE = 'prepare_xianyu_fulfillment';
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {
@@ -130,6 +131,21 @@ function executeXianyuIntentCall(userText) {
     id: 'call_xianyu_intent',
     name: TOOL_XIANYU_INTENT,
     arguments: JSON.stringify({ intentId: match?.[1] ?? 'missing-intent' }),
+  };
+}
+
+function executePreparedXianyuIntentCall(obs) {
+  let intentId = 'missing-intent';
+  try {
+    const parsed = JSON.parse(obs);
+    if (typeof parsed.intentId === 'string') intentId = parsed.intentId;
+  } catch {
+    // 保持闭集占位，让服务端 fail-closed。
+  }
+  return {
+    id: 'call_xianyu_intent',
+    name: TOOL_XIANYU_INTENT,
+    arguments: JSON.stringify({ intentId }),
   };
 }
 
@@ -490,6 +506,9 @@ function decide(sys, u, body) {
   const drill = driveDrill(u, body);
   if (drill !== null) return drill;
   const obs = lastToolObs(body);
+  if (obs === null && u.includes('自动履约扫描') && hasTool(body, TOOL_XIANYU_PREPARE)) {
+    return { toolCall: snapshotCall() };
+  }
   if (obs === null && u.includes('履约意图') && hasTool(body, TOOL_XIANYU_INTENT)) {
     return { toolCall: snapshotCall() };
   }
@@ -500,6 +519,10 @@ function decide(sys, u, body) {
         return { text: '页面新回执已确认履约消息送达。' };
       }
       return { text: '页面回执未明确增加或等待超时，履约状态已转人工且不会自动重发。' };
+    }
+    const xianyuPrepareCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_PREPARE);
+    if (xianyuPrepareCount > 0 && obs.includes('"intentId"')) {
+      return { toolCall: executePreparedXianyuIntentCall(obs) };
     }
     const xianyuSendCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_SEND);
     if (xianyuSendCount > 0 && !obs.includes('"elements"')) {
@@ -537,6 +560,19 @@ function decide(sys, u, body) {
     // 126 发送邮件快照观察轮：取发送按钮 ref，走 send-email（每次单独确认）。
     if (obs.includes('"elements"') && hasTool(body, TOOL_SEND_EMAIL)) {
       return { toolCall: sendEmailCall(obs) };
+    }
+    if (
+      obs.includes('"elements"') &&
+      u.includes('自动履约扫描') &&
+      hasTool(body, TOOL_XIANYU_PREPARE)
+    ) {
+      return {
+        toolCall: {
+          id: 'call_xianyu_prepare',
+          name: TOOL_XIANYU_PREPARE,
+          arguments: JSON.stringify({}),
+        },
+      };
     }
     if (obs.includes('"elements"') && hasTool(body, TOOL_XIANYU_SEND)) {
       const notice = firstBlockingNotice(obs);

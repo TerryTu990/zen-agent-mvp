@@ -25,6 +25,14 @@ import {
 import { reducePanelHistory, removeSettledHitl } from './panel-history.js';
 import { verifyExecInstruction } from './exec-verification.js';
 import { normalizeTrustedServerBaseUrl } from './server-url.js';
+import {
+  isXianyuAutoScanWorkPage,
+  normalizeAutoScanMinutes,
+  shouldPauseXianyuAutoScan,
+  XIANYU_AUTO_SCAN_ALARM,
+  XIANYU_AUTO_SCAN_ENABLED_KEY,
+  XIANYU_AUTO_SCAN_MINUTES_KEY,
+} from './xianyu-auto-scan.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
 // 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
@@ -124,6 +132,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   let hostUserId: string | null = null;
   // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
   let expectedActiveTabId: number | null = null;
+  let autoScanActiveUntil = 0;
 
   const postContent = (target: chrome.runtime.Port, message: BackgroundToContentMessage): void => {
     try {
@@ -153,6 +162,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     postToPanels(event);
   };
   const postFrame = (route: FrameRoute, frame: DownstreamFrame): void => {
+    if (shouldPauseXianyuAutoScan(autoScanActiveUntil, Date.now(), frame)) {
+      autoScanActiveUntil = 0;
+      void chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
+      postStatus('闲鱼自动履约已因异常暂停；核对页面、库存与策略后可在设置页重新启用。');
+    }
     if (route === 'panel') {
       if (frame.type === 'text-delta' || frame.type === 'tool-card' || frame.type === 'hitl-request') {
         emitUi({ kind: 'frame', frame });
@@ -511,6 +525,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         return;
       }
       if (message.kind === 'stop-operation') {
+        autoScanActiveUntil = 0;
+        void chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
+        postStatus('已停止当前操作并关闭闲鱼自动履约扫描。');
         for (const member of contentMembers.targets('active-page')) {
           postContent(member, { kind: 'stop-operation' });
         }
@@ -525,7 +542,17 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     port.onDisconnect.addListener(() => detachPanel(port));
   }
 
-  return { attachContent, attachPanel, close };
+  function triggerAutoScan(): void {
+    autoScanActiveUntil = Date.now() + 120_000;
+    postStatus('闲鱼自动履约扫描已触发；本轮最多处理一笔。');
+    pipeline = pipeline.then(() => forward({
+      kind: 'user-message',
+      text: '执行闲鱼自动履约扫描。每轮最多处理一笔；任一页面、订单、库存或回执状态不确定时立即暂停，不得重试发送。',
+      executionPreference: 'dom-only',
+    }));
+  }
+
+  return { attachContent, attachPanel, triggerAutoScan, close };
 }
 
 type GroupBridge = ReturnType<typeof createGroupBridge>;
@@ -657,6 +684,54 @@ chrome.runtime.onMessage.addListener((raw, sender) => {
 
 chrome.action.onClicked.addListener((tab) => {
   void handleIconClick(tab);
+});
+
+async function syncXianyuAutoScanAlarm(): Promise<void> {
+  const settings = await chrome.storage.local.get([
+    XIANYU_AUTO_SCAN_ENABLED_KEY,
+    XIANYU_AUTO_SCAN_MINUTES_KEY,
+  ]);
+  await chrome.alarms.clear(XIANYU_AUTO_SCAN_ALARM);
+  if (settings[XIANYU_AUTO_SCAN_ENABLED_KEY] !== true) return;
+  const periodInMinutes = normalizeAutoScanMinutes(settings[XIANYU_AUTO_SCAN_MINUTES_KEY]);
+  chrome.alarms.create(XIANYU_AUTO_SCAN_ALARM, { periodInMinutes });
+}
+
+async function triggerXianyuAutoScan(): Promise<void> {
+  const settings = await chrome.storage.local.get(XIANYU_AUTO_SCAN_ENABLED_KEY);
+  if (settings[XIANYU_AUTO_SCAN_ENABLED_KEY] !== true) return;
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    const groupId = tab.groupId;
+    if (
+      groupId === undefined ||
+      groupId === TAB_GROUP_ID_NONE ||
+      !isXianyuAutoScanWorkPage(tab.url) ||
+      !(await isGroupMapped(groupId))
+    ) {
+      continue;
+    }
+    const bridge = groups.get(groupId);
+    if (bridge === undefined) continue;
+    bridge.triggerAutoScan();
+    return;
+  }
+}
+
+void syncXianyuAutoScanAlarm();
+chrome.runtime.onStartup.addListener(() => void syncXianyuAutoScanAlarm());
+chrome.runtime.onInstalled.addListener(() => void syncXianyuAutoScanAlarm());
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (
+    areaName === 'local' &&
+    (changes[XIANYU_AUTO_SCAN_ENABLED_KEY] !== undefined ||
+      changes[XIANYU_AUTO_SCAN_MINUTES_KEY] !== undefined)
+  ) {
+    void syncXianyuAutoScanAlarm();
+  }
+});
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === XIANYU_AUTO_SCAN_ALARM) void triggerXianyuAutoScan();
 });
 
 // 拖 tab 入某 zen 会话组（groupId 变为已映射组）→ 通知该页激活并接入同一会话。

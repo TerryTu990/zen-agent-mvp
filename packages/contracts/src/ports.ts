@@ -153,6 +153,8 @@ export interface DomGateContext {
   pageInstanceId?: string;
   /** 最近快照元素的最小语义，用于有界履约固定校验输入框与发送按钮。 */
   elements?: SnapshotElement[];
+  /** 最近快照按 pack 配方生成的结构化证据；服务端可信准备器只消费闭集统计，不读取消息正文。 */
+  evidence?: Record<string, SnapshotEvidence>;
 }
 
 export interface PrepareFulfillmentIntentInput {

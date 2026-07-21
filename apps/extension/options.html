@@ -11,6 +11,8 @@
     label { display: block; font-weight: 600; font-size: 13px; margin: 14px 0 6px; }
     .hint { font-weight: 400; color: #8a867d; font-size: 12px; margin-left: 6px; }
     input, textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d8d4cb; border-radius: 8px; font: inherit; font-size: 13px; }
+    input[type="checkbox"] { width: auto; }
+    .check { display: flex; align-items: center; gap: 8px; font-weight: 600; }
     textarea { height: 88px; resize: vertical; font-family: ui-monospace, monospace; word-break: break-all; }
     .row { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
     button { padding: 8px 18px; border: none; border-radius: 8px; font: inherit; cursor: pointer; background: #1c1b18; color: #faf9f6; }
@@ -26,6 +28,10 @@
     <textarea id="token" placeholder="粘贴管理员发给你的令牌（eyJ 开头的一长串）"></textarea>
     <label>服务端地址<span class="hint">一般无需修改</span></label>
     <input id="baseUrl" placeholder="留空使用默认" />
+    <label class="check"><input id="xianyuAutoScan" type="checkbox" />启用闲鱼自动履约扫描</label>
+    <p class="sub">默认关闭。只唤醒已打开且已加入 zen 会话组的闲鱼订单/聊天页；不会自动新建页面。任一不确定状态会暂停。</p>
+    <label>扫描周期（分钟）<span class="hint">1–60；建议 5 分钟</span></label>
+    <input id="xianyuAutoScanMinutes" type="number" min="1" max="60" step="1" value="5" />
     <div class="row">
       <button id="save">保存</button>
       <span id="status"></span>

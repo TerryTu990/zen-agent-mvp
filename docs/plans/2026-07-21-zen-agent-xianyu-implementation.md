@@ -1,6 +1,6 @@
 # Zen Agent Chrome 形态与闲鱼站点能力实施方案
 
-> 状态：执行中（2026-07-22，分支 `codex/zen-agent-xianyu-plan`）；Phase 1、Phase 2A/2B/2C/2D 已完成并通过六轮独立复审；Phase 3A/3B 已实现、验证完成并等待独立复审，订单发货状态更新与周期扫描激活等待一笔低价值待发货测试单。
+> 状态：执行中（2026-07-22，分支 `codex/zen-agent-xianyu-plan`）；Phase 1、Phase 2A/2B/2C/2D、Phase 3A/3B 已完成并通过独立复审；Phase 3C 已实现并完成夹具 E2E，等待独立复审。订单发货状态更新与真实周期扫描激活仍等待一笔低价值待发货测试单。
 > 本文把产品讨论收敛为可逐批实施、验证和回滚的开发方案；产品主体始终是通用 **Zen Agent**，闲鱼是首个生产级站点能力包，不建立“闲鱼专用助手”分叉。
 > 各阶段只有通过本阶段验证门后才能进入下一阶段。
 
@@ -22,7 +22,8 @@
 - Phase 3A（2026-07-22）：按飞书 `general` user 身份精确查重后创建一张私有 `Zen Agent｜闲鱼卡密库存` Base，字段为计划定义的最小七列；导入 20 条记录并回读确认 1 条 `sent`、19 条 `available`。首条绑定附件中的历史订单号，Base 链接已登记到“Token 中转｜项目导航”，未开启外部分享。
 - Phase 3B（2026-07-22）：新增 ADR-017、`CardInventoryPort` 与 `FulfillmentCoordinatorPort`。`packages/card-inventory` 通过 `lark-cli --profile general --as user` 实现订单复用、available→reserved、reserved→sent/manual；每次重要写入前机械执行 `whoami`，写后按 `card_id` 回读 `status / order_id / note`，底层错误不回显 stdout/stderr。浏览器副作用前先持久化 `delivery-attempted`；该标记或 `manual` 会作为同商品跨重启暂停闩锁，避免点击后、回执前崩溃造成重复发送。`packages/fulfillment` 固定组装附件格式的订单号、兑换码与使用说明，模型及调用方只获得 opaque `intentId`。网关在闲鱼回执结束后同步回填，回填失败把整笔标记失败并停止。
 - Phase 3B 真实验证：运行时连接器按历史订单查到 `card-001` 的 `sent` 状态并完成幂等 settle，没有发送新的闲鱼消息、没有占用新卡、终端未输出兑换码。
-- Phase 3 验证：全仓 dependency lint、build、483 项串行测试与 `git diff --check` 通过；闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件无回归。新增测试覆盖同订单复用、同商品跨订单持久化暂停、reserved 崩溃恢复、三类写后回读不一致、缺货、重复记录、身份失败、预占写失败、终态单向转换、intent 登记失败清理、页面成功/超时后的 sent/manual 回填、浏览器指令前 attempt 闩锁，以及 attempt 写失败或闲鱼成功但飞书回填失败时零新增发送并停止下一单。
+- Phase 3C（2026-07-22）：新增 ADR-018。扩展以默认关闭的 `chrome.alarms` 唤醒既有闲鱼订单/聊天工作页，一轮最多一笔，不自动开页；用户停止或扫描窗口内任一失败 tool-card 会持久关闭扫描。服务端仅在履约 feature、库存、商品映射和 bounded 工具同时就绪时注入零参数 `prepare_xianyu_fulfillment`，从当前聊天 URL、JWT、最近快照和 `ZA_FULFILLMENT_PRODUCT_KEYS_JSON` 机械准备 intent；模型只得到 opaque `intentId`。未知商品、页面/控件/回执证据不唯一均零预占、零指令。
+- Phase 3 验证：全仓 dependency lint、build、491 项串行测试与 `git diff --check` 通过；闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件无回归。新增测试覆盖同订单复用、同商品跨订单持久化暂停、reserved 崩溃恢复、三类写后回读不一致、缺货、重复记录、身份失败、预占写失败、终态单向转换、intent 登记失败清理、页面成功/超时后的 sent/manual 回填、浏览器指令前 attempt 闩锁、默认关闭的周期扫描边界、零参数产品触发链，以及 attempt 写失败或闲鱼成功但飞书回填失败时零新增发送并停止下一单。
 
 ## 一、目标、边界与成功标准
 
