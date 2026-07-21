@@ -716,6 +716,101 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
     }
   });
 
+  it('履约回执由网关强制限时获取：插件不回传则失败，迟到快照拒绝且不重发', async () => {
+    const pageUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-timeout&orderId=order-timeout&peerUserId=buyer-timeout';
+    const intentServer = await startServer(
+      serverOptions({
+        snapshotRoot: acceptanceRoot,
+        execInstructionTtlMs: 500,
+        fulfillmentPolicies: [
+          {
+            id: 'timeout-policy',
+            accountId: 'host-u1',
+            toolId: 'xianyu-fulfillment.execute-intent',
+            siteOrigin: 'https://seller.goofish.com',
+            productIds: ['item-timeout'],
+            validUntil: Date.now() + 120_000,
+            maxCodesPerOrder: 1,
+            dailyOrderLimit: 5,
+            dayBoundaryOffsetMinutes: 480,
+          },
+        ],
+      }),
+    );
+    const { intentId } = await intentServer.ports.toolgate.prepareFulfillmentIntent({
+      accountId: 'host-u1',
+      toolId: 'xianyu-fulfillment.execute-intent',
+      productId: 'item-timeout',
+      orderId: 'order-timeout',
+      quantity: 1,
+      pageUrl,
+      pageInstanceId: 'page-instance-timeout',
+      messageRef: 'za-message',
+      sendRef: 'za-send',
+      message: '固定履约消息',
+      receiptEvidenceId: 'message-receipts',
+      receiptBaselineCount: 1,
+      receiptSuccessStatuses: ['未读', '已读'],
+      expiresAt: Date.now() + 60_000,
+    });
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${intentServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: pageUrl });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: `执行履约意图 ${intentId}`,
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      const beforeSend = framesByType(sse.frames, 'snapshot-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(beforeSend['requestId']),
+        url: pageUrl,
+        pageInstanceId: 'page-instance-timeout',
+        elements: [
+          { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send', role: 'button', label: '发 送' },
+        ],
+        evidence: { 'message-receipts': { count: 1, latest: '已读' } },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
+      const instruction = framesByType(sse.frames, 'exec-instruction')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instruction['nonce']),
+        ok: true,
+        body: { reads: {}, completedSteps: 2, url: pageUrl },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 2);
+      const receiptRequest = framesByType(sse.frames, 'snapshot-request')[1]!;
+      await sse.waitFor(
+        () => lastCardStatus(sse.frames, 'xianyu-fulfillment.execute-intent') === 'failed',
+      );
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(1);
+      const late = await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(receiptRequest['requestId']),
+        url: pageUrl,
+        pageInstanceId: 'page-instance-timeout',
+        elements: [],
+        evidence: { 'message-receipts': { count: 2, latest: '未读' } },
+      });
+      expect(late.status).toBe(409);
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await intentServer.close();
+    }
+  });
+
   it('模型实参 JSON 截断 → 回喂修正提示自愈重试，回合不终结（invalid-tool-args）', async () => {
     const token = await signToken();
     const sessionId = await createSession(token);

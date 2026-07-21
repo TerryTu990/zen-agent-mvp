@@ -443,6 +443,7 @@ describe('toolgate issueExecInstruction — 一次性签名指令', () => {
     expect(frame.nonce.length).toBeGreaterThan(0);
 
     const expected = computeExecSignature(SIGN_FIXTURE, {
+      sessionId: frame.sessionId,
       nonce: frame.nonce,
       issuedAt: frame.issuedAt,
       expiresAt: frame.expiresAt,
@@ -453,6 +454,7 @@ describe('toolgate issueExecInstruction — 一次性签名指令', () => {
     expect(frame.signature).toBe(expected);
     // 错 secret 复算得不同签名（防伪造）
     const wrong = computeExecSignature(OTHER_FIXTURE, {
+      sessionId: frame.sessionId,
       nonce: frame.nonce,
       issuedAt: frame.issuedAt,
       expiresAt: frame.expiresAt,
@@ -472,6 +474,7 @@ describe('toolgate issueExecInstruction — 一次性签名指令', () => {
         null,
         Buffer.from(
           stableTestJson({
+            sessionId: frame.sessionId,
             nonce: frame.nonce,
             issuedAt: frame.issuedAt,
             expiresAt: frame.expiresAt,
@@ -862,6 +865,7 @@ describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () 
     // 签名覆盖净化后的 request：同 secret 可复算。
     expect(instruction.signature).toBe(
       computeExecSignature(SIGN_FIXTURE, {
+        sessionId: instruction.sessionId,
         nonce: instruction.nonce,
         issuedAt: instruction.issuedAt,
         expiresAt: instruction.expiresAt,
@@ -1188,6 +1192,8 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
       port.confirmFulfillmentReceipt({
         sessionId: call.sessionId,
         toolCallId: call.toolCallId,
+        pageUrl: contextFor('order-call-state').url,
+        pageInstanceId: 'page-instance-1',
         evidence: { 'message-receipts': { count: 2, latest: '未读' } },
       }),
     ).resolves.toEqual({ confirmed: true, state: 'completed' });
@@ -1243,6 +1249,8 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
       completedPort.confirmFulfillmentReceipt({
         sessionId: completedCall.sessionId,
         toolCallId: completedCall.toolCallId,
+        pageUrl: contextFor('order-receipt-success').url,
+        pageInstanceId: 'page-instance-1',
         evidence: { 'message-receipts': { count: 2, latest: '已读' } },
       }),
     ).resolves.toEqual({ confirmed: true, state: 'completed' });
@@ -1269,7 +1277,39 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
       uncertainPort.confirmFulfillmentReceipt({
         sessionId: uncertainCall.sessionId,
         toolCallId: uncertainCall.toolCallId,
+        pageUrl: contextFor('order-receipt-stale').url,
+        pageInstanceId: 'page-instance-1',
         evidence: { 'message-receipts': { count: 1, latest: '未读' } },
+      }),
+    ).resolves.toEqual({ confirmed: false, state: 'uncertain' });
+  });
+
+  it('回执证据即使匹配，来自换页或刷新后的页面实例也不得确认', async () => {
+    const port = makePort({
+      now: () => 1_000_000,
+      fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }],
+    });
+    const prepared = await prepare(port, 'order-receipt-context');
+    const call = input('order-receipt-context', prepared.intentId, 'receipt-context-call');
+    expect(await port.decide(call)).toEqual({ verdict: 'allow' });
+    const instruction = await port.issueExecInstruction(call);
+    await port.acceptExecResult({
+      sessionId: call.sessionId,
+      result: {
+        type: 'exec-result',
+        sessionId: call.sessionId,
+        nonce: instruction.nonce,
+        ok: true,
+        body: { ok: true },
+      },
+    });
+    await expect(
+      port.confirmFulfillmentReceipt({
+        sessionId: call.sessionId,
+        toolCallId: call.toolCallId,
+        pageUrl: contextFor('different-order').url,
+        pageInstanceId: 'page-instance-after-refresh',
+        evidence: { 'message-receipts': { count: 2, latest: '已读' } },
       }),
     ).resolves.toEqual({ confirmed: false, state: 'uncertain' });
   });
@@ -1702,6 +1742,7 @@ describe('toolgate ADR-013 — 内建 site_navigate 跨站导航（渐进披露�
     });
     expect(frame.request).toEqual({ kind: 'dom', steps: [{ action: 'navigate', url: mailUrl }] });
     const expected = computeExecSignature(SIGN_FIXTURE, {
+      sessionId: frame.sessionId,
       nonce: frame.nonce,
       issuedAt: frame.issuedAt,
       expiresAt: frame.expiresAt,

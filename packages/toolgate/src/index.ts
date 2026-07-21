@@ -592,6 +592,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     const issuedAt = now();
     const expiresAt = issuedAt + ttlMs;
     const signature = computeExecSignature(options.signingSecret, {
+      sessionId: input.sessionId,
       nonce,
       issuedAt,
       expiresAt,
@@ -695,6 +696,10 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       const reservation = reservationKey === undefined ? undefined : fulfillmentReservations.get(reservationKey);
       const intent = intentId === undefined ? undefined : fulfillmentIntents.get(intentId);
       if (reservation?.state !== 'pending' || intent === undefined) {
+        return { confirmed: false, state: 'uncertain' };
+      }
+      if (input.pageUrl !== intent.pageUrl || input.pageInstanceId !== intent.pageInstanceId) {
+        reservation.state = 'uncertain';
         return { confirmed: false, state: 'uncertain' };
       }
       const receipt = input.evidence[intent.receiptEvidenceId];

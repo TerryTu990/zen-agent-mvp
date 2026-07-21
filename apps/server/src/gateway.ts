@@ -358,9 +358,9 @@ interface SessionRuntime {
   pendingSnapshot: Map<string, (report: SnapshotReportFrame) => void>;
   /** 最近一次快照的判定上下文（ref 闭集 + 页路径）；dom 签发校验依据，无快照即 deny。 */
   domContext: DomGateContext | null;
-  /** DOM 两步成功后仍待下一次页面回执确认的有界履约调用。 */
-  pendingFulfillmentVerification: { toolCallId: string; toolId: string; mode: 'client' | 'server' } | null;
 }
+
+const SNAPSHOT_TIMEOUT_MS = 15_000;
 
 export function createGateway(deps: GatewayDeps): Gateway {
   const validateFrame = createFrameValidator();
@@ -440,7 +440,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
         pendingExec: new Map(),
         pendingSnapshot: new Map(),
         domContext: null,
-        pendingFulfillmentVerification: null,
       };
       runtimes.set(sessionId, runtime);
     }
@@ -509,10 +508,23 @@ export function createGateway(deps: GatewayDeps): Gateway {
     });
   }
 
-  /** 等待客户端 snapshot-report；同理先注册 requestId 等待器，再下发 snapshot-request 帧。 */
-  function waitForSnapshot(sessionId: string, requestId: string): Promise<SnapshotReportFrame> {
+  /** 等待客户端 snapshot-report；超时即摘除等待器，迟到帧按过期请求拒绝。 */
+  function waitForSnapshot(
+    sessionId: string,
+    requestId: string,
+    timeoutMs = SNAPSHOT_TIMEOUT_MS,
+  ): Promise<SnapshotReportFrame | null> {
     const runtime = runtimeOf(sessionId);
-    return new Promise((resolve) => runtime.pendingSnapshot.set(requestId, resolve));
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        runtime.pendingSnapshot.delete(requestId);
+        resolve(null);
+      }, Math.max(1, timeoutMs));
+      runtime.pendingSnapshot.set(requestId, (report) => {
+        clearTimeout(timer);
+        resolve(report);
+      });
+    });
   }
 
   /**
@@ -527,6 +539,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     pack: PackRef,
     tool: ToolDefinition,
     call: { toolCallId: string; params: JsonObject },
+    evidenceRules: SnapshotEvidenceRule[],
   ): Promise<Observation> {
     const { sessionId } = session;
     const { toolCallId, params } = call;
@@ -610,6 +623,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     let observation: Observation;
     let nonce: string | undefined;
     let status: number | undefined;
+    let instructionExpiresAt: number | undefined;
     if (tool.execution === 'server') {
       observation = await deps.toolgate.executeServer({
         sessionId,
@@ -630,17 +644,43 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...(domContext !== undefined ? { domContext } : {}),
       });
       nonce = instruction.nonce;
+      instructionExpiresAt = instruction.expiresAt;
       const result = waitForExec(sessionId, instruction.nonce, instruction.ttl);
       broadcast(sessionId, instruction);
       const execResult = await result;
       if (typeof execResult.status === 'number') status = execResult.status;
       observation = await deps.toolgate.acceptExecResult({ sessionId, result: execResult });
     }
+    // 有界履约的 DOM 成功只表示点击已发生，不表示消息送达。网关（非模型）立即强制取回执快照，
+    // 并在原指令绝对时限内完成页面实例绑定确认；超时/换页/证据不符一律 uncertain。
     if (tool.authorization?.kind === 'bounded-fulfillment' && observation.ok) {
-      runtimeOf(sessionId).pendingFulfillmentVerification = { toolCallId, toolId: tool.id, mode };
-    } else {
-      finish(observation.ok ? 'succeeded' : 'failed');
+      const requestId = randomUUID();
+      const remainingMs = Math.max(1, (instructionExpiresAt ?? Date.now()) - Date.now());
+      const reported = waitForSnapshot(sessionId, requestId, remainingMs);
+      broadcast(sessionId, {
+        type: 'snapshot-request',
+        sessionId,
+        requestId,
+        ...(evidenceRules.length > 0 ? { evidenceRules } : {}),
+      });
+      const report = await reported;
+      const confirmation = await deps.toolgate.confirmFulfillmentReceipt({
+        sessionId,
+        toolCallId,
+        pageUrl: report?.url ?? '',
+        pageInstanceId: report?.pageInstanceId ?? '',
+        evidence: report?.evidence ?? {},
+      });
+      observation = confirmation.confirmed
+        ? { toolCallId, ok: true, content: { deliveryConfirmed: true } }
+        : {
+            toolCallId,
+            ok: false,
+            content: null,
+            error: report === null ? 'fulfillment-receipt-timeout' : 'fulfillment-receipt-unconfirmed',
+          };
     }
+    finish(observation.ok ? 'succeeded' : 'failed');
     recordEvent(sessionId, claims, featureId, {
       type: 'tool-execution',
       data: {
@@ -835,6 +875,21 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ...(evidenceRules.length > 0 ? { evidenceRules } : {}),
         });
         const report = await reported;
+        if (report === null) {
+          const snapshotEcho: LlmMessage = {
+            role: 'assistant',
+            content: roundText,
+            toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
+          };
+          const snapshotObs: LlmMessage = {
+            role: 'tool',
+            toolCallId: call.toolCallId,
+            content: JSON.stringify({ error: 'snapshot-timeout' }),
+          };
+          messages.push(snapshotEcho, snapshotObs);
+          turnMessages.push(snapshotEcho, snapshotObs);
+          continue;
+        }
         const safeElements = redactSnapshotValues(report.elements);
         const runtime = runtimeOf(sessionId);
         runtime.domContext = {
@@ -845,23 +900,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ...(report.pageInstanceId !== undefined ? { pageInstanceId: report.pageInstanceId } : {}),
           elements: safeElements,
         };
-        const pendingFulfillment = runtime.pendingFulfillmentVerification;
-        if (pendingFulfillment !== null) {
-          const confirmation = await deps.toolgate.confirmFulfillmentReceipt({
-            sessionId,
-            toolCallId: pendingFulfillment.toolCallId,
-            evidence: report.evidence ?? {},
-          });
-          broadcast(sessionId, {
-            type: 'tool-card',
-            sessionId,
-            toolCallId: pendingFulfillment.toolCallId,
-            toolId: pendingFulfillment.toolId,
-            status: confirmation.confirmed ? 'succeeded' : 'failed',
-            mode: pendingFulfillment.mode,
-          });
-          runtime.pendingFulfillmentVerification = null;
-        }
         const snapshotEcho: LlmMessage = {
           role: 'assistant',
           content: roundText,
@@ -985,6 +1023,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           pack,
           SITE_NAVIGATE_TOOL_DEF,
           call,
+          evidenceRules,
         );
         const navEcho: LlmMessage = {
           role: 'assistant',
@@ -1037,7 +1076,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
         break;
       }
 
-      const observation = await runExecSubflow(session, claims, featureId, pack, tool, call);
+      const observation = await runExecSubflow(
+        session,
+        claims,
+        featureId,
+        pack,
+        tool,
+        call,
+        evidenceRules,
+      );
       // 回喂 agent：assistant 调用轮回声本轮 tool_calls（OpenAI 兼容 API 要求 role:tool 须有前置
       // 带 tool_calls 的 assistant 消息，否则拒绝孤儿 tool 消息）+ observation（仅规整结果，U7）。
       const execEcho: LlmMessage = {

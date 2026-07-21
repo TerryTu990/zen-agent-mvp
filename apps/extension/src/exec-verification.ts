@@ -46,6 +46,7 @@ export async function verifyExecInstruction(
       ['verify'],
     );
     const payload = stableStringify({
+      sessionId: frame.sessionId,
       nonce: frame.nonce,
       issuedAt: frame.issuedAt,
       expiresAt: frame.expiresAt,

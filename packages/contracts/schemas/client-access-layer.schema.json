@@ -158,7 +158,7 @@
       }
     },
     "execInstruction": {
-      "$comment": "代执行指令（能力⑤上半程，U7）：服务端已完成门禁判定与模板实参代入，request 为最终定值请求。nonce 一次性；issuedAt/expiresAt 为绝对时限；signature 为服务端 Ed25519 私钥对 {nonce,issuedAt,expiresAt,ttl,toolCallId,request} 规范化序列的签名。插件从已鉴权 SSE 响应取得公钥，在任何副作用前验签、验过期并持久化 nonce 防重放。",
+      "$comment": "代执行指令（能力⑤上半程，U7）：服务端已完成门禁判定与模板实参代入，request 为最终定值请求。nonce 一次性；issuedAt/expiresAt 为绝对时限；signature 为服务端 Ed25519 私钥对 {sessionId,nonce,issuedAt,expiresAt,ttl,toolCallId,request} 规范化序列的签名。插件从已鉴权 HTTPS SSE 响应取得公钥，在任何副作用前验签、验过期并持久化 nonce 防重放。",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "sessionId", "nonce", "issuedAt", "expiresAt", "ttl", "signature", "toolCallId", "request"],

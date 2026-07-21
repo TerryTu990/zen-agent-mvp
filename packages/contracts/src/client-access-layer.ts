@@ -189,7 +189,7 @@ export interface ExecInstructionFrame {
   expiresAt: number;
   /** 自签发起的存活毫秒数，过期作废（U7）。 */
   ttl: number;
-  /** Ed25519 对 {nonce,issuedAt,expiresAt,ttl,toolCallId,request} 规范化序列的签名。 */
+  /** Ed25519 对 {sessionId,nonce,issuedAt,expiresAt,ttl,toolCallId,request} 规范化序列的签名。 */
   signature: string;
   toolCallId: string;
   request: ExecRequest | DomExecRequest;

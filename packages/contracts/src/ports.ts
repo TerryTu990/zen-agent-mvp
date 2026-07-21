@@ -181,6 +181,8 @@ export interface PrepareFulfillmentIntentResult {
 export interface ConfirmFulfillmentReceiptInput {
   sessionId: string;
   toolCallId: string;
+  pageUrl: string;
+  pageInstanceId: string;
   evidence: Record<string, SnapshotEvidence>;
 }
 

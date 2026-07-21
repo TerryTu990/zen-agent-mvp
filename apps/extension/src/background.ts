@@ -24,6 +24,7 @@ import {
 } from './messaging.js';
 import { reducePanelHistory, removeSettledHitl } from './panel-history.js';
 import { verifyExecInstruction } from './exec-verification.js';
+import { normalizeTrustedServerBaseUrl } from './server-url.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
 // 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
@@ -47,7 +48,10 @@ interface EventStream {
 async function readServerBaseUrl(): Promise<string> {
   const items = await chrome.storage.local.get('za.serverBaseUrl');
   const value = items['za.serverBaseUrl'];
-  return typeof value === 'string' && value !== '' ? value : DEFAULT_SERVER_BASE_URL;
+  const configured = typeof value === 'string' && value !== '' ? value : DEFAULT_SERVER_BASE_URL;
+  const trusted = normalizeTrustedServerBaseUrl(configured);
+  if (trusted === null) throw new Error('生产服务地址必须使用 HTTPS（仅 localhost/127.0.0.1 允许 HTTP）');
+  return trusted;
 }
 
 /** groupId→sessionId 存根是否存在：判定某组是否已是 zen 会话组（激活决策与 onUpdated 复用）。 */
@@ -162,7 +166,13 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
 
   // 错误消息只含键名/状态码等可定位信息，不回显 token 值（SEC-04）。
   async function openSession(): Promise<Session | null> {
-    const baseUrl = await readServerBaseUrl();
+    let baseUrl: string;
+    try {
+      baseUrl = await readServerBaseUrl();
+    } catch (error) {
+      postStatus(error instanceof Error ? error.message : '服务地址配置无效');
+      return null;
+    }
     let token: string;
     try {
       token = await identity.getToken();

@@ -495,17 +495,11 @@ function decide(sys, u, body) {
   }
   if (obs !== null) {
     const xianyuIntentCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_INTENT);
-    if (xianyuIntentCount > 0 && !obs.includes('"elements"')) {
-      return { toolCall: snapshotCall() };
-    }
-    if (xianyuIntentCount > 0 && obs.includes('"elements"')) {
-      const counts = receiptCountsSinceLastUser(body);
-      const prior = counts[counts.length - 2];
-      const current = counts[counts.length - 1];
-      if (prior !== undefined && current === prior + 1 && messageReceiptEvidence(obs) !== null) {
+    if (xianyuIntentCount > 0) {
+      if (obs.includes('"deliveryConfirmed":true')) {
         return { text: '页面新回执已确认履约消息送达。' };
       }
-      return { text: '页面回执未明确增加，履约状态已转人工且不会自动重发。' };
+      return { text: '页面回执未明确增加或等待超时，履约状态已转人工且不会自动重发。' };
     }
     const xianyuSendCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_SEND);
     if (xianyuSendCount > 0 && !obs.includes('"elements"')) {

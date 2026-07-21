@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "137",
   "name": "zen-agent",
   "version": "0.2.0",
   "description": "宿主系统功能辅助智能体（讲解 / UI 引导 / API 调用协助）",

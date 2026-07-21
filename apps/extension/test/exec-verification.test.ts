@@ -36,6 +36,7 @@ async function signedFrame(now = 1_000): Promise<{ frame: ExecInstructionFrame; 
     },
   };
   const payload = stableStringify({
+    sessionId: frame.sessionId,
     nonce: frame.nonce,
     issuedAt: frame.issuedAt,
     expiresAt: frame.expiresAt,
@@ -64,7 +65,7 @@ describe('exec-instruction 副作用前验证', () => {
     });
   });
 
-  it('request/页面围栏被篡改或绝对过期时拒绝', async () => {
+  it('request/页面围栏或会话被篡改、绝对过期时拒绝', async () => {
     const { frame, publicKey } = await signedFrame();
     const tampered: ExecInstructionFrame = {
       ...frame,
@@ -74,6 +75,9 @@ describe('exec-instruction 副作用前验证', () => {
       ok: false,
       error: 'instruction-invalid',
     });
+    await expect(
+      verifyExecInstruction({ ...frame, sessionId: 'other-session' }, publicKey, new Set(), 2_000),
+    ).resolves.toEqual({ ok: false, error: 'instruction-invalid' });
     await expect(verifyExecInstruction(frame, publicKey, new Set(), frame.expiresAt + 1)).resolves.toEqual({
       ok: false,
       error: 'instruction-expired',
