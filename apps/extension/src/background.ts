@@ -43,6 +43,7 @@ interface Session {
 interface EventStream {
   reader: ReadableStreamDefaultReader<Uint8Array>;
   execPublicKey: string;
+  expectedSessionId: string;
 }
 
 async function readServerBaseUrl(): Promise<string> {
@@ -263,10 +264,10 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       if (!quiet) postStatus(`事件流建立失败（HTTP ${response.status}）`);
       return null;
     }
-    return { reader: response.body.getReader(), execPublicKey };
+    return { reader: response.body.getReader(), execPublicKey, expectedSessionId: sessionId };
   }
 
-  async function drainEvents({ reader, execPublicKey }: EventStream): Promise<void> {
+  async function drainEvents({ reader, execPublicKey, expectedSessionId }: EventStream): Promise<void> {
     const decoder = new TextDecoder();
     const parser = createSseParser();
     try {
@@ -278,7 +279,12 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
             const frame = JSON.parse(payload) as DownstreamFrame;
             if (frame.type === 'exec-instruction') {
               await nonceHistoryReady;
-              const verified = await verifyExecInstruction(frame, execPublicKey, seenExecNonces);
+              const verified = await verifyExecInstruction(
+                frame,
+                execPublicKey,
+                seenExecNonces,
+                expectedSessionId,
+              );
               if (!verified.ok) {
                 void forward({
                   kind: 'exec-result',

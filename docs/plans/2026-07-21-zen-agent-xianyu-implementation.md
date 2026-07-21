@@ -1,6 +1,6 @@
 # Zen Agent Chrome 形态与闲鱼站点能力实施方案
 
-> 状态：执行中（2026-07-22，分支 `codex/zen-agent-xianyu-plan`）；Phase 1、Phase 2A/2B/2C 已完成，Phase 2D 第四轮复审项已修复并等待第五轮复审；订单发货状态更新等待一笔低价值待发货测试单。
+> 状态：执行中（2026-07-22，分支 `codex/zen-agent-xianyu-plan`）；Phase 1、Phase 2A/2B/2C 已完成，Phase 2D 第五轮跨会话复审项已修复并等待第六轮复审；订单发货状态更新等待一笔低价值待发货测试单。
 > 本文把产品讨论收敛为可逐批实施、验证和回滚的开发方案；产品主体始终是通用 **Zen Agent**，闲鱼是首个生产级站点能力包，不建立“闲鱼专用助手”分叉。
 > 各阶段只有通过本阶段验证门后才能进入下一阶段。
 
@@ -17,7 +17,7 @@
 - Phase 2C 实现：pack 升至 0.4.0；站点证据配方归属 DOM adapter，由服务端随 `snapshot-request` 下发，extension 只按唯一消息容器采集 `count + latest` 状态枚举，不认识闲鱼 class、不采集消息正文；成功判据收敛为回执数恰好增加 1 且最新为“未读/已读”。
 - Phase 2C 验证：闲鱼 18 个需求场景各 3 跑（54/54）通过；全仓 dependency lint、build 与 445 项串行测试通过。覆盖明确成功、同一气泡多状态去重、嵌套容器命中去重、非闲鱼无配方不采集、旧回执不误判、跨回合基线隔离、登录失效、验证码、发送超时、用户停止、结果不明确不重发和 every-call；关键异常场景按目标 `toolCallId` 硬断言 `snapshot → exec → snapshot` 帧序列。
 - Phase 2D 实现：新增 ADR-016 与 `bounded-fulfillment` 一次性意图。可信连接器在服务端登记账号、精确页面 URL/页面生命周期、商品、规范化订单、数量、输入/发送 ref、回执基线与固定正文；模型只传 opaque `intentId`，toolgate 自行构造唯一 `fill → click`。toolgate 联合校验策略/工具/所属站点、原子预占跨策略订单唯一键，并以调用单向状态机禁止同 call 重复签发；服务端 Ed25519 私钥签名会话、绝对时限与最终请求，插件只允许生产 HTTPS（本机开发例外）且声明 Chrome 137+，在副作用前验签、验过期、持久化 nonce 防重放并机械拒绝切页/刷新。输入值不采集且由网关二次剥离。DOM 两步成功后由网关在原指令时限内强制请求回执快照，仍绑定同一 URL/页面实例且回执数恰增 1 才完成；超时、换页及其它不明确结果进入人工路径且不自动重试。
-- Phase 2D 验证：闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件通过；真实 gateway/toolgate 协议 E2E 覆盖 opaque `intentId`、固定两步、网关强制回执以及回执数恰增 1 才完成。对抗测试覆盖同 call 各状态重放、Ed25519 request/会话篡改、绝对过期、插件 nonce 重放、切页/页面生命周期变化、错误控件角色、fill 后失败快照脱敏、`completedSteps=2` 契约、运营日边界、客户端无执行结果主动 TTL、回执快照超时与迟到 409；生产实现另将已验签 nonce 写入 `chrome.storage.session` 以跨 SW 重启保留。全仓 dependency lint、build、467 项串行测试与 `git diff --check` 通过；定向计数为 toolgate 78、extension 107、server 99，等待第五轮独立复审。
+- Phase 2D 验证：闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件通过；真实 gateway/toolgate 协议 E2E 覆盖 opaque `intentId`、固定两步、网关强制回执以及回执数恰增 1 才完成。对抗测试覆盖同 call 各状态重放、Ed25519 request/会话篡改、其它会话合法签名帧、绝对过期、插件 nonce 重放、切页/页面生命周期变化、错误控件角色、fill 后失败快照脱敏、`completedSteps=2` 契约、运营日边界、客户端无执行结果主动 TTL、回执快照超时与迟到 409；生产实现另将已验签 nonce 写入 `chrome.storage.session` 以跨 SW 重启保留。全仓 dependency lint、build、468 项串行测试与 `git diff --check` 通过；定向计数为 toolgate 78、extension 108、server 99，等待第六轮独立复审。
 - 当前账号待发货计数仍为零，订单发货状态更新保留到出现一笔明确授权的低价值待发货测试单时验证；不阻塞只依赖消息通知闭环的 Phase 2D/Phase 3。
 
 ## 一、目标、边界与成功标准

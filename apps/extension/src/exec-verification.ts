@@ -26,8 +26,10 @@ export async function verifyExecInstruction(
   frame: ExecInstructionFrame,
   publicKey: string,
   seen: Set<string>,
+  expectedSessionId: string,
   now = Date.now(),
 ): Promise<ExecVerificationResult> {
+  if (frame.sessionId !== expectedSessionId) return { ok: false, error: 'instruction-invalid' };
   if (seen.has(frame.nonce)) return { ok: false, error: 'instruction-replayed' };
   if (
     !Number.isInteger(frame.issuedAt) ||

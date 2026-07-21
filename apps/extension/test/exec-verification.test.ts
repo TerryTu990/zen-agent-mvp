@@ -58,8 +58,8 @@ describe('exec-instruction 副作用前验证', () => {
   it('合法帧只接受一次；同 nonce 重放在执行前拒绝', async () => {
     const { frame, publicKey } = await signedFrame();
     const seen = new Set<string>();
-    await expect(verifyExecInstruction(frame, publicKey, seen, 2_000)).resolves.toEqual({ ok: true });
-    await expect(verifyExecInstruction(frame, publicKey, seen, 2_000)).resolves.toEqual({
+    await expect(verifyExecInstruction(frame, publicKey, seen, 's1', 2_000)).resolves.toEqual({ ok: true });
+    await expect(verifyExecInstruction(frame, publicKey, seen, 's1', 2_000)).resolves.toEqual({
       ok: false,
       error: 'instruction-replayed',
     });
@@ -71,16 +71,23 @@ describe('exec-instruction 副作用前验证', () => {
       ...frame,
       request: { kind: 'dom', steps: [{ action: 'click', ref: 'za-other' }] },
     };
-    await expect(verifyExecInstruction(tampered, publicKey, new Set(), 2_000)).resolves.toEqual({
+    await expect(verifyExecInstruction(tampered, publicKey, new Set(), 's1', 2_000)).resolves.toEqual({
       ok: false,
       error: 'instruction-invalid',
     });
     await expect(
-      verifyExecInstruction({ ...frame, sessionId: 'other-session' }, publicKey, new Set(), 2_000),
+      verifyExecInstruction({ ...frame, sessionId: 'other-session' }, publicKey, new Set(), 's1', 2_000),
     ).resolves.toEqual({ ok: false, error: 'instruction-invalid' });
-    await expect(verifyExecInstruction(frame, publicKey, new Set(), frame.expiresAt + 1)).resolves.toEqual({
+    await expect(verifyExecInstruction(frame, publicKey, new Set(), 's1', frame.expiresAt + 1)).resolves.toEqual({
       ok: false,
       error: 'instruction-expired',
     });
+  });
+
+  it('同公钥为其它会话合法签发的帧也必须在当前 SSE 会话执行前拒绝', async () => {
+    const { frame, publicKey } = await signedFrame();
+    await expect(
+      verifyExecInstruction(frame, publicKey, new Set(), 'current-sse-session', 2_000),
+    ).resolves.toEqual({ ok: false, error: 'instruction-invalid' });
   });
 });
