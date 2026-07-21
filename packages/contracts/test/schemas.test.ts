@@ -298,6 +298,8 @@ describe('C3 client-access-layer M3 代执行 + HITL 帧', () => {
       type: 'exec-instruction',
       sessionId: 's-001',
       nonce: '11111111-2222-3333-4444-555555555555',
+      issuedAt: 1_000,
+      expiresAt: 61_000,
       ttl: 60000,
       signature: 'c2lnbmF0dXJlLWhtYWM',
       toolCallId: 'tc-01',

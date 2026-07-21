@@ -116,7 +116,7 @@
       "required": ["reads", "completedSteps"],
       "properties": {
         "reads": { "type": "object" },
-        "completedSteps": { "type": "number" },
+        "completedSteps": { "type": "integer", "const": 2 },
         "url": { "type": "string" }
       }
     }

@@ -24,7 +24,7 @@ export interface ServerOptions {
   host?: string;
   /** 空值拒绝启动（验签 fail-closed 的前提）。 */
   jwtSecret: string;
-  /** 代执行指令签名密钥；空值拒绝启动（U7 一次性签名的前提），经 env 注入不落仓/日志（SEC-01）。 */
+  /** Ed25519 私钥派生种子；空值拒绝启动，经 env 注入不落仓/日志，插件只取得公钥。 */
   signingSecret: string;
   issAllowlist: string[];
   snapshotRoot: string;

@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createPublicKey, verify as verifySignature } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { ExecResultFrame, IdentityClaims, ToolDefinition } from '@zen-agent/contracts';
 import { SITE_NAVIGATE_TOOL_ID } from '@zen-agent/contracts';
@@ -11,6 +11,16 @@ import {
 // 仅测试固定值，非真实密钥（真实密钥运行时经 env 注入，ZA-C-SEC-02）。
 const SIGN_FIXTURE = 'dev-fixture-value';
 const OTHER_FIXTURE = 'other-fixture-value';
+
+function stableTestJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableTestJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableTestJson(record[key])}`)
+    .join(',')}}`;
+}
 
 const validClaims: IdentityClaims = {
   sub: 'u1',
@@ -415,7 +425,8 @@ describe('toolgate decide — fail-closed 分级矩阵', () => {
 
 describe('toolgate issueExecInstruction — 一次性签名指令', () => {
   it('按 adapter 模板代入实参、urlencode 路径段，签名可同 secret 复算', async () => {
-    const frame = await makePort().issueExecInstruction({
+    const port = makePort();
+    const frame = await port.issueExecInstruction({
       sessionId: 's1',
       toolCallId: 'c1',
       toolId: hitlTool.id,
@@ -433,6 +444,8 @@ describe('toolgate issueExecInstruction — 一次性签名指令', () => {
 
     const expected = computeExecSignature(SIGN_FIXTURE, {
       nonce: frame.nonce,
+      issuedAt: frame.issuedAt,
+      expiresAt: frame.expiresAt,
       ttl: frame.ttl,
       toolCallId: frame.toolCallId,
       request: frame.request,
@@ -441,11 +454,36 @@ describe('toolgate issueExecInstruction — 一次性签名指令', () => {
     // 错 secret 复算得不同签名（防伪造）
     const wrong = computeExecSignature(OTHER_FIXTURE, {
       nonce: frame.nonce,
+      issuedAt: frame.issuedAt,
+      expiresAt: frame.expiresAt,
       ttl: frame.ttl,
       toolCallId: frame.toolCallId,
       request: frame.request,
     });
     expect(frame.signature).not.toBe(wrong);
+    const verification = await port.getExecVerificationKey();
+    const publicKey = createPublicKey({
+      key: Buffer.from(verification.publicKey, 'base64url'),
+      format: 'der',
+      type: 'spki',
+    });
+    expect(
+      verifySignature(
+        null,
+        Buffer.from(
+          stableTestJson({
+            nonce: frame.nonce,
+            issuedAt: frame.issuedAt,
+            expiresAt: frame.expiresAt,
+            ttl: frame.ttl,
+            toolCallId: frame.toolCallId,
+            request: frame.request,
+          }),
+        ),
+        publicKey,
+        Buffer.from(frame.signature, 'base64url'),
+      ),
+    ).toBe(true);
   });
 
   it('自定义 ttlMs 生效', async () => {
@@ -674,11 +712,7 @@ describe('computeExecSignature — 稳定键序（防篡改）', () => {
       x: { p: 1, q: 2 },
     });
     expect(a).not.toBe(c);
-    // 锚定实现为 HMAC-SHA256 over 稳定键序 JSON
-    const manual = createHmac('sha256', SIGN_FIXTURE)
-      .update('{"nonce":"n","toolCallId":"c","ttl":1,"x":{"p":1,"q":2}}')
-      .digest('hex');
-    expect(a).toBe(manual);
+    expect(Buffer.from(a, 'base64url')).toHaveLength(64);
   });
 });
 
@@ -829,6 +863,8 @@ describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () 
     expect(instruction.signature).toBe(
       computeExecSignature(SIGN_FIXTURE, {
         nonce: instruction.nonce,
+        issuedAt: instruction.issuedAt,
+        expiresAt: instruction.expiresAt,
         ttl: instruction.ttl,
         toolCallId: instruction.toolCallId,
         request: instruction.request as never,
@@ -1077,6 +1113,9 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
       messageRef: 'za-1',
       sendRef: 'za-2',
       message: '固定履约内容',
+      receiptEvidenceId: 'message-receipts',
+      receiptBaselineCount: 1,
+      receiptSuccessStatuses: ['未读', '已读'],
       expiresAt: 1_500_000,
       ...overrides,
     });
@@ -1145,6 +1184,13 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
         body: { ok: true },
       },
     });
+    await expect(
+      port.confirmFulfillmentReceipt({
+        sessionId: call.sessionId,
+        toolCallId: call.toolCallId,
+        evidence: { 'message-receipts': { count: 2, latest: '未读' } },
+      }),
+    ).resolves.toEqual({ confirmed: true, state: 'completed' });
     await expect(port.decide(call)).resolves.toEqual({
       verdict: 'deny',
       reason: 'bounded-call-already-used',
@@ -1172,6 +1218,60 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
       verdict: 'deny',
       reason: 'bounded-call-already-used',
     });
+  });
+
+  it('DOM 两步成功不等于送达；只有回执数恰增 1 才 completed，否则 uncertain', async () => {
+    const completedPort = makePort({
+      now: () => 1_000_000,
+      fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }],
+    });
+    const completedIntent = await prepare(completedPort, 'order-receipt-success');
+    const completedCall = input('order-receipt-success', completedIntent.intentId, 'receipt-success-call');
+    expect(await completedPort.decide(completedCall)).toEqual({ verdict: 'allow' });
+    const completedInstruction = await completedPort.issueExecInstruction(completedCall);
+    await completedPort.acceptExecResult({
+      sessionId: completedCall.sessionId,
+      result: {
+        type: 'exec-result',
+        sessionId: completedCall.sessionId,
+        nonce: completedInstruction.nonce,
+        ok: true,
+        body: { ok: true },
+      },
+    });
+    await expect(
+      completedPort.confirmFulfillmentReceipt({
+        sessionId: completedCall.sessionId,
+        toolCallId: completedCall.toolCallId,
+        evidence: { 'message-receipts': { count: 2, latest: '已读' } },
+      }),
+    ).resolves.toEqual({ confirmed: true, state: 'completed' });
+
+    const uncertainPort = makePort({
+      now: () => 1_000_000,
+      fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }],
+    });
+    const uncertainIntent = await prepare(uncertainPort, 'order-receipt-stale');
+    const uncertainCall = input('order-receipt-stale', uncertainIntent.intentId, 'receipt-stale-call');
+    expect(await uncertainPort.decide(uncertainCall)).toEqual({ verdict: 'allow' });
+    const uncertainInstruction = await uncertainPort.issueExecInstruction(uncertainCall);
+    await uncertainPort.acceptExecResult({
+      sessionId: uncertainCall.sessionId,
+      result: {
+        type: 'exec-result',
+        sessionId: uncertainCall.sessionId,
+        nonce: uncertainInstruction.nonce,
+        ok: true,
+        body: { ok: true },
+      },
+    });
+    await expect(
+      uncertainPort.confirmFulfillmentReceipt({
+        sessionId: uncertainCall.sessionId,
+        toolCallId: uncertainCall.toolCallId,
+        evidence: { 'message-receipts': { count: 1, latest: '未读' } },
+      }),
+    ).resolves.toEqual({ confirmed: false, state: 'uncertain' });
   });
 
   it('页面生命周期与输入/发送控件语义不符时拒绝自动履约', async () => {
@@ -1243,6 +1343,7 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
     await expect(prepare(port, 'order-x', { messageRef: 'za-2', sendRef: 'za-2' })).rejects.toThrow(
       /字段非法/,
     );
+    await expect(prepare(port, 'order-x', { receiptSuccessStatuses: [] })).rejects.toThrow(/字段非法/);
   });
 
   it('重复策略 id、非法产品与非法边界在启动期 fail-fast', () => {
@@ -1602,6 +1703,8 @@ describe('toolgate ADR-013 — 内建 site_navigate 跨站导航（渐进披露�
     expect(frame.request).toEqual({ kind: 'dom', steps: [{ action: 'navigate', url: mailUrl }] });
     const expected = computeExecSignature(SIGN_FIXTURE, {
       nonce: frame.nonce,
+      issuedAt: frame.issuedAt,
+      expiresAt: frame.expiresAt,
       ttl: frame.ttl,
       toolCallId: frame.toolCallId,
       request: frame.request,

@@ -184,9 +184,12 @@ export interface ExecInstructionFrame {
   type: 'exec-instruction';
   sessionId: string;
   nonce: string;
+  /** 服务端签发绝对时间与失效绝对时间；客户端在任何副作用前验签并验 expiresAt。 */
+  issuedAt: number;
+  expiresAt: number;
   /** 自签发起的存活毫秒数，过期作废（U7）。 */
   ttl: number;
-  /** 对 {nonce,ttl,toolCallId,request} 规范化序列的签名，插件执行前校验完整性。 */
+  /** Ed25519 对 {nonce,issuedAt,expiresAt,ttl,toolCallId,request} 规范化序列的签名。 */
   signature: string;
   toolCallId: string;
   request: ExecRequest | DomExecRequest;

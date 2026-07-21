@@ -5,8 +5,8 @@ export interface DelegatedExecutor {
   /**
    * 按签名指令的 request 形态代执行：http（默认）在页面环境以用户既有会话
    * （credentials:include）发出服务端已定值的请求；dom（kind='dom'）经闭集解释器
-   * 可见地操作页面。客户端零治理：不校验 signature、不改指令、不预判 riskTier——
-   * 核销、resultSchema 校验、nonce 权威全在服务端（U7）。失败如实回报，
+   * 可见地操作页面。background 已在转发前完成 Ed25519 验签、绝对过期检查和 nonce 防重放；
+   * 本执行器不改指令、不预判 riskTier，服务端仍是治理与结果 schema 权威。失败如实回报，
    * 错误文案不含 token/签名值（SEC-04）。
    */
   execute(frame: ExecInstructionFrame): Promise<ExecResultFrame>;
@@ -19,6 +19,7 @@ export function createDelegatedExecutor(
     url: globalThis.location?.href ?? '',
     pageInstanceId: '',
   }),
+  now: () => number = Date.now,
 ): DelegatedExecutor {
   return {
     async execute(frame) {
@@ -26,6 +27,9 @@ export function createDelegatedExecutor(
 
       // 判别：仅 DomExecRequest 带 kind；in 收窄让 else 分支落回 http 形态。
       if ('kind' in request) {
+        if (now() > frame.expiresAt) {
+          return { type: 'exec-result', sessionId, nonce, ok: false, error: 'instruction-expired' };
+        }
         if (domRunner === undefined) {
           return { type: 'exec-result', sessionId, nonce, ok: false, error: 'dom-runner-unavailable' };
         }

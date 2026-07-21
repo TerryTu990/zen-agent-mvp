@@ -84,6 +84,8 @@ export type {
   DomGateContext,
   PrepareFulfillmentIntentInput,
   PrepareFulfillmentIntentResult,
+  ConfirmFulfillmentReceiptInput,
+  ConfirmFulfillmentReceiptResult,
   GateDecisionInput,
   GateDecision,
   HitlGrantInput,

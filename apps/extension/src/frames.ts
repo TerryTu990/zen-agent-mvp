@@ -162,6 +162,8 @@ export interface ExecInstructionFrame {
   type: 'exec-instruction';
   sessionId: string;
   nonce: string;
+  issuedAt: number;
+  expiresAt: number;
   ttl: number;
   signature: string;
   toolCallId: string;

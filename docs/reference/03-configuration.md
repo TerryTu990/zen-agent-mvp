@@ -155,7 +155,7 @@
 | 变量 | 作用 |
 |---|---|
 | `ZA_JWT_SECRET` | JWT 验签密钥（HS256），也是 demo-token 签发密钥 |
-| `ZA_SIGNING_SECRET` | 代执行指令一次性签名密钥（U7） |
+| `ZA_SIGNING_SECRET` | 服务端派生 Ed25519 私钥的一次性指令签名种子（U7）；插件仅经已鉴权 SSE 取得公钥 |
 | `ZA_SNAPSHOT_ROOT` | 快照根目录（§2） |
 
 ### 网络与运行

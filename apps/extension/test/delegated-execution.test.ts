@@ -18,6 +18,8 @@ function instruction(
     type: 'exec-instruction',
     sessionId: 's1',
     nonce: 'n1',
+    issuedAt: 1_000,
+    expiresAt: 61_000,
     ttl: 60000,
     signature: 'sig-not-verified-client-side',
     toolCallId: 'tc1',
@@ -37,6 +39,7 @@ describe('delegated-execution 页面环境代执行', () => {
         },
       },
       () => ({ url: 'https://seller.example/chat/order-b', pageInstanceId: 'page-b' }),
+      () => 2_000,
     );
     const result = await exec.execute(
       instruction({

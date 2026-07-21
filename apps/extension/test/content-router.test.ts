@@ -41,6 +41,8 @@ const execInstruction: ExecInstructionFrame = {
   type: 'exec-instruction',
   sessionId: 's1',
   nonce: 'n1',
+  issuedAt: 1_000,
+  expiresAt: 61_000,
   ttl: 60000,
   signature: 'sig',
   toolCallId: 'tc1',

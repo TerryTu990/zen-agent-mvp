@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { SignJWT } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startServer, type RunningServer } from '../src/index.js';
+import { redactSnapshotValues } from '../src/gateway.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/host-demo/config');
@@ -26,6 +27,18 @@ const REPLY_NO_ANCHOR = 'MOCK-NO-ANCHOR';
 
 const ORDER_LIST_URL = 'http://127.0.0.1:4173/order-list.html';
 const UNKNOWN_URL = 'http://127.0.0.1:4173/unknown.html';
+
+it('服务端二次剥离快照输入值，fill 后失败遗留正文也不进入模型', () => {
+  expect(
+    redactSnapshotValues([
+      { ref: 'za-message', role: 'textarea', label: '消息', value: '不应进入模型' },
+      { ref: 'za-send', role: 'button', label: '发送' },
+    ]),
+  ).toEqual([
+    { ref: 'za-message', role: 'textarea', label: '消息' },
+    { ref: 'za-send', role: 'button', label: '发送' },
+  ]);
+});
 
 interface MockLlmHandle {
   port: number;
@@ -132,6 +145,8 @@ async function openSse(token: string, sessionId: string): Promise<SseHandle> {
   });
   expect(response.status).toBe(200);
   expect(response.headers.get('content-type')).toContain('text/event-stream');
+  expect(response.headers.get('x-zen-agent-exec-algorithm')).toBe('Ed25519');
+  expect(response.headers.get('x-zen-agent-exec-public-key')).toBeTruthy();
   const frames: Array<Record<string, unknown>> = [];
   let rawText = '';
   void (async () => {
@@ -627,6 +642,9 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       messageRef: 'za-message',
       sendRef: 'za-send',
       message: '固定履约消息',
+      receiptEvidenceId: 'message-receipts',
+      receiptBaselineCount: 1,
+      receiptSuccessStatuses: ['未读', '已读'],
       expiresAt: Date.now() + 60_000,
     });
     const previousBaseUrl = baseUrl;
@@ -654,6 +672,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
           { ref: 'za-message', role: 'textarea', label: '请输入消息' },
           { ref: 'za-send', role: 'button', label: '发 送' },
         ],
+        evidence: { 'message-receipts': { count: 1, latest: '已读' } },
       });
       await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
       expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
@@ -673,6 +692,21 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         nonce: String(instruction['nonce']),
         ok: true,
         body: { reads: {}, completedSteps: 2, url: pageUrl },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 2);
+      const receiptSnapshot = framesByType(sse.frames, 'snapshot-request')[1]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(receiptSnapshot['requestId']),
+        url: pageUrl,
+        pageInstanceId: 'page-instance-a',
+        title: '买家联系',
+        elements: [
+          { ref: 'za-message-2', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send-2', role: 'button', label: '发 送' },
+        ],
+        evidence: { 'message-receipts': { count: 2, latest: '未读' } },
       });
       await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-fulfillment.execute-intent') === 'succeeded');
     } finally {

@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, randomUUID, sign as signBytes } from 'node:crypto';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import {
   isDomTool,
@@ -23,6 +23,8 @@ import type {
   Observation,
   PrepareFulfillmentIntentInput,
   PrepareFulfillmentIntentResult,
+  ConfirmFulfillmentReceiptInput,
+  ConfirmFulfillmentReceiptResult,
   SiteDescriptor,
   ToolDefinition,
   ToolGatePort,
@@ -83,9 +85,17 @@ function stableStringify(value: JsonValue): string {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k] as JsonValue)}`).join(',')}}`;
 }
 
-/** HMAC-SHA256（hex）over 稳定键序 JSON；同 secret 可复算校验，值/键改变则签名变。 */
+const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
+
+/** 从部署 secret 单向派生 Ed25519 私钥；插件只取得对应公钥，私钥不离开服务端。 */
+function execSigningPrivateKey(secret: string) {
+  const seed = createHash('sha256').update(secret).digest();
+  return createPrivateKey({ key: Buffer.concat([ED25519_PKCS8_PREFIX, seed]), format: 'der', type: 'pkcs8' });
+}
+
+/** Ed25519 over 稳定键序 JSON；同部署 secret 可复算，值/键改变则验签失败。 */
 export function computeExecSignature(secret: string, payload: JsonValue): string {
-  return createHmac('sha256', secret).update(stableStringify(payload)).digest('hex');
+  return signBytes(null, Buffer.from(stableStringify(payload)), execSigningPrivateKey(secret)).toString('base64url');
 }
 
 /** 一次性 nonce 登记项：核销依据（一次性 + ttl，U7）。 */
@@ -264,6 +274,9 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   const grantTtlMs = options.hitlGrantTtlMs ?? DEFAULT_HITL_GRANT_TTL_MS;
   const now = options.now ?? Date.now;
   const store = new InMemoryNonceStore();
+  const execVerificationKey = createPublicKey(execSigningPrivateKey(options.signingSecret))
+    .export({ format: 'der', type: 'spki' })
+    .toString('base64url');
   // 任务级 HITL 授权：key=(sessionId,task) → 最近使用时刻（滑动 TTL）。同任务跨工具共享授权
   // （用户批准的是任务，不是某个工具）；进程内即可，随会话生命周期。
   const hitlGrants = new Map<string, number>();
@@ -570,14 +583,18 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     return { verdict: 'deny', reason };
   }
 
-  /** 一次性签名并登记 nonce（U7）：签名精确覆盖将执行的 {nonce,ttl,toolCallId,request}，客户端执行前校验完整性。 */
+  /** 一次性签名并登记 nonce（U7）：Ed25519 精确覆盖绝对时限与最终请求，插件副作用前验签。 */
   function signInstruction(
     input: IssueExecInstructionInput,
     request: ExecRequest | DomExecRequest,
   ): ExecInstructionFrame {
     const nonce = randomUUID();
+    const issuedAt = now();
+    const expiresAt = issuedAt + ttlMs;
     const signature = computeExecSignature(options.signingSecret, {
       nonce,
+      issuedAt,
+      expiresAt,
       ttl: ttlMs,
       toolCallId: input.toolCallId,
       request: request as unknown as JsonValue,
@@ -587,7 +604,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     store.put(nonce, {
       toolId: input.toolId,
       toolCallId: input.toolCallId,
-      issuedAt: now(),
+      issuedAt,
       ttl: ttlMs,
       consumed: false,
       ...(fulfillmentReservationKey !== undefined ? { fulfillmentReservationKey } : {}),
@@ -597,6 +614,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       type: 'exec-instruction',
       sessionId: input.sessionId,
       nonce,
+      issuedAt,
+      expiresAt,
       ttl: ttlMs,
       signature,
       toolCallId: input.toolCallId,
@@ -605,6 +624,10 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   }
 
   return {
+    async getExecVerificationKey() {
+      return { algorithm: 'Ed25519', publicKey: execVerificationKey };
+    },
+
     async prepareFulfillmentIntent(
       input: PrepareFulfillmentIntentInput,
     ): Promise<PrepareFulfillmentIntentResult> {
@@ -627,6 +650,12 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         input.sendRef.trim() === '' ||
         input.messageRef === input.sendRef ||
         input.message === '' ||
+        !/^[a-z][a-z0-9-]{0,63}$/.test(input.receiptEvidenceId) ||
+        !Number.isInteger(input.receiptBaselineCount) ||
+        input.receiptBaselineCount < 0 ||
+        input.receiptSuccessStatuses.length === 0 ||
+        input.receiptSuccessStatuses.some((status) => status.trim() === '') ||
+        new Set(input.receiptSuccessStatuses).size !== input.receiptSuccessStatuses.length ||
         !Number.isInteger(input.quantity) ||
         input.quantity < 1 ||
         input.expiresAt <= now()
@@ -655,6 +684,26 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         ],
       });
       return { intentId };
+    },
+
+    async confirmFulfillmentReceipt(
+      input: ConfirmFulfillmentReceiptInput,
+    ): Promise<ConfirmFulfillmentReceiptResult> {
+      const keyForCall = callKey(input.sessionId, input.toolCallId);
+      const reservationKey = reservationByCall.get(keyForCall);
+      const intentId = intentByCall.get(keyForCall);
+      const reservation = reservationKey === undefined ? undefined : fulfillmentReservations.get(reservationKey);
+      const intent = intentId === undefined ? undefined : fulfillmentIntents.get(intentId);
+      if (reservation?.state !== 'pending' || intent === undefined) {
+        return { confirmed: false, state: 'uncertain' };
+      }
+      const receipt = input.evidence[intent.receiptEvidenceId];
+      const confirmed =
+        receipt !== undefined &&
+        receipt.count === intent.receiptBaselineCount + 1 &&
+        intent.receiptSuccessStatuses.includes(receipt.latest);
+      reservation.state = confirmed ? 'completed' : 'uncertain';
+      return { confirmed, state: reservation.state };
     },
 
     async decide(input: GateDecisionInput): Promise<GateDecision> {
@@ -850,10 +899,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
           if (reservation?.state === 'pending') reservation.state = 'uncertain';
         }
         return { toolCallId: record.toolCallId, ok: false, content: null, error: 'invalid-result' };
-      }
-      if (record.fulfillmentReservationKey !== undefined) {
-        const reservation = fulfillmentReservations.get(record.fulfillmentReservationKey);
-        if (reservation?.state === 'pending') reservation.state = 'completed';
       }
       return { toolCallId: record.toolCallId, ok: true, content: body };
     },

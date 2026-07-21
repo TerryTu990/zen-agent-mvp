@@ -16,8 +16,8 @@
 - Phase 2C（2026-07-22）：对用户明确指定的一笔历史已发货订单完成一次相同履约通知重发；发送前核对订单号与路由，发送后以消息回执数增加及最新“未读”状态确认成功，未点击任何订单状态动作。
 - Phase 2C 实现：pack 升至 0.4.0；站点证据配方归属 DOM adapter，由服务端随 `snapshot-request` 下发，extension 只按唯一消息容器采集 `count + latest` 状态枚举，不认识闲鱼 class、不采集消息正文；成功判据收敛为回执数恰好增加 1 且最新为“未读/已读”。
 - Phase 2C 验证：闲鱼 18 个需求场景各 3 跑（54/54）通过；全仓 dependency lint、build 与 445 项串行测试通过。覆盖明确成功、同一气泡多状态去重、嵌套容器命中去重、非闲鱼无配方不采集、旧回执不误判、跨回合基线隔离、登录失效、验证码、发送超时、用户停止、结果不明确不重发和 every-call；关键异常场景按目标 `toolCallId` 硬断言 `snapshot → exec → snapshot` 帧序列。
-- Phase 2D 实现：新增 ADR-016 与 `bounded-fulfillment` 一次性意图。可信连接器在服务端登记账号、精确页面 URL/页面生命周期、商品、规范化订单、数量、输入/发送 ref 与固定正文；模型只传 opaque `intentId`，toolgate 自行构造唯一 `fill → click`。toolgate 联合校验策略/工具/所属站点、原子预占跨策略订单唯一键，并以调用单向状态机禁止同 call 重复签发；签名请求携带页面围栏，插件执行前机械拒绝切页/刷新。网关按指令 TTL 主动终止无回执等待。重复订单、失败、超时或不明确结果进入人工路径且不自动重试；现有自由文本测试发送始终 every-call。
-- Phase 2D 验证：闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件通过；真实 gateway/toolgate 协议 E2E 证明模型只传 `intentId`、无 HITL、签名指令取服务端固定“填写 + 点击”步骤；另覆盖同 call 在预占/签发/成功/不确定状态的重放、切页/页面生命周期变化、错误控件角色、运营日边界、客户端无结果主动 TTL 与迟到回执 409。全仓 dependency lint、build、459 项串行测试与 `git diff --check` 通过；定向计数为 toolgate 76、extension 103、server 97，待再次独立复审。
+- Phase 2D 实现：新增 ADR-016 与 `bounded-fulfillment` 一次性意图。可信连接器在服务端登记账号、精确页面 URL/页面生命周期、商品、规范化订单、数量、输入/发送 ref、回执基线与固定正文；模型只传 opaque `intentId`，toolgate 自行构造唯一 `fill → click`。toolgate 联合校验策略/工具/所属站点、原子预占跨策略订单唯一键，并以调用单向状态机禁止同 call 重复签发；服务端 Ed25519 私钥签名绝对时限与最终请求，插件从已鉴权 SSE 取得公钥，在副作用前验签、验过期、持久化 nonce 防重放并机械拒绝切页/刷新。输入值不采集且由网关二次剥离。DOM 两步成功后仍需新快照回执数恰增 1 才完成；其余进入人工路径且不自动重试。
+- Phase 2D 验证：闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件通过；真实 gateway/toolgate 协议 E2E 覆盖 opaque `intentId`、固定两步、发送后回执数恰增 1 才完成。对抗测试覆盖同 call 各状态重放、Ed25519 request 篡改、绝对过期、插件 nonce 重放、切页/页面生命周期变化、错误控件角色、fill 后失败快照脱敏、`completedSteps=2` 契约、运营日边界、客户端无结果主动 TTL 与迟到回执 409；生产实现另将已验签 nonce 写入 `chrome.storage.session` 以跨 SW 重启保留。全仓 dependency lint、build、463 项串行测试与 `git diff --check` 通过；定向计数为 toolgate 77、extension 105、server 98，等待第四轮独立复审。
 - 当前账号待发货计数仍为零，订单发货状态更新保留到出现一笔明确授权的低价值待发货测试单时验证；不阻塞只依赖消息通知闭环的 Phase 2D/Phase 3。
 
 ## 一、目标、边界与成功标准

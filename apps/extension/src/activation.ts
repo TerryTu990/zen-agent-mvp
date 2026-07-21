@@ -49,3 +49,6 @@ export const panelGroupKey = (windowId: number): string => 'za.panelGroup.w' + w
 
 /** Side Panel 可重放 UI 事件的 session-scoped 存根。 */
 export const panelHistoryKeyForGroup = (groupId: number): string => 'za.panelHistory.g' + groupId;
+
+/** 已验签并即将/已经执行的 nonce；storage.session 持久化以跨 service worker 重启防重放。 */
+export const execNonceKeyForGroup = (groupId: number): string => 'za.execNonces.g' + groupId;

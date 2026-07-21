@@ -8,6 +8,7 @@ import {
   autoGroupKey,
   panelGroupKey,
   panelHistoryKeyForGroup,
+  execNonceKeyForGroup,
   TAB_GROUP_ID_NONE,
 } from './activation.js';
 import {
@@ -22,6 +23,7 @@ import {
   type BackgroundRuntimeMessage,
 } from './messaging.js';
 import { reducePanelHistory, removeSettledHitl } from './panel-history.js';
+import { verifyExecInstruction } from './exec-verification.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
 // 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
@@ -35,6 +37,11 @@ interface Session {
   baseUrl: string;
   token: string;
   sessionId: string;
+}
+
+interface EventStream {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  execPublicKey: string;
 }
 
 async function readServerBaseUrl(): Promise<string> {
@@ -85,6 +92,24 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   const pendingPanels = new Set<chrome.runtime.Port>();
   let panelHistory: SidePanelUiEvent[] = [];
   const historyKey = panelHistoryKeyForGroup(groupId);
+  const nonceKey = execNonceKeyForGroup(groupId);
+  const seenExecNonces = new Set<string>();
+  let nonceHistory: Array<{ nonce: string; expiresAt: number }> = [];
+  const nonceHistoryReady = chrome.storage.session.get(nonceKey).then((items) => {
+    const stored = items[nonceKey];
+    if (!Array.isArray(stored)) return;
+    nonceHistory = stored.filter(
+      (item): item is { nonce: string; expiresAt: number } =>
+        typeof item === 'object' &&
+        item !== null &&
+        'nonce' in item &&
+        typeof item.nonce === 'string' &&
+        'expiresAt' in item &&
+        typeof item.expiresAt === 'number' &&
+        item.expiresAt >= Date.now(),
+    );
+    for (const entry of nonceHistory) seenExecNonces.add(entry.nonce);
+  });
   let historyChain = chrome.storage.session.get(historyKey).then((items) => {
     const stored = items[historyKey];
     if (Array.isArray(stored)) panelHistory = stored as SidePanelUiEvent[];
@@ -160,9 +185,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     const storedId = (await chrome.storage.session.get(key))[key];
     if (typeof storedId === 'string' && storedId !== '') {
       const resumed: Session = { baseUrl, token, sessionId: storedId };
-      const reader = await openEventStream(resumed, true);
-      if (reader !== null) {
-        void drainEvents(reader);
+      const stream = await openEventStream(resumed, true);
+      if (stream !== null) {
+        void drainEvents(stream);
         return resumed;
       }
       // 复用失败（会话已失效/服务端重启）：清存根，落到新建。
@@ -190,9 +215,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     await chrome.storage.session.set({ [key]: sessionId });
     const session = { baseUrl, token, sessionId };
     // 先建立 SSE 订阅再返回：否则首个 user-message 触发的回合可能早于订阅注册而丢失下行帧（订阅竞态）。
-    const reader = await openEventStream(session);
-    if (reader === null) return null;
-    void drainEvents(reader);
+    const stream = await openEventStream(session);
+    if (stream === null) return null;
+    void drainEvents(stream);
     return session;
   }
 
@@ -211,7 +236,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   async function openEventStream(
     { baseUrl, token, sessionId }: Session,
     quiet = false,
-  ): Promise<ReadableStreamDefaultReader<Uint8Array> | null> {
+  ): Promise<EventStream | null> {
     let response: Response;
     try {
       response = await fetch(`${baseUrl}/v1/sessions/${sessionId}/events`, {
@@ -222,14 +247,16 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       if (!abort.signal.aborted && !quiet) postStatus('事件流连接中断');
       return null;
     }
-    if (!response.ok || response.body === null) {
+    const algorithm = response.headers.get('x-zen-agent-exec-algorithm');
+    const execPublicKey = response.headers.get('x-zen-agent-exec-public-key');
+    if (!response.ok || response.body === null || algorithm !== 'Ed25519' || !execPublicKey) {
       if (!quiet) postStatus(`事件流建立失败（HTTP ${response.status}）`);
       return null;
     }
-    return response.body.getReader();
+    return { reader: response.body.getReader(), execPublicKey };
   }
 
-  async function drainEvents(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  async function drainEvents({ reader, execPublicKey }: EventStream): Promise<void> {
     const decoder = new TextDecoder();
     const parser = createSseParser();
     try {
@@ -239,6 +266,41 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         for (const payload of parser.push(decoder.decode(value, { stream: true }))) {
           try {
             const frame = JSON.parse(payload) as DownstreamFrame;
+            if (frame.type === 'exec-instruction') {
+              await nonceHistoryReady;
+              const verified = await verifyExecInstruction(frame, execPublicKey, seenExecNonces);
+              if (!verified.ok) {
+                void forward({
+                  kind: 'exec-result',
+                  result: {
+                    type: 'exec-result',
+                    sessionId: frame.sessionId,
+                    nonce: frame.nonce,
+                    ok: false,
+                    error: verified.error,
+                  },
+                });
+                continue;
+              }
+              nonceHistory = nonceHistory.filter((entry) => entry.expiresAt >= Date.now());
+              nonceHistory.push({ nonce: frame.nonce, expiresAt: frame.expiresAt });
+              try {
+                await chrome.storage.session.set({ [nonceKey]: nonceHistory });
+              } catch {
+                seenExecNonces.delete(frame.nonce);
+                void forward({
+                  kind: 'exec-result',
+                  result: {
+                    type: 'exec-result',
+                    sessionId: frame.sessionId,
+                    nonce: frame.nonce,
+                    ok: false,
+                    error: 'instruction-nonce-store-failed',
+                  },
+                });
+                continue;
+              }
+            }
             postFrame(routeForFrame(frame), frame);
           } catch {
             postStatus('收到无法解析的下行帧，已丢弃');
@@ -593,6 +655,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 // 组关闭=关会话：清 groupId→sessionId 存根并关桥（storage.session 存根在此才清，区别于组内换页重连）。
 chrome.tabGroups.onRemoved.addListener((group) => {
   void chrome.storage.session.remove(sessionKeyForGroup(group.id)).catch(() => {});
+  void chrome.storage.session.remove(execNonceKeyForGroup(group.id)).catch(() => {});
   const bridge = groups.get(group.id);
   if (bridge !== undefined) {
     bridge.close();

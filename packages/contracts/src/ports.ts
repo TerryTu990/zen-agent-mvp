@@ -7,7 +7,12 @@
 import type { JsonObject, JsonValue } from './json.js';
 import type { ToolDefinition } from './tool-definition.js';
 import type { IdentityClaims } from './identity-claims.js';
-import type { ExecInstructionFrame, ExecResultFrame, SnapshotElement } from './client-access-layer.js';
+import type {
+  ExecInstructionFrame,
+  ExecResultFrame,
+  SnapshotElement,
+  SnapshotEvidence,
+} from './client-access-layer.js';
 import type { AuditEvent, GateVerdict } from './audit-event.js';
 
 // ---- AssemblyPort（②会话网关 ← ⑤配置中心：featureId 定位 + 注入组合）----
@@ -163,11 +168,25 @@ export interface PrepareFulfillmentIntentInput {
   messageRef: string;
   sendRef: string;
   message: string;
+  receiptEvidenceId: string;
+  receiptBaselineCount: number;
+  receiptSuccessStatuses: string[];
   expiresAt: number;
 }
 
 export interface PrepareFulfillmentIntentResult {
   intentId: string;
+}
+
+export interface ConfirmFulfillmentReceiptInput {
+  sessionId: string;
+  toolCallId: string;
+  evidence: Record<string, SnapshotEvidence>;
+}
+
+export interface ConfirmFulfillmentReceiptResult {
+  confirmed: boolean;
+  state: 'completed' | 'uncertain';
 }
 
 /**
@@ -232,8 +251,12 @@ export interface HitlGrantInput {
 }
 
 export interface ToolGatePort {
+  /** 插件经已鉴权 SSE 响应取得的 Ed25519 SPKI 公钥；仅用于指令验签。 */
+  getExecVerificationKey(): Promise<{ algorithm: 'Ed25519'; publicKey: string }>;
   /** 仅供 apps/server 内可信连接器调用；不暴露为模型工具或客户端 API。 */
   prepareFulfillmentIntent(input: PrepareFulfillmentIntentInput): Promise<PrepareFulfillmentIntentResult>;
+  /** DOM 执行成功后，以发送后新快照回执确认最终交付；未精确增加 1 一律 uncertain。 */
+  confirmFulfillmentReceipt(input: ConfirmFulfillmentReceiptInput): Promise<ConfirmFulfillmentReceiptResult>;
   decide(input: GateDecisionInput): Promise<GateDecision>;
   /**
    * 登记任务级授权：同 (sessionId,task) 的后续 decide 放行（跨工具共享，every-call 工具除外），

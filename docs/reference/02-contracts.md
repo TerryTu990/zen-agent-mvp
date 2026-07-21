@@ -102,7 +102,7 @@
 
 **端口语义**（方法闭集以 `ports.ts` 为准，此处为语义导览）：
 - `AssemblyPort`（②网关 ← ⑤配置中心）：`resolveFeature`（url → pack 激活 + featureId，返回含 packId/packVersion/snapshotVersion）、`compose`（每轮换出：基座 + 站点索引 + feature.md + facts.md + skills + 工具白名单 + docs 索引）、`describeInjection`（注入自省，与 compose 同源，喂审计 assembly 事件）、`readPackDoc`（pack_doc 渐进披露正文，路径穿越 fail-closed）、`allTools`/`listSites`/`listToolOwnership`（启动期汇总：toolgate 判定闭集 / site 围栏 / 命名空间纪律）。
-- `ToolGatePort`（③工具执行层）：`decide`（唯一决策点：分级矩阵 + 身份/实参/dom 步骤/围栏校验 + 任务级授权复用，fail-closed；入参含 packOrigin/claimsForOrigin/domContext）、`grantHitl`（HITL 批准后登记 `(sessionId,task)` 授权）、`issueExecInstruction`（签发一次性签名指令，前提 = decide 放行）、`acceptExecResult`（核销 nonce + 验 ttl + resultSchema 校验 → 规整 observation；user-stopped 吊销本会话授权）、`executeServer`（server 通道直调：渲染 + credentialRef 凭证注入 + 结果校验）。
+- `ToolGatePort`（③工具执行层）：`decide`（唯一决策点：分级矩阵 + 身份/实参/dom 步骤/围栏校验 + 任务级授权复用，fail-closed；入参含 packOrigin/claimsForOrigin/domContext）、`grantHitl`（HITL 批准后登记 `(sessionId,task)` 授权）、`getExecVerificationKey`（只读 Ed25519 公钥）、`issueExecInstruction`（签发带绝对时限的一次性指令，前提 = decide 放行）、`acceptExecResult`（核销 nonce + 验 ttl + resultSchema 校验 → 规整 observation）、`confirmFulfillmentReceipt`（发送后结构化回执确认 `completed/uncertain`）、`executeServer`（server 通道直调：渲染 + credentialRef 凭证注入 + 结果校验）。
 - `LlmPort`（④LLM 接入层）：`chat` 返回 `AsyncIterable<LlmStreamEvent>`——流式 RPC 的进程内投影，逐事件 JSON 可序列化，仍满足 U1；done 事件携 `usage`（历史压缩触发依据）与 `errorKind`（invalid-tool-args 自愈信号）；provider 白名单与密钥托管在实现侧，不进契约。
 - `AuditPort`（⑦观测审计）：`record` 为 record-only 旁路，实现不抛异常、失败仅本地日志。
 

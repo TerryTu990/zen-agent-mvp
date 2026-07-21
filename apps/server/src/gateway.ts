@@ -285,6 +285,11 @@ function originOf(url: string): string {
   }
 }
 
+/** 输入控件值永不进入 toolgate 以外的快照上下文；即使旧/篡改客户端上报也在服务端剥离。 */
+export function redactSnapshotValues(elements: SnapshotReportFrame['elements']): SnapshotReportFrame['elements'] {
+  return elements.map(({ value: _value, ...element }) => element);
+}
+
 /**
  * 把 guide_highlight tool-call 的实参规整为下行页面动作帧；message 缺省则省略（U1 纯数据）。
  * action 越 highlight|scroll-to 闭集或 selector 非非空串 → null：服务端不下发违反 C3 契约的帧
@@ -353,6 +358,8 @@ interface SessionRuntime {
   pendingSnapshot: Map<string, (report: SnapshotReportFrame) => void>;
   /** 最近一次快照的判定上下文（ref 闭集 + 页路径）；dom 签发校验依据，无快照即 deny。 */
   domContext: DomGateContext | null;
+  /** DOM 两步成功后仍待下一次页面回执确认的有界履约调用。 */
+  pendingFulfillmentVerification: { toolCallId: string; toolId: string; mode: 'client' | 'server' } | null;
 }
 
 export function createGateway(deps: GatewayDeps): Gateway {
@@ -433,6 +440,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         pendingExec: new Map(),
         pendingSnapshot: new Map(),
         domContext: null,
+        pendingFulfillmentVerification: null,
       };
       runtimes.set(sessionId, runtime);
     }
@@ -628,7 +636,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (typeof execResult.status === 'number') status = execResult.status;
       observation = await deps.toolgate.acceptExecResult({ sessionId, result: execResult });
     }
-    finish(observation.ok ? 'succeeded' : 'failed');
+    if (tool.authorization?.kind === 'bounded-fulfillment' && observation.ok) {
+      runtimeOf(sessionId).pendingFulfillmentVerification = { toolCallId, toolId: tool.id, mode };
+    } else {
+      finish(observation.ok ? 'succeeded' : 'failed');
+    }
     recordEvent(sessionId, claims, featureId, {
       type: 'tool-execution',
       data: {
@@ -823,14 +835,33 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ...(evidenceRules.length > 0 ? { evidenceRules } : {}),
         });
         const report = await reported;
-        runtimeOf(sessionId).domContext = {
-          refs: report.elements.map((element) => element.ref),
+        const safeElements = redactSnapshotValues(report.elements);
+        const runtime = runtimeOf(sessionId);
+        runtime.domContext = {
+          refs: safeElements.map((element) => element.ref),
           path: pathOf(report.url),
           origin: originOf(report.url),
           url: report.url,
           ...(report.pageInstanceId !== undefined ? { pageInstanceId: report.pageInstanceId } : {}),
-          elements: report.elements,
+          elements: safeElements,
         };
+        const pendingFulfillment = runtime.pendingFulfillmentVerification;
+        if (pendingFulfillment !== null) {
+          const confirmation = await deps.toolgate.confirmFulfillmentReceipt({
+            sessionId,
+            toolCallId: pendingFulfillment.toolCallId,
+            evidence: report.evidence ?? {},
+          });
+          broadcast(sessionId, {
+            type: 'tool-card',
+            sessionId,
+            toolCallId: pendingFulfillment.toolCallId,
+            toolId: pendingFulfillment.toolId,
+            status: confirmation.confirmed ? 'succeeded' : 'failed',
+            mode: pendingFulfillment.mode,
+          });
+          runtime.pendingFulfillmentVerification = null;
+        }
         const snapshotEcho: LlmMessage = {
           role: 'assistant',
           content: roundText,
@@ -842,7 +873,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           content: JSON.stringify({
             url: report.url,
             title: report.title ?? '',
-            elements: report.elements,
+            elements: safeElements,
             ...(report.notices !== undefined ? { notices: report.notices } : {}),
             ...(report.evidence !== undefined ? { evidence: report.evidence } : {}),
           }),
@@ -1131,11 +1162,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
     }
   }
 
-  function handleEvents(res: ServerResponse, session: SessionState): void {
+  async function handleEvents(res: ServerResponse, session: SessionState): Promise<void> {
+    const verification = await deps.toolgate.getExecVerificationKey();
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
       connection: 'keep-alive',
+      'x-zen-agent-exec-algorithm': verification.algorithm,
+      'x-zen-agent-exec-public-key': verification.publicKey,
+      'access-control-expose-headers': 'x-zen-agent-exec-algorithm,x-zen-agent-exec-public-key',
       ...corsHeaders,
     });
     res.write(': ping\n\n');
@@ -1244,7 +1279,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         }
       }
       if (match[2] === 'frames' && req.method === 'POST') return handleFrames(req, res, session, claims);
-      if (match[2] === 'events' && req.method === 'GET') return handleEvents(res, session);
+      if (match[2] === 'events' && req.method === 'GET') return await handleEvents(res, session);
       if (match[2] === 'injection' && req.method === 'GET') return handleInjection(res, session);
     }
     sendJson(res, 404, { error: '未知路由' });

@@ -89,6 +89,9 @@ describe('xianyu-seller pack 装配', () => {
       hitlMode: 'every-call',
       execution: 'client',
       authorization: { kind: 'bounded-fulfillment', intentIdParam: 'intentId' },
+      resultSchema: {
+        properties: { completedSteps: { type: 'integer', const: 2 } },
+      },
     });
   });
 

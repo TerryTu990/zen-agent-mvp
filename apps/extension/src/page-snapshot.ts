@@ -206,19 +206,6 @@ function collectEvidence(
   return evidence;
 }
 
-function valueOf(el: Element): string | undefined {
-  if (
-    el instanceof HTMLInputElement ||
-    el instanceof HTMLSelectElement ||
-    el instanceof HTMLTextAreaElement
-  ) {
-    // 密码框值绝不进快照（SEC-04：快照会进 LLM 上下文与审计面）。
-    if (el instanceof HTMLInputElement && el.type === 'password') return undefined;
-    return el.value === '' ? undefined : el.value.slice(0, MAX_LABEL_LENGTH);
-  }
-  return undefined;
-}
-
 /**
  * 同源 iframe 的子文档（ADR-013 批次④ 方案 A）：contentDocument 可达即同源、返回其 document；
  * 跨源浏览器返回 null 或抛安全错误——一律视为不可下钻、跳过。
@@ -248,7 +235,6 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
         seq += 1;
         const ref = `${framePrefix}za-${seq}`;
         refs.set(ref, el);
-        const value = valueOf(el);
         const disabled = el instanceof HTMLButtonElement || el instanceof HTMLInputElement
           ? el.disabled
           : false;
@@ -256,7 +242,6 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
           ref,
           role: roleOf(el),
           label: labelOf(el),
-          ...(value !== undefined ? { value } : {}),
           ...(disabled ? { disabled } : {}),
         });
       };

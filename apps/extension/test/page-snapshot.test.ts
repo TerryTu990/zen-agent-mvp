@@ -37,7 +37,7 @@ describe('createSnapshotter：可交互元素采集与 ref 映射', () => {
     expect(elements[0]).toMatchObject({ label: '可见按钮' });
   });
 
-  it('密码框值不进快照（SEC-04）；普通输入值与 disabled 如实采集', () => {
+  it('任何输入值均不进快照；fill 成功但后续 click 失败也不会把正文送入模型', () => {
     document.body.innerHTML = `
       <input type="password" value="s3cret" aria-label="密码" />
       <input type="text" value="my-key" aria-label="名称" />
@@ -45,7 +45,7 @@ describe('createSnapshotter：可交互元素采集与 ref 映射', () => {
     `;
     const { elements } = createSnapshotter().collect();
     expect(elements[0]).not.toHaveProperty('value');
-    expect(elements[1]).toMatchObject({ value: 'my-key' });
+    expect(elements[1]).not.toHaveProperty('value');
     expect(elements[2]).toMatchObject({ disabled: true });
   });
 
