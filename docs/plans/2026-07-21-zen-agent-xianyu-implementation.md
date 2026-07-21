@@ -1,6 +1,6 @@
 # Zen Agent Chrome 形态与闲鱼站点能力实施方案
 
-> 状态：执行中（2026-07-21，分支 `codex/zen-agent-xianyu-plan`）；Phase 1 已通过验证门，下一节点为 Phase 2A 只读真机侦察。
+> 状态：执行中（2026-07-21，分支 `codex/zen-agent-xianyu-plan`）；Phase 1 已通过验证门，Phase 2A 只读真机侦察已完成，下一节点为 Phase 2B 站点包与技能。
 > 本文把产品讨论收敛为可逐批实施、验证和回滚的开发方案；产品主体始终是通用 **Zen Agent**，闲鱼是首个生产级站点能力包，不建立“闲鱼专用助手”分叉。
 > 各阶段只有通过本阶段验证门后才能进入下一阶段。
 
@@ -9,6 +9,8 @@
 - Phase 1（2026-07-21）：Chrome Side Panel、UI/执行路由拆分、会话恢复、执行偏好已实现。
 - 自动验证：`pnpm lint:deps`、`pnpm -r build`、全仓串行测试共 427 项通过。
 - 浏览器 E2E：Side Panel 壳、M1、M2、M3、M5 全部通过；覆盖重开、service worker 重启、跨站任务组、组外隔离、停止授权吊销和执行偏好 fail-closed。
+- Phase 2A（2026-07-21）：已在登录态闲鱼卖家 PC 端完成只读真机侦察；订单状态、订单号、详情与联系入口均可由页面证据到达，记录见 `docs/research/2026-07-21-xianyu-seller-readonly-spike.md`。
+- Phase 2A E2E：数据总览 → 订单管理、待发货筛选空态、订单详情新标签页路由均已验证；当前账号待发货为零，未触发任何发送/发货副作用。
 
 ## 一、目标、边界与成功标准
 
