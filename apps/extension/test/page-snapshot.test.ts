@@ -259,6 +259,21 @@ describe('createSnapshotter：页面提示文本 notices 采集', () => {
     expect(JSON.stringify(notices)).not.toContain('兑换内容');
   });
 
+  it('回执只接受叶节点状态枚举，嵌套容器不重复计数也不泄漏正文', () => {
+    document.body.innerHTML = `
+      <div class="message-status">
+        兑换内容不应进入 notices
+        <span class="read-status">已读</span>
+      </div>
+      <span class="send-status">未知自定义状态</span>
+      <span class="message-status">未读</span>
+    `;
+    const { notices } = createSnapshotter().collect();
+    expect(notices).toEqual(['消息回执数：2；最新：未读']);
+    expect(JSON.stringify(notices)).not.toContain('兑换内容');
+    expect(JSON.stringify(notices)).not.toContain('未知自定义状态');
+  });
+
   it('class 启发式跳过长容器与含表单控件的区块', () => {
     document.body.innerHTML = `
       <div class="error-panel">${'长'.repeat(201)}</div>

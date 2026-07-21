@@ -341,8 +341,8 @@ async function driveTurn(sessionId, token, scenario, bus) {
       .all()
       .some((f) => f.type === 'tool-card' && f.status !== 'running');
     const settled = bus.idleMs() > QUIET_MS && (text !== '' || guideFrame !== null || toolCardSettled);
-    if (settled) return { text, guideFrame };
-    if (Date.now() > deadline) return { text, guideFrame, timedOut: true };
+    if (settled) return { text, guideFrame, frames: bus.all() };
+    if (Date.now() > deadline) return { text, guideFrame, frames: bus.all(), timedOut: true };
     await sleep(POLL_MS);
   }
 }
@@ -382,6 +382,27 @@ function evaluateOutcome(scenario, outcome) {
   }
   if (outcome.timedOut && reasons.length === 0 && text === '' && outcome.guideFrame === null) {
     reasons.push('等待下行帧超时（15s）且无任何可判定内容');
+  }
+  const frames = outcome.frames ?? [];
+  const expectedCounts = expect.frameCounts ?? {};
+  const actualCounts = {
+    targetToolCalls: frames.filter(
+      (frame) =>
+        frame.type === 'tool-card' &&
+        frame.status === 'running' &&
+        (expect.targetToolId === undefined || frame.toolId === expect.targetToolId),
+    ).length,
+    execInstructions: new Set(
+      frames.filter((frame) => frame.type === 'exec-instruction').map((frame) => frame.nonce),
+    ).size,
+    snapshotRequests: new Set(
+      frames.filter((frame) => frame.type === 'snapshot-request').map((frame) => frame.requestId),
+    ).size,
+  };
+  for (const [name, expected] of Object.entries(expectedCounts)) {
+    if (actualCounts[name] !== expected) {
+      reasons.push(`帧计数 ${name} 期望 ${expected}，实际 ${actualCounts[name] ?? '未知'}`);
+    }
   }
   return { pass: reasons.length === 0, reasons };
 }

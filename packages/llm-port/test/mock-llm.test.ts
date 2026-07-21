@@ -105,6 +105,32 @@ describe('mock LLM 确定性规则', () => {
     expect(contentOf(payloads).join('')).toBe('MOCK-DEFAULT');
   });
 
+  it('闲鱼发送成功判据不复用上一用户回合的旧回执基线', async () => {
+    const { payloads } = await postChat({
+      model: 'mock-model',
+      stream: true,
+      tools: [
+        { function: { name: 'page_snapshot' } },
+        { function: { name: 'xianyu-fulfillment.send-test-message' } },
+      ],
+      messages: [
+        { role: 'system', content: 'xianyu-fulfillment' },
+        { role: 'user', content: '上一回合发送闲鱼测试消息' },
+        { role: 'tool', content: '{"elements":[],"notices":["消息回执数：3；最新：已读"]}' },
+        { role: 'user', content: '本回合发送闲鱼测试消息' },
+        { role: 'tool', content: '{"elements":[],"notices":[]}' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{ function: { name: 'xianyu-fulfillment.send-test-message' } }],
+        },
+        { role: 'tool', content: '{"ok":true}' },
+        { role: 'tool', content: '{"elements":[],"notices":["消息回执数：4；最新：未读"]}' },
+      ],
+    });
+    expect(contentOf(payloads).join('')).toContain('结果不明确');
+  });
+
   it('非流式请求 → 400', async () => {
     const { status } = await postChat({
       model: 'mock-model',

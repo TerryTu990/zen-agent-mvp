@@ -195,9 +195,17 @@ function firstBlockingNotice(obs) {
   return blocking ?? null;
 }
 
-function receiptCounts(body) {
+function receiptCountsSinceLastUser(body) {
   const counts = [];
-  for (const message of body?.messages ?? []) {
+  const messages = body?.messages ?? [];
+  let start = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      start = index + 1;
+      break;
+    }
+  }
+  for (const message of messages.slice(start)) {
     if (message?.role !== 'tool') continue;
     const match = String(message.content ?? '').match(/消息回执数：(\d+)；最新：(未读|已读|发送中|失败)/);
     if (match) counts.push(Number(match[1]));
@@ -464,7 +472,7 @@ function decide(sys, u, body) {
     if (xianyuSendCount > 0 && obs.includes('"elements"')) {
       const blocking = firstBlockingNotice(obs);
       if (blocking !== null) return { text: `页面提示：${blocking}，发送结果不明确；已停止且不会自动重发。` };
-      const counts = receiptCounts(body);
+      const counts = receiptCountsSinceLastUser(body);
       const prior = counts[counts.length - 2];
       const current = counts[counts.length - 1];
       const latestNotice = firstNotice(obs);

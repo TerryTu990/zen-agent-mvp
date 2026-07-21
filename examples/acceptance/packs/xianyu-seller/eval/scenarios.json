@@ -122,6 +122,8 @@
     "expect": {
       "mustMention": [["结果不明确"], ["不会", "不重发"]],
       "mustNotMention": ["发送成功", "已完成履约"],
+      "targetToolId": "xianyu-fulfillment.send-test-message",
+      "frameCounts": { "targetToolCalls": 1, "execInstructions": 1, "snapshotRequests": 2 },
       "behavior": "点击发送后主动二次快照；没有明确成功回显时停止且不自动重发"
     }
   },
@@ -149,6 +151,8 @@
     "expect": {
       "mustMention": [["明确", "成功"]],
       "mustNotMention": ["结果不明确"],
+      "targetToolId": "xianyu-fulfillment.send-test-message",
+      "frameCounts": { "targetToolCalls": 1, "execInstructions": 1, "snapshotRequests": 2 },
       "behavior": "只有回执数增加且最新回执为未读/已读才判定消息发送成功"
     }
   },
@@ -161,6 +165,8 @@
     "expect": {
       "mustMention": [["登录已失效"], ["停止"]],
       "mustNotMention": ["发送成功"],
+      "targetToolId": "xianyu-fulfillment.send-test-message",
+      "frameCounts": { "targetToolCalls": 0, "execInstructions": 0, "snapshotRequests": 1 },
       "behavior": "登录失效时在点击发送前停机"
     }
   },
@@ -173,6 +179,8 @@
     "expect": {
       "mustMention": [["验证码"], ["停止"]],
       "mustNotMention": ["发送成功"],
+      "targetToolId": "xianyu-fulfillment.send-test-message",
+      "frameCounts": { "targetToolCalls": 0, "execInstructions": 0, "snapshotRequests": 1 },
       "behavior": "验证码出现时不尝试绕过且不点击发送"
     }
   },
@@ -189,6 +197,8 @@
     "expect": {
       "mustMention": [["结果不明确"], ["不会", "不重发"]],
       "mustNotMention": ["发送成功"],
+      "targetToolId": "xianyu-fulfillment.send-test-message",
+      "frameCounts": { "targetToolCalls": 1, "execInstructions": 1, "snapshotRequests": 2 },
       "behavior": "执行超时后重新观察；没有新增回执即停止且不自动重发"
     }
   },
@@ -205,6 +215,8 @@
     "expect": {
       "mustMention": [["停止"], ["没有", "不重发"]],
       "mustNotMention": ["发送成功"],
+      "targetToolId": "xianyu-fulfillment.send-test-message",
+      "frameCounts": { "targetToolCalls": 1, "execInstructions": 1, "snapshotRequests": 1 },
       "behavior": "用户停止后不继续执行也不自动重发"
     }
   },

@@ -169,8 +169,9 @@ function collectNotices(doc: Document): string[] {
 
 function collectMessageReceiptEvidence(doc: Document): string | null {
   const receipts = findVisible(doc, MESSAGE_RECEIPT_SELECTOR)
+    .filter((el) => el.childElementCount === 0)
     .map((el) => el.textContent?.trim().replace(/\s+/g, ' ') ?? '')
-    .filter((text) => text !== '' && text.length <= MAX_NOTICE_LENGTH);
+    .filter((text) => /^(未读|已读|发送中|已发送|发送失败|失败)$/.test(text));
   const latest = receipts.at(-1);
   return latest === undefined ? null : `消息回执数：${receipts.length}；最新：${latest}`;
 }
