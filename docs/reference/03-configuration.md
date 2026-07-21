@@ -187,6 +187,11 @@
 | `ZA_SESSION_DIR` | `.za/sessions` | 会话持久化目录（`<sessionId>.jsonl`，TTL 清理，fail-open） |
 | `ZA_SESSION_TTL_MS` | `3600000` | 会话闲置 TTL（1h） |
 | `ZA_FULFILLMENT_POLICIES_JSON` | `[]` | ADR-016 有界履约策略 JSON 数组；绑定账号、工具、站点 origin、商品、有效期、单笔数量、每日限额与 `dayBoundaryOffsetMinutes`；与工具声明联合校验，非法配置拒绝启动 |
+| `ZA_FEISHU_CARD_BASE_TOKEN` | 无 | 飞书卡密库存 Base token；与表 ID、使用说明 URL 三项同时配置才启用，不是应用凭证 |
+| `ZA_FEISHU_CARD_TABLE_ID` | 无 | 飞书卡密库存表 ID |
+| `ZA_FULFILLMENT_GUIDE_URL` | 无 | 固定写入履约通知的 HTTPS 使用说明链接，不接受模型或客户端覆盖 |
+| `ZA_FEISHU_PROFILE` | `general` | `lark-cli` profile；运行时 token 获取/刷新复用飞书项目现有边界 |
+| `ZA_LARK_CLI_PATH` | `lark-cli` | 可选 CLI 可执行文件路径（容器/sidecar 部署时显式设置） |
 
 ### 凭证与演示
 

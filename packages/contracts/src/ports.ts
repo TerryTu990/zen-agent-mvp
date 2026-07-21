@@ -277,6 +277,97 @@ export interface ToolGatePort {
   executeServer(input: IssueExecInstructionInput): Promise<Observation>;
 }
 
+// ---- CardInventoryPort（飞书只承担轻量库存账本；卡密不得进入模型/审计/日志）----
+
+export type CardInventoryStatus = 'available' | 'reserved' | 'sent' | 'manual';
+
+export type CardInventoryError =
+  | 'inventory-unavailable'
+  | 'inventory-empty'
+  | 'inventory-ambiguous'
+  | 'inventory-write-failed'
+  | 'inventory-invalid-record';
+
+export interface ReserveCardInput {
+  productKey: string;
+  orderId: string;
+}
+
+export type ReserveCardResult =
+  | {
+      ok: true;
+      cardId: string;
+      /** 仅在服务端履约编排内短暂流转；MUST NOT 进入模型、审计或日志。 */
+      cardSecret: string;
+      status: Exclude<CardInventoryStatus, 'available'>;
+      reused: boolean;
+    }
+  | { ok: false; error: CardInventoryError };
+
+export interface SettleCardInput {
+  cardId: string;
+  orderId: string;
+  status: 'sent' | 'manual';
+  note?: string;
+}
+
+export type SettleCardResult =
+  | { ok: true }
+  | { ok: false; error: CardInventoryError };
+
+export interface CardInventoryPort {
+  /** 同订单优先复用；否则领取一条 available 并先写 reserved。单执行器串行前提见实施计划。 */
+  reserve(input: ReserveCardInput): Promise<ReserveCardResult>;
+  /** 页面回执明确后写 sent；任何不明确结果写 manual。 */
+  settle(input: SettleCardInput): Promise<SettleCardResult>;
+}
+
+export interface PrepareCardFulfillmentInput {
+  accountId: string;
+  toolId: string;
+  productId: string;
+  productKey: string;
+  orderId: string;
+  quantity: number;
+  pageUrl: string;
+  pageInstanceId: string;
+  messageRef: string;
+  sendRef: string;
+  receiptEvidenceId: string;
+  receiptBaselineCount: number;
+  receiptSuccessStatuses: string[];
+  expiresAt: number;
+}
+
+export type PrepareCardFulfillmentResult =
+  | { ok: true; intentId: string; cardId: string; reused: boolean }
+  | {
+      ok: false;
+      error:
+        | CardInventoryError
+        | 'already-sent'
+        | 'manual-review'
+        | 'unsupported-quantity'
+        | 'intent-registration-failed';
+    };
+
+export interface SettleCardFulfillmentInput {
+  intentId: string;
+  outcome: 'sent' | 'manual';
+  note?: string;
+}
+
+export type SettleCardFulfillmentResult =
+  | { ok: true }
+  | { ok: false; error: CardInventoryError | 'unknown-intent' };
+
+export interface FulfillmentCoordinatorPort {
+  /** 领取/复用卡密、先预占，再登记不向模型暴露正文的一次性 toolgate intent。 */
+  prepare(input: PrepareCardFulfillmentInput): Promise<PrepareCardFulfillmentResult>;
+  /** 闲鱼回执闭环后回填库存终态；失败必须阻断后续自动处理。 */
+  settle(input: SettleCardFulfillmentInput): Promise<SettleCardFulfillmentResult>;
+}
+
 // ---- LlmPort（④LLM 接入层：provider 白名单插拔，密钥托管在实现侧）----
 
 /** assistant 回合发起的工具调用回声；供回喂轮把 role:tool 观察关联到其发起调用（OpenAI 兼容 API 要求）。 */

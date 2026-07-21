@@ -29,6 +29,7 @@ import type {
   GuideActionFrame,
   HitlDecisionValue,
   IdentityClaims,
+  FulfillmentCoordinatorPort,
   JsonObject,
   LlmMessage,
   LlmPort,
@@ -64,6 +65,7 @@ export interface GatewayDeps {
   assembly: AssemblyPort;
   llm: LlmPort;
   toolgate: ToolGatePort;
+  fulfillment?: FulfillmentCoordinatorPort;
   audit: AuditPort;
   verifier: TokenVerifier;
   store: SessionStore;
@@ -557,6 +559,22 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const finish = (status: ToolCardStatus): void => {
       broadcast(sessionId, { type: 'tool-card', sessionId, toolCallId, toolId: tool.id, status, mode });
     };
+    const boundedIntentId =
+      tool.authorization?.kind === 'bounded-fulfillment' && typeof params['intentId'] === 'string'
+        ? params['intentId']
+        : null;
+    const settleInventory = async (
+      outcome: 'sent' | 'manual',
+      note?: string,
+    ): Promise<boolean> => {
+      if (boundedIntentId === null || deps.fulfillment === undefined) return true;
+      const result = await deps.fulfillment.settle({
+        intentId: boundedIntentId,
+        outcome,
+        ...(note !== undefined ? { note } : {}),
+      });
+      return result.ok;
+    };
 
     // dom 工具判定上下文来自最近一次快照（未观察不操作：无快照 toolgate 即 deny）。
     const domContext = isDomTool(tool) ? (runtimeOf(sessionId).domContext ?? undefined) : undefined;
@@ -582,8 +600,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
       },
     }, pack);
     if (decision.verdict === 'deny') {
+      const inventoryOk = await settleInventory('manual', 'toolgate-denied');
       finish('failed');
-      return { toolCallId, ok: false, content: null, error: decision.reason ?? 'denied' };
+      return {
+        toolCallId,
+        ok: false,
+        content: null,
+        error: inventoryOk ? (decision.reason ?? 'denied') : 'fulfillment-inventory-backfill-failed',
+      };
     }
     if (decision.verdict === 'hitl') {
       const hitlId = randomUUID();
@@ -603,8 +627,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
         data: { hitlId, toolCallId, decision: verdict },
       }, pack);
       if (verdict === 'reject') {
+        const inventoryOk = await settleInventory('manual', 'user-rejected');
         finish('failed');
-        return { toolCallId, ok: false, content: null, error: 'user-rejected' };
+        return {
+          toolCallId,
+          ok: false,
+          content: null,
+          error: inventoryOk ? 'user-rejected' : 'fulfillment-inventory-backfill-failed',
+        };
       }
       // 批准即任务级授权：登记 grant，同会话同任务的后续调用（跨工具，含 navigate）decide 直接放行。
       // 两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得顺带解锁同名任务）；
@@ -679,6 +709,20 @@ export function createGateway(deps: GatewayDeps): Gateway {
             content: null,
             error: report === null ? 'fulfillment-receipt-timeout' : 'fulfillment-receipt-unconfirmed',
           };
+    }
+    if (boundedIntentId !== null) {
+      const inventoryOk = await settleInventory(
+        observation.ok ? 'sent' : 'manual',
+        observation.ok ? undefined : (observation.error ?? 'fulfillment-unconfirmed'),
+      );
+      if (!inventoryOk) {
+        observation = {
+          toolCallId,
+          ok: false,
+          content: null,
+          error: 'fulfillment-inventory-backfill-failed',
+        };
+      }
     }
     finish(observation.ok ? 'succeeded' : 'failed');
     recordEvent(sessionId, claims, featureId, {

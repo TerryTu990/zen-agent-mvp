@@ -73,6 +73,16 @@ try {
   console.error(`ZA_FULFILLMENT_POLICIES_JSON 非法：${cause instanceof Error ? cause.message : String(cause)}，拒绝启动`);
   process.exit(1);
 }
+const cardBaseToken = process.env['ZA_FEISHU_CARD_BASE_TOKEN'];
+const cardTableId = process.env['ZA_FEISHU_CARD_TABLE_ID'];
+const cardGuideUrl = process.env['ZA_FULFILLMENT_GUIDE_URL'];
+const cardConfigValues = [cardBaseToken, cardTableId, cardGuideUrl];
+if (cardConfigValues.some((value) => value !== undefined) && cardConfigValues.some((value) => !value)) {
+  console.error(
+    'ZA_FEISHU_CARD_BASE_TOKEN、ZA_FEISHU_CARD_TABLE_ID、ZA_FULFILLMENT_GUIDE_URL 必须同时设置，拒绝启动',
+  );
+  process.exit(1);
+}
 if (!process.env['ZA_LLM_BASE_URL']) {
   console.warn('ZA_LLM_BASE_URL 未设置：LLM 调用将以"服务暂时不可用"降级');
 }
@@ -97,6 +107,19 @@ startServer({
   applicationsDir: process.env['ZA_APPLICATIONS_DIR'] ?? '.za/applications',
   genericAllowlist,
   fulfillmentPolicies,
+  ...(cardBaseToken && cardTableId && cardGuideUrl
+    ? {
+        cardInventory: {
+          baseToken: cardBaseToken,
+          tableId: cardTableId,
+          guideUrl: cardGuideUrl,
+          profile: process.env['ZA_FEISHU_PROFILE'] ?? 'general',
+          ...(process.env['ZA_LARK_CLI_PATH']
+            ? { cliPath: process.env['ZA_LARK_CLI_PATH'] }
+            : {}),
+        },
+      }
+    : {}),
   sessionTtlMs,
   allowedProviders: ['openai-compatible'],
   demoToken: {

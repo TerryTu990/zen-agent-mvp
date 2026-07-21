@@ -18,6 +18,8 @@ packages/
 ├── contracts/    # C1-C6 schema + TS 类型（零依赖底座，schema 为事实权威）
 ├── assembly/     # ② 装配引擎：快照读取、注入组合、describeInjection
 ├── toolgate/     # ③ 工具门禁：分级判定 fail-closed + 代执行指令签发/回收
+├── card-inventory/ # 飞书轻量库存：订单查重、预占、sent/manual 回填
+├── fulfillment/  # 卡密履约编排：库存端口 → opaque intent → 回执终态
 ├── llm-port/     # ④ LLM 接入：provider 白名单插拔
 └── audit/        # ⑦ 观测审计：record-only 旁路 → .za/events.jsonl
 apps/

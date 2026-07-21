@@ -68,9 +68,15 @@ importers:
       '@zen-agent/audit':
         specifier: workspace:*
         version: link:../../packages/audit
+      '@zen-agent/card-inventory':
+        specifier: workspace:*
+        version: link:../../packages/card-inventory
       '@zen-agent/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@zen-agent/fulfillment':
+        specifier: workspace:*
+        version: link:../../packages/fulfillment
       '@zen-agent/llm-port':
         specifier: workspace:*
         version: link:../../packages/llm-port
@@ -129,6 +135,22 @@ importers:
         specifier: 'catalog:'
         version: 3.2.6(@types/node@24.13.2)(jsdom@29.1.1)
 
+  packages/card-inventory:
+    dependencies:
+      '@zen-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      '@types/node':
+        specifier: ^24.13.2
+        version: 24.13.2
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.6(@types/node@24.13.2)(jsdom@29.1.1)
+
   packages/contracts:
     devDependencies:
       ajv:
@@ -137,6 +159,19 @@ importers:
       ajv-formats:
         specifier: 'catalog:'
         version: 3.0.1(ajv@8.20.0)
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.6(@types/node@24.13.2)(jsdom@29.1.1)
+
+  packages/fulfillment:
+    dependencies:
+      '@zen-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

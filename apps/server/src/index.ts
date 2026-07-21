@@ -3,11 +3,20 @@
  * 模块间彼此零依赖，只经 @zen-agent/contracts 端口类型在此接线。
  */
 import { createServer } from 'node:http';
-import type { AssemblyPort, AuditPort, LlmPort, ToolGatePort } from '@zen-agent/contracts';
+import type {
+  AssemblyPort,
+  AuditPort,
+  CardInventoryPort,
+  FulfillmentCoordinatorPort,
+  LlmPort,
+  ToolGatePort,
+} from '@zen-agent/contracts';
 import { createAssemblyPort } from '@zen-agent/assembly';
 import { createToolGatePort, type BoundedFulfillmentPolicy } from '@zen-agent/toolgate';
 import { createLlmPort } from '@zen-agent/llm-port';
 import { createAuditPort } from '@zen-agent/audit';
+import { createLarkBaseCardInventoryPort } from '@zen-agent/card-inventory';
+import { createFulfillmentCoordinator } from '@zen-agent/fulfillment';
 import { createTokenVerifier } from './auth.js';
 import {
   createMemorySessionStore,
@@ -67,6 +76,18 @@ export interface ServerOptions {
   genericAllowlist?: string[];
   /** ADR-016：运营者预批准的服务端有界履约策略；不从客户端或模型上下文接受。 */
   fulfillmentPolicies?: BoundedFulfillmentPolicy[];
+  /** Phase 3：可选飞书轻量卡密库存；未配置时不组装连接器，既有人工 intent 测试路径不变。 */
+  cardInventory?: {
+    baseToken: string;
+    tableId: string;
+    guideUrl: string;
+    profile?: string;
+    cliPath?: string;
+  };
+  /** 可信宿主可直接注入库存端口（测试/sidecar）；与 cardInventory CLI 配置互斥。 */
+  cardInventoryPort?: CardInventoryPort;
+  /** cardInventoryPort 模式下的固定使用说明 URL。 */
+  cardInventoryGuideUrl?: string;
 }
 
 /** ZA_GENERIC_ALLOWLIST 解析：逗号分隔 origin 精确值，空/未设 → []（generic 永不激活）；非法条目抛错（启动期 fail-fast）。www/裸域互认在比对点归一（canonicalizeOrigin），此处只验值形。 */
@@ -93,6 +114,7 @@ export interface ServerPorts {
   toolgate: ToolGatePort;
   llm: LlmPort;
   audit: AuditPort;
+  fulfillment?: FulfillmentCoordinatorPort;
 }
 
 export async function assemblePorts(options: ServerOptions): Promise<ServerPorts> {
@@ -107,19 +129,50 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
   // ADR-013：site 围栏（navigate 校验）+ 逐 pack 工具归属（命名空间纪律，跨 pack 同名 toolId 载入即拒启）。
   const sites = await assembly.listSites();
   const toolOwnership = await assembly.listToolOwnership();
+  const toolgate = createToolGatePort({
+    tools,
+    sites,
+    toolOwnership,
+    signingSecret: options.signingSecret,
+    ...(options.execInstructionTtlMs !== undefined ? { ttlMs: options.execInstructionTtlMs } : {}),
+    fulfillmentPolicies: options.fulfillmentPolicies ?? [],
+    ...(options.resolveCredential ? { resolveCredential: options.resolveCredential } : {}),
+  });
+  if (options.cardInventory !== undefined && options.cardInventoryPort !== undefined) {
+    throw new Error('飞书 CLI 配置与注入库存端口不可同时设置');
+  }
+  const inventory =
+    options.cardInventoryPort ??
+    (options.cardInventory
+      ? createLarkBaseCardInventoryPort({
+          baseToken: options.cardInventory.baseToken,
+          tableId: options.cardInventory.tableId,
+          ...(options.cardInventory.profile !== undefined
+            ? { profile: options.cardInventory.profile }
+            : {}),
+          ...(options.cardInventory.cliPath !== undefined
+            ? { cliPath: options.cardInventory.cliPath }
+            : {}),
+        })
+      : undefined);
+  const guideUrl = options.cardInventory?.guideUrl ?? options.cardInventoryGuideUrl;
+  if ((inventory === undefined) !== (guideUrl === undefined)) {
+    throw new Error('卡密库存端口与使用说明 URL 必须同时配置');
+  }
+  const fulfillment =
+    inventory !== undefined && guideUrl !== undefined
+      ? createFulfillmentCoordinator({
+          inventory,
+          toolgate,
+          guideUrl,
+        })
+      : undefined;
   return {
     assembly,
-    toolgate: createToolGatePort({
-      tools,
-      sites,
-      toolOwnership,
-      signingSecret: options.signingSecret,
-      ...(options.execInstructionTtlMs !== undefined ? { ttlMs: options.execInstructionTtlMs } : {}),
-      fulfillmentPolicies: options.fulfillmentPolicies ?? [],
-      ...(options.resolveCredential ? { resolveCredential: options.resolveCredential } : {}),
-    }),
+    toolgate,
     llm: createLlmPort({ allowedProviders: options.allowedProviders }),
     audit: createAuditPort({ sinkPath: options.auditSinkPath }),
+    ...(fulfillment !== undefined ? { fulfillment } : {}),
   };
 }
 
@@ -152,6 +205,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     assembly: ports.assembly,
     llm: ports.llm,
     toolgate: ports.toolgate,
+    ...(ports.fulfillment !== undefined ? { fulfillment: ports.fulfillment } : {}),
     audit: ports.audit,
     verifier: createTokenVerifier({
       jwtSecret: options.jwtSecret,

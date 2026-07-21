@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SignJWT } from 'jose';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { CardInventoryPort } from '@zen-agent/contracts';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startServer, type RunningServer } from '../src/index.js';
 import { redactSnapshotValues } from '../src/gateway.js';
 
@@ -613,9 +614,22 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
 
   it('可信履约意图端到端：模型只传 intentId，签名指令使用服务端固定步骤且无 HITL', async () => {
     const pageUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-a&orderId=order-a&peerUserId=buyer-a';
+    const inventorySettle = vi.fn(async () => ({ ok: true as const }));
+    const inventory: CardInventoryPort = {
+      reserve: vi.fn(async () => ({
+        ok: true,
+        cardId: 'card-a',
+        cardSecret: 'fixture-value-not-real',
+        status: 'reserved',
+        reused: false,
+      })),
+      settle: inventorySettle,
+    };
     const intentServer = await startServer(
       serverOptions({
         snapshotRoot: acceptanceRoot,
+        cardInventoryPort: inventory,
+        cardInventoryGuideUrl: 'https://example.test/guide',
         fulfillmentPolicies: [
           {
             id: 'test-policy',
@@ -631,22 +645,24 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         ],
       }),
     );
-    const { intentId } = await intentServer.ports.toolgate.prepareFulfillmentIntent({
+    const prepared = await intentServer.ports.fulfillment!.prepare({
       accountId: 'host-u1',
       toolId: 'xianyu-fulfillment.execute-intent',
       productId: 'item-a',
+      productKey: 'product-a',
       orderId: 'order-a',
       quantity: 1,
       pageUrl,
       pageInstanceId: 'page-instance-a',
       messageRef: 'za-message',
       sendRef: 'za-send',
-      message: '固定履约消息',
       receiptEvidenceId: 'message-receipts',
       receiptBaselineCount: 1,
       receiptSuccessStatuses: ['未读', '已读'],
       expiresAt: Date.now() + 60_000,
     });
+    expect(prepared.ok).toBe(true);
+    const intentId = prepared.ok ? prepared.intentId : '';
     const previousBaseUrl = baseUrl;
     baseUrl = `http://127.0.0.1:${intentServer.port}`;
     const token = await signToken();
@@ -682,7 +698,19 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         expectedPageUrl: pageUrl,
         expectedPageInstanceId: 'page-instance-a',
         steps: [
-          { action: 'fill', ref: 'za-message', value: '固定履约消息' },
+          {
+            action: 'fill',
+            ref: 'za-message',
+            value: [
+              '----',
+              '您好，您购买的订单号：',
+              'order-a 以下是给您发货的内容：',
+              '',
+              '兑换码： fixture-value-not-real',
+              '使用说明： https://example.test/guide',
+              '----',
+            ].join('\n'),
+          },
           { action: 'click', ref: 'za-send' },
         ],
       });
@@ -709,6 +737,11 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         evidence: { 'message-receipts': { count: 2, latest: '未读' } },
       });
       await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-fulfillment.execute-intent') === 'succeeded');
+      expect(inventorySettle).toHaveBeenCalledWith({
+        cardId: 'card-a',
+        orderId: 'order-a',
+        status: 'sent',
+      });
     } finally {
       sse.close();
       baseUrl = previousBaseUrl;
@@ -718,10 +751,23 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
 
   it('履约回执由网关强制限时获取：插件不回传则失败，迟到快照拒绝且不重发', async () => {
     const pageUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-timeout&orderId=order-timeout&peerUserId=buyer-timeout';
+    const inventorySettle = vi.fn(async () => ({ ok: true as const }));
+    const inventory: CardInventoryPort = {
+      reserve: vi.fn(async () => ({
+        ok: true,
+        cardId: 'card-timeout',
+        cardSecret: 'fixture-value-not-real',
+        status: 'reserved',
+        reused: false,
+      })),
+      settle: inventorySettle,
+    };
     const intentServer = await startServer(
       serverOptions({
         snapshotRoot: acceptanceRoot,
         execInstructionTtlMs: 500,
+        cardInventoryPort: inventory,
+        cardInventoryGuideUrl: 'https://example.test/guide',
         fulfillmentPolicies: [
           {
             id: 'timeout-policy',
@@ -737,22 +783,24 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         ],
       }),
     );
-    const { intentId } = await intentServer.ports.toolgate.prepareFulfillmentIntent({
+    const prepared = await intentServer.ports.fulfillment!.prepare({
       accountId: 'host-u1',
       toolId: 'xianyu-fulfillment.execute-intent',
       productId: 'item-timeout',
+      productKey: 'product-timeout',
       orderId: 'order-timeout',
       quantity: 1,
       pageUrl,
       pageInstanceId: 'page-instance-timeout',
       messageRef: 'za-message',
       sendRef: 'za-send',
-      message: '固定履约消息',
       receiptEvidenceId: 'message-receipts',
       receiptBaselineCount: 1,
       receiptSuccessStatuses: ['未读', '已读'],
       expiresAt: Date.now() + 60_000,
     });
+    expect(prepared.ok).toBe(true);
+    const intentId = prepared.ok ? prepared.intentId : '';
     const previousBaseUrl = baseUrl;
     baseUrl = `http://127.0.0.1:${intentServer.port}`;
     const token = await signToken();
@@ -793,6 +841,12 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       await sse.waitFor(
         () => lastCardStatus(sse.frames, 'xianyu-fulfillment.execute-intent') === 'failed',
       );
+      expect(inventorySettle).toHaveBeenCalledWith({
+        cardId: 'card-timeout',
+        orderId: 'order-timeout',
+        status: 'manual',
+        note: 'fulfillment-receipt-timeout',
+      });
       expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(1);
       const late = await postFrame(token, sessionId, {
         type: 'snapshot-report',
@@ -804,6 +858,115 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         evidence: { 'message-receipts': { count: 2, latest: '未读' } },
       });
       expect(late.status).toBe(409);
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await intentServer.close();
+    }
+  });
+
+  it('闲鱼回执成功但库存 sent 回填失败：整体标记失败并停止，不生成第二次发送', async () => {
+    const pageUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-backfill&orderId=order-backfill&peerUserId=buyer-backfill';
+    const inventory: CardInventoryPort = {
+      reserve: vi.fn(async () => ({
+        ok: true,
+        cardId: 'card-backfill',
+        cardSecret: 'fixture-value-not-real',
+        status: 'reserved',
+        reused: false,
+      })),
+      settle: vi.fn(async () => ({ ok: false, error: 'inventory-write-failed' })),
+    };
+    const intentServer = await startServer(
+      serverOptions({
+        snapshotRoot: acceptanceRoot,
+        cardInventoryPort: inventory,
+        cardInventoryGuideUrl: 'https://example.test/guide',
+        fulfillmentPolicies: [
+          {
+            id: 'backfill-policy',
+            accountId: 'host-u1',
+            toolId: 'xianyu-fulfillment.execute-intent',
+            siteOrigin: 'https://seller.goofish.com',
+            productIds: ['item-backfill'],
+            validUntil: Date.now() + 120_000,
+            maxCodesPerOrder: 1,
+            dailyOrderLimit: 5,
+            dayBoundaryOffsetMinutes: 480,
+          },
+        ],
+      }),
+    );
+    const prepared = await intentServer.ports.fulfillment!.prepare({
+      accountId: 'host-u1',
+      toolId: 'xianyu-fulfillment.execute-intent',
+      productId: 'item-backfill',
+      productKey: 'product-backfill',
+      orderId: 'order-backfill',
+      quantity: 1,
+      pageUrl,
+      pageInstanceId: 'page-instance-backfill',
+      messageRef: 'za-message',
+      sendRef: 'za-send',
+      receiptEvidenceId: 'message-receipts',
+      receiptBaselineCount: 1,
+      receiptSuccessStatuses: ['未读', '已读'],
+      expiresAt: Date.now() + 60_000,
+    });
+    expect(prepared.ok).toBe(true);
+    const intentId = prepared.ok ? prepared.intentId : '';
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${intentServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: pageUrl });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: `执行履约意图 ${intentId}`,
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      const before = framesByType(sse.frames, 'snapshot-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(before['requestId']),
+        url: pageUrl,
+        pageInstanceId: 'page-instance-backfill',
+        elements: [
+          { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send', role: 'button', label: '发 送' },
+        ],
+        evidence: { 'message-receipts': { count: 1, latest: '已读' } },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
+      const instruction = framesByType(sse.frames, 'exec-instruction')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instruction['nonce']),
+        ok: true,
+        body: { reads: {}, completedSteps: 2, url: pageUrl },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 2);
+      const receipt = framesByType(sse.frames, 'snapshot-request')[1]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(receipt['requestId']),
+        url: pageUrl,
+        pageInstanceId: 'page-instance-backfill',
+        elements: [],
+        evidence: { 'message-receipts': { count: 2, latest: '未读' } },
+      });
+      await sse.waitFor(
+        () => lastCardStatus(sse.frames, 'xianyu-fulfillment.execute-intent') === 'failed',
+      );
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(1);
+      expect(textOf(sse.frames)).not.toContain('fixture-value-not-real');
+      expect(JSON.stringify(auditEventsFor(sessionId))).not.toContain('fixture-value-not-real');
     } finally {
       sse.close();
       baseUrl = previousBaseUrl;

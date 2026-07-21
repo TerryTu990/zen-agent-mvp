@@ -17,7 +17,9 @@
   "dependencies": {
     "@zen-agent/assembly": "workspace:*",
     "@zen-agent/audit": "workspace:*",
+    "@zen-agent/card-inventory": "workspace:*",
     "@zen-agent/contracts": "workspace:*",
+    "@zen-agent/fulfillment": "workspace:*",
     "@zen-agent/llm-port": "workspace:*",
     "@zen-agent/toolgate": "workspace:*",
     "ajv": "catalog:",

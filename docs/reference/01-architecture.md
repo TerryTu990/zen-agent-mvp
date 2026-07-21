@@ -69,7 +69,8 @@
 │     内建工具注入：guide_highlight / page_snapshot / pack_doc /        │
 │     site_navigate（渐进披露，随装配条件注入，不入 pack tools.json）     │
 │      │              │               │              │               │
-│  ────┴── 端口注入（C6：AssemblyPort/ToolGatePort/LlmPort/AuditPort，  │
+│  ────┴── 端口注入（C6：Assembly/ToolGate/CardInventory/Fulfillment/ │
+│          Llm/Audit Port，                                           │
 │          U1 只传 JSON 可序列化值；U2 模块间禁直接 import）──────        │
 │      │              │               │              │               │
 │  ┌───▼────────┐ ┌───▼─────────┐ ┌───▼──────────┐ ┌─▼────────────┐  │
@@ -239,7 +240,7 @@ agent 下一轮即持有新站上下文，直接续作任务（先 page_snapshot
 
 ### U1 端口跨模块只传 JSON 可序列化值
 
-- 约束：C6 四端口（AssemblyPort / ToolGatePort / LlmPort / AuditPort）的入参与返回值 MUST 全部 JSON 可序列化；MUST NOT 跨端口传函数、类实例、流句柄等进程内对象。
+- 约束：C6 全部模块端口的入参与返回值 MUST 全部 JSON 可序列化；MUST NOT 跨端口传函数、类实例、流句柄等进程内对象。
 - 如何保平滑：S4 拆分时端口调用 1:1 替换为 RPC（HTTP/gRPC），签名与语义不变——升级改的是传输层，不是契约。
 - 违反代价：任何一处传了进程内对象，拆分时该端口即需重新设计，波及双侧调用方。
 
@@ -302,6 +303,8 @@ agent 下一轮即持有新站上下文，直接续作任务（先 page_snapshot
 | `packages/contracts` | C1-C6 全部 schema + TS 类型 | 零依赖底座：schema、端口类型、内建工具结构契约 | 任何实现逻辑 |
 | `packages/assembly` | C4 消费端（AssemblyPort） | 快照载入（registry/legacy 二形态）、pack 激活解析、注入组合、docs 渐进披露、site/工具归属枚举 | 运行时改写快照（U4）；治理判定 |
 | `packages/toolgate` | C1/C2 消费端（ToolGatePort） | 唯一决策点（分级/身份/围栏/dom 校验/任务级授权）、一次性签名签发/核销、server 直调执行器 | 产生对话内容；持 LLM 密钥 |
+| `packages/card-inventory` | C6 CardInventoryPort | 飞书 Base 同订单查重、单卡预占与 sent/manual 回填；CLI 错误脱敏 | 模型调用；页面操作；并发事务伪装 |
+| `packages/fulfillment` | C6 FulfillmentCoordinatorPort | 先预占库存、生成固定通知、登记 opaque intent、按回执回填 | DOM 执行；toolgate 决策；记录卡密 |
 | `packages/llm-port` | C6 LlmPort | openai 兼容流式对接、provider 白名单、密钥 env 托管、toolId 出网净化、实参非法诊断 | 感知业务语义与装配内容 |
 | `packages/audit` | C5 生产端（AuditPort） | record-only 旁路落盘、落盘前脱敏 | 进入控制流（故障吞掉） |
 | `apps/server` | 唯一组装点（U2） | 内部六模块：gateway（回合循环/内建工具/HITL 挂起恢复/自愈重试）、auth（验签）、sessions（持久化）、compress（P1 压缩）、history（P0 瘦身）、demo-token | 第二组装点；横向 import |

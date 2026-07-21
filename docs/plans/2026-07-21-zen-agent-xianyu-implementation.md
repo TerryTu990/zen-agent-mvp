@@ -1,6 +1,6 @@
 # Zen Agent Chrome 形态与闲鱼站点能力实施方案
 
-> 状态：执行中（2026-07-22，分支 `codex/zen-agent-xianyu-plan`）；Phase 1、Phase 2A/2B/2C 已完成，Phase 2D 第五轮跨会话复审项已修复并等待第六轮复审；订单发货状态更新等待一笔低价值待发货测试单。
+> 状态：执行中（2026-07-22，分支 `codex/zen-agent-xianyu-plan`）；Phase 1、Phase 2A/2B/2C/2D 已完成并通过六轮独立复审；Phase 3A/3B 已实现、验证完成并等待独立复审，订单发货状态更新与周期扫描激活等待一笔低价值待发货测试单。
 > 本文把产品讨论收敛为可逐批实施、验证和回滚的开发方案；产品主体始终是通用 **Zen Agent**，闲鱼是首个生产级站点能力包，不建立“闲鱼专用助手”分叉。
 > 各阶段只有通过本阶段验证门后才能进入下一阶段。
 
@@ -19,6 +19,10 @@
 - Phase 2D 实现：新增 ADR-016 与 `bounded-fulfillment` 一次性意图。可信连接器在服务端登记账号、精确页面 URL/页面生命周期、商品、规范化订单、数量、输入/发送 ref、回执基线与固定正文；模型只传 opaque `intentId`，toolgate 自行构造唯一 `fill → click`。toolgate 联合校验策略/工具/所属站点、原子预占跨策略订单唯一键，并以调用单向状态机禁止同 call 重复签发；服务端 Ed25519 私钥签名会话、绝对时限与最终请求，插件只允许生产 HTTPS（本机开发例外）且声明 Chrome 137+，在副作用前验签、验过期、持久化 nonce 防重放并机械拒绝切页/刷新。输入值不采集且由网关二次剥离。DOM 两步成功后由网关在原指令时限内强制请求回执快照，仍绑定同一 URL/页面实例且回执数恰增 1 才完成；超时、换页及其它不明确结果进入人工路径且不自动重试。
 - Phase 2D 验证：闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件通过；真实 gateway/toolgate 协议 E2E 覆盖 opaque `intentId`、固定两步、网关强制回执以及回执数恰增 1 才完成。对抗测试覆盖同 call 各状态重放、Ed25519 request/会话篡改、其它会话合法签名帧、绝对过期、插件 nonce 重放、切页/页面生命周期变化、错误控件角色、fill 后失败快照脱敏、`completedSteps=2` 契约、运营日边界、客户端无执行结果主动 TTL、回执快照超时与迟到 409；生产实现另将已验签 nonce 写入 `chrome.storage.session` 以跨 SW 重启保留。全仓 dependency lint、build、468 项串行测试与 `git diff --check` 通过；定向计数为 toolgate 78、extension 108、server 99，等待第六轮独立复审。
 - 当前账号待发货计数仍为零，订单发货状态更新保留到出现一笔明确授权的低价值待发货测试单时验证；不阻塞只依赖消息通知闭环的 Phase 2D/Phase 3。
+- Phase 3A（2026-07-22）：按飞书 `general` user 身份精确查重后创建一张私有 `Zen Agent｜闲鱼卡密库存` Base，字段为计划定义的最小七列；导入 20 条记录并回读确认 1 条 `sent`、19 条 `available`。首条绑定附件中的历史订单号，Base 链接已登记到“Token 中转｜项目导航”，未开启外部分享。
+- Phase 3B（2026-07-22）：新增 ADR-017、`CardInventoryPort` 与 `FulfillmentCoordinatorPort`。`packages/card-inventory` 通过 `lark-cli --profile general --as user` 实现订单复用、available→reserved、reserved→sent/manual；每次重要写入前机械执行 `whoami`，底层错误不回显 stdout/stderr。`packages/fulfillment` 固定组装附件格式的订单号、兑换码与使用说明，模型及调用方只获得 opaque `intentId`。网关在闲鱼回执结束后同步回填，回填失败把整笔标记失败并停止。
+- Phase 3B 真实验证：运行时连接器按历史订单查到 `card-001` 的 `sent` 状态并完成幂等 settle，没有发送新的闲鱼消息、没有占用新卡、终端未输出兑换码。
+- Phase 3 验证：全仓 dependency lint、build、478 项串行测试与 `git diff --check` 通过；闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件无回归。新增测试覆盖同订单复用、reserved 崩溃恢复、缺货、重复记录、身份失败、预占写失败、终态单向转换、intent 登记失败清理、页面成功/超时后的 sent/manual 回填，以及闲鱼成功但飞书回填失败时整体失败且不生成第二次发送。
 
 ## 一、目标、边界与成功标准
 
