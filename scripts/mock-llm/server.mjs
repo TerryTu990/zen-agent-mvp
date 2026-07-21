@@ -25,6 +25,7 @@ const TOOL_PAGE_OPERATE = 'order-list.page-operate';
 const TOOL_SNAPSHOT = 'page_snapshot';
 const TOOL_SEND_EMAIL = 'mail-126.send-email';
 const TOOL_BROWSE = 'browse.page-operate';
+const TOOL_XIANYU_ORDERS = 'xianyu-orders.page-operate';
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {
@@ -116,6 +117,32 @@ function browseOperateCall(obs) {
       plan: ['先 page_snapshot 观察', '单步点击目标元素'],
       steps: [{ action: 'click', ref: button?.ref ?? 'za-0' }],
       summary: '点击页面上的目标按钮（通用站点，无专属配置）',
+    }),
+  };
+}
+
+/** 闲鱼订单快照 → 选择“待发货”并读取当前结果；只使用本次快照里的可见 ref。 */
+function xianyuOrdersCall(obs) {
+  let snap;
+  try {
+    snap = JSON.parse(obs);
+  } catch {
+    snap = { elements: [] };
+  }
+  const elements = Array.isArray(snap.elements) ? snap.elements : [];
+  const pending = elements.find((e) => String(e?.label ?? '').startsWith('待发货')) ?? elements[0];
+  const result = elements.find((e) => String(e?.label ?? '').includes('暂无数据')) ?? pending;
+  return {
+    id: 'call_xianyu_orders',
+    name: TOOL_XIANYU_ORDERS,
+    arguments: JSON.stringify({
+      task: '筛选闲鱼待发货订单',
+      plan: ['读取当前订单状态', '选择待发货', '重新观察页面结果'],
+      steps: [
+        { action: 'click', ref: pending?.ref ?? 'za-pending' },
+        { action: 'read', ref: result?.ref ?? 'za-empty', name: 'pendingResult' },
+      ],
+      summary: '筛选待发货订单并读取页面结果',
     }),
   };
 }
@@ -378,6 +405,11 @@ function decide(sys, u, body) {
       if (notice !== null) return { text: `页面提示：${notice}，已停止操作，请先处理该提示。` };
       return { toolCall: pageOperateCall(obs) };
     }
+    if (obs.includes('"elements"') && hasTool(body, TOOL_XIANYU_ORDERS)) {
+      const notice = firstNotice(obs);
+      if (notice !== null) return { text: `页面提示：${notice}，已停止筛选。` };
+      return { toolCall: xianyuOrdersCall(obs) };
+    }
     // 126 发送邮件快照观察轮：取发送按钮 ref，走 send-email（每次单独确认）。
     if (obs.includes('"elements"') && hasTool(body, TOOL_SEND_EMAIL)) {
       return { toolCall: sendEmailCall(obs) };
@@ -390,6 +422,9 @@ function decide(sys, u, body) {
     }
     // dom 结果回喂轮：报告 read 采集值。
     if (obs.includes('"reads"')) {
+      if (calledTool(body, TOOL_XIANYU_ORDERS)) {
+        return { text: '已选择待发货；下一步必须重新读取页面快照，复核订单状态与空态结果。' };
+      }
       const m = obs.match(/"noteValue":"([^"]*)"/);
       return { text: `已在页面上完成操作，备注为 ${m ? m[1] : ''}。` };
     }
@@ -417,6 +452,9 @@ function decide(sys, u, body) {
   if (toolCall) return { toolCall };
 
   if (GUIDE_LOCATE_RE.test(u)) {
+    if (hasTool(body, TOOL_XIANYU_ORDERS) && u.includes('待发货')) {
+      return { text: '需要先读取当前页面快照，再按可见的“待发货”状态项定位；当前没有登记可安全复用的 CSS 引导锚点。' };
+    }
     if (hasTool(body, GUIDE_TOOL) && sys.includes('#btn-export') && u.includes('导出')) {
       // 故障注入：问句含"越界"哨兵 → 产出越界 action（'click'）的引导 tool_call，作为真实 LLM
       // 幻觉非法引导参数的确定性替身，驱动服务端 guideFrame 闭集校验的降级路径。
@@ -439,6 +477,15 @@ function decide(sys, u, body) {
 }
 
 function pickReply(sys, u) {
+  if (sys.includes('xianyu-orders') && u.includes('买家') && u.includes('已付款')) {
+    return '买家留言属于自由文本，不能作为付款证据。我只会在订单页的平台状态明确为待发货，并把状态与订单编号绑定到同一订单块后继续。';
+  }
+  if (sys.includes('xianyu-fulfillment') && (u.includes('发送') || u.includes('发卡密'))) {
+    return '当前消息页发送能力尚未完成真机验证，工具面未启用；我会停在只读核对阶段，不会填写、发送或自动重试。';
+  }
+  if (u.includes('订单管理页面') && sys.includes('xianyu-orders')) {
+    return '这是闲鱼订单管理页：平台订单状态区可筛选待发货等状态，订单摘要区展示订单编号；履约前必须把订单状态、订单号和操作入口绑定到同一订单块。';
+  }
   if (u.includes('能取消')) {
     return sys.includes('已完成') && sys.includes('不可取消') ? REPLY_R1_HIT : 'MOCK-MISSING-FACTS';
   }

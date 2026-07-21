@@ -24,6 +24,14 @@ const INTERACTIVE_SELECTOR = [
   '[role="listbox"] li',
   '[role="listbox"] > *',
   '[contenteditable="true"]',
+  // 业务表格中的状态、编号和结果通常是静态单元格而非控件；纳入有界快照后才可用 read 步骤
+  // 建立“页面证据 → 动作”链。仍受 MAX_ELEMENTS / MAX_LABEL_LENGTH 限制，不无差别采集正文 div。
+  'table th',
+  'table td',
+  '[role="columnheader"]',
+  '[role="rowheader"]',
+  '[role="cell"]',
+  '[role="gridcell"]',
 ].join(', ');
 
 /**

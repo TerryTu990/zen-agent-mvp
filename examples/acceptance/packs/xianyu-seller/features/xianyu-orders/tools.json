@@ -1,0 +1,29 @@
+[
+  {
+    "id": "xianyu-orders.page-operate",
+    "featureIds": ["xianyu-orders"],
+    "description": "在闲鱼订单管理或订单详情页可见地筛选、读取、滚动、打开详情或联系入口。使用前必须 page_snapshot，steps 的 ref 取自最近快照；读取订单时用 read 步骤分别采集平台状态、订单编号和目标入口，并确认它们属于同一订单块。进入新标签页或 hash 路由后必须重新快照；本工具不得填写或发送消息，不得点击发货、退款、提醒收货、延长收货或批量操作。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "steps", "summary"],
+      "properties": {
+        "task": { "type": "string", "description": "订单任务标题，同一订单任务保持不变" },
+        "plan": { "type": "array", "items": { "type": "string" }, "description": "首批操作计划，包含观察、判断和复核" },
+        "steps": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "object" }, "description": "操作步骤：click|select|read|scroll|highlight；不得包含 fill 或副作用按钮点击" },
+        "summary": { "type": "string", "description": "展示给用户的本批操作摘要" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "adapter": { "kind": "dom", "pathPrefixes": ["/"] },
+    "resultSchema": {
+      "type": "object",
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "number" },
+        "url": { "type": "string" }
+      }
+    }
+  }
+]

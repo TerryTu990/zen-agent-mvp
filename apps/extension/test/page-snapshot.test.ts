@@ -91,6 +91,25 @@ describe('createSnapshotter：可交互元素采集与 ref 映射', () => {
     expect(elements[2]).toMatchObject({ role: 'input:text' });
   });
 
+  it('业务表格静态表头与单元格进入快照，供订单状态和编号建立页面证据', () => {
+    document.body.innerHTML = `
+      <table>
+        <thead><tr><th>订单编号</th><th>平台状态</th></tr></thead>
+        <tbody><tr><td>ORDER-MASKED</td><td>待发货</td></tr></tbody>
+      </table>
+      <div role="gridcell">暂无数据</div>
+      <p>普通正文不采集</p>
+    `;
+    const { elements } = createSnapshotter().collect();
+    expect(elements.map((e) => [e.role, e.label])).toEqual([
+      ['th', '订单编号'],
+      ['th', '平台状态'],
+      ['td', 'ORDER-MASKED'],
+      ['td', '待发货'],
+      ['gridcell', '暂无数据'],
+    ]);
+  });
+
   it('label 兜底链补 title；仍无可读标签的元素给可辨识占位', () => {
     document.body.innerHTML = `
       <button title="关闭"><svg></svg></button>

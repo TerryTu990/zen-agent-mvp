@@ -1,9 +1,10 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "packs": [
     { "packId": "codeflow-console", "version": "0.1.0" },
     { "packId": "mail-126", "version": "0.1.0" },
     { "packId": "zhipin", "version": "0.1.0" },
-    { "packId": "generic-web", "version": "0.1.0" }
+    { "packId": "generic-web", "version": "0.1.0" },
+    { "packId": "xianyu-seller", "version": "0.1.0" }
   ]
 }

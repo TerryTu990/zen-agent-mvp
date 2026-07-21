@@ -300,14 +300,14 @@ async function driveTurn(sessionId, token, scenario, bus) {
         });
       }
       if (frame.type === 'snapshot-request' && !handledSnapshot.has(frame.requestId)) {
-        // 代插件之职回一份确定性快照（含一个"发送"按钮），url=场景 origin 使 dom origin 围栏命中（ADR-013）。
+        // 代插件之职回一份确定性快照；pack 场景可声明需求相关元素，未声明则沿用发送按钮夹具。
         handledSnapshot.add(frame.requestId);
         await postFrame(sessionId, token, {
           type: 'snapshot-report',
           sessionId,
           requestId: frame.requestId,
           url: scenario.url ?? `${HOST_BASE}/${scenario.page}`,
-          elements: [{ ref: 'za-send', role: 'button', label: '发送' }],
+          elements: scenario.snapshotElements ?? [{ ref: 'za-send', role: 'button', label: '发送' }],
         });
       }
       if (frame.type === 'exec-instruction' && !handledExec.has(frame.nonce)) {
