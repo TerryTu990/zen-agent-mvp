@@ -47,6 +47,12 @@ const NOTICE_SELECTOR = [
   '[class*="invalid" i]',
 ].join(', ');
 
+const MESSAGE_RECEIPT_SELECTOR = [
+  '[class*="read-status" i]',
+  '[class*="send-status" i]',
+  '[class*="message-status" i]',
+].join(', ');
+
 /** 模态层根匹配：显式语义（role=dialog / aria-modal）优先；无命中再兜底 class 含 dialog/modal 的容器。 */
 const MODAL_SELECTOR = '[role="dialog"], [aria-modal="true"]';
 const MODAL_FALLBACK_SELECTOR = '[class*="dialog" i], [class*="modal" i]';
@@ -161,6 +167,14 @@ function collectNotices(doc: Document): string[] {
   return notices;
 }
 
+function collectMessageReceiptEvidence(doc: Document): string | null {
+  const receipts = findVisible(doc, MESSAGE_RECEIPT_SELECTOR)
+    .map((el) => el.textContent?.trim().replace(/\s+/g, ' ') ?? '')
+    .filter((text) => text !== '' && text.length <= MAX_NOTICE_LENGTH);
+  const latest = receipts.at(-1);
+  return latest === undefined ? null : `消息回执数：${receipts.length}；最新：${latest}`;
+}
+
 function valueOf(el: Element): string | undefined {
   if (
     el instanceof HTMLInputElement ||
@@ -231,7 +245,10 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
         }
       };
       walk(doc, '');
-      return { url: doc.location?.href ?? '', title: doc.title, elements, notices: collectNotices(doc) };
+      const notices = collectNotices(doc);
+      const receipt = collectMessageReceiptEvidence(doc);
+      if (receipt !== null && notices.length < MAX_NOTICES) notices.push(receipt);
+      return { url: doc.location?.href ?? '', title: doc.title, elements, notices };
     },
     resolve(ref) {
       const el = refs.get(ref);

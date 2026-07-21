@@ -183,6 +183,28 @@ function firstNotice(obs) {
   return typeof notices[0] === 'string' && notices[0] !== '' ? notices[0] : null;
 }
 
+function firstBlockingNotice(obs) {
+  let snap;
+  try {
+    snap = JSON.parse(obs);
+  } catch {
+    return null;
+  }
+  const notices = Array.isArray(snap.notices) ? snap.notices : [];
+  const blocking = notices.find((notice) => typeof notice === 'string' && !notice.startsWith('消息回执数：'));
+  return blocking ?? null;
+}
+
+function receiptCounts(body) {
+  const counts = [];
+  for (const message of body?.messages ?? []) {
+    if (message?.role !== 'tool') continue;
+    const match = String(message.content ?? '').match(/消息回执数：(\d+)；最新：(未读|已读|发送中|失败)/);
+    if (match) counts.push(Number(match[1]));
+  }
+  return counts;
+}
+
 /**
  * 快照观察轮 → page-operate 批次：从快照 elements 取首个输入框与按钮的 ref，
  * 产出 fill+click+read 三步（read 键固定 noteValue，供回喂轮匹配）。
@@ -436,11 +458,22 @@ function decide(sys, u, body) {
   if (obs !== null) {
     const xianyuSendCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_SEND);
     if (xianyuSendCount > 0 && !obs.includes('"elements"')) {
+      if (obs.includes('user-stopped')) return { text: '已按用户要求停止，后续没有重发消息。' };
       return { toolCall: snapshotCall() };
     }
     if (xianyuSendCount > 0 && obs.includes('"elements"')) {
-      const notice = firstNotice(obs);
-      if (notice !== null && /发送成功|已发送/.test(notice)) {
+      const blocking = firstBlockingNotice(obs);
+      if (blocking !== null) return { text: `页面提示：${blocking}，发送结果不明确；已停止且不会自动重发。` };
+      const counts = receiptCounts(body);
+      const prior = counts[counts.length - 2];
+      const current = counts[counts.length - 1];
+      const latestNotice = firstNotice(obs);
+      if (
+        prior !== undefined &&
+        current === prior + 1 &&
+        latestNotice !== null &&
+        /最新：(未读|已读)/.test(latestNotice)
+      ) {
         return { text: '页面已明确回显测试消息发送成功。' };
       }
       return { text: '发送后页面复核没有得到明确成功证据，结果不明确；已停止且不会自动重发。' };
@@ -462,6 +495,8 @@ function decide(sys, u, body) {
       return { toolCall: sendEmailCall(obs) };
     }
     if (obs.includes('"elements"') && hasTool(body, TOOL_XIANYU_SEND)) {
+      const notice = firstBlockingNotice(obs);
+      if (notice !== null) return { text: `页面提示：${notice}，已停止发送。` };
       return { toolCall: sendXianyuTestCall(obs) };
     }
     // generic browse 快照观察轮：有拦截提示即停，否则单步点击批次（每批单独确认）。

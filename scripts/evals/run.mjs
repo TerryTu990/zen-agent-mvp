@@ -227,11 +227,21 @@ async function postFrame(sessionId, token, frame) {
 }
 
 /** 代插件之职：绝对化 exec-instruction 的相对 url、真实 fetch 宿主 API、把结果原样回喂为 exec-result。 */
-async function executeInstruction(sessionId, token, frame) {
+async function executeInstruction(sessionId, token, frame, scenario) {
   const { request } = frame;
   // dom 代执行批次（ADR-013 send-email 等）：代插件之职回一个符合 resultSchema 的确定性结果
   // （reads 空对象 + completedSteps=步数），供回喂轮总结；不触真实浏览器。
   if (request?.kind === 'dom') {
+    if (typeof scenario.execResultError === 'string') {
+      await postFrame(sessionId, token, {
+        type: 'exec-result',
+        sessionId,
+        nonce: frame.nonce,
+        ok: false,
+        error: scenario.execResultError,
+      });
+      return;
+    }
     await postFrame(sessionId, token, {
       type: 'exec-result',
       sessionId,
@@ -301,19 +311,21 @@ async function driveTurn(sessionId, token, scenario, bus) {
       }
       if (frame.type === 'snapshot-request' && !handledSnapshot.has(frame.requestId)) {
         // 代插件之职回一份确定性快照；pack 场景可声明需求相关元素，未声明则沿用发送按钮夹具。
+        const snapshotIndex = handledSnapshot.size;
         handledSnapshot.add(frame.requestId);
+        const snapshotFixture = scenario.snapshotSequence?.[snapshotIndex] ?? scenario;
         await postFrame(sessionId, token, {
           type: 'snapshot-report',
           sessionId,
           requestId: frame.requestId,
           url: scenario.url ?? `${HOST_BASE}/${scenario.page}`,
-          elements: scenario.snapshotElements ?? [{ ref: 'za-send', role: 'button', label: '发送' }],
-          notices: scenario.snapshotNotices ?? [],
+          elements: snapshotFixture.snapshotElements ?? [{ ref: 'za-send', role: 'button', label: '发送' }],
+          notices: snapshotFixture.snapshotNotices ?? [],
         });
       }
       if (frame.type === 'exec-instruction' && !handledExec.has(frame.nonce)) {
         handledExec.add(frame.nonce);
-        await executeInstruction(sessionId, token, frame);
+        await executeInstruction(sessionId, token, frame, scenario);
       }
       if (frame.type === 'guide-action' && guideFrame === null) {
         guideFrame = frame;

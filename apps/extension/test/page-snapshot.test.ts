@@ -245,6 +245,20 @@ describe('createSnapshotter：页面提示文本 notices 采集', () => {
     expect(createSnapshotter().collect().notices).toEqual(['请选择分组', '名称不能为空']);
   });
 
+  it('只汇总消息回执数量与最新状态，不采集相邻消息正文', () => {
+    document.body.innerHTML = `
+      <div class="message-content">
+        <div class="message-body">兑换内容不应进入 notices</div>
+        <div class="read-status-text--hash">已读</div>
+      </div>
+      <span class="send-status">已发送</span>
+      <span class="message-status">未读</span>
+    `;
+    const { notices } = createSnapshotter().collect();
+    expect(notices).toEqual(['消息回执数：3；最新：未读']);
+    expect(JSON.stringify(notices)).not.toContain('兑换内容');
+  });
+
   it('class 启发式跳过长容器与含表单控件的区块', () => {
     document.body.innerHTML = `
       <div class="error-panel">${'长'.repeat(201)}</div>
