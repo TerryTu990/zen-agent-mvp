@@ -97,6 +97,7 @@ export type {
   CardInventoryError,
   ReserveCardInput,
   ReserveCardResult,
+  BeginCardDeliveryInput,
   SettleCardInput,
   SettleCardResult,
   CardInventoryPort,

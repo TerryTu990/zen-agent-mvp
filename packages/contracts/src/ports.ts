@@ -285,6 +285,7 @@ export type CardInventoryError =
   | 'inventory-unavailable'
   | 'inventory-empty'
   | 'inventory-ambiguous'
+  | 'inventory-paused'
   | 'inventory-write-failed'
   | 'inventory-invalid-record';
 
@@ -299,10 +300,21 @@ export type ReserveCardResult =
       cardId: string;
       /** 仅在服务端履约编排内短暂流转；MUST NOT 进入模型、审计或日志。 */
       cardSecret: string;
-      status: Exclude<CardInventoryStatus, 'available'>;
+      status: 'reserved';
       reused: boolean;
     }
+  | {
+      ok: true;
+      cardId: string;
+      status: 'sent' | 'manual';
+      reused: true;
+    }
   | { ok: false; error: CardInventoryError };
+
+export interface BeginCardDeliveryInput {
+  cardId: string;
+  orderId: string;
+}
 
 export interface SettleCardInput {
   cardId: string;
@@ -318,6 +330,8 @@ export type SettleCardResult =
 export interface CardInventoryPort {
   /** 同订单优先复用；否则领取一条 available 并先写 reserved。单执行器串行前提见实施计划。 */
   reserve(input: ReserveCardInput): Promise<ReserveCardResult>;
+  /** 在浏览器副作用前持久化 attempt 闩锁；重启后看到该闩锁只能转人工，不得重发。 */
+  beginDelivery(input: BeginCardDeliveryInput): Promise<SettleCardResult>;
   /** 页面回执明确后写 sent；任何不明确结果写 manual。 */
   settle(input: SettleCardInput): Promise<SettleCardResult>;
 }
@@ -340,13 +354,14 @@ export interface PrepareCardFulfillmentInput {
 }
 
 export type PrepareCardFulfillmentResult =
-  | { ok: true; intentId: string; cardId: string; reused: boolean }
+  | { ok: true; intentId: string }
   | {
       ok: false;
       error:
         | CardInventoryError
         | 'already-sent'
         | 'manual-review'
+        | 'fulfillment-paused'
         | 'unsupported-quantity'
         | 'intent-registration-failed';
     };
@@ -359,11 +374,13 @@ export interface SettleCardFulfillmentInput {
 
 export type SettleCardFulfillmentResult =
   | { ok: true }
-  | { ok: false; error: CardInventoryError | 'unknown-intent' };
+  | { ok: false; error: CardInventoryError | 'unknown-intent' | 'outcome-conflict' };
 
 export interface FulfillmentCoordinatorPort {
   /** 领取/复用卡密、先预占，再登记不向模型暴露正文的一次性 toolgate intent。 */
   prepare(input: PrepareCardFulfillmentInput): Promise<PrepareCardFulfillmentResult>;
+  /** toolgate 放行后、浏览器指令签发前写入不可重放的发送尝试闩锁。 */
+  beginDelivery(intentId: string): Promise<SettleCardFulfillmentResult>;
   /** 闲鱼回执闭环后回填库存终态；失败必须阻断后续自动处理。 */
   settle(input: SettleCardFulfillmentInput): Promise<SettleCardFulfillmentResult>;
 }

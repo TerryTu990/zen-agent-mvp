@@ -20,7 +20,7 @@
 - Phase 2D 验证：闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件通过；真实 gateway/toolgate 协议 E2E 覆盖 opaque `intentId`、固定两步、网关强制回执以及回执数恰增 1 才完成。对抗测试覆盖同 call 各状态重放、Ed25519 request/会话篡改、其它会话合法签名帧、绝对过期、插件 nonce 重放、切页/页面生命周期变化、错误控件角色、fill 后失败快照脱敏、`completedSteps=2` 契约、运营日边界、客户端无执行结果主动 TTL、回执快照超时与迟到 409；生产实现另将已验签 nonce 写入 `chrome.storage.session` 以跨 SW 重启保留。全仓 dependency lint、build、468 项串行测试与 `git diff --check` 通过；定向计数为 toolgate 78、extension 108、server 99，等待第六轮独立复审。
 - 当前账号待发货计数仍为零，订单发货状态更新保留到出现一笔明确授权的低价值待发货测试单时验证；不阻塞只依赖消息通知闭环的 Phase 2D/Phase 3。
 - Phase 3A（2026-07-22）：按飞书 `general` user 身份精确查重后创建一张私有 `Zen Agent｜闲鱼卡密库存` Base，字段为计划定义的最小七列；导入 20 条记录并回读确认 1 条 `sent`、19 条 `available`。首条绑定附件中的历史订单号，Base 链接已登记到“Token 中转｜项目导航”，未开启外部分享。
-- Phase 3B（2026-07-22）：新增 ADR-017、`CardInventoryPort` 与 `FulfillmentCoordinatorPort`。`packages/card-inventory` 通过 `lark-cli --profile general --as user` 实现订单复用、available→reserved、reserved→sent/manual；每次重要写入前机械执行 `whoami`，底层错误不回显 stdout/stderr。`packages/fulfillment` 固定组装附件格式的订单号、兑换码与使用说明，模型及调用方只获得 opaque `intentId`。网关在闲鱼回执结束后同步回填，回填失败把整笔标记失败并停止。
+- Phase 3B（2026-07-22）：新增 ADR-017、`CardInventoryPort` 与 `FulfillmentCoordinatorPort`。`packages/card-inventory` 通过 `lark-cli --profile general --as user` 实现订单复用、available→reserved、reserved→sent/manual；每次重要写入前机械执行 `whoami`，写后按 `card_id` 回读 `status / order_id / note`，底层错误不回显 stdout/stderr。浏览器副作用前先持久化 `delivery-attempted`；该标记或 `manual` 会作为同商品跨重启暂停闩锁，避免点击后、回执前崩溃造成重复发送。`packages/fulfillment` 固定组装附件格式的订单号、兑换码与使用说明，模型及调用方只获得 opaque `intentId`。网关在闲鱼回执结束后同步回填，回填失败把整笔标记失败并停止。
 - Phase 3B 真实验证：运行时连接器按历史订单查到 `card-001` 的 `sent` 状态并完成幂等 settle，没有发送新的闲鱼消息、没有占用新卡、终端未输出兑换码。
 - Phase 3 验证：全仓 dependency lint、build、478 项串行测试与 `git diff --check` 通过；闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件无回归。新增测试覆盖同订单复用、reserved 崩溃恢复、缺货、重复记录、身份失败、预占写失败、终态单向转换、intent 登记失败清理、页面成功/超时后的 sent/manual 回填，以及闲鱼成功但飞书回填失败时整体失败且不生成第二次发送。
 
@@ -272,8 +272,8 @@ page_snapshot
 
 1. 按 `order_id` 查询已有关联记录。
 2. 按 `product_key` 获取一条 `available` 卡密。
-3. 发送前写入 `reserved + order_id + updated_at`。
-4. 页面确认成功后写入 `sent`；结果不明确时写入 `manual`。
+3. 发送前写入 `reserved + order_id + updated_at` 并回读；浏览器指令签发前再写 `note=delivery-attempted` 并回读。
+4. 页面确认成功后写入 `sent`；结果不明确时写入 `manual`。任一未决 attempt 或 `manual` 暂停同商品后续自动处理。
 
 连接器通过 JSON 可序列化端口接入，并由 `apps/server` 组装；不得让 assembly、toolgate 或 extension 横向 import 飞书实现。token 由既有 token 业务在运行时提供，不进入工具参数、模型或日志。
 

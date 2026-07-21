@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import type {
   CardInventoryPort,
   CardInventoryStatus,
+  BeginCardDeliveryInput,
   ReserveCardInput,
   ReserveCardResult,
   SettleCardInput,
@@ -31,7 +32,10 @@ interface InventoryRecord {
   cardSecret: string;
   status: CardInventoryStatus;
   orderId: string;
+  note: string;
 }
+
+const DELIVERY_ATTEMPTED_NOTE = 'delivery-attempted';
 
 function objectOf(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -79,7 +83,7 @@ function parseRecords(payload: unknown): InventoryRecord[] | null {
   const names = fields.every((field) => typeof field === 'string') ? (fields as string[]) : null;
   if (names === null || rows.length !== recordIds.length) return null;
   const index = (name: string): number => names.indexOf(name);
-  const required = ['card_id', 'product_key', 'card_secret', 'status', 'order_id'];
+  const required = ['card_id', 'product_key', 'card_secret', 'status', 'order_id', 'note'];
   if (required.some((name) => index(name) < 0)) return null;
   const parsed: InventoryRecord[] = [];
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
@@ -91,13 +95,15 @@ function parseRecords(payload: unknown): InventoryRecord[] | null {
     const cardSecret = row[index('card_secret')];
     const status = parseStatus(row[index('status')]);
     const orderIdValue = row[index('order_id')];
+    const noteValue = row[index('note')];
     if (
       typeof cardId !== 'string' ||
       typeof productKey !== 'string' ||
       typeof cardSecret !== 'string' ||
       cardSecret === '' ||
       status === null ||
-      (orderIdValue !== null && typeof orderIdValue !== 'string')
+      (orderIdValue !== null && typeof orderIdValue !== 'string') ||
+      (noteValue !== null && typeof noteValue !== 'string')
     ) {
       return null;
     }
@@ -108,6 +114,7 @@ function parseRecords(payload: unknown): InventoryRecord[] | null {
       cardSecret,
       status,
       orderId: typeof orderIdValue === 'string' ? orderIdValue : '',
+      note: typeof noteValue === 'string' ? noteValue : '',
     });
   }
   return parsed;
@@ -155,6 +162,8 @@ export function createLarkBaseCardInventoryPort(
         'status',
         '--field-id',
         'order_id',
+        '--field-id',
+        'note',
         '--filter-json',
         JSON.stringify(filter),
         '--sort-json',
@@ -198,18 +207,64 @@ export function createLarkBaseCardInventoryPort(
     return list({ logic: 'and', conditions: [['card_id', '==', cardId]] }, 2);
   }
 
+  async function patchAndVerify(
+    record: InventoryRecord,
+    patch: Record<string, unknown>,
+    expected: Partial<Pick<InventoryRecord, 'status' | 'orderId' | 'note'>>,
+  ): Promise<boolean> {
+    if (!(await patchRecord(record.recordId, patch))) return false;
+    const records = await byCard(record.cardId);
+    if (records === null || records.length !== 1 || records[0]?.recordId !== record.recordId) return false;
+    const updated = records[0];
+    return (
+      (expected.status === undefined || updated.status === expected.status) &&
+      (expected.orderId === undefined || updated.orderId === expected.orderId) &&
+      (expected.note === undefined || updated.note === expected.note)
+    );
+  }
+
+  async function productHasUncertainAttempt(productKey: string): Promise<boolean | null> {
+    const manual = await list(
+      { logic: 'and', conditions: [['product_key', '==', productKey], ['status', 'intersects', ['manual']]] },
+      1,
+    );
+    if (manual === null) return null;
+    if (manual.length > 0) return true;
+    const attempted = await list(
+      { logic: 'and', conditions: [['product_key', '==', productKey], ['note', '==', DELIVERY_ATTEMPTED_NOTE]] },
+      1,
+    );
+    return attempted === null ? null : attempted.length > 0;
+  }
+
+  let operation = Promise.resolve();
+  function serialized<T>(action: () => Promise<T>): Promise<T> {
+    const next = operation.then(action, action);
+    operation = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
   return {
-    async reserve(input: ReserveCardInput): Promise<ReserveCardResult> {
-      if (input.orderId.trim() === '' || input.productKey.trim() === '') {
-        return { ok: false, error: 'inventory-invalid-record' };
-      }
-      const existing = await byOrder(input.orderId);
+    reserve(input: ReserveCardInput): Promise<ReserveCardResult> {
+      return serialized(async () => {
+        const orderId = input.orderId.trim();
+        const productKey = input.productKey.trim();
+        if (orderId === '' || productKey === '') {
+          return { ok: false, error: 'inventory-invalid-record' };
+        }
+        const existing = await byOrder(orderId);
       if (existing === null) return { ok: false, error: 'inventory-unavailable' };
       if (existing.length > 1) return { ok: false, error: 'inventory-ambiguous' };
       const prior = existing[0];
       if (prior !== undefined) {
-        if (prior.productKey !== input.productKey || prior.status === 'available') {
+        if (prior.productKey !== productKey || prior.status === 'available') {
           return { ok: false, error: 'inventory-invalid-record' };
+        }
+        if (prior.status === 'reserved' && prior.note === DELIVERY_ATTEMPTED_NOTE) {
+          return { ok: false, error: 'inventory-paused' };
+        }
+        if (prior.status !== 'reserved') {
+          return { ok: true, cardId: prior.cardId, status: prior.status, reused: true };
         }
         return {
           ok: true,
@@ -219,11 +274,14 @@ export function createLarkBaseCardInventoryPort(
           reused: true,
         };
       }
+      const paused = await productHasUncertainAttempt(productKey);
+      if (paused === null) return { ok: false, error: 'inventory-unavailable' };
+      if (paused) return { ok: false, error: 'inventory-paused' };
       const available = await list(
         {
           logic: 'and',
           conditions: [
-            ['product_key', '==', input.productKey],
+            ['product_key', '==', productKey],
             ['status', 'intersects', ['available']],
           ],
         },
@@ -235,7 +293,11 @@ export function createLarkBaseCardInventoryPort(
       if (selected === undefined || selected.orderId !== '' || selected.status !== 'available') {
         return { ok: false, error: 'inventory-invalid-record' };
       }
-      if (!(await patchRecord(selected.recordId, { status: 'reserved', order_id: input.orderId }))) {
+      if (!(await patchAndVerify(
+        selected,
+        { status: 'reserved', order_id: orderId, note: '' },
+        { status: 'reserved', orderId, note: '' },
+      ))) {
         return { ok: false, error: 'inventory-write-failed' };
       }
       return {
@@ -245,25 +307,57 @@ export function createLarkBaseCardInventoryPort(
         status: 'reserved',
         reused: false,
       };
+      });
     },
 
-    async settle(input: SettleCardInput): Promise<SettleCardResult> {
-      const records = await byCard(input.cardId);
+    beginDelivery(input: BeginCardDeliveryInput): Promise<SettleCardResult> {
+      return serialized(async () => {
+        const cardId = input.cardId.trim();
+        const orderId = input.orderId.trim();
+        if (cardId === '' || orderId === '') return { ok: false, error: 'inventory-invalid-record' };
+        const records = await byCard(cardId);
+        if (records === null) return { ok: false, error: 'inventory-unavailable' };
+        if (records.length !== 1) {
+          return { ok: false, error: records.length === 0 ? 'inventory-invalid-record' : 'inventory-ambiguous' };
+        }
+        const record = records[0]!;
+        if (record.orderId !== orderId || record.status !== 'reserved') {
+          return { ok: false, error: 'inventory-invalid-record' };
+        }
+        if (record.note === DELIVERY_ATTEMPTED_NOTE) return { ok: true };
+        return (await patchAndVerify(
+          record,
+          { note: DELIVERY_ATTEMPTED_NOTE },
+          { status: 'reserved', orderId, note: DELIVERY_ATTEMPTED_NOTE },
+        )) ? { ok: true } : { ok: false, error: 'inventory-write-failed' };
+      });
+    },
+
+    settle(input: SettleCardInput): Promise<SettleCardResult> {
+      return serialized(async () => {
+        const cardId = input.cardId.trim();
+        const orderId = input.orderId.trim();
+        const records = await byCard(cardId);
       if (records === null) return { ok: false, error: 'inventory-unavailable' };
       if (records.length !== 1) {
         return { ok: false, error: records.length === 0 ? 'inventory-invalid-record' : 'inventory-ambiguous' };
       }
       const record = records[0]!;
-      if (record.orderId !== input.orderId || record.status === 'available') {
+      if (record.orderId !== orderId || record.status === 'available') {
         return { ok: false, error: 'inventory-invalid-record' };
       }
       if (record.status === input.status) return { ok: true };
       if (record.status !== 'reserved') return { ok: false, error: 'inventory-invalid-record' };
+      if (input.status === 'sent' && record.note !== DELIVERY_ATTEMPTED_NOTE) {
+        return { ok: false, error: 'inventory-invalid-record' };
+      }
       const patch: Record<string, unknown> = { status: input.status };
-      if (input.note !== undefined) patch['note'] = input.note;
-      return (await patchRecord(record.recordId, patch))
+      const note = input.note ?? (input.status === 'sent' ? 'delivery-confirmed' : 'manual-review-required');
+      patch['note'] = note;
+      return (await patchAndVerify(record, patch, { status: input.status, orderId, note }))
         ? { ok: true }
         : { ok: false, error: 'inventory-write-failed' };
+      });
     },
   };
 }

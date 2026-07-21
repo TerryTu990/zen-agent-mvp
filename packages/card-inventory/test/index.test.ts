@@ -1,15 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { createLarkBaseCardInventoryPort, type LarkCliRunner } from '../src/index.js';
 
-const FIELDS = ['card_id', 'product_key', 'card_secret', 'status', 'order_id'];
+const FIELDS = ['card_id', 'product_key', 'card_secret', 'status', 'order_id', 'note'];
 
 function listPayload(
-  records: Array<{ id: string; values: [string, string, string, string[], string | null] }>,
+  records: Array<{
+    id: string;
+    values:
+      | [string, string, string, string[], string | null]
+      | [string, string, string, string[], string | null, string | null];
+  }>,
 ) {
   return {
     ok: true,
     data: {
-      data: records.map((record) => record.values),
+      data: records.map((record) => record.values.length === 5 ? [...record.values, null] : record.values),
       fields: FIELDS,
       record_id_list: records.map((record) => record.id),
     },
@@ -60,6 +65,8 @@ describe('飞书卡密库存端口', () => {
   it('新订单先查重，再选择 available，whoami 通过后写 reserved', async () => {
     const runner = queuedRunner([
       listPayload([]),
+      listPayload([]),
+      listPayload([]),
       listPayload([
         {
           id: 'rec-2',
@@ -68,6 +75,12 @@ describe('飞书卡密库存端口', () => {
       ]),
       { available: true, identity: 'user' },
       { ok: true },
+      listPayload([
+        {
+          id: 'rec-2',
+          values: ['card-2', 'product-a', 'fixture-value-not-real', ['reserved'], 'order-2', ''],
+        },
+      ]),
     ]);
     await expect(port(runner).reserve({ productKey: 'product-a', orderId: 'order-2' })).resolves.toEqual({
       ok: true,
@@ -79,10 +92,13 @@ describe('飞书卡密库存端口', () => {
     expect(runner.calls.map((args) => args[1])).toEqual([
       '+record-list',
       '+record-list',
+      '+record-list',
+      '+record-list',
       undefined,
       '+record-batch-update',
+      '+record-list',
     ]);
-    const writeArgs = runner.calls[3]!.join(' ');
+    const writeArgs = runner.calls[5]!.join(' ');
     expect(writeArgs).toContain('reserved');
     expect(writeArgs).toContain('order-2');
     expect(writeArgs).not.toContain('fixture-value-not-real');
@@ -90,7 +106,7 @@ describe('飞书卡密库存端口', () => {
 
   it('缺货、重复订单记录、身份失败和写失败均 fail-closed', async () => {
     await expect(
-      port(queuedRunner([listPayload([]), listPayload([])])).reserve({
+      port(queuedRunner([listPayload([]), listPayload([]), listPayload([]), listPayload([])])).reserve({
         productKey: 'product-a',
         orderId: 'order-empty',
       }),
@@ -108,7 +124,13 @@ describe('飞书卡密库存端口', () => {
       { id: 'r3', values: ['c3', 'product-a', 'fixture-c', ['available'], null] },
     ]);
     await expect(
-      port(queuedRunner([listPayload([]), candidate, { available: false, identity: 'bot' }])).reserve({
+      port(queuedRunner([
+        listPayload([]),
+        listPayload([]),
+        listPayload([]),
+        candidate,
+        { available: false, identity: 'bot' },
+      ])).reserve({
         productKey: 'product-a',
         orderId: 'order-auth-fail',
       }),
@@ -122,6 +144,9 @@ describe('飞书卡密库存端口', () => {
       ]),
       { available: true, identity: 'user' },
       { ok: true },
+      listPayload([
+        { id: 'r4', values: ['c4', 'product-a', 'fixture-d', ['manual'], 'order-4', 'timeout'] },
+      ]),
     ]);
     await expect(
       port(runner).settle({ cardId: 'c4', orderId: 'order-4', status: 'manual', note: 'timeout' }),
@@ -147,6 +172,51 @@ describe('飞书卡密库存端口', () => {
         ]),
       ).settle({ cardId: 'c6', orderId: 'order-6', status: 'sent' }),
     ).resolves.toEqual({ ok: false, error: 'inventory-invalid-record' });
+  });
+
+  it('浏览器副作用前写入 delivery-attempted 并回读；重启恢复时拒绝再次发送', async () => {
+    const attempted = listPayload([
+      {
+        id: 'r7',
+        values: ['c7', 'product-a', 'fixture-g', ['reserved'], 'order-7', 'delivery-attempted'],
+      },
+    ]);
+    const runner = queuedRunner([
+      listPayload([
+        { id: 'r7', values: ['c7', 'product-a', 'fixture-g', ['reserved'], 'order-7', ''] },
+      ]),
+      { available: true, identity: 'user' },
+      { ok: true },
+      attempted,
+    ]);
+    await expect(port(runner).beginDelivery({ cardId: 'c7', orderId: 'order-7' })).resolves.toEqual({ ok: true });
+    expect(runner.calls[2]!.join(' ')).toContain('delivery-attempted');
+    await expect(
+      port(queuedRunner([attempted])).reserve({ productKey: 'product-a', orderId: 'order-7' }),
+    ).resolves.toEqual({ ok: false, error: 'inventory-paused' });
+  });
+
+  it('写命令成功但回读字段不符时 fail-closed；manual 或未决 attempt 会暂停同商品下一单', async () => {
+    const candidate = listPayload([
+      { id: 'r8', values: ['c8', 'product-a', 'fixture-h', ['available'], null] },
+    ]);
+    const stale = listPayload([
+      { id: 'r8', values: ['c8', 'product-a', 'fixture-h', ['available'], null] },
+    ]);
+    await expect(port(queuedRunner([
+      listPayload([]), listPayload([]), listPayload([]), candidate,
+      { available: true, identity: 'user' }, { ok: true }, stale,
+    ])).reserve({ productKey: 'product-a', orderId: 'order-8' })).resolves.toEqual({
+      ok: false,
+      error: 'inventory-write-failed',
+    });
+
+    const manual = listPayload([
+      { id: 'r9', values: ['c9', 'product-a', 'fixture-i', ['manual'], 'old-order', 'timeout'] },
+    ]);
+    await expect(port(queuedRunner([listPayload([]), manual])).reserve({
+      productKey: 'product-a', orderId: 'order-9',
+    })).resolves.toEqual({ ok: false, error: 'inventory-paused' });
   });
 
   it('CLI/响应异常只返回闭集错误，不回显底层内容', async () => {

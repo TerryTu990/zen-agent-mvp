@@ -623,6 +623,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         status: 'reserved',
         reused: false,
       })),
+      beginDelivery: vi.fn(async () => ({ ok: true })),
       settle: inventorySettle,
     };
     const intentServer = await startServer(
@@ -760,6 +761,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         status: 'reserved',
         reused: false,
       })),
+      beginDelivery: vi.fn(async () => ({ ok: true })),
       settle: inventorySettle,
     };
     const intentServer = await startServer(
@@ -875,6 +877,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         status: 'reserved',
         reused: false,
       })),
+      beginDelivery: vi.fn(async () => ({ ok: true })),
       settle: vi.fn(async () => ({ ok: false, error: 'inventory-write-failed' })),
     };
     const intentServer = await startServer(
@@ -967,6 +970,22 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(1);
       expect(textOf(sse.frames)).not.toContain('fixture-value-not-real');
       expect(JSON.stringify(auditEventsFor(sessionId))).not.toContain('fixture-value-not-real');
+      await expect(intentServer.ports.fulfillment!.prepare({
+        accountId: 'host-u1',
+        toolId: 'xianyu-fulfillment.execute-intent',
+        productId: 'item-backfill',
+        productKey: 'product-backfill',
+        orderId: 'order-after-backfill-failure',
+        quantity: 1,
+        pageUrl,
+        pageInstanceId: 'page-instance-backfill',
+        messageRef: 'za-message',
+        sendRef: 'za-send',
+        receiptEvidenceId: 'message-receipts',
+        receiptBaselineCount: 2,
+        receiptSuccessStatuses: ['未读', '已读'],
+        expiresAt: Date.now() + 60_000,
+      })).resolves.toEqual({ ok: false, error: 'fulfillment-paused' });
     } finally {
       sse.close();
       baseUrl = previousBaseUrl;

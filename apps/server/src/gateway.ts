@@ -568,12 +568,16 @@ export function createGateway(deps: GatewayDeps): Gateway {
       note?: string,
     ): Promise<boolean> => {
       if (boundedIntentId === null || deps.fulfillment === undefined) return true;
-      const result = await deps.fulfillment.settle({
-        intentId: boundedIntentId,
-        outcome,
-        ...(note !== undefined ? { note } : {}),
-      });
-      return result.ok;
+      try {
+        const result = await deps.fulfillment.settle({
+          intentId: boundedIntentId,
+          outcome,
+          ...(note !== undefined ? { note } : {}),
+        });
+        return result.ok;
+      } catch {
+        return false;
+      }
     };
 
     // dom 工具判定上下文来自最近一次快照（未观察不操作：无快照 toolgate 即 deny）。
@@ -645,6 +649,26 @@ export function createGateway(deps: GatewayDeps): Gateway {
         typeof params['task'] === 'string'
       ) {
         await deps.toolgate.grantHitl({ sessionId, task: params['task'] });
+      }
+    }
+
+    // 浏览器副作用前先把发送尝试写入飞书。写入或回读不确定即停，不签发任何指令；
+    // 该持久化闩锁让进程在点击后、回执前崩溃时重启也不能自动重发。
+    if (boundedIntentId !== null && deps.fulfillment !== undefined) {
+      let begun = false;
+      try {
+        begun = (await deps.fulfillment.beginDelivery(boundedIntentId)).ok;
+      } catch {
+        begun = false;
+      }
+      if (!begun) {
+        finish('failed');
+        return {
+          toolCallId,
+          ok: false,
+          content: null,
+          error: 'fulfillment-inventory-backfill-failed',
+        };
       }
     }
 

@@ -44,9 +44,10 @@ describe('卡密履约编排', () => {
       reused: false,
     }));
     const settle = vi.fn(async () => ({ ok: true as const }));
-    const built = coordinator({ reserve, settle });
+    const beginDelivery = vi.fn(async () => ({ ok: true as const }));
+    const built = coordinator({ reserve, beginDelivery, settle });
     const prepared = await built.port.prepare(input);
-    expect(prepared).toEqual({ ok: true, intentId: 'intent-a', cardId: 'card-a', reused: false });
+    expect(prepared).toEqual({ ok: true, intentId: 'intent-a' });
     expect(JSON.stringify(prepared)).not.toContain('fixture-value-not-real');
     expect(built.prepareFulfillmentIntent).toHaveBeenCalledOnce();
     const registered = built.prepareFulfillmentIntent.mock.calls[0]![0];
@@ -56,12 +57,12 @@ describe('卡密履约编排', () => {
     await expect(built.port.prepare(input)).resolves.toEqual({
       ok: true,
       intentId: 'intent-a',
-      cardId: 'card-a',
-      reused: true,
     });
     expect(reserve).toHaveBeenCalledOnce();
     expect(built.prepareFulfillmentIntent).toHaveBeenCalledOnce();
 
+    await expect(built.port.beginDelivery('intent-a')).resolves.toEqual({ ok: true });
+    expect(beginDelivery).toHaveBeenCalledWith({ cardId: 'card-a', orderId: 'order-a' });
     await expect(built.port.settle({ intentId: 'intent-a', outcome: 'sent' })).resolves.toEqual({ ok: true });
     expect(settle).toHaveBeenCalledWith({ cardId: 'card-a', orderId: 'order-a', status: 'sent' });
   });
@@ -75,10 +76,10 @@ describe('卡密履约编排', () => {
         reserve: vi.fn(async () => ({
           ok: true,
           cardId: 'card-a',
-          cardSecret: 'fixture-value-not-real',
           status,
           reused: true,
         })),
+        beginDelivery: vi.fn(async () => ({ ok: true })),
         settle: vi.fn(async () => ({ ok: true })),
       };
       const built = coordinator(inventory);
@@ -90,6 +91,7 @@ describe('卡密履约编排', () => {
   it('库存失败不触发闲鱼 intent；intent 登记失败把已预占卡转 manual', async () => {
     const empty: CardInventoryPort = {
       reserve: vi.fn(async () => ({ ok: false, error: 'inventory-empty' })),
+      beginDelivery: vi.fn(async () => ({ ok: true })),
       settle: vi.fn(async () => ({ ok: true })),
     };
     const noStock = coordinator(empty);
@@ -105,6 +107,7 @@ describe('卡密履约编排', () => {
         status: 'reserved',
         reused: false,
       })),
+      beginDelivery: vi.fn(async () => ({ ok: true })),
       settle,
     };
     const broken = coordinator(reserved, vi.fn(async () => Promise.reject(new Error('registration failed'))));
@@ -122,6 +125,7 @@ describe('卡密履约编排', () => {
     const cleanupFailed = coordinator(
       {
         reserve: reserved.reserve,
+        beginDelivery: reserved.beginDelivery,
         settle: vi.fn(async () => ({ ok: false, error: 'inventory-write-failed' as const })),
       },
       vi.fn(async () => Promise.reject(new Error('registration failed'))),
@@ -141,6 +145,7 @@ describe('卡密履约编排', () => {
         status: 'reserved',
         reused: false,
       })),
+      beginDelivery: vi.fn(async () => ({ ok: true })),
       settle: vi.fn(async () => ({ ok: false, error: 'inventory-write-failed' })),
     };
     const built = coordinator(inventory);
@@ -153,9 +158,59 @@ describe('卡密履约编排', () => {
       error: 'unknown-intent',
     });
     await built.port.prepare(input);
+    await expect(built.port.beginDelivery('intent-a')).resolves.toEqual({ ok: true });
     await expect(built.port.settle({ intentId: 'intent-a', outcome: 'manual' })).resolves.toEqual({
       ok: false,
       error: 'inventory-write-failed',
+    });
+    await expect(built.port.prepare({ ...input, orderId: 'order-next' })).resolves.toEqual({
+      ok: false,
+      error: 'fulfillment-paused',
+    });
+  });
+
+  it('规范化订单键并拒绝冲突终态；beginDelivery 失败后全局暂停', async () => {
+    const reserve = vi.fn(async () => ({
+      ok: true as const,
+      cardId: 'card-a',
+      cardSecret: 'fixture-value-not-real',
+      status: 'reserved' as const,
+      reused: false,
+    }));
+    const inventory: CardInventoryPort = {
+      reserve,
+      beginDelivery: vi.fn(async () => ({ ok: false, error: 'inventory-write-failed' as const })),
+      settle: vi.fn(async () => ({ ok: true })),
+    };
+    const built = coordinator(inventory);
+    await expect(built.port.prepare({ ...input, orderId: ' order-a ', productKey: ' product-a ' }))
+      .resolves.toEqual({ ok: true, intentId: 'intent-a' });
+    await expect(built.port.prepare(input)).resolves.toEqual({
+      ok: true,
+      intentId: 'intent-a',
+    });
+    expect(reserve).toHaveBeenCalledOnce();
+    expect(reserve).toHaveBeenCalledWith({ orderId: 'order-a', productKey: 'product-a' });
+    await expect(built.port.beginDelivery('intent-a')).resolves.toEqual({
+      ok: false,
+      error: 'inventory-write-failed',
+    });
+    await expect(built.port.prepare({ ...input, orderId: 'order-next' })).resolves.toEqual({
+      ok: false,
+      error: 'fulfillment-paused',
+    });
+
+    const settled = coordinator({
+      reserve,
+      beginDelivery: vi.fn(async () => ({ ok: true })),
+      settle: vi.fn(async () => ({ ok: true })),
+    });
+    await settled.port.prepare(input);
+    await settled.port.beginDelivery('intent-a');
+    await expect(settled.port.settle({ intentId: 'intent-a', outcome: 'sent' })).resolves.toEqual({ ok: true });
+    await expect(settled.port.settle({ intentId: 'intent-a', outcome: 'manual' })).resolves.toEqual({
+      ok: false,
+      error: 'outcome-conflict',
     });
   });
 });
