@@ -52,3 +52,6 @@ export const panelHistoryKeyForGroup = (groupId: number): string => 'za.panelHis
 
 /** 已验签并即将/已经执行的 nonce；storage.session 持久化以跨 service worker 重启防重放。 */
 export const execNonceKeyForGroup = (groupId: number): string => 'za.execNonces.g' + groupId;
+
+/** 自动扫描正在执行的轮次；storage.session 使 service worker 回收后仍保持单飞。 */
+export const xianyuAutoScanRunKeyForGroup = (groupId: number): string => 'za.xianyuAutoScanRun.g' + groupId;

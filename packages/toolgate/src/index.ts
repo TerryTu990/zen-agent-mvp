@@ -23,6 +23,8 @@ import type {
   Observation,
   PrepareFulfillmentIntentInput,
   PrepareFulfillmentIntentResult,
+  PreauthorizeFulfillmentInput,
+  PreauthorizeFulfillmentResult,
   ConfirmFulfillmentReceiptInput,
   ConfirmFulfillmentReceiptResult,
   SiteDescriptor,
@@ -115,8 +117,14 @@ interface FulfillmentReservation {
   toolId: string;
   orderId: string;
   day: string;
-  state: 'pending' | 'completed' | 'uncertain';
+  state: 'authorized' | 'pending' | 'completed' | 'uncertain';
   expiresAt: number;
+}
+
+interface FulfillmentAuthorization extends PreauthorizeFulfillmentInput {
+  authorizationId: string;
+  reservationKey: string;
+  used: boolean;
 }
 
 interface FulfillmentIntent extends PrepareFulfillmentIntentInput {
@@ -305,6 +313,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   // uncertain 并永久阻止该订单自动重试，防“没看见回执”演变成重复发货。
   const fulfillmentPolicies = options.fulfillmentPolicies ?? [];
   const fulfillmentReservations = new Map<string, FulfillmentReservation>();
+  const fulfillmentAuthorizations = new Map<string, FulfillmentAuthorization>();
   const fulfillmentIntents = new Map<string, FulfillmentIntent>();
   const intentByCall = new Map<string, string>();
   const reservationByCall = new Map<string, string>();
@@ -344,7 +353,16 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   }
 
   const expirePendingReservations = (): void => {
-    for (const reservation of fulfillmentReservations.values()) {
+    for (const [reservationKey, reservation] of fulfillmentReservations) {
+      if (reservation.state === 'authorized' && now() > reservation.expiresAt) {
+        fulfillmentReservations.delete(reservationKey);
+        for (const [authorizationId, authorization] of fulfillmentAuthorizations) {
+          if (authorization.reservationKey === reservationKey && !authorization.used) {
+            fulfillmentAuthorizations.delete(authorizationId);
+          }
+        }
+        continue;
+      }
       if (reservation.state === 'pending' && now() > reservation.expiresAt) {
         reservation.state = 'uncertain';
       }
@@ -403,46 +421,21 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     if ('reason' in validatedIntentSteps) {
       return { allowed: false, reason: `bounded-intent-steps:${validatedIntentSteps.reason}` };
     }
-    let intentOrigin: string;
-    try {
-      intentOrigin = new URL(intent.pageUrl).origin;
-    } catch {
-      return { allowed: false, reason: 'bounded-intent-invalid' };
+    const authorization = fulfillmentAuthorizations.get(intent.authorizationId);
+    const reservation = authorization === undefined
+      ? undefined
+      : fulfillmentReservations.get(authorization.reservationKey);
+    if (
+      authorization === undefined ||
+      !authorization.used ||
+      authorization.expiresAt < now() ||
+      reservation?.state !== 'authorized'
+    ) {
+      return { allowed: false, reason: 'bounded-authorization-invalid' };
     }
-    const eligible = fulfillmentPolicies.filter(
-      (policy) =>
-        policy.accountId === intent.accountId &&
-        policy.toolId === tool.id &&
-        policy.siteOrigin === intentOrigin &&
-        policy.validUntil >= now() &&
-        policy.productIds.includes(intent.productId) &&
-        intent.quantity <= policy.maxCodesPerOrder,
-    );
-    if (eligible.length !== 1) {
-      return { allowed: false, reason: eligible.length === 0 ? 'bounded-policy-miss' : 'bounded-policy-ambiguous' };
-    }
-    const policy = eligible[0]!;
-    const canonicalOrderId = intent.orderId.trim();
-    const today = dayKey(now(), policy.dayBoundaryOffsetMinutes);
-    const reservationKey = `${policy.siteOrigin}\0${intent.accountId}\0${tool.id}\0${canonicalOrderId}`;
-    if (fulfillmentReservations.has(reservationKey)) {
-      return { allowed: false, reason: 'bounded-order-already-used' };
-    }
-    const usedToday = [...fulfillmentReservations.values()].filter(
-      (reservation) => reservation.policyId === policy.id && reservation.day === today,
-    ).length;
-    if (usedToday >= policy.dailyOrderLimit) {
-      return { allowed: false, reason: 'bounded-daily-limit' };
-    }
-    fulfillmentReservations.set(reservationKey, {
-      policyId: policy.id,
-      accountId: intent.accountId,
-      toolId: tool.id,
-      orderId: canonicalOrderId,
-      day: today,
-      state: 'pending',
-      expiresAt: now() + ttlMs,
-    });
+    const reservationKey = authorization.reservationKey;
+    reservation.state = 'pending';
+    reservation.expiresAt = now() + ttlMs;
     reservationByCall.set(callKey(input.sessionId, input.toolCallId), reservationKey);
     intentByCall.set(callKey(input.sessionId, input.toolCallId), intent.intentId);
     fulfillmentCallStates.set(keyForCall, 'reserved');
@@ -629,6 +622,79 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       return { algorithm: 'Ed25519', publicKey: execVerificationKey };
     },
 
+    async preauthorizeFulfillment(
+      input: PreauthorizeFulfillmentInput,
+    ): Promise<PreauthorizeFulfillmentResult> {
+      expirePendingReservations();
+      const tool = toolsById.get(input.toolId);
+      if (tool?.authorization?.kind !== 'bounded-fulfillment' || !isDomTool(tool)) {
+        throw new Error('履约预授权目标工具不支持有界授权');
+      }
+      let pageOrigin: string;
+      try {
+        pageOrigin = new URL(input.pageUrl).origin;
+      } catch {
+        throw new Error('履约预授权页面 URL 非法');
+      }
+      const canonicalOrderId = input.orderId.trim();
+      if (
+        input.accountId.trim() === '' ||
+        input.productId.trim() === '' ||
+        canonicalOrderId === '' ||
+        !Number.isInteger(input.quantity) ||
+        input.quantity < 1 ||
+        input.expiresAt <= now()
+      ) {
+        throw new Error('履约预授权字段非法');
+      }
+      const eligible = fulfillmentPolicies.filter(
+        (policy) =>
+          policy.accountId === input.accountId &&
+          policy.toolId === input.toolId &&
+          policy.siteOrigin === pageOrigin &&
+          policy.validUntil >= input.expiresAt &&
+          policy.productIds.includes(input.productId) &&
+          input.quantity <= policy.maxCodesPerOrder,
+      );
+      if (eligible.length !== 1) throw new Error('履约预授权未唯一命中策略');
+      const policy = eligible[0]!;
+      const reservationKey = `${policy.siteOrigin}\0${input.accountId}\0${input.toolId}\0${canonicalOrderId}`;
+      if (fulfillmentReservations.has(reservationKey)) throw new Error('履约订单已占用');
+      const today = dayKey(now(), policy.dayBoundaryOffsetMinutes);
+      const usedToday = [...fulfillmentReservations.values()].filter(
+        (reservation) => reservation.policyId === policy.id && reservation.day === today,
+      ).length;
+      if (usedToday >= policy.dailyOrderLimit) throw new Error('履约日额度已用尽');
+      const authorizationId = randomUUID();
+      fulfillmentReservations.set(reservationKey, {
+        policyId: policy.id,
+        accountId: input.accountId,
+        toolId: input.toolId,
+        orderId: canonicalOrderId,
+        day: today,
+        state: 'authorized',
+        expiresAt: input.expiresAt,
+      });
+      fulfillmentAuthorizations.set(authorizationId, {
+        ...input,
+        orderId: canonicalOrderId,
+        authorizationId,
+        reservationKey,
+        used: false,
+      });
+      return { authorizationId };
+    },
+
+    async releaseFulfillmentAuthorization(authorizationId: string): Promise<void> {
+      const authorization = fulfillmentAuthorizations.get(authorizationId);
+      if (authorization === undefined || authorization.used) return;
+      const reservation = fulfillmentReservations.get(authorization.reservationKey);
+      if (reservation?.state === 'authorized') {
+        fulfillmentReservations.delete(authorization.reservationKey);
+      }
+      fulfillmentAuthorizations.delete(authorizationId);
+    },
+
     async prepareFulfillmentIntent(
       input: PrepareFulfillmentIntentInput,
     ): Promise<PrepareFulfillmentIntentResult> {
@@ -673,6 +739,26 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
           input.quantity <= policy.maxCodesPerOrder,
       );
       if (eligible.length !== 1) throw new Error('履约意图未唯一命中预批准策略');
+      const authorization = fulfillmentAuthorizations.get(input.authorizationId);
+      const reservation = authorization === undefined
+        ? undefined
+        : fulfillmentReservations.get(authorization.reservationKey);
+      if (
+        authorization === undefined ||
+        authorization.used ||
+        authorization.expiresAt < now() ||
+        reservation?.state !== 'authorized' ||
+        authorization.accountId !== input.accountId ||
+        authorization.toolId !== input.toolId ||
+        authorization.productId !== input.productId ||
+        authorization.orderId !== input.orderId.trim() ||
+        authorization.quantity !== input.quantity ||
+        authorization.pageUrl !== input.pageUrl ||
+        authorization.expiresAt !== input.expiresAt
+      ) {
+        throw new Error('履约预授权与意图不匹配');
+      }
+      authorization.used = true;
       const intentId = randomUUID();
       fulfillmentIntents.set(intentId, {
         ...input,

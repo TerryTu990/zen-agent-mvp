@@ -39,6 +39,7 @@ export interface UserMessageFrame {
   sessionId: string;
   text: string;
   executionPreference?: ExecutionPreference;
+  automationRunId?: string;
 }
 
 export interface HitlDecisionFrame {

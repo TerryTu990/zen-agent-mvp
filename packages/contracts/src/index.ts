@@ -83,6 +83,8 @@ export type {
   AssemblyPort,
   DomGateContext,
   PrepareFulfillmentIntentInput,
+  PreauthorizeFulfillmentInput,
+  PreauthorizeFulfillmentResult,
   PrepareFulfillmentIntentResult,
   ConfirmFulfillmentReceiptInput,
   ConfirmFulfillmentReceiptResult,

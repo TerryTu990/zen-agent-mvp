@@ -130,6 +130,7 @@ describe('C3 client-access-layer 消息帧', () => {
       sessionId: 's-001',
       text: '怎么筛选待发货订单？',
       executionPreference: 'dom-only',
+      automationRunId: 'scan_run_001',
     },
     'text-delta': {
       type: 'text-delta',
@@ -162,6 +163,12 @@ describe('C3 client-access-layer 消息帧', () => {
       sessionId: 's-001',
       text: '刷新订单',
       executionPreference: 'client-decides',
+    },
+    'user-message 自动轮次标识过短': {
+      type: 'user-message',
+      sessionId: 's-001',
+      text: '自动扫描',
+      automationRunId: 'short',
     },
     'context-report 缺 required url': { type: 'context-report', sessionId: 's-001' },
     '未知帧 type 被闭集拒绝': { type: 'page-reload', sessionId: 's-001' },

@@ -45,6 +45,8 @@ export interface UserMessageFrame {
   sessionId: string;
   text: string;
   executionPreference?: ExecutionPreference;
+  /** 插件后台生成的自动扫描轮次标识；只收紧服务端单轮预算，不授予任何执行权限。 */
+  automationRunId?: string;
 }
 
 export interface HitlDecisionFrame {

@@ -1101,12 +1101,12 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
     ...domContext,
     url: `https://seller.example/console/token?order=${orderId}`,
   });
-  const prepare = (
+  const prepare = async (
     port: ReturnType<typeof makePort>,
     orderId: string,
     overrides: Partial<Parameters<typeof port.prepareFulfillmentIntent>[0]> = {},
-  ) =>
-    port.prepareFulfillmentIntent({
+  ) => {
+    const baseIntent = {
       accountId: 'host-1',
       toolId: boundedFulfillmentTool.id,
       productId: 'product-a',
@@ -1122,7 +1122,23 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
       receiptSuccessStatuses: ['未读', '已读'],
       expiresAt: 1_500_000,
       ...overrides,
-    });
+    };
+    const authorizationId = overrides.authorizationId ?? (await port.preauthorizeFulfillment({
+      accountId: baseIntent.accountId,
+      toolId: baseIntent.toolId,
+      productId: baseIntent.productId,
+      orderId: baseIntent.orderId,
+      quantity: baseIntent.quantity,
+      pageUrl: baseIntent.pageUrl,
+      expiresAt: baseIntent.expiresAt,
+    })).authorizationId;
+    try {
+      return await port.prepareFulfillmentIntent({ ...baseIntent, authorizationId });
+    } catch (error) {
+      await port.releaseFulfillmentAuthorization(authorizationId);
+      throw error;
+    }
+  };
   const input = (orderId: string, intentId: string, toolCallId = `call-${orderId}`) => ({
     sessionId: 's-bounded',
     toolCallId,
@@ -1130,6 +1146,46 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
     params: { intentId },
     claims: validClaims,
     domContext: contextFor(orderId),
+  });
+
+  it('库存前预授权原子占住订单与日额度，释放后可重试且授权不可跨订单使用', async () => {
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
+    const authorization = await port.preauthorizeFulfillment({
+      accountId: 'host-1',
+      toolId: boundedFulfillmentTool.id,
+      productId: 'product-a',
+      orderId: 'order-preauthorized',
+      quantity: 1,
+      pageUrl: contextFor('order-preauthorized').url,
+      expiresAt: 1_500_000,
+    });
+    await expect(
+      port.preauthorizeFulfillment({
+        accountId: 'host-1',
+        toolId: boundedFulfillmentTool.id,
+        productId: 'product-a',
+        orderId: 'order-other',
+        quantity: 1,
+        pageUrl: contextFor('order-other').url,
+        expiresAt: 1_500_000,
+      }),
+    ).rejects.toThrow(/日额度/);
+    await expect(
+      prepare(port, 'order-other', { authorizationId: authorization.authorizationId }),
+    ).rejects.toThrow(/不匹配/);
+    await port.releaseFulfillmentAuthorization(authorization.authorizationId);
+
+    const retried = await port.preauthorizeFulfillment({
+      accountId: 'host-1',
+      toolId: boundedFulfillmentTool.id,
+      productId: 'product-a',
+      orderId: 'order-other',
+      quantity: 1,
+      pageUrl: contextFor('order-other').url,
+      expiresAt: 1_500_000,
+    });
+    const registered = await prepare(port, 'order-other', { authorizationId: retried.authorizationId });
+    await expect(port.decide(input('order-other', registered.intentId))).resolves.toEqual({ verdict: 'allow' });
   });
 
   it('可信意图绑定账号、精确页面与固定步骤；模型只传 opaque intentId', async () => {
@@ -1345,11 +1401,7 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
     const { intentId } = await prepare(port, 'order-1', { orderId: ' order-1 ' });
     const firstInput = input('order-1', intentId);
     expect(await port.decide(firstInput)).toEqual({ verdict: 'allow' });
-    const secondIntent = await prepare(port, 'order-1', { productId: 'product-b' });
-    await expect(port.decide(input('order-1', secondIntent.intentId, 'call-repeat'))).resolves.toEqual({
-      verdict: 'deny',
-      reason: 'bounded-order-already-used',
-    });
+    await expect(prepare(port, 'order-1', { productId: 'product-b' })).rejects.toThrow(/订单已占用/);
   });
 
   it('执行失败或回执不明确将订单标为 uncertain，禁止自动重发', async () => {
@@ -1368,11 +1420,7 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
         error: 'page-result-ambiguous',
       },
     });
-    const retry = await prepare(port, 'order-ambiguous');
-    await expect(port.decide(input('order-ambiguous', retry.intentId, 'call-repeat'))).resolves.toEqual({
-      verdict: 'deny',
-      reason: 'bounded-order-already-used',
-    });
+    await expect(prepare(port, 'order-ambiguous')).rejects.toThrow(/订单已占用/);
   });
 
   it('策略范围在可信意图登记时校验，模型无法自报商品或数量', async () => {

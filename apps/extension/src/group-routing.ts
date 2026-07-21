@@ -28,6 +28,7 @@ export interface GroupMembers<T> {
   /** route=active 时无显式活跃者则回退最近加入者（活跃页刚关闭的兜底），组空返回 []。 */
   targets(route: FrameRoute): T[];
   others(member: T): T[];
+  members(): T[];
   size(): number;
 }
 
@@ -53,6 +54,9 @@ export function createGroupMembers<T>(): GroupMembers<T> {
     },
     others(member) {
       return members.filter((candidate) => candidate !== member);
+    },
+    members() {
+      return [...members];
     },
     size() {
       return members.length;

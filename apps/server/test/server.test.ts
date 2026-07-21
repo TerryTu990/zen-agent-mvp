@@ -965,6 +965,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         sessionId,
         text: '执行闲鱼自动履约扫描。每轮最多处理一笔。',
         executionPreference: 'dom-only',
+        automationRunId: 'scan_run_auto_001',
       });
       await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
       const before = framesByType(sse.frames, 'snapshot-request')[0]!;
@@ -1005,6 +1006,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         evidence: { 'message-receipts': { count: 4, latest: '未读' } },
       });
       await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-fulfillment.execute-intent') === 'succeeded');
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-auto-scan') === 'succeeded');
       expect(settle).toHaveBeenCalledWith({ cardId: 'card-auto', orderId: 'order-auto', status: 'sent' });
       expect(textOf(sse.frames)).not.toContain('fixture-value-not-real');
       expect(JSON.stringify(auditEventsFor(sessionId))).not.toContain('fixture-value-not-real');
@@ -1018,6 +1020,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         });
         await postFrame(token, deniedSessionId, {
           type: 'user-message', sessionId: deniedSessionId, text: '执行闲鱼自动履约扫描。',
+          automationRunId: 'scan_run_denied_001',
         });
         await deniedSse.waitFor(() => framesByType(deniedSse.frames, 'snapshot-request').length === 1);
         const deniedSnapshot = framesByType(deniedSse.frames, 'snapshot-request')[0]!;
@@ -1036,6 +1039,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         await deniedSse.waitFor(() => textOf(deniedSse.frames).includes('MOCK-OBS-DEFAULT'));
         expect(framesByType(deniedSse.frames, 'exec-instruction')).toHaveLength(0);
         expect(reserve).toHaveBeenCalledTimes(1);
+        await deniedSse.waitFor(() => lastCardStatus(deniedSse.frames, 'xianyu-auto-scan') === 'succeeded');
       } finally {
         deniedSse.close();
       }
@@ -1043,6 +1047,186 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       sse.close();
       baseUrl = previousBaseUrl;
       await autoServer.close();
+    }
+  });
+
+  it('自动履约网关边界：过期策略与多控件不触达库存，自动轮次第二次准备被机械拒绝', async () => {
+    const reserve = vi.fn(async () => ({
+      ok: true as const,
+      cardId: 'card-boundary',
+      cardSecret: 'fixture-value-not-real',
+      status: 'reserved' as const,
+      reused: false,
+    }));
+    const inventory: CardInventoryPort = {
+      reserve,
+      beginDelivery: vi.fn(async () => ({ ok: true })),
+      settle: vi.fn(async () => ({ ok: true })),
+    };
+    const boundaryServer = await startServer(serverOptions({
+      snapshotRoot: acceptanceRoot,
+      cardInventoryPort: inventory,
+      cardInventoryGuideUrl: 'https://example.test/guide',
+      fulfillmentProductKeys: { 'item-boundary': 'product-boundary' },
+      fulfillmentPolicies: [{
+        id: 'boundary-policy',
+        accountId: 'host-u1',
+        toolId: 'xianyu-fulfillment.execute-intent',
+        siteOrigin: 'https://seller.goofish.com',
+        productIds: ['item-boundary'],
+        validUntil: Date.now() + 120_000,
+        maxCodesPerOrder: 1,
+        dailyOrderLimit: 5,
+        dayBoundaryOffsetMinutes: 480,
+      }],
+    }));
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${boundaryServer.port}`;
+    const token = await signToken();
+    try {
+      const wrongRoute = 'https://seller.goofish.com/?site=COMMONPRO#/seller-data/data';
+      const wrongRouteSession = await createSession(token);
+      const wrongRouteSse = await openSse(token, wrongRouteSession);
+      try {
+        await postFrame(token, wrongRouteSession, {
+          type: 'context-report', sessionId: wrongRouteSession, url: wrongRoute,
+        });
+        await postFrame(token, wrongRouteSession, {
+          type: 'user-message', sessionId: wrongRouteSession, text: '执行闲鱼自动履约扫描。',
+          automationRunId: 'scan_run_wrong_route_001',
+        });
+        await wrongRouteSse.waitFor(() => lastCardStatus(wrongRouteSse.frames, 'xianyu-auto-scan') === 'succeeded');
+        expect(framesByType(wrongRouteSse.frames, 'snapshot-request')).toHaveLength(0);
+        expect(framesByType(wrongRouteSse.frames, 'exec-instruction')).toHaveLength(0);
+        expect(reserve).not.toHaveBeenCalled();
+      } finally {
+        wrongRouteSse.close();
+      }
+
+      const ambiguousUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-boundary&orderId=order-ambiguous';
+      const ambiguousSession = await createSession(token);
+      const ambiguousSse = await openSse(token, ambiguousSession);
+      try {
+        await postFrame(token, ambiguousSession, {
+          type: 'context-report', sessionId: ambiguousSession, url: ambiguousUrl,
+        });
+        await postFrame(token, ambiguousSession, {
+          type: 'user-message', sessionId: ambiguousSession, text: '执行闲鱼自动履约扫描。',
+          automationRunId: 'scan_run_ambiguous_001',
+        });
+        await ambiguousSse.waitFor(() => framesByType(ambiguousSse.frames, 'snapshot-request').length === 1);
+        const request = framesByType(ambiguousSse.frames, 'snapshot-request')[0]!;
+        await postFrame(token, ambiguousSession, {
+          type: 'snapshot-report',
+          sessionId: ambiguousSession,
+          requestId: String(request['requestId']),
+          url: ambiguousUrl,
+          pageInstanceId: 'page-ambiguous',
+          elements: [
+            { ref: 'za-message-a', role: 'textarea', label: '请输入消息' },
+            { ref: 'za-message-b', role: 'textarea', label: '请输入消息' },
+            { ref: 'za-send', role: 'button', label: '发送' },
+          ],
+          evidence: { 'message-receipts': { count: 1, latest: '已读' } },
+        });
+        await ambiguousSse.waitFor(() => lastCardStatus(ambiguousSse.frames, 'prepare_xianyu_fulfillment') === 'failed');
+        expect(reserve).not.toHaveBeenCalled();
+        expect(framesByType(ambiguousSse.frames, 'exec-instruction')).toHaveLength(0);
+      } finally {
+        ambiguousSse.close();
+      }
+
+      const doubleUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-boundary&orderId=order-double';
+      const doubleSession = await createSession(token);
+      const doubleSse = await openSse(token, doubleSession);
+      try {
+        await postFrame(token, doubleSession, { type: 'context-report', sessionId: doubleSession, url: doubleUrl });
+        await postFrame(token, doubleSession, {
+          type: 'user-message', sessionId: doubleSession, text: '执行闲鱼自动履约扫描，进行双单预算边界测试。',
+          automationRunId: 'scan_run_double_001',
+        });
+        await doubleSse.waitFor(() => framesByType(doubleSse.frames, 'snapshot-request').length === 1);
+        const request = framesByType(doubleSse.frames, 'snapshot-request')[0]!;
+        await postFrame(token, doubleSession, {
+          type: 'snapshot-report',
+          sessionId: doubleSession,
+          requestId: String(request['requestId']),
+          url: doubleUrl,
+          pageInstanceId: 'page-double',
+          elements: [
+            { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+            { ref: 'za-send', role: 'button', label: '发送' },
+          ],
+          evidence: { 'message-receipts': { count: 1, latest: '已读' } },
+        });
+        await doubleSse.waitFor(() =>
+          framesByType(doubleSse.frames, 'tool-card').filter(
+            (frame) => frame['toolId'] === 'prepare_xianyu_fulfillment',
+          ).length >= 4,
+        );
+        expect(reserve).toHaveBeenCalledTimes(1);
+        expect(framesByType(doubleSse.frames, 'exec-instruction')).toHaveLength(0);
+        await doubleSse.waitFor(() => lastCardStatus(doubleSse.frames, 'xianyu-auto-scan') === 'succeeded');
+      } finally {
+        doubleSse.close();
+      }
+    } finally {
+      baseUrl = previousBaseUrl;
+      await boundaryServer.close();
+    }
+
+    const expiredReserve = vi.fn(async () => ({
+      ok: true as const,
+      cardId: 'card-expired',
+      cardSecret: 'fixture-value-not-real',
+      status: 'reserved' as const,
+      reused: false,
+    }));
+    const expiredServer = await startServer(serverOptions({
+      snapshotRoot: acceptanceRoot,
+      cardInventoryPort: {
+        reserve: expiredReserve,
+        beginDelivery: vi.fn(async () => ({ ok: true })),
+        settle: vi.fn(async () => ({ ok: true })),
+      },
+      cardInventoryGuideUrl: 'https://example.test/guide',
+      fulfillmentProductKeys: { 'item-expired': 'product-expired' },
+      fulfillmentPolicies: [{
+        id: 'expired-policy', accountId: 'host-u1', toolId: 'xianyu-fulfillment.execute-intent',
+        siteOrigin: 'https://seller.goofish.com', productIds: ['item-expired'],
+        validUntil: Date.now() - 1, maxCodesPerOrder: 1, dailyOrderLimit: 1,
+        dayBoundaryOffsetMinutes: 480,
+      }],
+    }));
+    baseUrl = `http://127.0.0.1:${expiredServer.port}`;
+    const expiredToken = await signToken();
+    const expiredSession = await createSession(expiredToken);
+    const expiredSse = await openSse(expiredToken, expiredSession);
+    try {
+      const url = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-expired&orderId=order-expired';
+      await postFrame(expiredToken, expiredSession, { type: 'context-report', sessionId: expiredSession, url });
+      await postFrame(expiredToken, expiredSession, {
+        type: 'user-message', sessionId: expiredSession, text: '执行闲鱼自动履约扫描。',
+        automationRunId: 'scan_run_expired_001',
+      });
+      await expiredSse.waitFor(() => framesByType(expiredSse.frames, 'snapshot-request').length === 1);
+      const request = framesByType(expiredSse.frames, 'snapshot-request')[0]!;
+      await postFrame(expiredToken, expiredSession, {
+        type: 'snapshot-report', sessionId: expiredSession, requestId: String(request['requestId']), url,
+        pageInstanceId: 'page-expired',
+        elements: [
+          { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send', role: 'button', label: '发送' },
+        ],
+        evidence: { 'message-receipts': { count: 1, latest: '已读' } },
+      });
+      await expiredSse.waitFor(() => lastCardStatus(expiredSse.frames, 'prepare_xianyu_fulfillment') === 'failed');
+      expect(expiredReserve).not.toHaveBeenCalled();
+      expect(framesByType(expiredSse.frames, 'exec-instruction')).toHaveLength(0);
+    } finally {
+      expiredSse.close();
+      baseUrl = previousBaseUrl;
+      await expiredServer.close();
     }
   });
 

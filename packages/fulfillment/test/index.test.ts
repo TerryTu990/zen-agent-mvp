@@ -22,8 +22,14 @@ const input = {
 function coordinator(
   inventory: CardInventoryPort,
   prepareFulfillmentIntent = vi.fn(async () => ({ intentId: 'intent-a' })),
+  preauthorizeFulfillment = vi.fn(async () => ({ authorizationId: 'authorization-a' })),
 ) {
-  const toolgate = { prepareFulfillmentIntent } as unknown as ToolGatePort;
+  const releaseFulfillmentAuthorization = vi.fn(async () => undefined);
+  const toolgate = {
+    preauthorizeFulfillment,
+    releaseFulfillmentAuthorization,
+    prepareFulfillmentIntent,
+  } as unknown as ToolGatePort;
   return {
     port: createFulfillmentCoordinator({
       inventory,
@@ -31,11 +37,13 @@ function coordinator(
       guideUrl: 'https://example.test/guide',
     }),
     prepareFulfillmentIntent,
+    preauthorizeFulfillment,
+    releaseFulfillmentAuthorization,
   };
 }
 
 describe('卡密履约编排', () => {
-  it('先预占再登记 opaque intent，返回值不含卡密；成功回执后写 sent', async () => {
+  it('先预授权再预占并登记 opaque intent，返回值不含卡密；成功回执后写 sent', async () => {
     const reserve = vi.fn(async () => ({
       ok: true as const,
       cardId: 'card-a',
@@ -51,6 +59,7 @@ describe('卡密履约编排', () => {
     expect(JSON.stringify(prepared)).not.toContain('fixture-value-not-real');
     expect(built.prepareFulfillmentIntent).toHaveBeenCalledOnce();
     const registered = built.prepareFulfillmentIntent.mock.calls[0]![0];
+    expect(registered.authorizationId).toBe('authorization-a');
     expect(registered.message).toContain('兑换码： fixture-value-not-real');
     expect(registered.message).toContain('https://example.test/guide');
 
@@ -65,6 +74,26 @@ describe('卡密履约编排', () => {
     expect(beginDelivery).toHaveBeenCalledWith({ cardId: 'card-a', orderId: 'order-a' });
     await expect(built.port.settle({ intentId: 'intent-a', outcome: 'sent' })).resolves.toEqual({ ok: true });
     expect(settle).toHaveBeenCalledWith({ cardId: 'card-a', orderId: 'order-a', status: 'sent' });
+  });
+
+  it('策略预授权拒绝时不读取库存；库存失败时释放尚未使用的预授权', async () => {
+    const reserve = vi.fn(async () => ({ ok: false as const, error: 'inventory-empty' as const }));
+    const inventory: CardInventoryPort = {
+      reserve,
+      beginDelivery: vi.fn(async () => ({ ok: true })),
+      settle: vi.fn(async () => ({ ok: true })),
+    };
+    const denied = coordinator(
+      inventory,
+      undefined,
+      vi.fn(async () => Promise.reject(new Error('policy denied'))),
+    );
+    await expect(denied.port.prepare(input)).resolves.toEqual({ ok: false, error: 'authorization-denied' });
+    expect(reserve).not.toHaveBeenCalled();
+
+    const empty = coordinator(inventory);
+    await expect(empty.port.prepare(input)).resolves.toEqual({ ok: false, error: 'inventory-empty' });
+    expect(empty.releaseFulfillmentAuthorization).toHaveBeenCalledWith('authorization-a');
   });
 
   it('已 sent/manual 不登记 intent；reserved 可恢复但不领取第二张卡', async () => {

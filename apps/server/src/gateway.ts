@@ -776,6 +776,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     text: string,
     claims: IdentityClaims,
     executionPreference: ExecutionPreference,
+    automationRunId?: string,
   ): Promise<void> {
     const { sessionId } = session;
     const preferenceInstruction = executionPreferenceInstruction(executionPreference);
@@ -900,6 +901,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // invalid-tool-args 自愈重试预算：模型偶发产出截断/坏 JSON 实参时回喂修正提示重试，
     // 连续超限则按不可自愈终结（防同因空转烧轮数；maxTurnRounds 仍是总兜底）。
     let invalidArgsRetries = 0;
+    let automatedFulfillmentBudgetUsed = false;
     for (let round = 0; round < deps.maxTurnRounds; round += 1) {
       let roundText = '';
       let call: { toolCallId: string; name: string; params: JsonObject } | null = null;
@@ -1028,7 +1030,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
           (tool) => tool.authorization?.kind === 'bounded-fulfillment',
         );
         let prepared: Awaited<ReturnType<NonNullable<typeof deps.fulfillment>['prepare']>> | null = null;
-        if (deps.fulfillment !== undefined) {
+        let prepareError: string | null = null;
+        if (automationRunId !== undefined && automatedFulfillmentBudgetUsed) {
+          prepareError = 'automation-order-limit';
+        } else if (automationRunId !== undefined) {
+          automatedFulfillmentBudgetUsed = true;
+        }
+        if (prepareError === null && deps.fulfillment !== undefined) {
           try {
             const derived = deriveXianyuFulfillmentInput({
               claims,
@@ -1055,7 +1063,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           content: JSON.stringify(
             prepared?.ok === true
               ? { intentId: prepared.intentId }
-              : { error: prepared?.error ?? 'fulfillment-prepare-denied' },
+              : { error: prepareError ?? prepared?.error ?? 'fulfillment-prepare-denied' },
           ),
         };
         broadcast(sessionId, {
@@ -1307,7 +1315,39 @@ export function createGateway(deps: GatewayDeps): Gateway {
       case 'user-message': {
         const runtime = runtimeOf(session.sessionId);
         runtime.turnChain = runtime.turnChain
-          .then(() => runTurn(session, upstream.text, claims, upstream.executionPreference ?? 'auto'))
+          .then(async () => {
+            try {
+              await runTurn(
+                session,
+                upstream.text,
+                claims,
+                upstream.executionPreference ?? 'auto',
+                upstream.automationRunId,
+              );
+              if (upstream.automationRunId !== undefined) {
+                broadcast(session.sessionId, {
+                  type: 'tool-card',
+                  sessionId: session.sessionId,
+                  toolCallId: upstream.automationRunId,
+                  toolId: 'xianyu-auto-scan',
+                  status: 'succeeded',
+                  mode: 'server',
+                });
+              }
+            } catch (cause) {
+              if (upstream.automationRunId !== undefined) {
+                broadcast(session.sessionId, {
+                  type: 'tool-card',
+                  sessionId: session.sessionId,
+                  toolCallId: upstream.automationRunId,
+                  toolId: 'xianyu-auto-scan',
+                  status: 'failed',
+                  mode: 'server',
+                });
+              }
+              throw cause;
+            }
+          })
           .catch((cause) => {
             // 回合内部异常不外泄细节（SEC-04）：客户端只见类别，明细留本地日志
             console.error('agent 回合异常：', cause);

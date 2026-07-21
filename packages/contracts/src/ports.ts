@@ -158,6 +158,8 @@ export interface DomGateContext {
 }
 
 export interface PrepareFulfillmentIntentInput {
+  /** 库存写入前由 toolgate 原子预留策略/订单/日额度所得的一次性票据；缺失不得登记 intent。 */
+  authorizationId: string;
   accountId: string;
   toolId: string;
   productId: string;
@@ -174,6 +176,20 @@ export interface PrepareFulfillmentIntentInput {
   receiptBaselineCount: number;
   receiptSuccessStatuses: string[];
   expiresAt: number;
+}
+
+export interface PreauthorizeFulfillmentInput {
+  accountId: string;
+  toolId: string;
+  productId: string;
+  orderId: string;
+  quantity: number;
+  pageUrl: string;
+  expiresAt: number;
+}
+
+export interface PreauthorizeFulfillmentResult {
+  authorizationId: string;
 }
 
 export interface PrepareFulfillmentIntentResult {
@@ -257,6 +273,10 @@ export interface HitlGrantInput {
 export interface ToolGatePort {
   /** 插件经已鉴权 SSE 响应取得的 Ed25519 SPKI 公钥；仅用于指令验签。 */
   getExecVerificationKey(): Promise<{ algorithm: 'Ed25519'; publicKey: string }>;
+  /** 库存写前原子校验并占住策略、订单和日额度；失败不得触达库存。 */
+  preauthorizeFulfillment(input: PreauthorizeFulfillmentInput): Promise<PreauthorizeFulfillmentResult>;
+  /** 库存/intent 准备失败时释放尚未转执行态的预授权。 */
+  releaseFulfillmentAuthorization(authorizationId: string): Promise<void>;
   /** 仅供 apps/server 内可信连接器调用；不暴露为模型工具或客户端 API。 */
   prepareFulfillmentIntent(input: PrepareFulfillmentIntentInput): Promise<PrepareFulfillmentIntentResult>;
   /** DOM 执行成功后，以发送后新快照回执确认最终交付；未精确增加 1 一律 uncertain。 */
@@ -365,6 +385,7 @@ export type PrepareCardFulfillmentResult =
         | 'manual-review'
         | 'fulfillment-paused'
         | 'unsupported-quantity'
+        | 'authorization-denied'
         | 'intent-registration-failed';
     };
 
@@ -379,7 +400,7 @@ export type SettleCardFulfillmentResult =
   | { ok: false; error: CardInventoryError | 'unknown-intent' | 'outcome-conflict' };
 
 export interface FulfillmentCoordinatorPort {
-  /** 领取/复用卡密、先预占，再登记不向模型暴露正文的一次性 toolgate intent。 */
+  /** 先由 toolgate 原子占住授权/额度，再领取卡密并登记不向模型暴露正文的一次性 intent。 */
   prepare(input: PrepareCardFulfillmentInput): Promise<PrepareCardFulfillmentResult>;
   /** toolgate 放行后、浏览器指令签发前写入不可重放的发送尝试闩锁。 */
   beginDelivery(intentId: string): Promise<SettleCardFulfillmentResult>;

@@ -13,9 +13,9 @@
 - 工具定义只声明 `bounded-fulfillment` 的 opaque `intentId` 参数名；模型不能提供商品、订单、数量、消息正文或 DOM 步骤。
 - 可信服务端连接器通过进程内端口登记一次性履约意图。意图绑定已验签账号、工具、商品、规范化订单、数量、精确页面 URL、页面生命周期、消息输入 ref、发送按钮 ref、固定正文和有效期；连接器不能提交自由步骤，toolgate 只构造恰好一组 `fill → click`。含卡密的正文只存在 toolgate 内存与签名指令，不进模型/审计。
 - 预批准策略只由服务端启动配置注入 toolgate，绑定账号、工具、站点 origin、允许商品、有效期、单订单卡密数量、每日订单上限和运营日时区。
-- toolgate 先联合校验工具/策略/所属站点契约，再在每次调用上校验意图、身份、精确页面 URL、页面生命周期、DOM ref、输入框/发送按钮语义与围栏，匹配唯一策略并原子预占订单；任一不符即 deny，由独立的 `every-call` 人工工具承接。
+- 库存读取前，履约编排必须先调用 toolgate 预授权：联合校验工具、账号、策略有效期、站点、商品、数量，并原子占住订单唯一键与日额度。预授权失败时不得访问飞书库存；库存领取失败则释放尚未使用的预授权。随后登记的 intent 必须逐字段绑定同一预授权，toolgate 在执行调用上继续校验精确页面 URL、页面生命周期、DOM ref、输入框/发送按钮语义与围栏；任一不符即 deny。
 - `(sessionId, toolCallId)` 采用 `reserved → issued → terminal` 单向状态机：一经预占即不能再次放行，一经签发即不能生成第二个 nonce。服务端以 Ed25519 私钥签名会话、绝对时限、nonce、调用和最终请求；插件只允许生产 HTTPS（本机开发 HTTP 例外），经已鉴权 SSE 响应取得公钥，在任何副作用前验签、验绝对过期并将 nonce 持久化去重。签名 DOM 请求同时携带预期 URL 与页面生命周期；切页、刷新或切换标签页均回报 `context-mismatch`。插件最低 Chrome 137（WebCrypto Ed25519 默认启用版本）。
-- 预占状态为 `pending/completed/uncertain`。DOM `fill → click` 两步成功仍保持 `pending`；网关不等待模型决定，而是在原指令绝对时限内强制发起一次发送后快照。只有该快照仍绑定意图的精确 URL 与页面生命周期，且结构化回执数相对基线恰好增加 1、状态在允许枚举内，才记 `completed`。失败、过期、重放、结果 schema 不明、换页、回执不明确或等待超时记 `uncertain`。三种状态都占用订单唯一键，自动路径永不重试同一订单。
+- 预占状态为 `authorized/pending/completed/uncertain`。`authorized` 是库存写前的短暂状态；intent 被执行裁决后转 `pending`。DOM `fill → click` 两步成功仍保持 `pending`；网关不等待模型决定，而是在原指令绝对时限内强制发起一次发送后快照。只有该快照仍绑定意图的精确 URL 与页面生命周期，且结构化回执数相对基线恰好增加 1、状态在允许枚举内，才记 `completed`。失败、过期、重放、结果 schema 不明、换页、回执不明确或等待超时记 `uncertain`。执行态都占用订单唯一键，自动路径永不重试同一订单。
 - 订单唯一键为 `(siteOrigin, accountId, toolId, canonicalOrderId)`，跨策略也不能重复。网关按签名指令 TTL 主动结束无回执等待，toolgate 将其记为 `uncertain`。
 - 快照不采集任何输入控件值；网关对客户端上报再剥离一次 `value`，避免 fill 成功、click 失败后的正文进入模型。自由文本工具继续 `every-call`；当前测试发送工具不接入自动授权。客户端不读取或裁决策略，只执行验签后的指令及机械验证页面执行围栏。
 

@@ -5,6 +5,7 @@ import {
   autoGroupKey,
   panelGroupKey,
   panelHistoryKeyForGroup,
+  xianyuAutoScanRunKeyForGroup,
   TAB_GROUP_ID_NONE,
 } from '../src/activation.js';
 
@@ -63,5 +64,6 @@ describe('会话组存根键', () => {
     expect(autoGroupKey(3, 'https://mail.126.com')).toBe('za.autoGroup.3.https://mail.126.com');
     expect(panelGroupKey(3)).toBe('za.panelGroup.w3');
     expect(panelHistoryKeyForGroup(42)).toBe('za.panelHistory.g42');
+    expect(xianyuAutoScanRunKeyForGroup(42)).toBe('za.xianyuAutoScanRun.g42');
   });
 });

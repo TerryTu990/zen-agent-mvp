@@ -35,7 +35,7 @@ function deliveryMessage(orderId: string, cardSecret: string, guideUrl: string):
 }
 
 /**
- * 纯服务端履约编排：先飞书预占，再登记 toolgate opaque intent；卡密只在两端口之间短暂流转。
+ * 纯服务端履约编排：先由 toolgate 原子预授权，再飞书预占并登记 opaque intent；卡密只在两端口之间短暂流转。
  * 本模块不认识 Chrome/DOM 执行器、不记录任何输入，也不把正文返回给调用方。
  */
 export function createFulfillmentCoordinator(
@@ -69,18 +69,47 @@ export function createFulfillmentCoordinator(
           intentId: existingIntentId!,
         };
       }
+      let authorizationId: string;
+      try {
+        const authorized = await options.toolgate.preauthorizeFulfillment({
+          accountId: input.accountId,
+          toolId: input.toolId,
+          productId: input.productId,
+          orderId,
+          quantity: input.quantity,
+          pageUrl: input.pageUrl,
+          expiresAt: input.expiresAt,
+        });
+        authorizationId = authorized.authorizationId;
+      } catch {
+        return { ok: false, error: 'authorization-denied' };
+      }
       let reservation;
       try {
         reservation = await options.inventory.reserve({ productKey, orderId });
       } catch {
+        await options.toolgate.releaseFulfillmentAuthorization(authorizationId);
         return { ok: false, error: 'inventory-unavailable' };
       }
-      if (!reservation.ok) return reservation;
-      if (reservation.status === 'sent') return { ok: false, error: 'already-sent' };
-      if (reservation.status === 'manual') return { ok: false, error: 'manual-review' };
-      if (reservation.status !== 'reserved') return { ok: false, error: 'inventory-invalid-record' };
+      if (!reservation.ok) {
+        await options.toolgate.releaseFulfillmentAuthorization(authorizationId);
+        return reservation;
+      }
+      if (reservation.status === 'sent') {
+        await options.toolgate.releaseFulfillmentAuthorization(authorizationId);
+        return { ok: false, error: 'already-sent' };
+      }
+      if (reservation.status === 'manual') {
+        await options.toolgate.releaseFulfillmentAuthorization(authorizationId);
+        return { ok: false, error: 'manual-review' };
+      }
+      if (reservation.status !== 'reserved') {
+        await options.toolgate.releaseFulfillmentAuthorization(authorizationId);
+        return { ok: false, error: 'inventory-invalid-record' };
+      }
       try {
         const registered = await options.toolgate.prepareFulfillmentIntent({
+          authorizationId,
           accountId: input.accountId,
           toolId: input.toolId,
           productId: input.productId,
@@ -109,6 +138,7 @@ export function createFulfillmentCoordinator(
           intentId: registered.intentId,
         };
       } catch {
+        await options.toolgate.releaseFulfillmentAuthorization(authorizationId);
         const cleanup = await options.inventory.settle({
           cardId: reservation.cardId,
           orderId,

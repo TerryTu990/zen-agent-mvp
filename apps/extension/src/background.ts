@@ -9,6 +9,7 @@ import {
   panelGroupKey,
   panelHistoryKeyForGroup,
   execNonceKeyForGroup,
+  xianyuAutoScanRunKeyForGroup,
   TAB_GROUP_ID_NONE,
 } from './activation.js';
 import {
@@ -27,6 +28,7 @@ import { verifyExecInstruction } from './exec-verification.js';
 import { normalizeTrustedServerBaseUrl } from './server-url.js';
 import {
   isXianyuAutoScanWorkPage,
+  isXianyuAutoScanCompletion,
   normalizeAutoScanMinutes,
   shouldPauseXianyuAutoScan,
   XIANYU_AUTO_SCAN_ALARM,
@@ -93,6 +95,13 @@ type UpstreamPanelMessage = Extract<
   { kind: 'user-message' | 'hitl-decision' }
 >;
 
+interface AutoScanMessage {
+  kind: 'auto-scan';
+  text: string;
+  executionPreference: 'dom-only';
+  automationRunId: string;
+}
+
 /**
  * 一个 zen 标签页组的会话桥（ADR-013 批次④：键=tabGroup id，组内共享一个服务端会话、一条 SSE）；
  * 下行帧按 routeForFrame 路由（叙事/HITL → Side Panel；exec/guide/snapshot → 活跃执行页）。
@@ -106,6 +115,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   let panelHistory: SidePanelUiEvent[] = [];
   const historyKey = panelHistoryKeyForGroup(groupId);
   const nonceKey = execNonceKeyForGroup(groupId);
+  const autoScanRunKey = xianyuAutoScanRunKeyForGroup(groupId);
   const seenExecNonces = new Set<string>();
   let nonceHistory: Array<{ nonce: string; expiresAt: number }> = [];
   const nonceHistoryReady = chrome.storage.session.get(nonceKey).then((items) => {
@@ -132,7 +142,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   let hostUserId: string | null = null;
   // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
   let expectedActiveTabId: number | null = null;
-  let autoScanActiveUntil = 0;
+  let autoScanRunId: string | null = null;
+  const autoScanRunReady = chrome.storage.session.get(autoScanRunKey).then((items) => {
+    const stored = items[autoScanRunKey];
+    if (typeof stored === 'string' && stored !== '') autoScanRunId = stored;
+  });
 
   const postContent = (target: chrome.runtime.Port, message: BackgroundToContentMessage): void => {
     try {
@@ -162,10 +176,25 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     postToPanels(event);
   };
   const postFrame = (route: FrameRoute, frame: DownstreamFrame): void => {
-    if (shouldPauseXianyuAutoScan(autoScanActiveUntil, Date.now(), frame)) {
-      autoScanActiveUntil = 0;
+    if (isXianyuAutoScanCompletion(autoScanRunId, frame)) {
+      const failed = frame.type === 'tool-card' && frame.status === 'failed';
+      autoScanRunId = null;
+      void chrome.storage.session.remove(autoScanRunKey);
+      if (failed) {
+        void chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
+        postStatus('闲鱼自动履约回合异常结束，扫描已暂停。');
+      }
+      return;
+    }
+    if (shouldPauseXianyuAutoScan(autoScanRunId, frame)) {
       void chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
       postStatus('闲鱼自动履约已因异常暂停；核对页面、库存与策略后可在设置页重新启用。');
+      if (frame.type === 'hitl-request') {
+        // 自动回合本不应进入人工确认；安全拒绝可让服务端回合收尾并发出明确完成帧，避免单飞锁悬挂。
+        pipeline = pipeline.then(async () => {
+          await forward({ kind: 'hitl-decision', hitlId: frame.hitlId, decision: 'reject' });
+        });
+      }
     }
     if (route === 'panel') {
       if (frame.type === 'text-delta' || frame.type === 'tool-card' || frame.type === 'hitl-request') {
@@ -343,7 +372,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   }
 
   function toUpstreamFrame(
-    message: UpstreamContentMessage | UpstreamPanelMessage,
+    message: UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage,
     sessionId: string,
   ): UpstreamFrame {
     switch (message.kind) {
@@ -356,6 +385,14 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           text: message.text,
           executionPreference: message.executionPreference,
         };
+      case 'auto-scan':
+        return {
+          type: 'user-message',
+          sessionId,
+          text: message.text,
+          executionPreference: message.executionPreference,
+          automationRunId: message.automationRunId,
+        };
       case 'hitl-decision':
         return { type: 'hitl-decision', sessionId, hitlId: message.hitlId, decision: message.decision };
       case 'exec-result':
@@ -366,7 +403,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  async function forward(message: UpstreamContentMessage | UpstreamPanelMessage): Promise<void> {
+  async function forward(message: UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage): Promise<void> {
     const session = await ensureSession();
     if (session === null) return;
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
@@ -525,7 +562,6 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         return;
       }
       if (message.kind === 'stop-operation') {
-        autoScanActiveUntil = 0;
         void chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
         postStatus('已停止当前操作并关闭闲鱼自动履约扫描。');
         for (const member of contentMembers.targets('active-page')) {
@@ -542,16 +578,35 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     port.onDisconnect.addListener(() => detachPanel(port));
   }
 
-  function triggerAutoScan(): boolean {
-    if (contentMembers.size() === 0) return false;
-    autoScanActiveUntil = Date.now() + 120_000;
+  async function triggerAutoScan(tabId: number): Promise<'started' | 'busy' | 'unavailable'> {
+    await autoScanRunReady;
+    const enabled = await chrome.storage.local.get(XIANYU_AUTO_SCAN_ENABLED_KEY);
+    if (enabled[XIANYU_AUTO_SCAN_ENABLED_KEY] !== true) return 'unavailable';
+    if (autoScanRunId !== null) return 'busy';
+    const target = contentMembers.members().find((member) => member.sender?.tab?.id === tabId);
+    if (target === undefined) return 'unavailable';
+    contentMembers.markActive(target);
+    const runId = crypto.randomUUID();
+    autoScanRunId = runId;
+    await chrome.storage.session.set({ [autoScanRunKey]: runId });
     postStatus('闲鱼自动履约扫描已触发；本轮最多处理一笔。');
-    pipeline = pipeline.then(() => forward({
-      kind: 'user-message',
-      text: '执行闲鱼自动履约扫描。每轮最多处理一笔；任一页面、订单、库存或回执状态不确定时立即暂停，不得重试发送。',
-      executionPreference: 'dom-only',
-    }));
-    return true;
+    pipeline = pipeline.then(async () => {
+      const current = await chrome.storage.local.get(XIANYU_AUTO_SCAN_ENABLED_KEY);
+      if (current[XIANYU_AUTO_SCAN_ENABLED_KEY] !== true || autoScanRunId !== runId) {
+        if (autoScanRunId === runId) {
+          autoScanRunId = null;
+          await chrome.storage.session.remove(autoScanRunKey);
+        }
+        return;
+      }
+      await forward({
+        kind: 'auto-scan',
+        text: '执行闲鱼自动履约扫描。每轮最多处理一笔；任一页面、订单、库存或回执状态不确定时立即暂停，不得重试发送。',
+        executionPreference: 'dom-only',
+        automationRunId: runId,
+      });
+    });
+    return 'started';
   }
 
   return { attachContent, attachPanel, triggerAutoScan, close };
@@ -715,7 +770,10 @@ async function triggerXianyuAutoScan(): Promise<void> {
     }
     const bridge = groups.get(groupId);
     if (bridge === undefined) continue;
-    if (bridge.triggerAutoScan()) return;
+    if (tab.id !== undefined) {
+      const triggered = await bridge.triggerAutoScan(tab.id);
+      if (triggered === 'started' || triggered === 'busy') return;
+    }
   }
   await chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
 }

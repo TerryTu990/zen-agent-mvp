@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_XIANYU_AUTO_SCAN_MINUTES,
   isXianyuAutoScanWorkPage,
+  isXianyuAutoScanCompletion,
   normalizeAutoScanMinutes,
   shouldPauseXianyuAutoScan,
 } from '../src/xianyu-auto-scan.js';
@@ -24,11 +25,21 @@ describe('闲鱼周期扫描纯决策', () => {
     }
   });
 
-  it('仅在自动扫描活动窗口内由失败 tool-card 触发持久暂停', () => {
-    expect(shouldPauseXianyuAutoScan(2_000, 1_000, { type: 'tool-card', status: 'failed' })).toBe(true);
-    expect(shouldPauseXianyuAutoScan(999, 1_000, { type: 'tool-card', status: 'failed' })).toBe(false);
-    expect(shouldPauseXianyuAutoScan(2_000, 1_000, { type: 'tool-card', status: 'succeeded' })).toBe(false);
-    expect(shouldPauseXianyuAutoScan(2_000, 1_000, { type: 'hitl-request' })).toBe(true);
-    expect(shouldPauseXianyuAutoScan(2_000, 1_000, { type: 'text-delta' })).toBe(false);
+  it('有持久轮次锁时失败/HITL 触发暂停，明确完成帧只负责释放', () => {
+    const runId = 'scan_run_001';
+    expect(shouldPauseXianyuAutoScan(runId, { type: 'tool-card', status: 'failed' })).toBe(true);
+    expect(shouldPauseXianyuAutoScan(null, { type: 'tool-card', status: 'failed' })).toBe(false);
+    expect(shouldPauseXianyuAutoScan(runId, { type: 'tool-card', status: 'succeeded' })).toBe(false);
+    expect(shouldPauseXianyuAutoScan(runId, { type: 'hitl-request' })).toBe(true);
+    expect(shouldPauseXianyuAutoScan(runId, { type: 'text-delta' })).toBe(false);
+    const completion = {
+      type: 'tool-card',
+      toolId: 'xianyu-auto-scan',
+      toolCallId: runId,
+      status: 'failed',
+    };
+    expect(isXianyuAutoScanCompletion(runId, completion)).toBe(true);
+    expect(shouldPauseXianyuAutoScan(runId, completion)).toBe(false);
+    expect(isXianyuAutoScanCompletion('different_run', completion)).toBe(false);
   });
 });

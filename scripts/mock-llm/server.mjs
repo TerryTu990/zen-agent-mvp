@@ -521,6 +521,15 @@ function decide(sys, u, body) {
       return { text: '页面回执未明确增加或等待超时，履约状态已转人工且不会自动重发。' };
     }
     const xianyuPrepareCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_PREPARE);
+    if (xianyuPrepareCount === 1 && u.includes('双单预算')) {
+      return {
+        toolCall: {
+          id: 'call_xianyu_prepare_second_order',
+          name: TOOL_XIANYU_PREPARE,
+          arguments: JSON.stringify({}),
+        },
+      };
+    }
     if (xianyuPrepareCount > 0 && obs.includes('"intentId"')) {
       return { toolCall: executePreparedXianyuIntentCall(obs) };
     }
