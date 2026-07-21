@@ -29,6 +29,9 @@ import { normalizeTrustedServerBaseUrl } from './server-url.js';
 import {
   isXianyuAutoScanWorkPage,
   isXianyuAutoScanCompletion,
+  decideAutoScanRecovery,
+  autoScanDispatch,
+  type AutoScanRecoveryStatus,
   normalizeAutoScanMinutes,
   shouldPauseXianyuAutoScan,
   XIANYU_AUTO_SCAN_ALARM,
@@ -403,9 +406,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  async function forward(message: UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage): Promise<void> {
+  async function forward(message: UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage): Promise<boolean> {
     const session = await ensureSession();
-    if (session === null) return;
+    if (session === null) return false;
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
     try {
       const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/frames`, {
@@ -418,8 +421,10 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       } else if (!response.ok) {
         postStatus(`上行帧被拒绝（HTTP ${response.status}）`);
       }
+      return response.ok;
     } catch {
       postStatus(`无法连接 zen-agent 服务（${session.baseUrl}）`);
+      return false;
     }
   }
 
@@ -526,7 +531,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           ...(message.title !== '' ? { title: message.title } : {}),
         });
       }
-      pipeline = pipeline.then(() => forward(message));
+      pipeline = pipeline.then(async () => { await forward(message); });
     });
     port.onDisconnect.addListener(() => detachContent(port));
   }
@@ -573,16 +578,50 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       if (message.kind === 'hitl-decision') {
         updateHistory((history) => removeSettledHitl(history, message.hitlId));
       }
-      pipeline = pipeline.then(() => forward(message));
+      pipeline = pipeline.then(async () => { await forward(message); });
     });
     port.onDisconnect.addListener(() => detachPanel(port));
   }
 
-  async function triggerAutoScan(tabId: number): Promise<'started' | 'busy' | 'unavailable'> {
+  async function recoverAutoScanRun(runId: string): Promise<'busy' | 'settled' | 'paused'> {
+    const session = await ensureSession();
+    let status: AutoScanRecoveryStatus = 'unavailable';
+    if (session !== null) {
+      try {
+        const response = await fetch(
+          `${session.baseUrl}/v1/sessions/${session.sessionId}/automation-runs/${encodeURIComponent(runId)}`,
+          { headers: { authorization: `Bearer ${session.token}` } },
+        );
+        if (response.status === 404) status = 'missing';
+        else if (response.ok) {
+          const body = await response.json() as { status?: unknown };
+          if (body.status === 'running' || body.status === 'succeeded' || body.status === 'failed') {
+            status = body.status;
+          }
+        }
+      } catch {
+        status = 'unavailable';
+      }
+    }
+    const decision = decideAutoScanRecovery(status);
+    if (decision === 'keep-busy') return 'busy';
+    if (autoScanRunId === runId) {
+      autoScanRunId = null;
+      await chrome.storage.session.remove(autoScanRunKey);
+    }
+    if (decision === 'release-and-pause') {
+      await chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
+      postStatus('闲鱼自动履约上次回合状态异常，扫描已暂停。');
+      return 'paused';
+    }
+    return 'settled';
+  }
+
+  async function triggerAutoScan(tabId: number, tabUrl: string, tabTitle: string): Promise<'started' | 'busy' | 'settled' | 'paused' | 'unavailable'> {
     await autoScanRunReady;
     const enabled = await chrome.storage.local.get(XIANYU_AUTO_SCAN_ENABLED_KEY);
     if (enabled[XIANYU_AUTO_SCAN_ENABLED_KEY] !== true) return 'unavailable';
-    if (autoScanRunId !== null) return 'busy';
+    if (autoScanRunId !== null) return recoverAutoScanRun(autoScanRunId);
     const target = contentMembers.members().find((member) => member.sender?.tab?.id === tabId);
     if (target === undefined) return 'unavailable';
     contentMembers.markActive(target);
@@ -599,12 +638,17 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         }
         return;
       }
-      await forward({
-        kind: 'auto-scan',
-        text: '执行闲鱼自动履约扫描。每轮最多处理一笔；任一页面、订单、库存或回执状态不确定时立即暂停，不得重试发送。',
-        executionPreference: 'dom-only',
-        automationRunId: runId,
-      });
+      const [contextMessage, scanMessage] = autoScanDispatch(tabUrl, tabTitle, runId);
+      if (!(await forward(contextMessage))) {
+        if (autoScanRunId === runId) {
+          autoScanRunId = null;
+          await chrome.storage.session.remove(autoScanRunKey);
+        }
+        await chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
+        postStatus('闲鱼工作页上下文同步失败，扫描已暂停。');
+        return;
+      }
+      await forward(scanMessage);
     });
     return 'started';
   }
@@ -771,8 +815,8 @@ async function triggerXianyuAutoScan(): Promise<void> {
     const bridge = groups.get(groupId);
     if (bridge === undefined) continue;
     if (tab.id !== undefined) {
-      const triggered = await bridge.triggerAutoScan(tab.id);
-      if (triggered === 'started' || triggered === 'busy') return;
+      const triggered = await bridge.triggerAutoScan(tab.id, tab.url!, tab.title ?? '');
+      if (triggered !== 'unavailable') return;
     }
   }
   await chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });

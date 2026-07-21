@@ -123,6 +123,15 @@ function postFrame(token: string, sessionId: string, frame: unknown): Promise<Re
   });
 }
 
+async function getAutomationRun(token: string, sessionId: string, runId: string): Promise<Record<string, unknown>> {
+  const response = await api(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/automation-runs/${encodeURIComponent(runId)}`,
+    { headers: authHeaders(token) },
+  );
+  expect(response.status).toBe(200);
+  return await response.json() as Record<string, unknown>;
+}
+
 async function getInjection(token: string, sessionId: string): Promise<Record<string, unknown>> {
   const res = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/injection`, {
     headers: authHeaders(token),
@@ -959,6 +968,11 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
     const sessionId = await createSession(token);
     const sse = await openSse(token, sessionId);
     try {
+      await postFrame(token, sessionId, {
+        type: 'context-report', sessionId,
+        url: 'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage',
+      });
+      // 模拟同组另一 tab 曾是当前上下文；调度须先同步候选聊天 tab，再发自动消息。
       await postFrame(token, sessionId, { type: 'context-report', sessionId, url: pageUrl });
       await postFrame(token, sessionId, {
         type: 'user-message',
@@ -968,6 +982,14 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         automationRunId: 'scan_run_auto_001',
       });
       await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      await expect(getAutomationRun(token, sessionId, 'scan_run_auto_001')).resolves.toMatchObject({
+        status: 'running',
+      });
+      const duplicateRun = await postFrame(token, sessionId, {
+        type: 'user-message', sessionId, text: '重复投递同一自动轮次。',
+        automationRunId: 'scan_run_auto_001',
+      });
+      expect(duplicateRun.status).toBe(409);
       const before = framesByType(sse.frames, 'snapshot-request')[0]!;
       await postFrame(token, sessionId, {
         type: 'snapshot-report',
@@ -1007,6 +1029,9 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       });
       await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-fulfillment.execute-intent') === 'succeeded');
       await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-auto-scan') === 'succeeded');
+      await expect(getAutomationRun(token, sessionId, 'scan_run_auto_001')).resolves.toMatchObject({
+        status: 'succeeded',
+      });
       expect(settle).toHaveBeenCalledWith({ cardId: 'card-auto', orderId: 'order-auto', status: 'sent' });
       expect(textOf(sse.frames)).not.toContain('fixture-value-not-real');
       expect(JSON.stringify(auditEventsFor(sessionId))).not.toContain('fixture-value-not-real');
@@ -1039,7 +1064,10 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         await deniedSse.waitFor(() => textOf(deniedSse.frames).includes('MOCK-OBS-DEFAULT'));
         expect(framesByType(deniedSse.frames, 'exec-instruction')).toHaveLength(0);
         expect(reserve).toHaveBeenCalledTimes(1);
-        await deniedSse.waitFor(() => lastCardStatus(deniedSse.frames, 'xianyu-auto-scan') === 'succeeded');
+        await deniedSse.waitFor(() => lastCardStatus(deniedSse.frames, 'xianyu-auto-scan') === 'failed');
+        await expect(getAutomationRun(token, deniedSessionId, 'scan_run_denied_001')).resolves.toMatchObject({
+          status: 'failed',
+        });
       } finally {
         deniedSse.close();
       }
@@ -1166,7 +1194,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         );
         expect(reserve).toHaveBeenCalledTimes(1);
         expect(framesByType(doubleSse.frames, 'exec-instruction')).toHaveLength(0);
-        await doubleSse.waitFor(() => lastCardStatus(doubleSse.frames, 'xianyu-auto-scan') === 'succeeded');
+        await doubleSse.waitFor(() => lastCardStatus(doubleSse.frames, 'xianyu-auto-scan') === 'failed');
       } finally {
         doubleSse.close();
       }
@@ -1227,6 +1255,99 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       expiredSse.close();
       baseUrl = previousBaseUrl;
       await expiredServer.close();
+    }
+  });
+
+  it('所有回合统一一单预算：自动回合执行历史 intent 后不能在新订单页再次准备', async () => {
+    const oldUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-budget&orderId=order-old';
+    const newUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-budget&orderId=order-new';
+    const reserve = vi.fn(async () => ({
+      ok: true as const,
+      cardId: 'card-old',
+      cardSecret: 'fixture-value-not-real',
+      status: 'reserved' as const,
+      reused: false,
+    }));
+    const budgetServer = await startServer(serverOptions({
+      snapshotRoot: acceptanceRoot,
+      cardInventoryPort: {
+        reserve,
+        beginDelivery: vi.fn(async () => ({ ok: true })),
+        settle: vi.fn(async () => ({ ok: true })),
+      },
+      cardInventoryGuideUrl: 'https://example.test/guide',
+      fulfillmentProductKeys: { 'item-budget': 'product-budget' },
+      fulfillmentPolicies: [{
+        id: 'budget-policy', accountId: 'host-u1', toolId: 'xianyu-fulfillment.execute-intent',
+        siteOrigin: 'https://seller.goofish.com', productIds: ['item-budget'],
+        validUntil: Date.now() + 120_000, maxCodesPerOrder: 1, dailyOrderLimit: 5,
+        dayBoundaryOffsetMinutes: 480,
+      }],
+    }));
+    const historical = await budgetServer.ports.fulfillment!.prepare({
+      accountId: 'host-u1', toolId: 'xianyu-fulfillment.execute-intent', productId: 'item-budget',
+      productKey: 'product-budget', orderId: 'order-old', quantity: 1, pageUrl: oldUrl,
+      pageInstanceId: 'page-budget', messageRef: 'za-message', sendRef: 'za-send',
+      receiptEvidenceId: 'message-receipts', receiptBaselineCount: 1,
+      receiptSuccessStatuses: ['未读', '已读'], expiresAt: Date.now() + 60_000,
+    });
+    expect(historical.ok).toBe(true);
+    const intentId = historical.ok ? historical.intentId : '';
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${budgetServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: oldUrl });
+      await postFrame(token, sessionId, {
+        type: 'user-message', sessionId,
+        text: `执行履约意图 ${intentId}，旧意图再新单。`,
+        automationRunId: 'scan_run_old_then_new_001',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      const initial = framesByType(sse.frames, 'snapshot-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report', sessionId, requestId: String(initial['requestId']), url: oldUrl,
+        pageInstanceId: 'page-budget',
+        elements: [
+          { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send', role: 'button', label: '发送' },
+        ],
+        evidence: { 'message-receipts': { count: 1, latest: '已读' } },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
+      const instruction = framesByType(sse.frames, 'exec-instruction')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'exec-result', sessionId, nonce: String(instruction['nonce']), ok: true,
+        body: { reads: {}, completedSteps: 2, url: oldUrl },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 2);
+      const receipt = framesByType(sse.frames, 'snapshot-request')[1]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report', sessionId, requestId: String(receipt['requestId']), url: oldUrl,
+        pageInstanceId: 'page-budget', elements: [],
+        evidence: { 'message-receipts': { count: 2, latest: '未读' } },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 3);
+      const newOrderSnapshot = framesByType(sse.frames, 'snapshot-request')[2]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report', sessionId, requestId: String(newOrderSnapshot['requestId']), url: newUrl,
+        pageInstanceId: 'page-new',
+        elements: [
+          { ref: 'za-message-new', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send-new', role: 'button', label: '发送' },
+        ],
+        evidence: { 'message-receipts': { count: 0, latest: '已读' } },
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'prepare_xianyu_fulfillment') === 'failed');
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-auto-scan') === 'failed');
+      expect(reserve).toHaveBeenCalledTimes(1);
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(1);
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await budgetServer.close();
     }
   });
 

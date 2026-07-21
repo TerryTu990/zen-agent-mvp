@@ -367,6 +367,8 @@ interface SessionRuntime {
   pendingSnapshot: Map<string, (report: SnapshotReportFrame) => void>;
   /** 最近一次快照的判定上下文（ref 闭集 + 页路径）；dom 签发校验依据，无快照即 deny。 */
   domContext: DomGateContext | null;
+  /** 自动扫描状态由服务端持有，供 MV3 service worker 重启后查询恢复单飞锁。 */
+  automationRuns: Map<string, { status: 'running' | 'succeeded' | 'failed'; updatedAt: number }>;
 }
 
 const SNAPSHOT_TIMEOUT_MS = 15_000;
@@ -449,6 +451,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         pendingExec: new Map(),
         pendingSnapshot: new Map(),
         domContext: null,
+        automationRuns: new Map(),
       };
       runtimes.set(sessionId, runtime);
     }
@@ -776,8 +779,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     text: string,
     claims: IdentityClaims,
     executionPreference: ExecutionPreference,
-    automationRunId?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const { sessionId } = session;
     const preferenceInstruction = executionPreferenceInstruction(executionPreference);
     const withPreference = (content: string): string =>
@@ -901,7 +903,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // invalid-tool-args 自愈重试预算：模型偶发产出截断/坏 JSON 实参时回喂修正提示重试，
     // 连续超限则按不可自愈终结（防同因空转烧轮数；maxTurnRounds 仍是总兜底）。
     let invalidArgsRetries = 0;
-    let automatedFulfillmentBudgetUsed = false;
+    let automationFailed = false;
+    // 所有用户回合统一最多选择一个 bounded intent；客户端标识只做运行关联，不改变治理约束（U7）。
+    let fulfillmentBudget: { attempted: boolean; intentId?: string } = { attempted: false };
     for (let round = 0; round < deps.maxTurnRounds; round += 1) {
       let roundText = '';
       let call: { toolCallId: string; name: string; params: JsonObject } | null = null;
@@ -916,6 +920,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         } else if (event.kind === 'done') {
           if (event.usage !== undefined) lastUsage = event.usage;
           if (event.stopReason === 'error') {
+            automationFailed = true;
             if (event.errorKind === 'invalid-tool-args' && invalidArgsRetries < MAX_INVALID_ARGS_RETRIES) {
               recoverableError = event.error ?? 'invalid-tool-args';
             } else {
@@ -961,6 +966,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         });
         const report = await reported;
         if (report === null) {
+          automationFailed = true;
           broadcast(sessionId, {
             type: 'tool-card',
             sessionId,
@@ -1031,10 +1037,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
         );
         let prepared: Awaited<ReturnType<NonNullable<typeof deps.fulfillment>['prepare']>> | null = null;
         let prepareError: string | null = null;
-        if (automationRunId !== undefined && automatedFulfillmentBudgetUsed) {
+        if (fulfillmentBudget.attempted) {
           prepareError = 'automation-order-limit';
-        } else if (automationRunId !== undefined) {
-          automatedFulfillmentBudgetUsed = true;
+        } else {
+          fulfillmentBudget = { attempted: true };
         }
         if (prepareError === null && deps.fulfillment !== undefined) {
           try {
@@ -1052,6 +1058,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
             prepared = null;
           }
         }
+        if (prepared?.ok === true) fulfillmentBudget = { attempted: true, intentId: prepared.intentId };
+        else automationFailed = true;
         const prepareEcho: LlmMessage = {
           role: 'assistant',
           content: roundText,
@@ -1230,19 +1238,45 @@ export function createGateway(deps: GatewayDeps): Gateway {
         const notice = '该操作暂未支持。';
         tailText += roundText + notice;
         notify(sessionId, notice);
+        automationFailed = true;
         settled = true;
         break;
       }
 
-      const observation = await runExecSubflow(
-        session,
-        claims,
-        featureId,
-        pack,
-        tool,
-        call,
-        evidenceRules,
-      );
+      const boundedIntentId =
+        tool.authorization?.kind === 'bounded-fulfillment' && typeof call.params['intentId'] === 'string'
+          ? call.params['intentId']
+          : null;
+      let observation: Observation;
+      if (
+        boundedIntentId !== null &&
+        fulfillmentBudget.attempted &&
+        fulfillmentBudget.intentId !== boundedIntentId
+      ) {
+        broadcast(sessionId, {
+          type: 'tool-card', sessionId, toolCallId: call.toolCallId, toolId: tool.id,
+          status: 'running', summary: tool.id, mode: tool.execution,
+        });
+        broadcast(sessionId, {
+          type: 'tool-card', sessionId, toolCallId: call.toolCallId, toolId: tool.id,
+          status: 'failed', mode: tool.execution,
+        });
+        observation = { toolCallId: call.toolCallId, ok: false, content: null, error: 'fulfillment-order-limit' };
+      } else {
+        if (boundedIntentId !== null && !fulfillmentBudget.attempted) {
+          fulfillmentBudget = { attempted: true, intentId: boundedIntentId };
+        }
+        observation = await runExecSubflow(
+          session,
+          claims,
+          featureId,
+          pack,
+          tool,
+          call,
+          evidenceRules,
+        );
+      }
+      if (!observation.ok) automationFailed = true;
       // 回喂 agent：assistant 调用轮回声本轮 tool_calls（OpenAI 兼容 API 要求 role:tool 须有前置
       // 带 tool_calls 的 assistant 消息，否则拒绝孤儿 tool 消息）+ observation（仅规整结果，U7）。
       const execEcho: LlmMessage = {
@@ -1264,6 +1298,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       const notice = '本轮操作步数已达上限，我先停在这里；回复「继续」可接着做。';
       tailText += notice;
       notify(sessionId, notice);
+      automationFailed = true;
     }
     if (tailText !== '') {
       turnMessages.push({ role: 'assistant', content: tailText });
@@ -1278,6 +1313,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       ? await compressHistory(pruned, { llm: deps.llm })
       : pruned;
     deps.store.setHistory(sessionId, toStore);
+    return !automationFailed;
   }
 
   async function handleFrames(
@@ -1314,28 +1350,39 @@ export function createGateway(deps: GatewayDeps): Gateway {
         return;
       case 'user-message': {
         const runtime = runtimeOf(session.sessionId);
+        if (upstream.automationRunId !== undefined) {
+          if (runtime.automationRuns.has(upstream.automationRunId)) {
+            sendJson(res, 409, { error: '自动扫描轮次已存在' });
+            return;
+          }
+          runtime.automationRuns.set(upstream.automationRunId, { status: 'running', updatedAt: Date.now() });
+        }
         runtime.turnChain = runtime.turnChain
           .then(async () => {
             try {
-              await runTurn(
+              const succeeded = await runTurn(
                 session,
                 upstream.text,
                 claims,
                 upstream.executionPreference ?? 'auto',
-                upstream.automationRunId,
               );
               if (upstream.automationRunId !== undefined) {
+                runtime.automationRuns.set(upstream.automationRunId, {
+                  status: succeeded ? 'succeeded' : 'failed',
+                  updatedAt: Date.now(),
+                });
                 broadcast(session.sessionId, {
                   type: 'tool-card',
                   sessionId: session.sessionId,
                   toolCallId: upstream.automationRunId,
                   toolId: 'xianyu-auto-scan',
-                  status: 'succeeded',
+                  status: succeeded ? 'succeeded' : 'failed',
                   mode: 'server',
                 });
               }
             } catch (cause) {
               if (upstream.automationRunId !== undefined) {
+                runtime.automationRuns.set(upstream.automationRunId, { status: 'failed', updatedAt: Date.now() });
                 broadcast(session.sessionId, {
                   type: 'tool-card',
                   sessionId: session.sessionId,
@@ -1438,6 +1485,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
     sendJson(res, 200, description);
   }
 
+  function handleAutomationRun(res: ServerResponse, session: SessionState, runId: string): void {
+    const run = runtimeOf(session.sessionId).automationRuns.get(runId);
+    if (run === undefined) {
+      sendJson(res, 404, { error: '自动扫描轮次不存在' });
+      return;
+    }
+    sendJson(res, 200, run);
+  }
+
   /**
    * P0-b demo-token 签发（demo 级）：有意不要求 authorization——此端点就是发 token 的，故须先于 verifier 判定。
    * 信任模型见 demo-token.ts：真实鉴权在代执行时靠用户 cookie，伪造 hostUserId 只会被下游宿主拒绝。
@@ -1498,7 +1554,18 @@ export function createGateway(deps: GatewayDeps): Gateway {
       sendJson(res, 201, { sessionId: session.sessionId });
       return;
     }
+    const automationMatch = /^\/v1\/sessions\/([^/]+)\/automation-runs\/([^/]+)$/.exec(pathname);
     const match = /^\/v1\/sessions\/([^/]+)\/(frames|events|injection)$/.exec(pathname);
+    if (automationMatch && req.method === 'GET') {
+      const sessionId = decodeURIComponent(automationMatch[1]!);
+      const session = deps.store.get(sessionId);
+      if (!session || session.ownerSub !== claims.sub) {
+        sendJson(res, 404, { error: '会话不存在' });
+        return;
+      }
+      deps.store.refreshClaims(sessionId, claims);
+      return handleAutomationRun(res, session, decodeURIComponent(automationMatch[2]!));
+    }
     if (match) {
       const sessionId = decodeURIComponent(match[1]!);
       const session = deps.store.get(sessionId);

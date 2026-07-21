@@ -8,7 +8,9 @@
 
 Phase 3C 不把订单号、商品号、库存键或卡密变成模型可写参数。Chrome 扩展只提供默认关闭的周期唤醒器：用户在设置页显式开启后，由 `chrome.alarms` 唤醒一个已经打开、已经加入 zen 会话组且确有 content port 绑定的闲鱼订单页或聊天页；不自动新建标签页，也不接管站外、登录或数据总览页面。
 
-每次自动扫描由 background 生成 `automationRunId`，先写入 `chrome.storage.session` 的组级单飞锁，再排入会话管线；真正发送上行帧前再次读取启用状态。锁存在时后续 alarm 只跳过，不排队第二轮。服务端在同一个自动回合里维护不可扩张的一单预算：第一次准备尝试即耗用预算，后续准备调用在触达履约编排/库存前机械拒绝。回合成功或异常退出后，服务端广播与 `automationRunId` 精确绑定的完成帧，插件只凭该帧释放锁；不使用固定时长猜测回合结束。
+每次自动扫描由 background 生成 `automationRunId`，先写入 `chrome.storage.session` 的组级单飞锁，再排入会话管线；真正发送上行帧前再次读取启用状态。调度找到候选 tab 后，必须先用 Chrome 可信 tab URL 向服务端同步 `context-report`，成功后才能发送自动消息，使工具装配与下行快照目标绑定同一 tab。锁存在时后续 alarm 不排队第二轮。
+
+服务端对**所有用户回合**统一维护不可扩张的一单预算，客户端 `automationRunId` 只用于运行关联，不能开关治理。第一次 prepare 尝试或第一次直接执行历史 bounded intent 即选定本轮唯一 intent；同轮其它 prepare 或不同 intent 执行在触达履约编排/库存前机械拒绝。服务端保存每个自动 run 的 `running/succeeded/failed` 状态，正常策略/准备/工具失败也聚合为 `failed`。回合终结时广播与 `automationRunId` 精确绑定的完成帧；若 MV3 service worker 中途回收而错过 SSE，新 worker 先恢复 SSE/session，再查询服务端 run 状态：运行中保持锁，成功后释放，失败/服务端已失去状态则释放并暂停。全链不使用固定时长猜测回合结束。
 
 真实履约准备由 `apps/server` 内建的 `prepare_xianyu_fulfillment` 完成。该工具参数 schema 为空，且只在当前 feature 为 `xianyu-fulfillment`、库存端口已组装、服务端 `itemId → product_key` 闭集已配置、pack 中恰有一个 bounded-fulfillment 工具时注入。它从最近快照机械取得精确聊天 URL、页面生命周期、唯一 textarea、唯一“发 送”按钮和回执基线，从 JWT claims 取得账号，从服务端配置取得库存键；任一证据缺失或不唯一即拒绝。成功只把 opaque `intentId` 回给模型，后续仍由 toolgate 策略、一次性签名、库存 attempt 闩锁和强制回执共同裁决。
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_XIANYU_AUTO_SCAN_MINUTES,
+  decideAutoScanRecovery,
+  autoScanDispatch,
   isXianyuAutoScanWorkPage,
   isXianyuAutoScanCompletion,
   normalizeAutoScanMinutes,
@@ -41,5 +43,20 @@ describe('闲鱼周期扫描纯决策', () => {
     expect(isXianyuAutoScanCompletion(runId, completion)).toBe(true);
     expect(shouldPauseXianyuAutoScan(runId, completion)).toBe(false);
     expect(isXianyuAutoScanCompletion('different_run', completion)).toBe(false);
+  });
+
+  it('service worker 重启后按服务端权威状态恢复单飞锁', () => {
+    expect(decideAutoScanRecovery('running')).toBe('keep-busy');
+    expect(decideAutoScanRecovery('unavailable')).toBe('keep-busy');
+    expect(decideAutoScanRecovery('succeeded')).toBe('release');
+    expect(decideAutoScanRecovery('failed')).toBe('release-and-pause');
+    expect(decideAutoScanRecovery('missing')).toBe('release-and-pause');
+  });
+
+  it('双 tab 调度机械保证先同步候选页上下文，再发送自动轮次', () => {
+    expect(autoScanDispatch('https://seller.goofish.com/#/im?orderId=new', '新订单', 'scan_run_001')).toEqual([
+      { kind: 'context-report', url: 'https://seller.goofish.com/#/im?orderId=new', title: '新订单' },
+      expect.objectContaining({ kind: 'auto-scan', automationRunId: 'scan_run_001' }),
+    ]);
   });
 });

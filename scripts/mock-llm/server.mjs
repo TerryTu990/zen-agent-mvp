@@ -514,6 +514,18 @@ function decide(sys, u, body) {
   }
   if (obs !== null) {
     const xianyuIntentCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_INTENT);
+    if (xianyuIntentCount > 0 && u.includes('旧意图再新单') && hasTool(body, TOOL_XIANYU_PREPARE)) {
+      if (obs.includes('"deliveryConfirmed":true')) return { toolCall: snapshotCall() };
+      if (obs.includes('"elements"')) {
+        return {
+          toolCall: {
+            id: 'call_xianyu_prepare_after_old_intent',
+            name: TOOL_XIANYU_PREPARE,
+            arguments: JSON.stringify({}),
+          },
+        };
+      }
+    }
     if (xianyuIntentCount > 0) {
       if (obs.includes('"deliveryConfirmed":true')) {
         return { text: '页面新回执已确认履约消息送达。' };

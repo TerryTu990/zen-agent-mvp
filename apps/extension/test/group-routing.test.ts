@@ -56,4 +56,14 @@ describe('createGroupMembers：成员表与活跃页', () => {
     members.markActive('ghost');
     expect(members.targets('active-page')).toEqual(['b']);
   });
+
+  it('members 返回独立快照，供调度按候选 tab 精确绑定 content port', () => {
+    const members = createGroupMembers<string>();
+    members.add('tab-orders');
+    members.add('tab-chat');
+    const snapshot = members.members();
+    expect(snapshot.find((member) => member === 'tab-chat')).toBe('tab-chat');
+    snapshot.pop();
+    expect(members.members()).toEqual(['tab-orders', 'tab-chat']);
+  });
 });
