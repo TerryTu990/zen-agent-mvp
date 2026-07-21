@@ -3,6 +3,7 @@
  * ZA_LLM_BASE_URL / ZA_LLM_API_KEY / ZA_LLM_MODEL 由 llm-port 在调用时读取，此处只做启动期提示。
  */
 import { parseGenericAllowlist, startServer } from './index.js';
+import type { BoundedFulfillmentPolicy } from '@zen-agent/toolgate';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -60,6 +61,18 @@ try {
   console.error(`${cause instanceof Error ? cause.message : String(cause)}，拒绝启动`);
   process.exit(1);
 }
+let fulfillmentPolicies: BoundedFulfillmentPolicy[] = [];
+try {
+  const raw = process.env['ZA_FULFILLMENT_POLICIES_JSON'];
+  if (raw !== undefined && raw.trim() !== '') {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('必须是 JSON 数组');
+    fulfillmentPolicies = parsed as BoundedFulfillmentPolicy[];
+  }
+} catch (cause) {
+  console.error(`ZA_FULFILLMENT_POLICIES_JSON 非法：${cause instanceof Error ? cause.message : String(cause)}，拒绝启动`);
+  process.exit(1);
+}
 if (!process.env['ZA_LLM_BASE_URL']) {
   console.warn('ZA_LLM_BASE_URL 未设置：LLM 调用将以"服务暂时不可用"降级');
 }
@@ -83,6 +96,7 @@ startServer({
   sessionDir: process.env['ZA_SESSION_DIR'] ?? '.za/sessions',
   applicationsDir: process.env['ZA_APPLICATIONS_DIR'] ?? '.za/applications',
   genericAllowlist,
+  fulfillmentPolicies,
   sessionTtlMs,
   allowedProviders: ['openai-compatible'],
   demoToken: {

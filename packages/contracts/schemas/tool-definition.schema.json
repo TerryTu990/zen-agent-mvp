@@ -43,6 +43,10 @@
       "type": "string",
       "enum": ["per-task", "every-call"]
     },
+    "authorization": {
+      "$comment": "ADR-016 服务端有界自动履约授权映射；只声明业务键位置，不承载策略或客户端判定。",
+      "$ref": "#/$defs/boundedFulfillmentAuthorization"
+    },
     "adapter": {
       "$comment": "执行适配段，形状由 execution 决定（见根级 if/then 分形）。",
       "type": "object"
@@ -68,6 +72,17 @@
     "properties": { "adapter": { "$ref": "#/$defs/serverAdapter" } }
   },
   "$defs": {
+    "boundedFulfillmentAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "productIdParam", "orderIdParam", "quantityParam"],
+      "properties": {
+        "kind": { "const": "bounded-fulfillment" },
+        "productIdParam": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+        "orderIdParam": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+        "quantityParam": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" }
+      }
+    },
     "featureId": {
       "$comment": "功能标识文法，与 config-snapshot manifest.featureIdRules[].featureId 同文法（跨契约对齐）。",
       "type": "string",

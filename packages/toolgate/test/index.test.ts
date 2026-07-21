@@ -2,7 +2,11 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { ExecResultFrame, IdentityClaims, ToolDefinition } from '@zen-agent/contracts';
 import { SITE_NAVIGATE_TOOL_ID } from '@zen-agent/contracts';
-import { computeExecSignature, createToolGatePort } from '../src/index.js';
+import {
+  computeExecSignature,
+  createToolGatePort,
+  type BoundedFulfillmentPolicy,
+} from '../src/index.js';
 
 // 仅测试固定值，非真实密钥（真实密钥运行时经 env 注入，ZA-C-SEC-02）。
 const SIGN_FIXTURE = 'dev-fixture-value';
@@ -207,6 +211,38 @@ const httpTaskHitlTool: ToolDefinition = {
   },
 };
 
+const boundedFulfillmentTool: ToolDefinition = {
+  id: 'xianyu.send-delivery',
+  featureIds: ['order-list'],
+  description: '发送确定性履约通知',
+  params: {
+    type: 'object',
+    required: ['productId', 'orderId', 'codeCount'],
+    properties: {
+      productId: { type: 'string' },
+      orderId: { type: 'string' },
+      codeCount: { type: 'integer', minimum: 1 },
+    },
+    additionalProperties: false,
+  },
+  execution: 'client',
+  riskTier: 'hitl',
+  hitlMode: 'every-call',
+  authorization: {
+    kind: 'bounded-fulfillment',
+    productIdParam: 'productId',
+    orderIdParam: 'orderId',
+    quantityParam: 'codeCount',
+  },
+  adapter: { method: 'POST', urlTemplate: '/api/deliver/{{orderId}}' },
+  resultSchema: {
+    type: 'object',
+    required: ['ok'],
+    properties: { ok: { type: 'boolean' } },
+    additionalProperties: false,
+  },
+};
+
 /** dom 判定上下文夹具：快照页在围栏内、含 za-1/za-2 两个 ref。 */
 const domContext = { refs: ['za-1', 'za-2'], path: '/console/token' };
 
@@ -223,6 +259,7 @@ const allTools: ToolDefinition[] = [
   domTool,
   domHitlTool,
   httpTaskHitlTool,
+  boundedFulfillmentTool,
 ];
 
 interface PortOverrides {
@@ -230,6 +267,7 @@ interface PortOverrides {
   now?: () => number;
   resolveCredential?: (ref: string) => string | undefined;
   fetchImpl?: typeof fetch;
+  fulfillmentPolicies?: BoundedFulfillmentPolicy[];
 }
 
 function makePort(overrides?: PortOverrides) {
@@ -242,6 +280,9 @@ function makePort(overrides?: PortOverrides) {
       ? { resolveCredential: overrides.resolveCredential }
       : {}),
     ...(overrides?.fetchImpl !== undefined ? { fetchImpl: overrides.fetchImpl } : {}),
+    ...(overrides?.fulfillmentPolicies !== undefined
+      ? { fulfillmentPolicies: overrides.fulfillmentPolicies }
+      : {}),
   });
 }
 
@@ -993,6 +1034,108 @@ describe('toolgate 任务级 HITL 授权（grant，一任务一确认）', () =>
     // 停止吊销覆盖本会话全部任务，不只被停止的那个。
     const otherTask = await port.decide({ ...base, params: taskParams('删令牌'), domContext });
     expect(otherTask.verdict).toBe('hitl');
+  });
+});
+
+describe('toolgate ADR-016 有界自动履约授权', () => {
+  const policy: BoundedFulfillmentPolicy = {
+    id: 'seller-main-product-a',
+    accountId: 'host-1',
+    toolId: boundedFulfillmentTool.id,
+    productIds: ['product-a'],
+    validUntil: 2_000_000,
+    maxCodesPerOrder: 1,
+    dailyOrderLimit: 1,
+  };
+  const input = (orderId: string, overrides: Record<string, unknown> = {}) => ({
+    sessionId: 's-bounded',
+    toolCallId: `call-${orderId}`,
+    toolId: boundedFulfillmentTool.id,
+    params: { productId: 'product-a', orderId, codeCount: 1, ...overrides },
+    claims: validClaims,
+  });
+
+  it('账号、商品、有效期、单笔数量和日限额全部命中才自动 allow', async () => {
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
+    await expect(port.decide(input('order-1'))).resolves.toEqual({ verdict: 'allow' });
+
+    const wrongProduct = await makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] }).decide(
+      input('order-2', { productId: 'product-b' }),
+    );
+    expect(wrongProduct).toEqual({ verdict: 'hitl', reason: 'bounded-policy-miss' });
+
+    const tooMany = await makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] }).decide(
+      input('order-3', { codeCount: 2 }),
+    );
+    expect(tooMany).toEqual({ verdict: 'hitl', reason: 'bounded-policy-miss' });
+
+    const wrongAccount = await makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] }).decide({
+      ...input('order-4'),
+      claims: { ...validClaims, hostUserId: 'other-account' },
+    });
+    expect(wrongAccount).toEqual({ verdict: 'hitl', reason: 'bounded-policy-miss' });
+
+    const expired = await makePort({ now: () => 2_000_001, fulfillmentPolicies: [policy] }).decide(
+      input('order-5'),
+    );
+    expect(expired).toEqual({ verdict: 'hitl', reason: 'bounded-policy-miss' });
+  });
+
+  it('同一订单不自动重试，已完成订单同时占用每日订单额度', async () => {
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
+    const firstInput = input('order-1');
+    expect(await port.decide(firstInput)).toEqual({ verdict: 'allow' });
+    const instruction = await port.issueExecInstruction(firstInput);
+    await expect(
+      port.acceptExecResult({
+        sessionId: firstInput.sessionId,
+        result: {
+          type: 'exec-result',
+          sessionId: firstInput.sessionId,
+          nonce: instruction.nonce,
+          ok: true,
+          body: { ok: true },
+        },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    await expect(port.decide({ ...input('order-1'), toolCallId: 'call-order-1-repeat' })).resolves.toEqual({
+      verdict: 'hitl',
+      reason: 'bounded-order-already-used',
+    });
+    await expect(port.decide(input('order-2'))).resolves.toEqual({
+      verdict: 'hitl',
+      reason: 'bounded-daily-limit',
+    });
+  });
+
+  it('执行失败或回执不明确将订单标为 uncertain，禁止自动重发', async () => {
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 3 }] });
+    const firstInput = input('order-ambiguous');
+    expect(await port.decide(firstInput)).toEqual({ verdict: 'allow' });
+    const instruction = await port.issueExecInstruction(firstInput);
+    await port.acceptExecResult({
+      sessionId: firstInput.sessionId,
+      result: {
+        type: 'exec-result',
+        sessionId: firstInput.sessionId,
+        nonce: instruction.nonce,
+        ok: false,
+        error: 'page-result-ambiguous',
+      },
+    });
+    await expect(
+      port.decide({ ...input('order-ambiguous'), toolCallId: 'call-ambiguous-repeat' }),
+    ).resolves.toEqual({ verdict: 'hitl', reason: 'bounded-order-already-used' });
+  });
+
+  it('重复策略 id 或非法边界在启动期 fail-fast', () => {
+    expect(() =>
+      makePort({ fulfillmentPolicies: [policy, { ...policy }] }),
+    ).toThrow(/有界履约策略/);
+    expect(() =>
+      makePort({ fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 0 }] }),
+    ).toThrow(/有界履约策略/);
   });
 });
 

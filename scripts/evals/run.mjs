@@ -134,6 +134,17 @@ function startServer(snapshotRoot = SNAPSHOT_ROOT) {
       ZA_LLM_MODEL: 'mock-model',
       ZA_AUDIT_SINK: AUDIT_SINK_PATH,
       ZA_GENERIC_ALLOWLIST: HOST_BASE,
+      ZA_FULFILLMENT_POLICIES_JSON: JSON.stringify([
+        {
+          id: 'eval-xianyu-bounded',
+          accountId: 'host-eval-user',
+          toolId: 'xianyu-fulfillment.send-test-message',
+          productIds: ['eval-product'],
+          validUntil: 4_102_444_800_000,
+          maxCodesPerOrder: 1,
+          dailyOrderLimit: 10,
+        },
+      ]),
     },
   });
   child.stdout.on('data', (d) => process.stdout.write(`[server] ${d}`));
@@ -404,6 +415,9 @@ function evaluateOutcome(scenario, outcome) {
     snapshotRequests: new Set(
       frames.filter((frame) => frame.type === 'snapshot-request').map((frame) => frame.requestId),
     ).size,
+    hitlRequests: frames.filter(
+      (frame) => frame.type === 'hitl-request' && targetCallIds.has(frame.toolCallId),
+    ).length,
   };
   for (const [name, expected] of Object.entries(expectedCounts)) {
     if (actualCounts[name] !== expected) {

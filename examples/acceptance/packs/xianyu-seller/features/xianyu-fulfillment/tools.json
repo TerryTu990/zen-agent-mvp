@@ -77,12 +77,21 @@
             }
           }
         },
-        "summary": { "type": "string", "description": "明确说明将对外发送非秘密测试占位内容" }
+        "summary": { "type": "string", "description": "明确说明将对外发送非秘密测试占位内容" },
+        "productId": { "type": "string", "description": "有界自动履约时的商品标识；普通人工测试可省略" },
+        "orderId": { "type": "string", "description": "有界自动履约时的平台订单号；普通人工测试可省略" },
+        "codeCount": { "type": "integer", "minimum": 1, "description": "有界自动履约时本单卡密数量；普通人工测试可省略" }
       }
     },
     "execution": "client",
     "riskTier": "hitl",
     "hitlMode": "every-call",
+    "authorization": {
+      "kind": "bounded-fulfillment",
+      "productIdParam": "productId",
+      "orderIdParam": "orderId",
+      "quantityParam": "codeCount"
+    },
     "adapter": { "kind": "dom", "pathPrefixes": ["/"] },
     "resultSchema": {
       "type": "object",

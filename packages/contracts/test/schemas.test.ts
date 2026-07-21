@@ -463,6 +463,23 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
       },
       resultSchema: { type: 'object' },
     },
+    'every-call 工具声明服务端有界履约授权映射': {
+      id: 'chat.send-delivery',
+      featureIds: ['chat'],
+      description: '发送确定性履约通知',
+      params: { type: 'object', properties: {}, additionalProperties: false },
+      execution: 'client',
+      riskTier: 'hitl',
+      hitlMode: 'every-call',
+      authorization: {
+        kind: 'bounded-fulfillment',
+        productIdParam: 'productId',
+        orderIdParam: 'orderId',
+        quantityParam: 'codeCount',
+      },
+      adapter: { kind: 'dom', pathPrefixes: ['/'] },
+      resultSchema: { type: 'object' },
+    },
   };
 
   it.each(Object.keys(validTools))('合法工具 %s 通过校验', (label) => {
@@ -477,6 +494,14 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
     'client adapter 缺 required urlTemplate 被拒': {
       ...baseTool,
       adapter: { method: 'GET' },
+    },
+    '有界授权映射缺订单字段被拒': {
+      ...baseTool,
+      authorization: {
+        kind: 'bounded-fulfillment',
+        productIdParam: 'productId',
+        quantityParam: 'codeCount',
+      },
     },
   };
 

@@ -5,7 +5,7 @@
 import { createServer } from 'node:http';
 import type { AssemblyPort, AuditPort, LlmPort, ToolGatePort } from '@zen-agent/contracts';
 import { createAssemblyPort } from '@zen-agent/assembly';
-import { createToolGatePort } from '@zen-agent/toolgate';
+import { createToolGatePort, type BoundedFulfillmentPolicy } from '@zen-agent/toolgate';
 import { createLlmPort } from '@zen-agent/llm-port';
 import { createAuditPort } from '@zen-agent/audit';
 import { createTokenVerifier } from './auth.js';
@@ -63,6 +63,8 @@ export interface ServerOptions {
   applicationsDir?: string;
   /** generic 兜底 pack 的服务端准入名单（origin 精确值闭集）；缺省/空 = generic 永不激活（fail-closed，U7）。 */
   genericAllowlist?: string[];
+  /** ADR-016：运营者预批准的服务端有界履约策略；不从客户端或模型上下文接受。 */
+  fulfillmentPolicies?: BoundedFulfillmentPolicy[];
 }
 
 /** ZA_GENERIC_ALLOWLIST 解析：逗号分隔 origin 精确值，空/未设 → []（generic 永不激活）；非法条目抛错（启动期 fail-fast）。www/裸域互认在比对点归一（canonicalizeOrigin），此处只验值形。 */
@@ -110,6 +112,7 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
       sites,
       toolOwnership,
       signingSecret: options.signingSecret,
+      fulfillmentPolicies: options.fulfillmentPolicies ?? [],
       ...(options.resolveCredential ? { resolveCredential: options.resolveCredential } : {}),
     }),
     llm: createLlmPort({ allowedProviders: options.allowedProviders }),

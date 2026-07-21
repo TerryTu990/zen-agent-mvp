@@ -1,6 +1,6 @@
 {
   "packId": "xianyu-seller",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "summary": "闲鱼卖家 PC 端：数据导航、订单识别与受控履约",
   "site": {
     "origin": "https://seller.goofish.com",

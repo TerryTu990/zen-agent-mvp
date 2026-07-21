@@ -50,6 +50,19 @@ export interface ToolGateOptions {
   resolveCredential?: (ref: string) => string | undefined;
   /** fetch 注入点，仅测试用于替身；默认全局 fetch。 */
   fetchImpl?: typeof fetch;
+  /** ADR-016：由服务端启动配置注入的、已由运营者预先批准的有界履约策略；客户端不可写。 */
+  fulfillmentPolicies?: BoundedFulfillmentPolicy[];
+}
+
+/** JSON 可序列化的有界履约策略；accountId 对应已验签 claims.hostUserId，不采信 LLM 实参。 */
+export interface BoundedFulfillmentPolicy {
+  id: string;
+  accountId: string;
+  toolId: string;
+  productIds: string[];
+  validUntil: number;
+  maxCodesPerOrder: number;
+  dailyOrderLimit: number;
 }
 
 const DEFAULT_TTL_MS = 60000;
@@ -77,6 +90,17 @@ interface NonceRecord {
   issuedAt: number;
   ttl: number;
   consumed: boolean;
+  fulfillmentReservationKey?: string;
+}
+
+interface FulfillmentReservation {
+  policyId: string;
+  accountId: string;
+  toolId: string;
+  orderId: string;
+  day: string;
+  state: 'pending' | 'completed' | 'uncertain';
+  expiresAt: number;
 }
 
 /**
@@ -250,6 +274,99 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     }
   };
 
+  // ADR-016：自动履约额度与订单占用只存在服务端 toolgate。decide 原子预占；结果不明确时标记
+  // uncertain 并永久阻止该订单自动重试，防“没看见回执”演变成重复发货。
+  const fulfillmentPolicies = options.fulfillmentPolicies ?? [];
+  const fulfillmentReservations = new Map<string, FulfillmentReservation>();
+  const reservationByCall = new Map<string, string>();
+  const callKey = (sessionId: string, toolCallId: string): string => `${sessionId}\0${toolCallId}`;
+  const dayKey = (timestamp: number): string => new Date(timestamp).toISOString().slice(0, 10);
+  const fulfillmentPolicyIds = new Set<string>();
+  for (const policy of fulfillmentPolicies) {
+    if (
+      policy.id.trim() === '' ||
+      fulfillmentPolicyIds.has(policy.id) ||
+      policy.accountId.trim() === '' ||
+      policy.toolId.trim() === '' ||
+      policy.productIds.length === 0 ||
+      new Set(policy.productIds).size !== policy.productIds.length ||
+      !Number.isFinite(policy.validUntil) ||
+      !Number.isInteger(policy.maxCodesPerOrder) ||
+      policy.maxCodesPerOrder < 1 ||
+      !Number.isInteger(policy.dailyOrderLimit) ||
+      policy.dailyOrderLimit < 1
+    ) {
+      throw new Error(`有界履约策略 ${policy.id || '<empty>'} 非法，拒绝启动`);
+    }
+    fulfillmentPolicyIds.add(policy.id);
+  }
+
+  const expirePendingReservations = (): void => {
+    for (const reservation of fulfillmentReservations.values()) {
+      if (reservation.state === 'pending' && now() > reservation.expiresAt) {
+        reservation.state = 'uncertain';
+      }
+    }
+  };
+
+  const reserveBoundedFulfillment = (
+    tool: ToolDefinition,
+    input: GateDecisionInput,
+  ): { allowed: boolean; reason?: string } => {
+    const mapping = tool.authorization;
+    if (mapping?.kind !== 'bounded-fulfillment') return { allowed: false };
+    expirePendingReservations();
+    const accountId = input.claims.hostUserId;
+    const productId = input.params[mapping.productIdParam];
+    const orderId = input.params[mapping.orderIdParam];
+    const quantity = input.params[mapping.quantityParam];
+    if (
+      typeof accountId !== 'string' ||
+      typeof productId !== 'string' ||
+      typeof orderId !== 'string' ||
+      orderId.trim() === '' ||
+      typeof quantity !== 'number' ||
+      !Number.isInteger(quantity) ||
+      quantity < 1
+    ) {
+      return { allowed: false, reason: 'bounded-policy-input-missing' };
+    }
+    const eligible = fulfillmentPolicies.filter(
+      (policy) =>
+        policy.accountId === accountId &&
+        policy.toolId === tool.id &&
+        policy.validUntil >= now() &&
+        policy.productIds.includes(productId) &&
+        quantity <= policy.maxCodesPerOrder,
+    );
+    if (eligible.length !== 1) {
+      return { allowed: false, reason: eligible.length === 0 ? 'bounded-policy-miss' : 'bounded-policy-ambiguous' };
+    }
+    const policy = eligible[0]!;
+    const today = dayKey(now());
+    const reservationKey = `${policy.id}\0${orderId}`;
+    if (fulfillmentReservations.has(reservationKey)) {
+      return { allowed: false, reason: 'bounded-order-already-used' };
+    }
+    const usedToday = [...fulfillmentReservations.values()].filter(
+      (reservation) => reservation.policyId === policy.id && reservation.day === today,
+    ).length;
+    if (usedToday >= policy.dailyOrderLimit) {
+      return { allowed: false, reason: 'bounded-daily-limit' };
+    }
+    fulfillmentReservations.set(reservationKey, {
+      policyId: policy.id,
+      accountId,
+      toolId: tool.id,
+      orderId,
+      day: today,
+      state: 'pending',
+      expiresAt: now() + ttlMs,
+    });
+    reservationByCall.set(callKey(input.sessionId, input.toolCallId), reservationKey);
+    return { allowed: true };
+  };
+
   const toolsById = new Map<string, ToolDefinition>();
   const paramsValidators = new Map<string, ValidateFunction>();
   const resultValidators = new Map<string, ValidateFunction>();
@@ -355,12 +472,14 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       toolCallId: input.toolCallId,
       request: request as unknown as JsonValue,
     });
+    const fulfillmentReservationKey = reservationByCall.get(callKey(input.sessionId, input.toolCallId));
     store.put(nonce, {
       toolId: input.toolId,
       toolCallId: input.toolCallId,
       issuedAt: now(),
       ttl: ttlMs,
       consumed: false,
+      ...(fulfillmentReservationKey !== undefined ? { fulfillmentReservationKey } : {}),
     });
     return {
       type: 'exec-instruction',
@@ -416,6 +535,13 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         consumeGrant(input.sessionId, grantTask)
       ) {
         return { verdict: 'allow' };
+      }
+      // ADR-016：every-call 对自由文本仍次次确认；只有声明了 bounded-fulfillment 且本次调用
+      // 完整命中服务端预批准策略时才自动放行。decide 同步完成订单预占，日限额并发下不超卖。
+      if (tool.riskTier === 'hitl' && tool.authorization?.kind === 'bounded-fulfillment') {
+        const bounded = reserveBoundedFulfillment(tool, input);
+        if (bounded.allowed) return { verdict: 'allow' };
+        return { verdict: 'hitl', ...(bounded.reason !== undefined ? { reason: bounded.reason } : {}) };
       }
       return { verdict: tool.riskTier === 'hitl' ? 'hitl' : 'allow' };
     },
@@ -479,10 +605,18 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       }
       if (now() - record.issuedAt > record.ttl) {
         store.markConsumed(result.nonce);
+        if (record.fulfillmentReservationKey !== undefined) {
+          const reservation = fulfillmentReservations.get(record.fulfillmentReservationKey);
+          if (reservation?.state === 'pending') reservation.state = 'uncertain';
+        }
         return { toolCallId: record.toolCallId, ok: false, content: null, error: 'timeout' };
       }
       store.markConsumed(result.nonce);
       if (!result.ok) {
+        if (record.fulfillmentReservationKey !== undefined) {
+          const reservation = fulfillmentReservations.get(record.fulfillmentReservationKey);
+          if (reservation?.state === 'pending') reservation.state = 'uncertain';
+        }
         // 用户点停止＝收回自动执行授权：吊销本会话全部任务 grant，后续批次回到 hitl。
         if (result.error === USER_STOPPED_ERROR) revokeGrants(input.sessionId);
         return {
@@ -499,7 +633,15 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
           : resultValidators.get(record.toolId);
       const body = result.body ?? null;
       if (!validateResult || !validateResult(body)) {
+        if (record.fulfillmentReservationKey !== undefined) {
+          const reservation = fulfillmentReservations.get(record.fulfillmentReservationKey);
+          if (reservation?.state === 'pending') reservation.state = 'uncertain';
+        }
         return { toolCallId: record.toolCallId, ok: false, content: null, error: 'invalid-result' };
+      }
+      if (record.fulfillmentReservationKey !== undefined) {
+        const reservation = fulfillmentReservations.get(record.fulfillmentReservationKey);
+        if (reservation?.state === 'pending') reservation.state = 'completed';
       }
       return { toolCallId: record.toolCallId, ok: true, content: body };
     },

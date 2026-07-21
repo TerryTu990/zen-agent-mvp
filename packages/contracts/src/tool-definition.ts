@@ -16,6 +16,17 @@ export type RiskTier = 'auto' | 'hitl' | 'forbidden';
  */
 export type HitlMode = 'per-task' | 'every-call';
 
+/**
+ * ADR-016：确定性履约工具可声明有界自动授权所需的业务键。
+ * 这些字段只告诉服务端如何从已过 params schema 的调用中取订单维度；策略与计数仍只在 toolgate。
+ */
+export interface BoundedFulfillmentAuthorization {
+  kind: 'bounded-fulfillment';
+  productIdParam: string;
+  orderIdParam: string;
+  quantityParam: string;
+}
+
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /** client 通道适配：宿主 API 请求模板，{{param}} 占位符由服务端代入实参后签名下发。 */
@@ -64,6 +75,8 @@ interface ToolDefinitionBase {
   riskTier: RiskTier;
   /** 缺省 per-task；every-call 使 toolgate 对本工具跳过任务级授权复用、次次挂起确认（对外不可撤回动作）。 */
   hitlMode?: HitlMode;
+  /** 可选的服务端有界自动授权映射；不命中策略时仍按原 riskTier/hitlMode 走人工确认。 */
+  authorization?: BoundedFulfillmentAuthorization;
   /** 结果契约：exec-result.body 校验不过即 invalid-result、不回喂 agent（U7）。 */
   resultSchema: JsonObject;
 }

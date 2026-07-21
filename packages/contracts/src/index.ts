@@ -3,6 +3,7 @@ export type {
   ToolExecution,
   RiskTier,
   HitlMode,
+  BoundedFulfillmentAuthorization,
   HttpMethod,
   ClientAdapter,
   DomAdapter,

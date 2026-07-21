@@ -27,6 +27,7 @@ const TOOL_SEND_EMAIL = 'mail-126.send-email';
 const TOOL_BROWSE = 'browse.page-operate';
 const TOOL_XIANYU_ORDERS = 'xianyu-orders.page-operate';
 const TOOL_XIANYU_SEND = 'xianyu-fulfillment.send-test-message';
+let boundedDeliveryOrderCounter = 0;
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {
@@ -103,7 +104,7 @@ function sendEmailCall(obs) {
   };
 }
 
-function sendXianyuTestCall(obs) {
+function sendXianyuTestCall(obs, bounded = false) {
   let snap;
   try {
     snap = JSON.parse(obs);
@@ -119,6 +120,13 @@ function sendXianyuTestCall(obs) {
       task: '发送闲鱼非秘密测试消息',
       steps: [{ action: 'click', ref: button?.ref ?? 'za-send' }],
       summary: '对外发送已准备好的非秘密测试占位内容',
+      ...(bounded
+        ? {
+            productId: 'eval-product',
+            orderId: `eval-order-${++boundedDeliveryOrderCounter}`,
+            codeCount: 1,
+          }
+        : {}),
     }),
   };
 }
@@ -521,7 +529,7 @@ function decide(sys, u, body) {
     if (obs.includes('"elements"') && hasTool(body, TOOL_XIANYU_SEND)) {
       const notice = firstBlockingNotice(obs);
       if (notice !== null) return { text: `页面提示：${notice}，已停止发送。` };
-      return { toolCall: sendXianyuTestCall(obs) };
+      return { toolCall: sendXianyuTestCall(obs, u.includes('有界自动')) };
     }
     // generic browse 快照观察轮：有拦截提示即停，否则单步点击批次（每批单独确认）。
     if (obs.includes('"elements"') && hasTool(body, TOOL_BROWSE)) {

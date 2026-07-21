@@ -82,6 +82,12 @@ describe('xianyu-seller pack 装配', () => {
       riskTier: 'hitl',
       hitlMode: 'every-call',
       execution: 'client',
+      authorization: {
+        kind: 'bounded-fulfillment',
+        productIdParam: 'productId',
+        orderIdParam: 'orderId',
+        quantityParam: 'codeCount',
+      },
     });
   });
 
