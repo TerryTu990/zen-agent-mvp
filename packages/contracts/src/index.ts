@@ -82,6 +82,8 @@ export type {
   ToolOwnership,
   AssemblyPort,
   DomGateContext,
+  PrepareFulfillmentIntentInput,
+  PrepareFulfillmentIntentResult,
   GateDecisionInput,
   GateDecision,
   HitlGrantInput,

@@ -27,9 +27,9 @@
     "url": "https://seller.goofish.com/?site=COMMONPRO#/im?itemId=masked&orderId=masked&peerUserId=masked",
     "expect": {
       "featureId": "xianyu-fulfillment",
-      "toolIncludes": ["xianyu-fulfillment.compose-test-message", "xianyu-fulfillment.send-test-message"],
+      "toolIncludes": ["xianyu-fulfillment.compose-test-message", "xianyu-fulfillment.send-test-message", "xianyu-fulfillment.execute-intent"],
       "toolExcludesPrefixes": ["xianyu-orders."],
-      "behavior": "消息页只装配非秘密测试准备与 every-call 测试发送工具，不泄漏订单页工具"
+      "behavior": "消息页装配非秘密人工测试工具与只接受服务端一次性意图的受限执行工具，不泄漏订单页工具"
     }
   },
   {
@@ -230,36 +230,6 @@
       "frameSequence": ["snapshot", "target-tool", "target-exec"],
       "evidenceRuleId": "message-receipts",
       "behavior": "用户停止后不继续执行也不自动重发"
-    }
-  },
-  {
-    "id": "xianyu-bounded-auto-authorization",
-    "dimension": "tool",
-    "url": "https://seller.goofish.com/?site=COMMONPRO#/im?itemId=masked&orderId=masked&peerUserId=masked",
-    "question": "有界自动发送闲鱼测试消息",
-    "snapshotSequence": [
-      {
-        "snapshotElements": [
-          { "ref": "za-message", "role": "textarea", "label": "请输入消息，按Enter键发送或点击发送按钮发送" },
-          { "ref": "za-send", "role": "button", "label": "发 送" }
-        ],
-        "snapshotEvidence": { "message-receipts": { "count": 2, "latest": "已读" } }
-      },
-      {
-        "snapshotElements": [
-          { "ref": "za-message", "role": "textarea", "label": "请输入消息，按Enter键发送或点击发送按钮发送" },
-          { "ref": "za-send", "role": "button", "label": "发 送", "disabled": true }
-        ],
-        "snapshotEvidence": { "message-receipts": { "count": 3, "latest": "未读" } }
-      }
-    ],
-    "expect": {
-      "mustMention": [["明确", "成功"]],
-      "targetToolId": "xianyu-fulfillment.send-test-message",
-      "frameCounts": { "targetToolCalls": 1, "execInstructions": 1, "snapshotRequests": 2, "hitlRequests": 0 },
-      "frameSequence": ["snapshot", "target-tool", "target-exec", "snapshot"],
-      "evidenceRuleId": "message-receipts",
-      "behavior": "账号、商品、有效期、单笔数量和日限额全部命中时服务端自动放行且仍完成页面复核"
     }
   },
   {

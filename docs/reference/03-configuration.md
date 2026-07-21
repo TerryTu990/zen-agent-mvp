@@ -186,7 +186,7 @@
 | `ZA_AUDIT_SINK` | `.za/events.jsonl` | 审计事件落点（append-only JSONL，落盘前脱敏，旁路 fail-open） |
 | `ZA_SESSION_DIR` | `.za/sessions` | 会话持久化目录（`<sessionId>.jsonl`，TTL 清理，fail-open） |
 | `ZA_SESSION_TTL_MS` | `3600000` | 会话闲置 TTL（1h） |
-| `ZA_FULFILLMENT_POLICIES_JSON` | `[]` | ADR-016 有界履约策略 JSON 数组；绑定已验签账号、工具、商品、有效期、单笔数量和每日订单限额；非法配置拒绝启动 |
+| `ZA_FULFILLMENT_POLICIES_JSON` | `[]` | ADR-016 有界履约策略 JSON 数组；绑定账号、工具、站点 origin、商品、有效期、单笔数量、每日限额与 `dayBoundaryOffsetMinutes`；与工具声明联合校验，非法配置拒绝启动 |
 
 ### 凭证与演示
 

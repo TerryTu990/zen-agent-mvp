@@ -77,21 +77,39 @@
             }
           }
         },
-        "summary": { "type": "string", "description": "明确说明将对外发送非秘密测试占位内容" },
-        "productId": { "type": "string", "description": "有界自动履约时的商品标识；普通人工测试可省略" },
-        "orderId": { "type": "string", "description": "有界自动履约时的平台订单号；普通人工测试可省略" },
-        "codeCount": { "type": "integer", "minimum": 1, "description": "有界自动履约时本单卡密数量；普通人工测试可省略" }
+        "summary": { "type": "string", "description": "明确说明将对外发送非秘密测试占位内容" }
       }
     },
     "execution": "client",
     "riskTier": "hitl",
     "hitlMode": "every-call",
-    "authorization": {
-      "kind": "bounded-fulfillment",
-      "productIdParam": "productId",
-      "orderIdParam": "orderId",
-      "quantityParam": "codeCount"
+    "adapter": { "kind": "dom", "pathPrefixes": ["/"] },
+    "resultSchema": {
+      "type": "object",
+      "required": ["reads", "completedSteps"],
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "number" },
+        "url": { "type": "string" }
+      }
+    }
+  },
+  {
+    "id": "xianyu-fulfillment.execute-intent",
+    "featureIds": ["xianyu-fulfillment"],
+    "description": "执行可信服务端连接器已经登记的一次性履约意图。参数只能是 opaque intentId；消息正文、订单、商品、数量和固定 DOM 步骤均从 toolgate 内存意图取得，模型不得自报或改写。无有效意图时拒绝。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intentId"],
+      "properties": {
+        "intentId": { "type": "string", "minLength": 1, "description": "可信连接器返回的一次性履约意图标识" }
+      }
     },
+    "execution": "client",
+    "riskTier": "hitl",
+    "hitlMode": "every-call",
+    "authorization": { "kind": "bounded-fulfillment", "intentIdParam": "intentId" },
     "adapter": { "kind": "dom", "pathPrefixes": ["/"] },
     "resultSchema": {
       "type": "object",

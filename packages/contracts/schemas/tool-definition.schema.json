@@ -44,7 +44,7 @@
       "enum": ["per-task", "every-call"]
     },
     "authorization": {
-      "$comment": "ADR-016 服务端有界自动履约授权映射；只声明业务键位置，不承载策略或客户端判定。",
+      "$comment": "ADR-016 服务端有界自动履约授权；只声明 opaque intentId 的参数名，不承载业务键、策略或客户端判定。",
       "$ref": "#/$defs/boundedFulfillmentAuthorization"
     },
     "adapter": {
@@ -75,12 +75,10 @@
     "boundedFulfillmentAuthorization": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "productIdParam", "orderIdParam", "quantityParam"],
+      "required": ["kind", "intentIdParam"],
       "properties": {
         "kind": { "const": "bounded-fulfillment" },
-        "productIdParam": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
-        "orderIdParam": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
-        "quantityParam": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" }
+        "intentIdParam": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" }
       }
     },
     "featureId": {

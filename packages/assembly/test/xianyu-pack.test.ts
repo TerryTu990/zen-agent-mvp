@@ -64,6 +64,7 @@ describe('xianyu-seller pack 装配', () => {
     expect(composed.tools.map((tool) => tool.id)).toEqual([
       'xianyu-fulfillment.compose-test-message',
       'xianyu-fulfillment.send-test-message',
+      'xianyu-fulfillment.execute-intent',
     ]);
     expect(composed.tools[0]).toMatchObject({ riskTier: 'hitl', execution: 'client' });
     expect(composed.tools[0]).toMatchObject({
@@ -82,12 +83,12 @@ describe('xianyu-seller pack 装配', () => {
       riskTier: 'hitl',
       hitlMode: 'every-call',
       execution: 'client',
-      authorization: {
-        kind: 'bounded-fulfillment',
-        productIdParam: 'productId',
-        orderIdParam: 'orderId',
-        quantityParam: 'codeCount',
-      },
+    });
+    expect(composed.tools[2]).toMatchObject({
+      riskTier: 'hitl',
+      hitlMode: 'every-call',
+      execution: 'client',
+      authorization: { kind: 'bounded-fulfillment', intentIdParam: 'intentId' },
     });
   });
 

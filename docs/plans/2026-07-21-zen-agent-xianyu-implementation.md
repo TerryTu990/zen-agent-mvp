@@ -16,8 +16,8 @@
 - Phase 2C（2026-07-22）：对用户明确指定的一笔历史已发货订单完成一次相同履约通知重发；发送前核对订单号与路由，发送后以消息回执数增加及最新“未读”状态确认成功，未点击任何订单状态动作。
 - Phase 2C 实现：pack 升至 0.4.0；站点证据配方归属 DOM adapter，由服务端随 `snapshot-request` 下发，extension 只按唯一消息容器采集 `count + latest` 状态枚举，不认识闲鱼 class、不采集消息正文；成功判据收敛为回执数恰好增加 1 且最新为“未读/已读”。
 - Phase 2C 验证：闲鱼 18 个需求场景各 3 跑（54/54）通过；全仓 dependency lint、build 与 445 项串行测试通过。覆盖明确成功、同一气泡多状态去重、嵌套容器命中去重、非闲鱼无配方不采集、旧回执不误判、跨回合基线隔离、登录失效、验证码、发送超时、用户停止、结果不明确不重发和 every-call；关键异常场景按目标 `toolCallId` 硬断言 `snapshot → exec → snapshot` 帧序列。
-- Phase 2D 实现：新增 ADR-016 与 `bounded-fulfillment` 工具声明；有界策略仅由服务端注入，toolgate 按已验签账号、工具、商品、有效期、单笔数量和每日订单限额逐单原子预占。重复订单、失败、超时或不明确结果进入人工路径且不自动重试。
-- Phase 2D 验证：闲鱼 19 个需求场景各 3 跑（57/57）通过，其中完整命中策略的确定性发送 3/3 无 HITL 且仍完成发送后复核；普通发送 every-call 仍 2 次确认。审计 396 条完整；全仓 dependency lint、build 与 451 项串行测试通过。
+- Phase 2D 实现：新增 ADR-016 与 `bounded-fulfillment` 一次性意图。可信连接器在服务端登记账号、精确页面 URL、商品、规范化订单、数量和固定 DOM 步骤；模型只传 opaque `intentId`。toolgate 联合校验策略/工具、原子预占跨策略订单唯一键；网关按指令 TTL 主动终止无回执等待。重复订单、失败、超时或不明确结果进入人工路径且不自动重试；现有自由文本测试发送始终 every-call。
+- Phase 2D 验证：闲鱼 18 个需求场景各 3 跑（54/54）及 384 条审计事件通过；新增真实 gateway/toolgate 协议 E2E，证明模型只传 `intentId`、无 HITL、签名指令取服务端固定“填写 + 点击”步骤；另验证客户端不回结果时 TTL 主动结束、迟到回执 409。全仓 dependency lint、build 与 455 项串行测试通过。
 - 当前账号待发货计数仍为零，订单发货状态更新保留到出现一笔明确授权的低价值待发货测试单时验证；不阻塞只依赖消息通知闭环的 Phase 2D/Phase 3。
 
 ## 一、目标、边界与成功标准
@@ -218,7 +218,7 @@ page_snapshot
 
 首版有界策略至少包含账号、允许商品、有效期、单次卡密数量和每日订单上限。每个订单仍由服务端 toolgate 逐次验证；超出策略、页面状态不明、登录失效或验证码出现时 fail-closed 并转人工。
 
-实施结果：ADR-016 已落地。工具包仅声明商品/订单/数量字段映射，策略经 `ZA_FULFILLMENT_POLICIES_JSON` 注入服务端；账号取已验签 `claims.hostUserId`。toolgate 在 `decide` 内同步预占订单，成功记 `completed`，失败/超时/结果 schema 不明或预占过期记 `uncertain`，所有状态均阻止同订单自动重试。策略 miss、歧义、过期、超单笔或超日限额回到 HITL，不由客户端降级裁决。
+实施结果：ADR-016 已落地。工具包只声明 `intentId` 参数；策略经 `ZA_FULFILLMENT_POLICIES_JSON` 注入服务端，可信连接器通过进程内端口登记固定意图。toolgate 在 `decide` 内校验账号、精确 URL、DOM refs 和策略后同步预占；成功记 `completed`，失败/主动 TTL 超时/结果 schema 不明或预占过期记 `uncertain`。策略或意图不符直接 deny，由独立 every-call 人工工具承接，客户端不参与降级裁决。
 
 ### 4.6 验证门 2
 

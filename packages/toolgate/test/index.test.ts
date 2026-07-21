@@ -217,11 +217,9 @@ const boundedFulfillmentTool: ToolDefinition = {
   description: '发送确定性履约通知',
   params: {
     type: 'object',
-    required: ['productId', 'orderId', 'codeCount'],
+    required: ['intentId'],
     properties: {
-      productId: { type: 'string' },
-      orderId: { type: 'string' },
-      codeCount: { type: 'integer', minimum: 1 },
+      intentId: { type: 'string' },
     },
     additionalProperties: false,
   },
@@ -230,11 +228,9 @@ const boundedFulfillmentTool: ToolDefinition = {
   hitlMode: 'every-call',
   authorization: {
     kind: 'bounded-fulfillment',
-    productIdParam: 'productId',
-    orderIdParam: 'orderId',
-    quantityParam: 'codeCount',
+    intentIdParam: 'intentId',
   },
-  adapter: { method: 'POST', urlTemplate: '/api/deliver/{{orderId}}' },
+  adapter: { kind: 'dom', pathPrefixes: ['/console'] },
   resultSchema: {
     type: 'object',
     required: ['ok'],
@@ -244,7 +240,12 @@ const boundedFulfillmentTool: ToolDefinition = {
 };
 
 /** dom 判定上下文夹具：快照页在围栏内、含 za-1/za-2 两个 ref。 */
-const domContext = { refs: ['za-1', 'za-2'], path: '/console/token' };
+const domContext = {
+  refs: ['za-1', 'za-2'],
+  path: '/console/token',
+  origin: 'https://seller.example',
+  url: 'https://seller.example/console/token?order=order-1',
+};
 
 const allTools: ToolDefinition[] = [
   autoTool,
@@ -1042,76 +1043,91 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
     id: 'seller-main-product-a',
     accountId: 'host-1',
     toolId: boundedFulfillmentTool.id,
+    siteOrigin: 'https://seller.example',
     productIds: ['product-a'],
     validUntil: 2_000_000,
     maxCodesPerOrder: 1,
     dailyOrderLimit: 1,
+    dayBoundaryOffsetMinutes: 480,
   };
-  const input = (orderId: string, overrides: Record<string, unknown> = {}) => ({
+  const contextFor = (orderId: string) => ({
+    ...domContext,
+    url: `https://seller.example/console/token?order=${orderId}`,
+  });
+  const prepare = (
+    port: ReturnType<typeof makePort>,
+    orderId: string,
+    overrides: Partial<Parameters<typeof port.prepareFulfillmentIntent>[0]> = {},
+  ) =>
+    port.prepareFulfillmentIntent({
+      accountId: 'host-1',
+      toolId: boundedFulfillmentTool.id,
+      productId: 'product-a',
+      orderId,
+      quantity: 1,
+      pageUrl: contextFor(orderId).url,
+      steps: [
+        { action: 'fill', ref: 'za-1', value: '固定履约内容' },
+        { action: 'click', ref: 'za-2' },
+      ],
+      expiresAt: 1_500_000,
+      ...overrides,
+    });
+  const input = (orderId: string, intentId: string, toolCallId = `call-${orderId}`) => ({
     sessionId: 's-bounded',
-    toolCallId: `call-${orderId}`,
+    toolCallId,
     toolId: boundedFulfillmentTool.id,
-    params: { productId: 'product-a', orderId, codeCount: 1, ...overrides },
+    params: { intentId },
     claims: validClaims,
+    domContext: contextFor(orderId),
   });
 
-  it('账号、商品、有效期、单笔数量和日限额全部命中才自动 allow', async () => {
+  it('可信意图绑定账号、精确页面与固定步骤；模型只传 opaque intentId', async () => {
     const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
-    await expect(port.decide(input('order-1'))).resolves.toEqual({ verdict: 'allow' });
+    const { intentId } = await prepare(port, 'order-1');
+    const call = input('order-1', intentId);
+    await expect(port.decide(call)).resolves.toEqual({ verdict: 'allow' });
+    const instruction = await port.issueExecInstruction(call);
+    expect(instruction.request).toEqual({
+      kind: 'dom',
+      steps: [
+        { action: 'fill', ref: 'za-1', value: '固定履约内容' },
+        { action: 'click', ref: 'za-2' },
+      ],
+    });
+    expect(call.params).toEqual({ intentId });
 
-    const wrongProduct = await makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] }).decide(
-      input('order-2', { productId: 'product-b' }),
-    );
-    expect(wrongProduct).toEqual({ verdict: 'hitl', reason: 'bounded-policy-miss' });
-
-    const tooMany = await makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] }).decide(
-      input('order-3', { codeCount: 2 }),
-    );
-    expect(tooMany).toEqual({ verdict: 'hitl', reason: 'bounded-policy-miss' });
-
-    const wrongAccount = await makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] }).decide({
-      ...input('order-4'),
+    const other = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
+    const { intentId: otherIntent } = await prepare(other, 'order-2');
+    const wrongPage = await other.decide({
+      ...input('order-2', otherIntent),
+      domContext: contextFor('different-order'),
+    });
+    expect(wrongPage).toEqual({ verdict: 'deny', reason: 'bounded-intent-context-mismatch' });
+    const wrongAccount = await other.decide({
+      ...input('order-2', otherIntent, 'call-wrong-account'),
       claims: { ...validClaims, hostUserId: 'other-account' },
     });
-    expect(wrongAccount).toEqual({ verdict: 'hitl', reason: 'bounded-policy-miss' });
-
-    const expired = await makePort({ now: () => 2_000_001, fulfillmentPolicies: [policy] }).decide(
-      input('order-5'),
-    );
-    expect(expired).toEqual({ verdict: 'hitl', reason: 'bounded-policy-miss' });
+    expect(wrongAccount).toEqual({ verdict: 'deny', reason: 'bounded-intent-context-mismatch' });
   });
 
-  it('同一订单不自动重试，已完成订单同时占用每日订单额度', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
-    const firstInput = input('order-1');
+  it('跨策略按站点+账号+工具+规范化订单全局去重，且日限额含预占', async () => {
+    const policyB = { ...policy, id: 'seller-main-product-b', productIds: ['product-b'], dailyOrderLimit: 3 };
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 3 }, policyB] });
+    const { intentId } = await prepare(port, 'order-1', { orderId: ' order-1 ' });
+    const firstInput = input('order-1', intentId);
     expect(await port.decide(firstInput)).toEqual({ verdict: 'allow' });
-    const instruction = await port.issueExecInstruction(firstInput);
-    await expect(
-      port.acceptExecResult({
-        sessionId: firstInput.sessionId,
-        result: {
-          type: 'exec-result',
-          sessionId: firstInput.sessionId,
-          nonce: instruction.nonce,
-          ok: true,
-          body: { ok: true },
-        },
-      }),
-    ).resolves.toMatchObject({ ok: true });
-
-    await expect(port.decide({ ...input('order-1'), toolCallId: 'call-order-1-repeat' })).resolves.toEqual({
-      verdict: 'hitl',
+    const secondIntent = await prepare(port, 'order-1', { productId: 'product-b' });
+    await expect(port.decide(input('order-1', secondIntent.intentId, 'call-repeat'))).resolves.toEqual({
+      verdict: 'deny',
       reason: 'bounded-order-already-used',
-    });
-    await expect(port.decide(input('order-2'))).resolves.toEqual({
-      verdict: 'hitl',
-      reason: 'bounded-daily-limit',
     });
   });
 
   it('执行失败或回执不明确将订单标为 uncertain，禁止自动重发', async () => {
     const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 3 }] });
-    const firstInput = input('order-ambiguous');
+    const { intentId } = await prepare(port, 'order-ambiguous');
+    const firstInput = input('order-ambiguous', intentId);
     expect(await port.decide(firstInput)).toEqual({ verdict: 'allow' });
     const instruction = await port.issueExecInstruction(firstInput);
     await port.acceptExecResult({
@@ -1124,18 +1140,46 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
         error: 'page-result-ambiguous',
       },
     });
-    await expect(
-      port.decide({ ...input('order-ambiguous'), toolCallId: 'call-ambiguous-repeat' }),
-    ).resolves.toEqual({ verdict: 'hitl', reason: 'bounded-order-already-used' });
+    const retry = await prepare(port, 'order-ambiguous');
+    await expect(port.decide(input('order-ambiguous', retry.intentId, 'call-repeat'))).resolves.toEqual({
+      verdict: 'deny',
+      reason: 'bounded-order-already-used',
+    });
   });
 
-  it('重复策略 id 或非法边界在启动期 fail-fast', () => {
+  it('策略范围在可信意图登记时校验，模型无法自报商品或数量', async () => {
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
+    await expect(prepare(port, 'order-x', { productId: 'product-b' })).rejects.toThrow(/未唯一命中/);
+    await expect(prepare(port, 'order-x', { quantity: 2 })).rejects.toThrow(/未唯一命中/);
+    await expect(prepare(port, 'order-x', { expiresAt: 2_000_001 })).rejects.toThrow(/未唯一命中/);
+    await expect(
+      prepare(port, 'order-x', { steps: [{ action: 'click', ref: 'za-2' }] }),
+    ).rejects.toThrow(/字段非法/);
+  });
+
+  it('重复策略 id、非法产品与非法边界在启动期 fail-fast', () => {
     expect(() =>
       makePort({ fulfillmentPolicies: [policy, { ...policy }] }),
     ).toThrow(/有界履约策略/);
     expect(() =>
       makePort({ fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 0 }] }),
     ).toThrow(/有界履约策略/);
+    expect(() =>
+      makePort({ fulfillmentPolicies: [{ ...policy, productIds: [''] }] }),
+    ).toThrow(/有界履约策略/);
+  });
+
+  it('工具分级、通道、every-call 与 intentId params 联合契约非法时拒绝启动', () => {
+    const create = (tool: ToolDefinition) =>
+      createToolGatePort({ tools: [tool], signingSecret: SIGN_FIXTURE });
+    expect(() => create({ ...boundedFulfillmentTool, riskTier: 'auto' })).toThrow(/授权契约非法/);
+    expect(() => create({ ...boundedFulfillmentTool, hitlMode: undefined })).toThrow(/授权契约非法/);
+    expect(() =>
+      create({
+        ...boundedFulfillmentTool,
+        params: { type: 'object', properties: { intentId: { type: 'string' } } },
+      }),
+    ).toThrow(/授权契约非法/);
   });
 });
 

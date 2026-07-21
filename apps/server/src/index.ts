@@ -36,6 +36,8 @@ export interface ServerOptions {
   heartbeatMs?: number;
   /** agent loop 单回合轮数上限，默认 12；dom 代操作一批页面操作固定耗 2 轮（操作+复核快照）。 */
   maxTurnRounds?: number;
+  /** 代执行指令/等待客户端结果 TTL；缺省 60000ms。测试可缩短以验证主动超时。 */
+  execInstructionTtlMs?: number;
   /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW），默认 200000。 */
   compressContextWindow?: number;
   /** 历史压缩触发阈值比例（ZA_LLM_COMPRESS_THRESHOLD），默认 0.6。 */
@@ -112,6 +114,7 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
       sites,
       toolOwnership,
       signingSecret: options.signingSecret,
+      ...(options.execInstructionTtlMs !== undefined ? { ttlMs: options.execInstructionTtlMs } : {}),
       fulfillmentPolicies: options.fulfillmentPolicies ?? [],
       ...(options.resolveCredential ? { resolveCredential: options.resolveCredential } : {}),
     }),
@@ -122,6 +125,8 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
 
 export interface RunningServer {
   port: number;
+  /** 进程内组装端口；供可信连接器接线与集成测试使用，不经 HTTP 暴露。 */
+  ports: ServerPorts;
   close(): Promise<void>;
 }
 
@@ -175,6 +180,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   }
   return {
     port: address.port,
+    ports,
     close: () =>
       new Promise<void>((resolve, reject) => {
         gateway.shutdown();

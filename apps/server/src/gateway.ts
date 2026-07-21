@@ -481,9 +481,24 @@ export function createGateway(deps: GatewayDeps): Gateway {
   }
 
   /** 等待客户端 exec-result；同理先注册 nonce 等待器，再下发 exec-instruction 帧。 */
-  function waitForExec(sessionId: string, nonce: string): Promise<ExecResultFrame> {
+  function waitForExec(sessionId: string, nonce: string, ttl: number): Promise<ExecResultFrame> {
     const runtime = runtimeOf(sessionId);
-    return new Promise((resolve) => runtime.pendingExec.set(nonce, resolve));
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        runtime.pendingExec.delete(nonce);
+        resolve({
+          type: 'exec-result',
+          sessionId,
+          nonce,
+          ok: false,
+          error: 'exec-result-timeout',
+        });
+      }, ttl);
+      runtime.pendingExec.set(nonce, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+    });
   }
 
   /** 等待客户端 snapshot-report；同理先注册 requestId 等待器，再下发 snapshot-request 帧。 */
@@ -607,7 +622,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...(domContext !== undefined ? { domContext } : {}),
       });
       nonce = instruction.nonce;
-      const result = waitForExec(sessionId, instruction.nonce);
+      const result = waitForExec(sessionId, instruction.nonce, instruction.ttl);
       broadcast(sessionId, instruction);
       const execResult = await result;
       if (typeof execResult.status === 'number') status = execResult.status;
@@ -812,6 +827,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           refs: report.elements.map((element) => element.ref),
           path: pathOf(report.url),
           origin: originOf(report.url),
+          url: report.url,
         };
         const snapshotEcho: LlmMessage = {
           role: 'assistant',

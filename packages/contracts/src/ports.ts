@@ -7,7 +7,7 @@
 import type { JsonObject, JsonValue } from './json.js';
 import type { ToolDefinition } from './tool-definition.js';
 import type { IdentityClaims } from './identity-claims.js';
-import type { ExecInstructionFrame, ExecResultFrame } from './client-access-layer.js';
+import type { DomStep, ExecInstructionFrame, ExecResultFrame } from './client-access-layer.js';
 import type { AuditEvent, GateVerdict } from './audit-event.js';
 
 // ---- AssemblyPort（②会话网关 ← ⑤配置中心：featureId 定位 + 注入组合）----
@@ -142,6 +142,24 @@ export interface DomGateContext {
   path: string;
   /** 快照页 origin（ADR-013）：site pack 的非 navigate dom 步须 === 工具所属 pack origin，越界即 deny。 */
   origin?: string;
+  /** 当前快照完整 URL：有界履约意图必须与其精确绑定，防在另一订单聊天页复用。 */
+  url?: string;
+}
+
+export interface PrepareFulfillmentIntentInput {
+  accountId: string;
+  toolId: string;
+  productId: string;
+  orderId: string;
+  quantity: number;
+  pageUrl: string;
+  /** 可信连接器生成的固定 DOM 步骤；可含履约值，只存在 toolgate 内存与签名指令，不进模型/审计。 */
+  steps: DomStep[];
+  expiresAt: number;
+}
+
+export interface PrepareFulfillmentIntentResult {
+  intentId: string;
 }
 
 /**
@@ -206,6 +224,8 @@ export interface HitlGrantInput {
 }
 
 export interface ToolGatePort {
+  /** 仅供 apps/server 内可信连接器调用；不暴露为模型工具或客户端 API。 */
+  prepareFulfillmentIntent(input: PrepareFulfillmentIntentInput): Promise<PrepareFulfillmentIntentResult>;
   decide(input: GateDecisionInput): Promise<GateDecision>;
   /**
    * 登记任务级授权：同 (sessionId,task) 的后续 decide 放行（跨工具共享，every-call 工具除外），

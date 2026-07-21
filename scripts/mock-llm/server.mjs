@@ -27,7 +27,7 @@ const TOOL_SEND_EMAIL = 'mail-126.send-email';
 const TOOL_BROWSE = 'browse.page-operate';
 const TOOL_XIANYU_ORDERS = 'xianyu-orders.page-operate';
 const TOOL_XIANYU_SEND = 'xianyu-fulfillment.send-test-message';
-let boundedDeliveryOrderCounter = 0;
+const TOOL_XIANYU_INTENT = 'xianyu-fulfillment.execute-intent';
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {
@@ -104,7 +104,7 @@ function sendEmailCall(obs) {
   };
 }
 
-function sendXianyuTestCall(obs, bounded = false) {
+function sendXianyuTestCall(obs) {
   let snap;
   try {
     snap = JSON.parse(obs);
@@ -120,14 +120,16 @@ function sendXianyuTestCall(obs, bounded = false) {
       task: '发送闲鱼非秘密测试消息',
       steps: [{ action: 'click', ref: button?.ref ?? 'za-send' }],
       summary: '对外发送已准备好的非秘密测试占位内容',
-      ...(bounded
-        ? {
-            productId: 'eval-product',
-            orderId: `eval-order-${++boundedDeliveryOrderCounter}`,
-            codeCount: 1,
-          }
-        : {}),
     }),
+  };
+}
+
+function executeXianyuIntentCall(userText) {
+  const match = userText.match(/履约意图\s+([0-9a-f-]{16,})/i);
+  return {
+    id: 'call_xianyu_intent',
+    name: TOOL_XIANYU_INTENT,
+    arguments: JSON.stringify({ intentId: match?.[1] ?? 'missing-intent' }),
   };
 }
 
@@ -488,6 +490,9 @@ function decide(sys, u, body) {
   const drill = driveDrill(u, body);
   if (drill !== null) return drill;
   const obs = lastToolObs(body);
+  if (obs === null && u.includes('履约意图') && hasTool(body, TOOL_XIANYU_INTENT)) {
+    return { toolCall: snapshotCall() };
+  }
   if (obs !== null) {
     const xianyuSendCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_SEND);
     if (xianyuSendCount > 0 && !obs.includes('"elements"')) {
@@ -529,7 +534,10 @@ function decide(sys, u, body) {
     if (obs.includes('"elements"') && hasTool(body, TOOL_XIANYU_SEND)) {
       const notice = firstBlockingNotice(obs);
       if (notice !== null) return { text: `页面提示：${notice}，已停止发送。` };
-      return { toolCall: sendXianyuTestCall(obs, u.includes('有界自动')) };
+      if (hasTool(body, TOOL_XIANYU_INTENT) && u.includes('履约意图')) {
+        return { toolCall: executeXianyuIntentCall(u) };
+      }
+      return { toolCall: sendXianyuTestCall(obs) };
     }
     // generic browse 快照观察轮：有拦截提示即停，否则单步点击批次（每批单独确认）。
     if (obs.includes('"elements"') && hasTool(body, TOOL_BROWSE)) {

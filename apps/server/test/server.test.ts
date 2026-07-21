@@ -9,6 +9,7 @@ import { startServer, type RunningServer } from '../src/index.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/host-demo/config');
+const acceptanceRoot = join(repoRoot, 'examples/acceptance');
 const systemPromptPath = join(repoRoot, 'assets/system-prompt.md');
 // 共享测试 server 的审计落点：审计链测试按 sessionId 过滤本流事件，与其它测试的事件互不干扰。
 const AUDIT_SINK = join(mkdtempSync(join(tmpdir(), 'za-server-audit-')), 'events.jsonl');
@@ -564,6 +565,117 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       expect(lastCardStatus(sse.frames, 'order-list.refresh-orders')).toBe('succeeded');
     } finally {
       sse.close();
+    }
+  });
+
+  it('客户端不回 exec-result 时按指令 TTL 主动结束回合，迟到结果返回 409', async () => {
+    const timeoutServer = await startServer(serverOptions({ execInstructionTtlMs: 30 }));
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${timeoutServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '刷新订单列表' });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
+      const nonce = String(framesByType(sse.frames, 'exec-instruction')[0]!['nonce']);
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'order-list.refresh-orders') === 'failed');
+      const late = await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce,
+        ok: true,
+        body: { ok: true, count: 2 },
+      });
+      expect(late.status).toBe(409);
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await timeoutServer.close();
+    }
+  });
+
+  it('可信履约意图端到端：模型只传 intentId，签名指令使用服务端固定步骤且无 HITL', async () => {
+    const pageUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-a&orderId=order-a&peerUserId=buyer-a';
+    const intentServer = await startServer(
+      serverOptions({
+        snapshotRoot: acceptanceRoot,
+        fulfillmentPolicies: [
+          {
+            id: 'test-policy',
+            accountId: 'host-u1',
+            toolId: 'xianyu-fulfillment.execute-intent',
+            siteOrigin: 'https://seller.goofish.com',
+            productIds: ['item-a'],
+            validUntil: Date.now() + 120_000,
+            maxCodesPerOrder: 1,
+            dailyOrderLimit: 5,
+            dayBoundaryOffsetMinutes: 480,
+          },
+        ],
+      }),
+    );
+    const { intentId } = await intentServer.ports.toolgate.prepareFulfillmentIntent({
+      accountId: 'host-u1',
+      toolId: 'xianyu-fulfillment.execute-intent',
+      productId: 'item-a',
+      orderId: 'order-a',
+      quantity: 1,
+      pageUrl,
+      steps: [
+        { action: 'fill', ref: 'za-message', value: '固定履约消息' },
+        { action: 'click', ref: 'za-send' },
+      ],
+      expiresAt: Date.now() + 60_000,
+    });
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${intentServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: pageUrl });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: `执行履约意图 ${intentId}`,
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      const snapshot = framesByType(sse.frames, 'snapshot-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(snapshot['requestId']),
+        url: pageUrl,
+        title: '买家联系',
+        elements: [
+          { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send', role: 'button', label: '发 送' },
+        ],
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
+      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
+      const instruction = framesByType(sse.frames, 'exec-instruction')[0]!;
+      expect(instruction['request']).toEqual({
+        kind: 'dom',
+        steps: [
+          { action: 'fill', ref: 'za-message', value: '固定履约消息' },
+          { action: 'click', ref: 'za-send' },
+        ],
+      });
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instruction['nonce']),
+        ok: true,
+        body: { reads: {}, completedSteps: 2, url: pageUrl },
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-fulfillment.execute-intent') === 'succeeded');
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await intentServer.close();
     }
   });
 

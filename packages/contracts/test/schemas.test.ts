@@ -409,7 +409,12 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
       id: 'order-list.refresh-orders',
       featureIds: ['order-list'],
       description: '刷新当前订单列表，返回订单条数',
-      params: { type: 'object', properties: {}, additionalProperties: false },
+      params: {
+        type: 'object',
+        required: ['intentId'],
+        properties: { intentId: { type: 'string' } },
+        additionalProperties: false,
+      },
       execution: 'client',
       riskTier: 'auto',
       adapter: { method: 'GET', urlTemplate: '/api/orders' },
@@ -473,9 +478,7 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
       hitlMode: 'every-call',
       authorization: {
         kind: 'bounded-fulfillment',
-        productIdParam: 'productId',
-        orderIdParam: 'orderId',
-        quantityParam: 'codeCount',
+        intentIdParam: 'intentId',
       },
       adapter: { kind: 'dom', pathPrefixes: ['/'] },
       resultSchema: { type: 'object' },
@@ -495,12 +498,10 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
       ...baseTool,
       adapter: { method: 'GET' },
     },
-    '有界授权映射缺订单字段被拒': {
+    '有界授权映射缺意图字段被拒': {
       ...baseTool,
       authorization: {
         kind: 'bounded-fulfillment',
-        productIdParam: 'productId',
-        quantityParam: 'codeCount',
       },
     },
   };
