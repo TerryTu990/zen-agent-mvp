@@ -3,6 +3,8 @@ import {
   decideActivation,
   sessionKeyForGroup,
   autoGroupKey,
+  panelGroupKey,
+  panelHistoryKeyForGroup,
   TAB_GROUP_ID_NONE,
 } from '../src/activation.js';
 
@@ -56,8 +58,10 @@ describe('decideActivation：显式会话组激活决策', () => {
 });
 
 describe('会话组存根键', () => {
-  it('sessionKeyForGroup 按 groupId 命名；autoGroupKey 按 window+origin 命名', () => {
+  it('会话、自动组和 Side Panel 绑定键均按其作用域命名', () => {
     expect(sessionKeyForGroup(42)).toBe('za.sessionId.g42');
     expect(autoGroupKey(3, 'https://mail.126.com')).toBe('za.autoGroup.3.https://mail.126.com');
+    expect(panelGroupKey(3)).toBe('za.panelGroup.w3');
+    expect(panelHistoryKeyForGroup(42)).toBe('za.panelHistory.g42');
   });
 });

@@ -6,15 +6,22 @@ import {
   decideActivation,
   sessionKeyForGroup,
   autoGroupKey,
+  panelGroupKey,
+  panelHistoryKeyForGroup,
   TAB_GROUP_ID_NONE,
 } from './activation.js';
 import {
   SESSION_PORT_NAME,
+  SIDE_PANEL_PORT_NAME,
+  type BackgroundToSidePanelMessage,
   type BackgroundToContentMessage,
   type ContentToBackgroundMessage,
+  type SidePanelToBackgroundMessage,
+  type SidePanelUiEvent,
   type ContentRuntimeMessage,
   type BackgroundRuntimeMessage,
 } from './messaging.js';
+import { reducePanelHistory, removeSettledHitl } from './panel-history.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
 // 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
@@ -54,34 +61,79 @@ function originOf(url: string | undefined): string | null {
 
 type UpstreamContentMessage = Exclude<
   ContentToBackgroundMessage,
-  { kind: 'host-identity' } | { kind: 'ping' } | { kind: 'navigate-request' }
+  | { kind: 'host-identity' }
+  | { kind: 'ping' }
+  | { kind: 'navigate-request' }
+  | { kind: 'page-status' }
+  | { kind: 'operation-state' }
+>;
+
+type UpstreamPanelMessage = Extract<
+  SidePanelToBackgroundMessage,
+  { kind: 'user-message' | 'hitl-decision' }
 >;
 
 /**
  * 一个 zen 标签页组的会话桥（ADR-013 批次④：键=tabGroup id，组内共享一个服务端会话、一条 SSE）；
- * 下行帧按 routeForFrame 路由（叙事帧全员镜像 / HITL·exec·guide 仅活跃页）。
+ * 下行帧按 routeForFrame 路由（叙事/HITL → Side Panel；exec/guide/snapshot → 活跃执行页）。
  */
 function createGroupBridge(groupId: number, onEmpty: () => void) {
   const identity = createIdentityProvider();
   const abort = new AbortController();
-  const members = createGroupMembers<chrome.runtime.Port>();
+  const contentMembers = createGroupMembers<chrome.runtime.Port>();
+  const panels = new Set<chrome.runtime.Port>();
+  const pendingPanels = new Set<chrome.runtime.Port>();
+  let panelHistory: SidePanelUiEvent[] = [];
+  const historyKey = panelHistoryKeyForGroup(groupId);
+  let historyChain = chrome.storage.session.get(historyKey).then((items) => {
+    const stored = items[historyKey];
+    if (Array.isArray(stored)) panelHistory = stored as SidePanelUiEvent[];
+  });
   let sessionPromise: Promise<Session | null> | null = null;
   // 组内任一页面同源读取的宿主用户 id；无 za.token 时用于向 demo-token 端点自取（P0-b）。
   let hostUserId: string | null = null;
   // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
   let expectedActiveTabId: number | null = null;
 
-  const post = (target: chrome.runtime.Port, message: BackgroundToContentMessage): void => {
+  const postContent = (target: chrome.runtime.Port, message: BackgroundToContentMessage): void => {
     try {
       target.postMessage(message);
     } catch {
-      detach(target);
+      detachContent(target);
     }
   };
-  const postTo = (route: FrameRoute, message: BackgroundToContentMessage): void => {
-    for (const member of members.targets(route)) post(member, message);
+  const postPanel = (target: chrome.runtime.Port, message: BackgroundToSidePanelMessage): void => {
+    try {
+      target.postMessage(message);
+    } catch {
+      detachPanel(target);
+    }
   };
-  const postStatus = (message: string) => postTo('all', { kind: 'status', message });
+  const postToPanels = (message: BackgroundToSidePanelMessage): void => {
+    for (const panel of panels) postPanel(panel, message);
+  };
+  const updateHistory = (update: (history: SidePanelUiEvent[]) => SidePanelUiEvent[]): void => {
+    historyChain = historyChain.then(async () => {
+      panelHistory = update(panelHistory);
+      await chrome.storage.session.set({ [historyKey]: panelHistory });
+    });
+  };
+  const emitUi = (event: SidePanelUiEvent): void => {
+    updateHistory((history) => reducePanelHistory(history, event));
+    postToPanels(event);
+  };
+  const postFrame = (route: FrameRoute, frame: DownstreamFrame): void => {
+    if (route === 'panel') {
+      if (frame.type === 'text-delta' || frame.type === 'tool-card' || frame.type === 'hitl-request') {
+        emitUi({ kind: 'frame', frame });
+      }
+      return;
+    }
+    for (const member of contentMembers.targets('active-page')) {
+      postContent(member, { kind: 'frame', frame });
+    }
+  };
+  const postStatus = (message: string): void => emitUi({ kind: 'status', message });
 
   // 错误消息只含键名/状态码等可定位信息，不回显 token 值（SEC-04）。
   async function openSession(): Promise<Session | null> {
@@ -187,7 +239,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         for (const payload of parser.push(decoder.decode(value, { stream: true }))) {
           try {
             const frame = JSON.parse(payload) as DownstreamFrame;
-            postTo(routeForFrame(frame), { kind: 'frame', frame });
+            postFrame(routeForFrame(frame), frame);
           } catch {
             postStatus('收到无法解析的下行帧，已丢弃');
           }
@@ -198,12 +250,20 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  function toUpstreamFrame(message: UpstreamContentMessage, sessionId: string): UpstreamFrame {
+  function toUpstreamFrame(
+    message: UpstreamContentMessage | UpstreamPanelMessage,
+    sessionId: string,
+  ): UpstreamFrame {
     switch (message.kind) {
       case 'context-report':
         return { type: 'context-report', sessionId, url: message.url, title: message.title };
       case 'user-message':
-        return { type: 'user-message', sessionId, text: message.text };
+        return {
+          type: 'user-message',
+          sessionId,
+          text: message.text,
+          executionPreference: message.executionPreference,
+        };
       case 'hitl-decision':
         return { type: 'hitl-decision', sessionId, hitlId: message.hitlId, decision: message.decision };
       case 'exec-result':
@@ -214,7 +274,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  async function forward(message: UpstreamContentMessage): Promise<void> {
+  async function forward(message: UpstreamContentMessage | UpstreamPanelMessage): Promise<void> {
     const session = await ensureSession();
     if (session === null) return;
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
@@ -256,9 +316,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         // 主动通知新页激活（content 已加载时即接入）；未加载时其自身 request-activate 走 reconnect 兜底。
         void sendActivate(created.id);
       }
-      post(port, { kind: 'navigate-result', requestId: request.requestId, ok: true, url: request.url });
+      postContent(port, { kind: 'navigate-result', requestId: request.requestId, ok: true, url: request.url });
     } catch {
-      post(port, {
+      postContent(port, {
         kind: 'navigate-result',
         requestId: request.requestId,
         ok: false,
@@ -270,16 +330,24 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   // 串行转发保证 context-report 先于后续 user-message 到达服务端（组内共用一条管线）。
   const UPSTREAM_KINDS: ReadonlySet<ContentToBackgroundMessage['kind']> = new Set([
     'context-report',
-    'user-message',
-    'hitl-decision',
     'exec-result',
     'snapshot-report',
   ]);
   let pipeline: Promise<void> = Promise.resolve();
 
-  function detach(port: chrome.runtime.Port): void {
-    members.remove(port);
-    if (members.size() === 0) close();
+  function maybeClose(): void {
+    if (contentMembers.size() === 0 && panels.size === 0) close();
+  }
+
+  function detachContent(port: chrome.runtime.Port): void {
+    contentMembers.remove(port);
+    maybeClose();
+  }
+
+  function detachPanel(port: chrome.runtime.Port): void {
+    panels.delete(port);
+    pendingPanels.delete(port);
+    maybeClose();
   }
 
   /** 桥关闭：中止 SSE 并从组表移除；storage.session 存根不清（供组内换页重连恢复，见 openSession）。 */
@@ -288,11 +356,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     onEmpty();
   }
 
-  function attach(port: chrome.runtime.Port): void {
-    members.add(port);
+  function attachContent(port: chrome.runtime.Port): void {
+    contentMembers.add(port);
     // navigate 新开页接入即标为活跃：后续 exec/HITL 路由跟随导航到新站点页。
     if (expectedActiveTabId !== null && port.sender?.tab?.id === expectedActiveTabId) {
-      members.markActive(port);
+      contentMembers.markActive(port);
       expectedActiveTabId = null;
     }
     port.onMessage.addListener((raw) => {
@@ -307,23 +375,79 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         void handleNavigate(port, message);
         return;
       }
+      if (message.kind === 'page-status') {
+        postStatus(message.message);
+        return;
+      }
+      if (message.kind === 'operation-state') {
+        postToPanels(message);
+        return;
+      }
       // 保活心跳：其到达已重置 SW 空闲计时器，不转发、不入管线。
       if (message.kind === 'ping') return;
       if (!UPSTREAM_KINDS.has(message.kind)) return;
       // 上下文上报/用户发言都来自用户视线所在页：即组内活跃页（HITL/exec/guide 的路由目标）。
-      if (message.kind === 'context-report' || message.kind === 'user-message') {
-        members.markActive(port);
-      }
-      // 组内其它页回显该提问，保持各页对话镜像一致。
-      if (message.kind === 'user-message') {
-        for (const other of members.others(port)) post(other, { kind: 'user-echo', text: message.text });
+      if (message.kind === 'context-report') {
+        contentMembers.markActive(port);
+        postToPanels({
+          kind: 'task-context',
+          groupId,
+          authorized: true,
+          url: message.url,
+          ...(message.title !== '' ? { title: message.title } : {}),
+        });
       }
       pipeline = pipeline.then(() => forward(message));
     });
-    port.onDisconnect.addListener(() => detach(port));
+    port.onDisconnect.addListener(() => detachContent(port));
   }
 
-  return { attach, close };
+  function attachPanel(port: chrome.runtime.Port): void {
+    pendingPanels.add(port);
+    const finishAttach = (): void => {
+      const observed = historyChain;
+      void observed.then(() => {
+        if (!pendingPanels.has(port)) return;
+        if (observed !== historyChain) {
+          finishAttach();
+          return;
+        }
+        postPanel(port, { kind: 'history-replay', events: panelHistory });
+        pendingPanels.delete(port);
+        panels.add(port);
+        postPanel(port, { kind: 'panel-ready' });
+      });
+    };
+    finishAttach();
+    port.onMessage.addListener((raw) => {
+      const message = raw as SidePanelToBackgroundMessage | null;
+      if (message === null || message.kind === 'panel-bind' || message.kind === 'ping') return;
+      if (message.kind === 'browsing-context') {
+        postPanel(port, {
+          kind: 'task-context',
+          groupId,
+          authorized: message.groupId === groupId,
+          ...(message.url !== undefined ? { url: message.url } : {}),
+          ...(message.title !== undefined ? { title: message.title } : {}),
+        });
+        return;
+      }
+      if (message.kind === 'stop-operation') {
+        for (const member of contentMembers.targets('active-page')) {
+          postContent(member, { kind: 'stop-operation' });
+        }
+        return;
+      }
+      if (message.kind === 'user-message') emitUi({ kind: 'user-echo', text: message.text });
+      if (message.kind === 'hitl-decision') {
+        updateHistory((history) => removeSettledHitl(history, message.hitlId));
+      }
+      pipeline = pipeline.then(() => forward(message));
+    });
+    port.onDisconnect.addListener(() => detachPanel(port));
+  }
+
+  return { attachContent, attachPanel, close };
 }
 
 type GroupBridge = ReturnType<typeof createGroupBridge>;
@@ -394,23 +518,30 @@ async function handleRequestActivate(
     autoActivate: request.autoActivate,
     autoJoinGroupId,
   });
+  let activeGroupId: number;
   switch (decision.kind) {
     case 'none':
       return;
     case 'reconnect':
+      activeGroupId = decision.groupId;
       break;
     case 'join':
       await chrome.tabs.group({ tabIds: tabId, groupId: decision.groupId }).catch(() => {});
+      activeGroupId = decision.groupId;
       break;
     case 'create': {
       // tab 已属某标签组（用户既有分组，或宿主自动化的受控组）则采用该组当会话组——
       // 会话键即 tabGroup id（groupIdOf），无需夺 tab 新建；仅未分组 tab 才建 zen 组。
       const groupId = tabGroupId !== TAB_GROUP_ID_NONE ? tabGroupId : await createZenGroup(tabId);
+      activeGroupId = groupId;
       if (origin !== null && tab.windowId !== undefined) {
         await chrome.storage.session.set({ [autoGroupKey(tab.windowId, origin)]: groupId });
       }
       break;
     }
+  }
+  if (tab.windowId !== undefined) {
+    await chrome.storage.session.set({ [panelGroupKey(tab.windowId)]: activeGroupId });
   }
   await sendActivate(tabId);
 }
@@ -419,15 +550,26 @@ async function handleRequestActivate(
 async function handleIconClick(tab: chrome.tabs.Tab): Promise<void> {
   if (tab.id === undefined) return;
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
-  if (tabGroupId === TAB_GROUP_ID_NONE) {
-    await createZenGroup(tab.id);
+  const groupId = tabGroupId === TAB_GROUP_ID_NONE ? await createZenGroup(tab.id) : tabGroupId;
+  if (tab.windowId !== undefined) {
+    await chrome.storage.session.set({ [panelGroupKey(tab.windowId)]: groupId });
   }
   await sendActivate(tab.id);
+  await chrome.sidePanel.open({ tabId: tab.id }).catch(() => {});
 }
 
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name !== SESSION_PORT_NAME) return;
-  bridgeFor(groupIdOf(port)).attach(port);
+  if (port.name === SESSION_PORT_NAME) {
+    bridgeFor(groupIdOf(port)).attachContent(port);
+    return;
+  }
+  if (port.name !== SIDE_PANEL_PORT_NAME) return;
+  const bind = (raw: unknown): void => {
+    const message = raw as SidePanelToBackgroundMessage | null;
+    if (message?.kind !== 'panel-bind' || message.groupId === TAB_GROUP_ID_NONE) return;
+    bridgeFor(message.groupId).attachPanel(port);
+  };
+  port.onMessage.addListener(bind);
 });
 
 chrome.runtime.onMessage.addListener((raw, sender) => {

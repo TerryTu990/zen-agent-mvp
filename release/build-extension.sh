@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 打包 Chrome 插件发布 zip：manifest + dist + icons（不含 src/test/node_modules）。
+# 打包 Chrome 插件发布 zip：manifest + Side Panel/选项页 + dist + icons（不含 src/test/node_modules）。
 # 生产服务端地址经 esbuild --define 烤入包内缺省值——用户装完零配置；
 # 可用 ZA_SERVER_BASE_URL 环境变量覆盖目标地址。版本取 manifest.json 的 version。
 set -euo pipefail
@@ -18,7 +18,7 @@ OUT="${OUT_DIR}/zen-agent-extension-${VERSION}.zip"
 mkdir -p "${OUT_DIR}"
 rm -f "${OUT}"
 
-(cd apps/extension && zip -qr "../../${OUT}" manifest.json options.html dist icons)
+(cd apps/extension && zip -qr "../../${OUT}" manifest.json options.html sidepanel.html sidepanel.css dist icons)
 # 打包后把 dist 恢复为开发构建，避免生产地址残留在工作区影响本机调试。
 pnpm --filter @zen-agent/extension build >/dev/null
 

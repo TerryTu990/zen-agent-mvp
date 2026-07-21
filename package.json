@@ -14,6 +14,7 @@
     "test:e2e:m2": "node scripts/e2e/run-m2.mjs",
     "test:e2e:m3": "node scripts/e2e/run-m3.mjs",
     "test:e2e:m5": "node scripts/e2e/run-m5.mjs",
+    "test:e2e:sidepanel": "node scripts/e2e/run-sidepanel.mjs",
     "test:e2e:real": "node --env-file=../tmp/zen-agent-demo/.env scripts/e2e/run-real-llm.mjs",
     "lint:deps": "node scripts/lint-deps.mjs",
     "eval": "node scripts/evals/run.mjs"

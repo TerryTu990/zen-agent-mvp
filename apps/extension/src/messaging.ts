@@ -5,16 +5,24 @@
 import type {
   DownstreamFrame,
   ExecResultFrame,
+  ExecutionPreference,
   HitlDecisionValue,
   SnapshotReportFrame,
 } from './frames.js';
 
+export type SidePanelUiEvent =
+  | {
+      kind: 'frame';
+      frame: Extract<DownstreamFrame, { type: 'text-delta' | 'tool-card' | 'hitl-request' }>;
+    }
+  | { kind: 'status'; message: string }
+  | { kind: 'user-echo'; text: string };
+
 export const SESSION_PORT_NAME = 'za-session';
+export const SIDE_PANEL_PORT_NAME = 'za-side-panel';
 
 export type ContentToBackgroundMessage =
   | { kind: 'context-report'; url: string; title: string }
-  | { kind: 'user-message'; text: string }
-  | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
   // content 在页面环境代执行后回传整帧；sessionId 权威仍由 background 组帧时盖章。
   | { kind: 'exec-result'; result: ExecResultFrame }
   // 页面快照上报（dom 代操作观察半程）；sessionId 同样由 background 盖章。
@@ -24,16 +32,37 @@ export type ContentToBackgroundMessage =
   // navigate 代执行（ADR-013 批次④）：dom 批次遇 navigate 步请 background 在本组窗口开目标页并入组；
   // requestId 关联 navigate-result 回执，不进上行转发管线。
   | { kind: 'navigate-request'; requestId: string; url: string }
+  | { kind: 'page-status'; message: string }
+  | { kind: 'operation-state'; running: boolean }
   // 保活心跳：仅靠端口消息的到达重置 MV3 service worker 空闲计时器，background 不处理内容。
   | { kind: 'ping' };
 
 export type BackgroundToContentMessage =
   | { kind: 'frame'; frame: DownstreamFrame }
-  | { kind: 'status'; message: string }
-  // 同组其它标签页的用户提问回显：保持组内各页对话镜像一致（adr-012）。
-  | { kind: 'user-echo'; text: string }
+  | { kind: 'stop-operation' }
   // navigate-request 的回执：ok 时 url 为新开页目标地址，供 content 组 exec-result。
   | { kind: 'navigate-result'; requestId: string; ok: boolean; url?: string; error?: string };
+
+export type SidePanelToBackgroundMessage =
+  | { kind: 'panel-bind'; groupId: number }
+  | { kind: 'browsing-context'; groupId: number; url?: string; title?: string }
+  | { kind: 'user-message'; text: string; executionPreference: ExecutionPreference }
+  | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
+  | { kind: 'stop-operation' }
+  | { kind: 'ping' };
+
+export type BackgroundToSidePanelMessage =
+  | SidePanelUiEvent
+  | { kind: 'history-replay'; events: SidePanelUiEvent[] }
+  | { kind: 'panel-ready' }
+  | { kind: 'operation-state'; running: boolean }
+  | {
+      kind: 'task-context';
+      groupId: number;
+      authorized: boolean;
+      url?: string;
+      title?: string;
+    };
 
 /**
  * 激活握手的一次性 runtime 消息（不走 Port，经 chrome.runtime/tabs.sendMessage 单发）：

@@ -129,6 +129,7 @@ describe('C3 client-access-layer 消息帧', () => {
       type: 'user-message',
       sessionId: 's-001',
       text: '怎么筛选待发货订单？',
+      executionPreference: 'dom-only',
     },
     'text-delta': {
       type: 'text-delta',
@@ -156,6 +157,12 @@ describe('C3 client-access-layer 消息帧', () => {
 
   const invalidFrames: Record<string, unknown> = {
     'user-message 缺 required text': { type: 'user-message', sessionId: 's-001' },
+    'user-message 执行偏好越闭集': {
+      type: 'user-message',
+      sessionId: 's-001',
+      text: '刷新订单',
+      executionPreference: 'client-decides',
+    },
     'context-report 缺 required url': { type: 'context-report', sessionId: 's-001' },
     '未知帧 type 被闭集拒绝': { type: 'page-reload', sessionId: 's-001' },
     'guide-action action 越 highlight|scroll-to 闭集': {

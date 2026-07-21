@@ -1,38 +1,35 @@
 import type { DownstreamFrame } from './frames.js';
-import type { ConversationUi } from './conversation-hitl.js';
 import type { DelegatedExecutor } from './delegated-execution.js';
 import type { PageActionRunner } from './page-action.js';
 import type { Snapshotter } from './page-snapshot.js';
 import type { ContentToBackgroundMessage } from './messaging.js';
 
 export interface DownstreamRouterDeps {
-  ui: Pick<ConversationUi, 'appendTextDelta' | 'showStatus' | 'renderToolCard' | 'promptHitl'>;
   pageAction: Pick<PageActionRunner, 'run'>;
   executor: DelegatedExecutor;
   snapshot: Pick<Snapshotter, 'collect'>;
   send: (message: ContentToBackgroundMessage) => void;
 }
 
+export type PageDownstreamFrame = Extract<
+  DownstreamFrame,
+  { type: 'guide-action' | 'exec-instruction' | 'snapshot-request' }
+>;
+
+export function isPageDownstreamFrame(frame: DownstreamFrame): frame is PageDownstreamFrame {
+  return (
+    frame.type === 'guide-action' || frame.type === 'exec-instruction' || frame.type === 'snapshot-request'
+  );
+}
+
 /**
- * 下行帧唯一分发点。代执行与 HITL 均只呈现/执行/回传，治理判定全在服务端（U7）：
- * hitl-request 弹卡收裁决后经 send 回 hitl-decision；exec-instruction 页面环境代执行后回 exec-result；
- * snapshot-request 采集可交互元素清单回 snapshot-report（sessionId 由 background 盖章）。
+ * 页面下行帧唯一分发点。Side Panel 帧不会进入 content；代执行结果和页面快照
+ * 仍由 background 盖章 sessionId 后回传，治理判定全在服务端（U7）。
  */
-export function routeDownstreamFrame(frame: DownstreamFrame, deps: DownstreamRouterDeps): void {
+export function routeDownstreamFrame(frame: PageDownstreamFrame, deps: DownstreamRouterDeps): void {
   switch (frame.type) {
-    case 'text-delta':
-      deps.ui.appendTextDelta(frame);
-      break;
     case 'guide-action':
-      deps.ui.showStatus(deps.pageAction.run(frame).status);
-      break;
-    case 'tool-card':
-      deps.ui.renderToolCard(frame);
-      break;
-    case 'hitl-request':
-      void deps.ui
-        .promptHitl(frame)
-        .then((decision) => deps.send({ kind: 'hitl-decision', hitlId: frame.hitlId, decision }));
+      deps.send({ kind: 'page-status', message: deps.pageAction.run(frame).status });
       break;
     case 'exec-instruction':
       void deps.executor

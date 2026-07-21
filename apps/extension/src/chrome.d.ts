@@ -15,6 +15,7 @@ declare namespace chrome {
     interface Tab {
       id?: number;
       url?: string;
+      title?: string;
       windowId?: number;
       groupId?: number;
     }
@@ -24,6 +25,7 @@ declare namespace chrome {
     function group(options: { tabIds: number | number[]; groupId?: number }): Promise<number>;
     /** 向指定标签页的内容脚本单发一次性消息（激活握手用）。 */
     function sendMessage(tabId: number, message: unknown): Promise<unknown>;
+    function query(queryInfo: { active?: boolean; currentWindow?: boolean; windowId?: number }): Promise<Tab[]>;
     interface TabChangeInfo {
       status?: string;
       url?: string;
@@ -33,6 +35,14 @@ declare namespace chrome {
     const onUpdated: {
       addListener(callback: (tabId: number, changeInfo: TabChangeInfo, tab: Tab) => void): void;
     };
+    const onActivated: {
+      addListener(callback: (activeInfo: { tabId: number; windowId: number }) => void): void;
+    };
+  }
+
+  namespace sidePanel {
+    /** 只能在用户手势（如 action 点击）内调用。 */
+    function open(options: { tabId?: number; windowId?: number }): Promise<void>;
   }
 
   namespace tabGroups {

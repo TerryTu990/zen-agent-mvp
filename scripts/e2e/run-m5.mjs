@@ -218,41 +218,70 @@ function readSessionHistory() {
     .join('\n');
 }
 
-async function runScenarios(context, packAPage) {
+async function runScenarios(context, packAPage, panelPage) {
   const pageCountBeforeFence = context.pages().length;
 
   // S1 越界：navigate 目标 origin 不属任何 pack → toolgate fence-violation 拒绝、无新 tab、agent 如实回报。
-  await sendMessage(packAPage, '越界演练：尝试跳转到站外地址');
-  await waitFor(async () => (await panelText(packAPage)).includes('已阻止跳转'), {
+  await sendMessage(panelPage, '越界演练：尝试跳转到站外地址');
+  await waitFor(async () => (await panelText(panelPage)).includes('已阻止跳转'), {
     label: 'S1 越界：等待围栏拒绝回报', timeoutMs: 20000,
   });
-  assert((await hitlCardCount(packAPage)) === 0, 'S1 越界：deny 不应弹 HITL 卡');
+  assert((await hitlCardCount(panelPage)) === 0, 'S1 越界：deny 不应弹 HITL 卡');
   assert(context.pages().length === pageCountBeforeFence, 'S1 越界：被拒的 navigate 不应开新 tab');
   console.log('  [pass] S1 越界：fence-violation 拒绝、无新 tab、无 HITL、如实回报');
 
   // S2 回合①（站点甲）：读一格数据（任务级授权卡）→ 批准 → 同任务 navigate 去站点乙（grant 复用、无第二卡）。
-  await sendMessage(packAPage, '跨站演练：读取一格订单数据后前往站点乙提交备注');
-  await approveOneCard(packAPage, 'S2 回合①：等待站点甲任务级授权卡');
+  await sendMessage(panelPage, '跨站演练：读取一格订单数据后前往站点乙提交备注');
+  await approveOneCard(panelPage, 'S2 回合①：等待站点甲任务级授权卡');
   const siteBPage = await findPage(context, 'site-b.html', 'S2：等待站点乙页面自动开启');
-  await siteBPage.locator('#za-input').waitFor({ state: 'visible', timeout: 15000 });
   await new Promise((r) => setTimeout(r, 300));
-  await waitFor(async () => (await panelText(packAPage)).includes('已打开站点乙页面'), {
+  await waitFor(async () => (await panelText(panelPage)).includes('已打开站点乙页面'), {
     label: 'S2 回合①：等待站点甲收尾', timeoutMs: 20000,
   });
-  assert((await hitlCardCount(packAPage)) === 0, 'S2 回合①：navigate 为同任务批次，不应弹第二张授权卡');
+  assert((await hitlCardCount(panelPage)) === 0, 'S2 回合①：navigate 为同任务批次，不应弹第二张授权卡');
   console.log('  [pass] S2 回合①：任务级授权一次 → 批准 → navigate 自动执行、新 tab 入组、面板出现');
 
   // S2 回合②（站点乙）：填表（任务级授权卡）→ 批准 → confirm-submit（every-call 单独弹卡，即便已有任务级授权）→ 批准 → 提交生效。
-  await sendMessage(siteBPage, '在站点乙填写备注并提交表单');
-  await approveOneCard(siteBPage, 'S2 回合②：等待站点乙填表授权卡');
+  await sendMessage(panelPage, '在站点乙填写备注并提交表单');
+  await approveOneCard(panelPage, 'S2 回合②：等待站点乙填表授权卡');
   // 填表批次执行后 confirm-submit 独立弹卡：第二次卡出现即证明 every-call 不复用已有任务级授权。
-  await approveOneCard(siteBPage, 'S2 回合②：等待 confirm-submit 独立确认卡');
-  await waitFor(async () => (await panelText(siteBPage)).includes('跨站演练完成'), {
+  await approveOneCard(panelPage, 'S2 回合②：等待 confirm-submit 独立确认卡');
+  await waitFor(async () => (await panelText(panelPage)).includes('跨站演练完成'), {
     label: 'S2 回合②：等待提交收尾', timeoutMs: 20000,
   });
   const submitted = (await siteBPage.locator('#sb-result').innerText()).trim();
   assert(submitted.includes('已提交：跨站演练备注'), `S2 回合②：站点乙提交应生效，实际 #sb-result="${submitted}"`);
   console.log('  [pass] S2 回合②：填表授权 + confirm-submit 独立确认 → 提交生效（页面可见变化）');
+
+  const outsidePage = await context.newPage();
+  await outsidePage.goto(`${HOST_B_ORIGIN}/site-b.html?outside=1`, { waitUntil: 'load' });
+  await waitFor(
+    async () => (await panelPage.locator('[data-za-context]').getAttribute('data-state')) === 'outside',
+    { label: '组外页面提示', timeoutMs: 5000 },
+  );
+  assert((await outsidePage.locator('#za-root').count()) === 0, '任务组外页面不应注入或获得 Zen UI');
+  await outsidePage.close();
+  await siteBPage.bringToFront();
+  await waitFor(
+    async () => (await panelPage.locator('[data-za-context]').getAttribute('data-state')) === 'ready',
+    { label: '任务页重新成为权威执行页', timeoutMs: 5000 },
+  );
+  await new Promise((r) => setTimeout(r, 300));
+  console.log('  [pass] 任务组外页面：Side Panel 明示不可执行，页面无注入 UI');
+
+  await sendMessage(panelPage, '停止演练：执行两步页面操作');
+  await approveOneCard(panelPage, '停止演练：等待任务授权');
+  await panelPage.locator('[data-za-stop]:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
+  await panelPage.locator('[data-za-stop]').click();
+  await waitFor(async () => (await panelText(panelPage)).includes('已按用户要求停止'), {
+    label: '停止演练：等待停止总结', timeoutMs: 20000,
+  });
+  await sendMessage(panelPage, '停止演练：停止后重试');
+  await waitFor(async () => (await hitlCardCount(panelPage)) > 0, {
+    label: '停止演练：等待重新授权', timeoutMs: 20000,
+  });
+  await panelPage.locator('[data-za-hitl-reject]').click();
+  console.log('  [pass] 停止语义：中止余下 DOM 步骤、回传 user-stopped、吊销任务授权，重试重新询问');
 
   // 审计断言：assembly/tool-decision/tool-execution 均带 packId，且出现两个不同 packId。
   const events = readAuditEvents();
@@ -352,11 +381,14 @@ async function main() {
     );
     const packAPage = context.pages()[0];
     await packAPage.reload({ waitUntil: 'load' });
-    await packAPage.locator('#za-input').waitFor({ state: 'visible', timeout: 10000 });
     await new Promise((r) => setTimeout(r, 400));
+    const extensionId = new URL(sw.url()).host;
+    const panel = await context.newPage();
+    await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+    await panel.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
 
     console.log('场景断言：');
-    await runScenarios(context, packAPage);
+    await runScenarios(context, packAPage, panel);
 
     console.log('\nM5 E2E 全部场景通过 ✅');
   } catch (error) {

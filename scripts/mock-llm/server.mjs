@@ -320,11 +320,38 @@ function driveSiteB(body) {
   };
 }
 
+function driveStop(body) {
+  const obs = lastToolObs(body);
+  if (obs === null) return { toolCall: snapshotCall() };
+  if (obs.includes('"elements"')) {
+    const elements = lastSnapshotElements(body);
+    const input = elements.find((item) => String(item?.role ?? '').startsWith('input')) ?? elements[0];
+    return {
+      toolCall: {
+        id: 'call_stop_operate',
+        name: TOOL_B_OPERATE,
+        arguments: JSON.stringify({
+          task: '停止演练',
+          steps: [
+            { action: 'fill', ref: input?.ref ?? 'za-1', value: '停止前首步' },
+            { action: 'read', ref: input?.ref ?? 'za-1', name: 'fieldValue' },
+          ],
+          summary: '执行可由用户中止的两步页面操作',
+        }),
+      },
+    };
+  }
+  if (obs.includes('user-stopped')) return { text: '已按用户要求停止，后续步骤没有继续执行。' };
+  if (obs.includes('user-rejected')) return { text: '已取消停止后的重试。' };
+  return { text: '停止演练已结束。' };
+}
+
 /**
  * M5 跨站任务组剧本分派：站点乙工具在场（回合已切到 pack B）优先走 driveSiteB；
  * 否则按当前回合驱动语（u）判越界/跨站演练。非 M5 上下文返回 null 走既有决策。
  */
 function driveDrill(u, body) {
+  if (u.includes('停止演练')) return driveStop(body);
   if (hasTool(body, TOOL_B_OPERATE) || hasTool(body, TOOL_B_SUBMIT)) return driveSiteB(body);
   if (u.includes('越界演练')) return driveFence(body);
   if (u.includes('跨站演练')) return driveCrossPackA(body);
@@ -376,6 +403,14 @@ function decide(sys, u, body) {
   }
   if (u.includes('实参 JSON 无效') && hasTool(body, TOOL_REFRESH)) {
     return { toolCall: { id: 'call_retry', name: TOOL_REFRESH, arguments: JSON.stringify({}) } };
+  }
+
+  if (
+    sys.includes('【执行偏好】') &&
+    u.includes('刷新') &&
+    !hasTool(body, TOOL_REFRESH)
+  ) {
+    return { text: '当前执行偏好下没有可用的刷新工具，已暂停；请切换执行偏好后重试。' };
   }
 
   const toolCall = pickToolCall(u, body);

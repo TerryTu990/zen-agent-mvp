@@ -23,6 +23,7 @@ import type {
   DomGateContext,
   DomToolDefinition,
   DownstreamFrame,
+  ExecutionPreference,
   ExecResultFrame,
   GuideActionKind,
   GuideActionFrame,
@@ -53,6 +54,10 @@ import {
 import { pruneStaleSnapshots, SNAPSHOT_TOOL_NAME } from './history.js';
 import { listApplications, recordApplication } from './applications.js';
 import type { SessionState, SessionStore } from './sessions.js';
+import {
+  executionPreferenceInstruction,
+  selectToolsForPreference,
+} from './execution-preference.js';
 
 export interface GatewayDeps {
   assembly: AssemblyPort;
@@ -627,8 +632,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
     session: SessionState,
     text: string,
     claims: IdentityClaims,
+    executionPreference: ExecutionPreference,
   ): Promise<void> {
     const { sessionId } = session;
+    const preferenceInstruction = executionPreferenceInstruction(executionPreference);
+    const withPreference = (content: string): string =>
+      preferenceInstruction === null ? content : `${content}\n\n${preferenceInstruction}`;
     // 按 URL 装配一轮上下文（回合开始与 navigate 落点换装共用）：解析功能、组装注入、建工具面。
     const assembleFor = async (url: string) => {
       const resolved = await deps.assembly.resolveFeature({ url });
@@ -650,14 +659,19 @@ export function createGateway(deps: GatewayDeps): Gateway {
           skillIds: composed.skills.map((skill) => skill.id),
         },
       }, pack);
-      const hostToolsById = new Map(composed.tools.map((tool) => [tool.id, tool]));
+      const selectedHostTools = selectToolsForPreference(composed.tools, executionPreference);
+      const hostToolsById = new Map(selectedHostTools.map((tool) => [tool.id, tool]));
       const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
       // 快照工具只在工具面含 dom 工具时注入：无 dom 操作面就不给观察入口（最小工具面）。
-      const snapshotTools: LlmToolSpec[] = composed.tools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
+      const snapshotTools: LlmToolSpec[] = selectedHostTools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
       // pack_doc 只在激活 pack 有 docs 索引时注入（渐进披露）：无索引则不给读取入口。
       const docTools: LlmToolSpec[] = composed.docsIndex !== null ? [PACK_DOC_TOOL_SPEC] : [];
       // site_navigate 与站点索引同门：仅当注入了"已安装站点索引"（≥2 site）时给跨站导航入口；单 site 无跨站意义。
-      const navTools: LlmToolSpec[] = composed.sitesIndex !== null ? [SITE_NAVIGATE_TOOL_SPEC] : [];
+      const navTools: LlmToolSpec[] =
+        composed.sitesIndex !== null &&
+        (executionPreference === 'auto' || executionPreference === 'dom-only')
+          ? [SITE_NAVIGATE_TOOL_SPEC]
+          : [];
       // 投递记录（业务日志）：pack 激活即注入读写入口，供求职 agent 落盘/回溯投递。
       const appTools: LlmToolSpec[] =
         composed.packId !== null
@@ -669,7 +683,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...docTools,
         ...navTools,
         ...appTools,
-        ...composed.tools.map(toLlmToolSpec),
+        ...selectedHostTools.map(toLlmToolSpec),
       ];
       return { pack, featureId, composed, hostToolsById, tools };
     };
@@ -703,8 +717,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
     ) {
       deps.store.setLastPackId(sessionId, pack.packId, pack.genericOrigin);
     }
+    const systemContent = systemContentFor(composed, pack, session.currentUrl ?? '');
     const messages: LlmMessage[] = [
-      { role: 'system', content: systemContentFor(composed, pack, session.currentUrl ?? '') },
+      {
+        role: 'system',
+        content: withPreference(systemContent),
+      },
       ...session.history,
       ...boundaryMessages,
       { role: 'user', content: text },
@@ -925,7 +943,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
             const previousPackId = pack.packId;
             const previousGenericOrigin = pack.genericOrigin ?? null;
             ({ pack, featureId, composed, hostToolsById, tools } = await assembleFor(landedUrl));
-            messages[0] = { role: 'system', content: systemContentFor(composed, pack, landedUrl) };
+            messages[0] = {
+              role: 'system',
+              content: withPreference(systemContentFor(composed, pack, landedUrl)),
+            };
             const navBoundary = await boundaryFor(pack, previousPackId, previousGenericOrigin);
             if (navBoundary !== null) {
               messages.push(navBoundary);
@@ -1025,7 +1046,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       case 'user-message': {
         const runtime = runtimeOf(session.sessionId);
         runtime.turnChain = runtime.turnChain
-          .then(() => runTurn(session, upstream.text, claims))
+          .then(() => runTurn(session, upstream.text, claims, upstream.executionPreference ?? 'auto'))
           .catch((cause) => {
             // 回合内部异常不外泄细节（SEC-04）：客户端只见类别，明细留本地日志
             console.error('agent 回合异常：', cause);

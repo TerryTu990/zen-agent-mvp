@@ -16,6 +16,12 @@ export type ClientCapability =
 
 export type HitlDecisionValue = 'approve' | 'reject';
 
+export type ExecutionPreference =
+  | 'auto'
+  | 'dom-only'
+  | 'prefer-client-api'
+  | 'prefer-server-api';
+
 export type ToolCardStatus = 'running' | 'succeeded' | 'failed';
 
 /** 页面动作闭集（纯引导，无副作用）：填表/替点走 delegated-execution 的 dom 通道（adr-011），不入本闭集。 */
@@ -38,6 +44,7 @@ export interface UserMessageFrame {
   type: 'user-message';
   sessionId: string;
   text: string;
+  executionPreference?: ExecutionPreference;
 }
 
 export interface HitlDecisionFrame {

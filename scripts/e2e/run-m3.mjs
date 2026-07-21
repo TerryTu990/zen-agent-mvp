@@ -195,51 +195,65 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function runScenarios(page, counts) {
+async function runScenarios(hostPage, panelPage, counts) {
   // d4 auto（刷新）：riskTier=auto 直执，无 HITL 卡片，页面 GET /api/orders，回喂后总结。
-  await sendMessage(page, '刷新订单列表');
-  await waitFor(async () => (await panelText(page)).includes('已刷新，当前 2 笔订单'), {
+  await sendMessage(panelPage, '刷新订单列表');
+  await waitFor(async () => (await panelText(panelPage)).includes('已刷新，当前 2 笔订单'), {
     label: 'd4 auto：等待刷新总结', timeoutMs: 15000,
   });
-  assert((await hitlCardCount(page)) === 0, 'd4 auto：不应出现 HITL 卡片');
+  assert((await hitlCardCount(panelPage)) === 0, 'd4 auto：不应出现 HITL 卡片');
   assert(counts.refresh === 1, `d4 auto：GET /api/orders 应恰被调用 1 次，实际 ${counts.refresh}`);
   console.log('  [pass] d4 auto：refresh 直执、无 HITL、页面 fetch 命中、总结正确');
 
   // d3 forbidden（清空）：服务端 deny，无 HITL、无 exec-instruction，DELETE 计数 0。
-  await sendMessage(page, '清空所有订单');
-  await waitFor(async () => (await panelText(page)).includes('抱歉，该操作不被允许执行'), {
+  await sendMessage(panelPage, '清空所有订单');
+  await waitFor(async () => (await panelText(panelPage)).includes('抱歉，该操作不被允许执行'), {
     label: 'd3 forbidden：等待拒绝文案', timeoutMs: 15000,
   });
-  assert((await hitlCardCount(page)) === 0, 'd3 forbidden：不应出现 HITL 卡片');
+  assert((await hitlCardCount(panelPage)) === 0, 'd3 forbidden：不应出现 HITL 卡片');
   assert(counts.purge === 0, `d3 forbidden：DELETE /api/orders 不应被调用，实际 ${counts.purge}`);
   console.log('  [pass] d3 forbidden：fail-closed deny、无 HITL/无 exec、DELETE 计数 0');
 
   // d2 拒绝（取消 ORD-1002）：hitl 挂起弹卡 → 拒绝 → 不下发指令、/cancel 计数不增。
-  await sendMessage(page, '帮我取消订单 ORD-1002');
-  await waitFor(async () => (await hitlCardCount(page)) > 0, {
+  await sendMessage(panelPage, '帮我取消订单 ORD-1002');
+  await waitFor(async () => (await hitlCardCount(panelPage)) > 0, {
     label: 'd2 拒绝：等待 HITL 卡片', timeoutMs: 15000,
   });
-  await page.locator('[data-za-hitl-reject]').click();
-  await waitFor(async () => (await panelText(page)).includes('已取消该操作'), {
+  await panelPage.locator('[data-za-hitl-reject]').click();
+  await waitFor(async () => (await panelText(panelPage)).includes('已取消该操作'), {
     label: 'd2 拒绝：等待取消回喂总结', timeoutMs: 15000,
   });
   assert(counts.cancel === 0, `d2 拒绝：/cancel 不应被调用，实际 ${counts.cancel}`);
-  assert((await hitlCardCount(page)) === 0, 'd2 拒绝：裁决后卡片应移除');
+  assert((await hitlCardCount(panelPage)) === 0, 'd2 拒绝：裁决后卡片应移除');
   console.log('  [pass] d2 拒绝：挂起弹卡 → 拒绝 → 无代执行、/cancel 计数 0');
 
   // d1 HITL happy（取消 ORD-1001）：挂起弹卡 → 确认 → 一次性签名指令 → 页面 fetch /cancel → 回喂总结。
-  await sendMessage(page, '帮我取消订单 ORD-1001');
-  await waitFor(async () => (await hitlCardCount(page)) > 0, {
+  await sendMessage(panelPage, '帮我取消订单 ORD-1001');
+  await waitFor(async () => (await hitlCardCount(panelPage)) > 0, {
     label: 'd1 happy：等待 HITL 卡片', timeoutMs: 15000,
   });
-  await page.locator('[data-za-hitl-approve]').click();
-  await waitFor(async () => (await panelText(page)).includes('已为你取消订单 ORD-1001'), {
+  await panelPage.locator('[data-za-hitl-approve]').click();
+  await waitFor(async () => (await panelText(panelPage)).includes('已为你取消订单 ORD-1001'), {
     label: 'd1 happy：等待取消成功总结', timeoutMs: 15000,
   });
   assert(counts.cancel === 1, `d1 happy：POST /api/orders/ORD-1001/cancel 应恰 1 次，实际 ${counts.cancel}`);
-  const finalText = await panelText(page);
+  const finalText = await panelText(panelPage);
   assert(finalText.includes('已完成：'), 'd1 happy：应出现 tool-card 已完成状态');
   console.log('  [pass] d1 HITL happy：确认 → 签名指令 → 页面 fetch /cancel → 结果回喂 → 成功总结');
+
+  await panelPage.getByLabel('执行偏好').selectOption('dom-only');
+  await panelPage.reload();
+  await panelPage.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
+  await waitFor(async () => (await panelPage.getByLabel('执行偏好').inputValue()) === 'dom-only', {
+    label: '执行偏好持久化', timeoutMs: 5000,
+  });
+  await sendMessage(panelPage, '再次刷新订单列表');
+  await waitFor(async () => (await panelText(panelPage)).includes('当前执行偏好下没有可用的刷新工具'), {
+    label: 'DOM-only 拦截客户端 API', timeoutMs: 15000,
+  });
+  assert(counts.refresh === 1, `DOM-only 下客户端 API 不应再次调用，实际 ${counts.refresh}`);
+  assert((await hostPage.locator('#za-root').count()) === 0, '宿主页面仍注入旧对话抽屉');
+  console.log('  [pass] 执行偏好：持久化、服务端工具面收窄、不可用通道暂停且未静默降级');
 }
 
 async function main() {
@@ -308,11 +322,14 @@ async function main() {
     );
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
-    await page.locator('#za-input').waitFor({ state: 'visible', timeout: 10000 });
     await new Promise((r) => setTimeout(r, 400));
+    const extensionId = new URL(sw.url()).host;
+    const panel = await context.newPage();
+    await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+    await panel.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
 
     console.log('场景断言：');
-    await runScenarios(page, host.counts);
+    await runScenarios(page, panel, host.counts);
 
     console.log('\nM3 E2E 全部场景通过 ✅');
   } catch (error) {

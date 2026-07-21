@@ -5,18 +5,18 @@
  */
 import type { DownstreamFrame } from './frames.js';
 
-export type FrameRoute = 'all' | 'active';
+export type FrameRoute = 'panel' | 'active-page';
 
 export function routeForFrame(frame: DownstreamFrame): FrameRoute {
   switch (frame.type) {
+    case 'text-delta':
+    case 'tool-card':
     case 'hitl-request':
+      return 'panel';
     case 'exec-instruction':
     case 'guide-action':
     case 'snapshot-request':
-      return 'active';
-    case 'text-delta':
-    case 'tool-card':
-      return 'all';
+      return 'active-page';
   }
 }
 
@@ -47,7 +47,7 @@ export function createGroupMembers<T>(): GroupMembers<T> {
       if (members.includes(member)) active = member;
     },
     targets(route) {
-      if (route === 'all') return [...members];
+      if (route === 'panel') return [...members];
       const target = active ?? members[members.length - 1];
       return target === undefined ? [] : [target];
     },

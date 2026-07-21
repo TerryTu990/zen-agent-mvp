@@ -26,6 +26,7 @@ export type {
   GuideActionKind,
   ContextReportFrame,
   UserMessageFrame,
+  ExecutionPreference,
   HitlDecisionFrame,
   ExecResultFrame,
   SnapshotElement,

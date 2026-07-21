@@ -171,6 +171,34 @@ async function waitServiceWorker(context, timeoutMs) {
   return context.waitForEvent('serviceworker', { timeout: timeoutMs }).catch(() => null);
 }
 
+async function restartServiceWorker(context, worker, panelPage) {
+  const page = context.pages()[0] ?? (await context.newPage());
+  const cdp = await context.newCDPSession(page);
+  const versions = new Map();
+  cdp.on('ServiceWorker.workerVersionUpdated', ({ versions: updates }) => {
+    for (const version of updates) versions.set(version.versionId, version);
+  });
+  await cdp.send('ServiceWorker.enable');
+  await waitFor(
+    () => [...versions.values()].some((item) => item.scriptURL === worker.url() && item.runningStatus === 'running'),
+    { label: '读取运行中的 service worker 版本', timeoutMs: 5000 },
+  );
+  const active = [...versions.values()].find(
+    (item) => item.scriptURL === worker.url() && item.runningStatus === 'running',
+  );
+  if (!active) throw new Error('未找到运行中的 extension service worker 版本');
+  await cdp.send('ServiceWorker.stopWorker', { versionId: active.versionId });
+  await waitFor(
+    () => versions.get(active.versionId)?.runningStatus === 'stopped',
+    { label: 'service worker 停止', timeoutMs: 5000 },
+  );
+  await panelPage.reload();
+  await waitFor(
+    () => versions.get(active.versionId)?.runningStatus === 'running',
+    { label: 'service worker 重启', timeoutMs: 10000 },
+  );
+}
+
 /** 取当前页第 index 个 assistant 气泡文本，轮询至 predicate 命中；超时抛出并附实际文本。 */
 async function waitAssistantBubble(page, index, predicate, { timeoutMs = 15000 } = {}) {
   const locator = page.locator('.za-msg[data-role="assistant"]').nth(index);
@@ -201,26 +229,39 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function runScenarios(page) {
+async function runScenarios(context, worker, extensionId, hostPage, panelPage) {
   // a 讲解（order-list）
-  await sendMessage(page, '已完成的订单能取消吗？');
-  const a = await waitAssistantBubble(page, 0, (t) => t.includes('不可取消'));
+  await sendMessage(panelPage, '已完成的订单能取消吗？');
+  const a = await waitAssistantBubble(panelPage, 0, (t) => t.includes('不可取消'));
   assert(!a.includes('MOCK-'), `场景 a 命中 MOCK 兜底：「${a}」`);
   console.log(`  [pass] a 讲解：「${a}」`);
 
+  await panelPage.close();
+  panelPage = await context.newPage();
+  await panelPage.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await panelPage.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
+  const restored = await waitAssistantBubble(panelPage, 0, (t) => t.includes('不可取消'));
+  assert(restored === a, 'Side Panel 重开后首轮对话未原样恢复');
+  console.log('  [pass] Side Panel 重开：对话恢复且未重复');
+
+  await restartServiceWorker(context, worker, panelPage);
+  await panelPage.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
+  await waitAssistantBubble(panelPage, 0, (t) => t.includes('不可取消'));
+  assert((await panelPage.locator('.za-msg[data-role="assistant"]').count()) === 1, 'SW 重启后对话重复');
+  console.log('  [pass] service worker 重启：同一会话恢复且对话未重复');
+
   // e 拒答（order-list，同页复用会话）
-  await sendMessage(page, '今天北京天气怎么样？');
-  const e = await waitAssistantBubble(page, 1, (t) => t.includes('职责范围') || t.includes('无关'));
+  await sendMessage(panelPage, '今天北京天气怎么样？');
+  const e = await waitAssistantBubble(panelPage, 1, (t) => t.includes('职责范围') || t.includes('无关'));
   assert(!/[晴雨]|气温/.test(e), `场景 e 泄露天气内容：「${e}」`);
   assert(!e.includes('MOCK-BASE-MISSING'), `场景 e 基座规则缺失（MOCK-BASE-MISSING）：「${e}」`);
   console.log(`  [pass] e 拒答：「${e}」`);
 
-  // b 换出（跳转 order-detail，新会话）
-  await page.goto(ORDER_DETAIL_URL, { waitUntil: 'load' });
-  await page.locator('#za-input').waitFor({ state: 'visible', timeout: 10000 });
+  // b 换出（宿主页跳转，Side Panel 会话保持）
+  await hostPage.goto(ORDER_DETAIL_URL, { waitUntil: 'load' });
   await new Promise((r) => setTimeout(r, 400)); // 让 context-report 先于 user-message 落到服务端
-  await sendMessage(page, '这个页面显示的是什么？');
-  const b = await waitAssistantBubble(page, 0, (t) => t.includes('订单号') && t.includes('状态') && t.includes('金额'));
+  await sendMessage(panelPage, '这个页面显示的是什么？');
+  const b = await waitAssistantBubble(panelPage, 2, (t) => t.includes('订单号') && t.includes('状态') && t.includes('金额'));
   assert(!b.includes('MOCK-'), `场景 b 命中 MOCK 兜底：「${b}」`);
   console.log(`  [pass] b 换出（UI 面）：「${b}」`);
 }
@@ -292,11 +333,15 @@ async function main() {
     );
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
-    await page.locator('#za-input').waitFor({ state: 'visible', timeout: 10000 });
     await new Promise((r) => setTimeout(r, 400));
+    const extensionId = new URL(sw.url()).host;
+    const panel = await context.newPage();
+    await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+    await panel.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
+    assert((await page.locator('#za-root').count()) === 0, '宿主页面仍注入旧对话抽屉');
 
     console.log('场景断言：');
-    await runScenarios(page);
+    await runScenarios(context, sw, extensionId, page, panel);
     await assertInjectionSwap(token);
 
     console.log('\nM1 E2E 全部场景通过 ✅');

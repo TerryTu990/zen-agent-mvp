@@ -5,34 +5,35 @@ import { createGroupMembers, routeForFrame } from '../src/group-routing.js';
 const frame = (type: DownstreamFrame['type']): DownstreamFrame => ({ type }) as DownstreamFrame;
 
 describe('routeForFrame：帧类型 → 路由目标', () => {
-  it('交互/副作用帧只到活跃页：hitl-request / exec-instruction / guide-action', () => {
-    expect(routeForFrame(frame('hitl-request'))).toBe('active');
-    expect(routeForFrame(frame('exec-instruction'))).toBe('active');
-    expect(routeForFrame(frame('guide-action'))).toBe('active');
+  it('对话与 HITL 只到 Side Panel，页面帧只到权威执行页', () => {
+    expect(routeForFrame(frame('hitl-request'))).toBe('panel');
+    expect(routeForFrame(frame('exec-instruction'))).toBe('active-page');
+    expect(routeForFrame(frame('guide-action'))).toBe('active-page');
+    expect(routeForFrame(frame('snapshot-request'))).toBe('active-page');
   });
 
-  it('会话叙事帧全员镜像：text-delta / tool-card', () => {
-    expect(routeForFrame(frame('text-delta'))).toBe('all');
-    expect(routeForFrame(frame('tool-card'))).toBe('all');
+  it('会话叙事帧进入 Side Panel：text-delta / tool-card', () => {
+    expect(routeForFrame(frame('text-delta'))).toBe('panel');
+    expect(routeForFrame(frame('tool-card'))).toBe('panel');
   });
 });
 
 describe('createGroupMembers：成员表与活跃页', () => {
-  it('active 路由给显式标记的活跃成员；all 给全员', () => {
+  it('active-page 路由给显式标记的活跃成员；panel 给全员', () => {
     const members = createGroupMembers<string>();
     members.add('a');
     members.add('b');
     members.markActive('a');
-    expect(members.targets('active')).toEqual(['a']);
-    expect(members.targets('all')).toEqual(['a', 'b']);
+    expect(members.targets('active-page')).toEqual(['a']);
+    expect(members.targets('panel')).toEqual(['a', 'b']);
   });
 
   it('无显式活跃者回退最近加入者；组空返回空数组', () => {
     const members = createGroupMembers<string>();
-    expect(members.targets('active')).toEqual([]);
+    expect(members.targets('active-page')).toEqual([]);
     members.add('a');
     members.add('b');
-    expect(members.targets('active')).toEqual(['b']);
+    expect(members.targets('active-page')).toEqual(['b']);
   });
 
   it('活跃成员被移除后回退最近加入者（活跃页关闭的兜底）', () => {
@@ -41,7 +42,7 @@ describe('createGroupMembers：成员表与活跃页', () => {
     members.add('b');
     members.markActive('b');
     members.remove('b');
-    expect(members.targets('active')).toEqual(['a']);
+    expect(members.targets('active-page')).toEqual(['a']);
     expect(members.size()).toBe(1);
   });
 
@@ -53,6 +54,6 @@ describe('createGroupMembers：成员表与活跃页', () => {
     expect(members.size()).toBe(2);
     expect(members.others('a')).toEqual(['b']);
     members.markActive('ghost');
-    expect(members.targets('active')).toEqual(['b']);
+    expect(members.targets('active-page')).toEqual(['b']);
   });
 });

@@ -168,7 +168,6 @@ function btnExportHighlighted(page) {
   }, HIGHLIGHT_CLASS);
 }
 
-/** 面板消息区全文（Playwright 穿透 open shadow root 取 #za-root 内 [data-za-messages] 文本）。 */
 async function panelText(page) {
   const locator = page.locator('[data-za-messages]');
   if ((await locator.count()) === 0) return '';
@@ -179,30 +178,30 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function runScenarios(page) {
+async function runScenarios(hostPage, panelPage) {
   // c 失配（order-list）：facts 无"打印发票"锚点 → LLM 如实文本降级，不假装高亮。
   // 先跑失配再跑命中，避免命中留下的高亮 class 污染"无元素高亮"断言。
-  await sendMessage(page, '在哪里打印发票？');
-  await waitFor(async () => (await panelText(page)).includes('MOCK-NO-ANCHOR'), {
+  await sendMessage(panelPage, '在哪里打印发票？');
+  await waitFor(async () => (await panelText(panelPage)).includes('MOCK-NO-ANCHOR'), {
     label: 'c 失配：等待如实文本降级回复',
     timeoutMs: 15000,
   });
-  const missText = await panelText(page);
-  assert(!(await anyHighlighted(page)), `场景 c 失配：不应有元素获得高亮 class，面板文本：「${missText}」`);
+  const missText = await panelText(panelPage);
+  assert(!(await anyHighlighted(hostPage)), `场景 c 失配：不应有元素获得高亮 class，面板文本：「${missText}」`);
   assert(!missText.includes('已为你定位'), `场景 c 失配：出现了成功定位文案（假装高亮）：「${missText}」`);
   console.log('  [pass] c 失配：无元素高亮、无成功文案，如实文本降级（MOCK-NO-ANCHOR）');
 
   // c 命中（order-list，同会话）：注入 guide_highlight → tool_call → GuideActionFrame → #btn-export 高亮。
-  await sendMessage(page, '导出订单在哪里？');
-  await waitFor(() => btnExportHighlighted(page), {
+  await sendMessage(panelPage, '导出订单在哪里？');
+  await waitFor(() => btnExportHighlighted(hostPage), {
     label: 'c 命中：等待 #btn-export 获得高亮 class',
     timeoutMs: 15000,
   });
-  await waitFor(async () => (await panelText(page)).includes('已为你定位'), {
+  await waitFor(async () => (await panelText(panelPage)).includes('已为你定位'), {
     label: 'c 命中：等待面板定位文案',
     timeoutMs: 5000,
   });
-  const hitText = await panelText(page);
+  const hitText = await panelText(panelPage);
   assert(hitText.includes('导出按钮'), `场景 c 命中：面板 status 缺定位说明，实际：「${hitText}」`);
   console.log(`  [pass] c 命中：#btn-export 已高亮，面板 status 含定位文案`);
 }
@@ -273,11 +272,15 @@ async function main() {
     );
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
-    await page.locator('#za-input').waitFor({ state: 'visible', timeout: 10000 });
     await new Promise((r) => setTimeout(r, 400));
+    const extensionId = new URL(sw.url()).host;
+    const panel = await context.newPage();
+    await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+    await panel.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
+    assert((await page.locator('#za-root').count()) === 0, '宿主页面仍注入旧对话抽屉');
 
     console.log('场景断言：');
-    await runScenarios(page);
+    await runScenarios(page, panel);
 
     console.log('\nM2 E2E 全部场景通过 ✅');
   } catch (error) {

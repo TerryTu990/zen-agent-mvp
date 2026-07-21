@@ -43,3 +43,9 @@ export const sessionKeyForGroup = (groupId: number): string => 'za.' + 'sessionI
 /** 同窗同源 autoActivate 组存根键（storage.session）：供 autoJoin 查既有组。 */
 export const autoGroupKey = (windowId: number, origin: string): string =>
   'za.' + 'autoGroup.' + windowId + '.' + origin;
+
+/** 当前窗口 Side Panel 绑定的任务组；切到组外标签页时不自动改绑。 */
+export const panelGroupKey = (windowId: number): string => 'za.panelGroup.w' + windowId;
+
+/** Side Panel 可重放 UI 事件的 session-scoped 存根。 */
+export const panelHistoryKeyForGroup = (groupId: number): string => 'za.panelHistory.g' + groupId;

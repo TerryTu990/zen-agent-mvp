@@ -17,6 +17,11 @@ export type ClientCapability =
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export type HitlDecisionValue = 'approve' | 'reject';
+export type ExecutionPreference =
+  | 'auto'
+  | 'dom-only'
+  | 'prefer-client-api'
+  | 'prefer-server-api';
 export type ToolCardStatus = 'running' | 'succeeded' | 'failed';
 export type GuideActionKind = 'highlight' | 'scroll-to';
 
@@ -33,6 +38,7 @@ export interface UserMessageFrame {
   type: 'user-message';
   sessionId: string;
   text: string;
+  executionPreference?: ExecutionPreference;
 }
 
 export interface HitlDecisionFrame {
