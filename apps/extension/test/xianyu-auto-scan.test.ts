@@ -28,6 +28,7 @@ describe('闲鱼周期扫描纯决策', () => {
     expect(shouldPauseXianyuAutoScan(2_000, 1_000, { type: 'tool-card', status: 'failed' })).toBe(true);
     expect(shouldPauseXianyuAutoScan(999, 1_000, { type: 'tool-card', status: 'failed' })).toBe(false);
     expect(shouldPauseXianyuAutoScan(2_000, 1_000, { type: 'tool-card', status: 'succeeded' })).toBe(false);
+    expect(shouldPauseXianyuAutoScan(2_000, 1_000, { type: 'hitl-request' })).toBe(true);
     expect(shouldPauseXianyuAutoScan(2_000, 1_000, { type: 'text-delta' })).toBe(false);
   });
 });

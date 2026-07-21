@@ -542,7 +542,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     port.onDisconnect.addListener(() => detachPanel(port));
   }
 
-  function triggerAutoScan(): void {
+  function triggerAutoScan(): boolean {
+    if (contentMembers.size() === 0) return false;
     autoScanActiveUntil = Date.now() + 120_000;
     postStatus('闲鱼自动履约扫描已触发；本轮最多处理一笔。');
     pipeline = pipeline.then(() => forward({
@@ -550,6 +551,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       text: '执行闲鱼自动履约扫描。每轮最多处理一笔；任一页面、订单、库存或回执状态不确定时立即暂停，不得重试发送。',
       executionPreference: 'dom-only',
     }));
+    return true;
   }
 
   return { attachContent, attachPanel, triggerAutoScan, close };
@@ -713,9 +715,9 @@ async function triggerXianyuAutoScan(): Promise<void> {
     }
     const bridge = groups.get(groupId);
     if (bridge === undefined) continue;
-    bridge.triggerAutoScan();
-    return;
+    if (bridge.triggerAutoScan()) return;
   }
+  await chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
 }
 
 void syncXianyuAutoScanAlarm();

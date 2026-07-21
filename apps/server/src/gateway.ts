@@ -959,6 +959,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
         });
         const report = await reported;
         if (report === null) {
+          broadcast(sessionId, {
+            type: 'tool-card',
+            sessionId,
+            toolCallId: call.toolCallId,
+            toolId: SNAPSHOT_TOOL_NAME,
+            status: 'failed',
+            mode: 'client',
+          });
           const snapshotEcho: LlmMessage = {
             role: 'assistant',
             content: roundText,

@@ -27,5 +27,8 @@ export function shouldPauseXianyuAutoScan(
   now: number,
   frame: { type: string; status?: string },
 ): boolean {
-  return activeUntil >= now && frame.type === 'tool-card' && frame.status === 'failed';
+  return activeUntil >= now && (
+    frame.type === 'hitl-request' ||
+    (frame.type === 'tool-card' && frame.status === 'failed')
+  );
 }
