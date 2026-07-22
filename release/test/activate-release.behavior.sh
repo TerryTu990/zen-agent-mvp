@@ -97,6 +97,28 @@ exit 0
 EOF
 chmod +x "${MOCK_BIN}/curl"
 
+cat >"${MOCK_BIN}/ln" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${MOCK_FAIL_KIND:-}" == link-create && "${*: -1}" == */current-release.next && ! -e "${MOCK_STATE:?}/link-create-failed" ]]; then
+  : >"${MOCK_STATE}/link-create-failed"
+  exit 1
+fi
+exec /bin/ln "$@"
+EOF
+chmod +x "${MOCK_BIN}/ln"
+
+cat >"${MOCK_BIN}/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${MOCK_FAIL_KIND:-}" == link-move && "$*" == *current-release.next*current-release* && ! -e "${MOCK_STATE:?}/link-move-failed" ]]; then
+  : >"${MOCK_STATE}/link-move-failed"
+  exit 1
+fi
+exec /bin/mv "$@"
+EOF
+chmod +x "${MOCK_BIN}/mv"
+
 make_release() {
   local root="$1" name="$2" tag="$3"
   mkdir -p "${root}/releases/${name}" "${root}/snapshots/${name}"
@@ -150,7 +172,7 @@ run_case() {
   esac
 }
 
-for kind in health replica lark whoami; do run_case "${kind}"; done
+for kind in health replica lark whoami link-create link-move; do run_case "${kind}"; done
 
 # 卡密未配置时 whoami 必须明确跳过，不能把未授权 profile 误判为发布失败。
 success_root="${TEST_ROOT}/success-unconfigured"

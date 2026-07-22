@@ -47,4 +47,8 @@ if (!activateRelease.includes('/data/za/.release-write-probe-')) {
 if (!activateRelease.includes("grep -qx 'ZA_RELEASE_LEGACY=1'")) {
   throw new Error('activation must scope compatibility exceptions to an explicit legacy descriptor');
 }
+if (!activateRelease.includes('current-release 原子切换失败') ||
+    !activateRelease.includes('activation_status=1')) {
+  throw new Error('current-release swap failure must re-enter the rollback state machine');
+}
 console.log('release static contracts passed');

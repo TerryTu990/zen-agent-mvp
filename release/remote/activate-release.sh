@@ -119,6 +119,12 @@ compose "${RELEASE_DIR}" up -d || activation_status=$?
 if [[ "${activation_status}" == 0 ]]; then
   validate_release "${RELEASE_DIR}" "zen-agent-server:${IMAGE_TAG}" "${SNAPSHOT_DIR}" || activation_status=$?
 fi
+if [[ "${activation_status}" == 0 ]]; then
+  if ! ln -sfn "${RELEASE_DIR}" "${CURRENT_LINK}.next" || ! mv -Tf "${CURRENT_LINK}.next" "${CURRENT_LINK}"; then
+    echo 'current-release 原子切换失败' >&2
+    activation_status=1
+  fi
+fi
 if [[ "${activation_status}" != 0 ]]; then
   if ! rollback; then
     echo '严重：新 release 失败且回滚验证失败，需要人工介入' >&2
@@ -126,7 +132,4 @@ if [[ "${activation_status}" != 0 ]]; then
   fi
   exit "${activation_status}"
 fi
-
-ln -sfn "${RELEASE_DIR}" "${CURRENT_LINK}.next"
-mv -Tf "${CURRENT_LINK}.next" "${CURRENT_LINK}"
 echo "已激活 ${RELEASE_DIR}"
