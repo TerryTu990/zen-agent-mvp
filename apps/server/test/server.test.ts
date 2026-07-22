@@ -1038,6 +1038,22 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       });
       expect(settle).toHaveBeenCalledWith({ cardId: 'card-auto', orderId: 'order-auto', status: 'sent' });
       expect(textOf(sse.frames)).not.toContain('fixture-value-not-real');
+      // 卡密只允许存在于签名控制帧的固定 fill 值；不得复制到其他 SSE 帧或叙事文本。
+      const serializedFrames = JSON.stringify(sse.frames);
+      expect(serializedFrames.split('fixture-value-not-real')).toHaveLength(2);
+      expect(instruction).toMatchObject({
+        request: {
+          kind: 'dom',
+          steps: [
+            {
+              action: 'fill',
+              ref: 'za-message',
+              value: '----\n您好，您购买的订单号：\norder-auto 以下是给您发货的内容：\n\n兑换码： fixture-value-not-real\n使用说明： https://example.test/guide\n----',
+            },
+            { action: 'click', ref: 'za-send' },
+          ],
+        },
+      });
       expect(JSON.stringify(auditEventsFor(sessionId))).not.toContain('fixture-value-not-real');
 
       const deniedUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-unknown&orderId=order-unknown';

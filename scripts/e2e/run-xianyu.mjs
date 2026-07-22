@@ -16,7 +16,9 @@ const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
 const JWT_SECRET = 'xianyu-e2e-jwt-fixture';
 const SIGNING_SECRET = 'xianyu-e2e-signing-fixture';
 const JWT_ISS = 'zen-agent-demo';
-const MOCK_LLM_PORT = Number(process.env.ZA_E2E_XIANYU_MOCK_PORT ?? 8798);
+const MOCK_LLM_PORT = process.env.ZA_E2E_XIANYU_MOCK_PORT === undefined
+  ? 0
+  : Number(process.env.ZA_E2E_XIANYU_MOCK_PORT);
 const SELLER_ORIGIN = 'https://seller.goofish.com';
 const ORDER_ID = 'order-e2e';
 const ITEM_ID = 'item-e2e';
@@ -176,6 +178,36 @@ async function sendMessage(panel, text) {
   await panel.locator('#za-send').click();
 }
 
+async function restartServiceWorker(context, page, scriptUrl, wake) {
+  const cdp = await context.newCDPSession(page);
+  let versions = [];
+  cdp.on('ServiceWorker.workerVersionUpdated', (event) => { versions = event.versions; });
+  try {
+    await cdp.send('ServiceWorker.enable');
+    await waitFor(
+      () => versions.some((version) => version.scriptURL === scriptUrl && version.runningStatus === 'running'),
+      '定位运行中的 MV3 Service Worker',
+      5_000,
+    );
+    const version = versions.find((item) => item.scriptURL === scriptUrl && item.runningStatus === 'running');
+    if (version === undefined) throw new Error('未找到可停止的 MV3 Service Worker');
+    await cdp.send('ServiceWorker.stopWorker', { versionId: version.versionId });
+    await waitFor(
+      () => versions.some((item) => item.scriptURL === scriptUrl && item.runningStatus === 'stopped'),
+      'MV3 Service Worker 进入 stopped',
+      5_000,
+    );
+    await wake();
+    await waitFor(
+      () => versions.some((item) => item.scriptURL === scriptUrl && item.runningStatus === 'running'),
+      'MV3 Service Worker 从 stopped 恢复 running',
+      10_000,
+    );
+  } finally {
+    await cdp.detach().catch(() => {});
+  }
+}
+
 function readTree(root) {
   if (!existsSync(root)) return '';
   let output = '';
@@ -199,7 +231,7 @@ async function main() {
     console.log('[2/5] 启动 mock LLM 与真实 gateway/toolgate…');
     const mock = await startMockLlm({ port: MOCK_LLM_PORT });
     cleanups.push(() => mock.close());
-    process.env.ZA_LLM_BASE_URL = `http://127.0.0.1:${MOCK_LLM_PORT}/v1`;
+    process.env.ZA_LLM_BASE_URL = `http://127.0.0.1:${mock.port}/v1`;
     process.env.ZA_LLM_MODEL = 'mock-model';
     const { startServer } = await import(pathToFileURL(join(REPO_ROOT, 'apps/server/dist/index.js')).href);
     const validUntil = Date.now() + 120_000;
@@ -231,14 +263,23 @@ async function main() {
         headless,
         args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
       });
-      await candidate.route(`${SELLER_ORIGIN}/**`, (route) => route.fulfill({
-        status: 200, contentType: 'text/html; charset=utf-8', body: fixtureHtml(route.request().url()),
-      }));
-      const page = candidate.pages()[0] ?? await candidate.newPage();
-      await page.goto(`${SELLER_ORIGIN}/?fixture=shipping#/seller-trade/order-manage/order-detail?orderId=${ORDER_ID}`);
-      const worker = await waitServiceWorker(candidate);
-      if (worker !== null) { context = candidate; sw = worker; break; }
-      await candidate.close();
+      let selected = false;
+      try {
+        await candidate.route(`${SELLER_ORIGIN}/**`, (route) => route.fulfill({
+          status: 200, contentType: 'text/html; charset=utf-8', body: fixtureHtml(route.request().url()),
+        }));
+        const page = candidate.pages()[0] ?? await candidate.newPage();
+        await page.goto(`${SELLER_ORIGIN}/?fixture=shipping#/seller-trade/order-manage/order-detail?orderId=${ORDER_ID}`);
+        const worker = await waitServiceWorker(candidate);
+        if (worker !== null) {
+          context = candidate;
+          sw = worker;
+          selected = true;
+          break;
+        }
+      } finally {
+        if (!selected) await candidate.close().catch(() => {});
+      }
     }
     if (context === undefined || sw === undefined) throw new Error('Chromium 未加载扩展 service worker');
     cleanups.push(() => context.close());
@@ -263,6 +304,17 @@ async function main() {
     assert(await page.evaluate(() => window.fixtureShipClicks) === 1, '发货按钮必须恰好点击一次');
     assert(inventory.stage(ORDER_ID) === 'shipped-confirmed', '库存必须推进到 shipped-confirmed');
 
+    // 不可逆边界恢复：发货已经确认、卡密尚未发送时由 Chromium 停止 SW；
+    // Side Panel 只恢复连接与观察，不恢复点击。
+    const previousWorker = sw;
+    await restartServiceWorker(context, page, previousWorker.url(), async () => {
+      // 主动重载控制页，触发端口重连并唤醒 worker，不依赖 20 秒 ping 定时器。
+      await panel.reload({ waitUntil: 'load' });
+    });
+    sw = context.serviceWorkers()[0] ?? previousWorker;
+    await panel.locator('#za-input:not([disabled])').waitFor({ timeout: 10_000 });
+    assert(await page.evaluate(() => window.fixtureShipClicks) === 1, 'SW 恢复不得重放已确认的发货点击');
+
     const chatUrl = `${SELLER_ORIGIN}/?fixture=chat#/im?itemId=${ITEM_ID}&orderId=${ORDER_ID}&peerUserId=buyer-e2e`;
     await page.goto(chatUrl, { waitUntil: 'load' });
     await page.locator('#message').waitFor();
@@ -272,7 +324,7 @@ async function main() {
     try {
       await waitFor(async () => (await panelText(panel)).includes('页面新回执已确认履约消息送达'), '消息回执成功总结');
     } catch (error) {
-      throw new Error(`${error.message}；inventory=${inventory.stage(ORDER_ID) ?? 'none'}；events=${inventory.events.join(',')}；panel=${await panelText(panel)}`);
+      throw new Error(`${error.message}；inventory=${inventory.stage(ORDER_ID) ?? 'none'}；events=${inventory.events.join(',')}`);
     }
     assert(await page.evaluate(() => window.fixtureSendClicks) === 1, '消息发送按钮必须恰好点击一次');
     assert(inventory.stage(ORDER_ID) === 'sent', '库存终态必须为 sent');
@@ -291,9 +343,12 @@ async function main() {
     assert(inventory.stage(DIALOG_ORDER_ID) === 'manual', '不明确状态必须转 manual');
 
     const panelOutput = await panelText(panel);
+    const llmRequests = mock.requests.join('\n');
     const persisted = readTree(sessionDir);
     const audit = readFileSync(auditPath, 'utf8');
-    for (const [name, text] of [['panel', panelOutput], ['sessions', persisted], ['audit', audit]]) {
+    for (const [name, text] of [
+      ['llm-requests', llmRequests], ['panel', panelOutput], ['sessions', persisted], ['audit', audit],
+    ]) {
       assert(!text.includes(CARD_CANARY), `${name} 泄漏卡密 canary`);
       assert(!text.includes(HREF_CANARY), `${name} 泄漏 href query canary`);
     }

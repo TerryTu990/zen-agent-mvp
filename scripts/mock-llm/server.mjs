@@ -737,12 +737,13 @@ function sendError(res, status, message) {
   res.end(JSON.stringify({ error: { message, type: 'invalid_request_error' } }));
 }
 
-function handleChat(req, res) {
+function handleChat(req, res, requests) {
   let raw = '';
   req.on('data', (chunk) => {
     raw += chunk;
   });
   req.on('end', () => {
+    requests.push(raw);
     let body;
     try {
       body = JSON.parse(raw);
@@ -808,9 +809,10 @@ function handleChat(req, res) {
 }
 
 export function startMockLlm({ port = Number(process.env.MOCK_LLM_PORT ?? 8788) } = {}) {
+  const requests = [];
   const server = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/v1/chat/completions') {
-      handleChat(req, res);
+      handleChat(req, res, requests);
       return;
     }
     sendError(res, 404, 'not found');
@@ -820,6 +822,8 @@ export function startMockLlm({ port = Number(process.env.MOCK_LLM_PORT ?? 8788) 
     server.listen(port, '127.0.0.1', () => {
       resolve({
         port: server.address().port,
+        /** 原始请求只保留在测试进程内，供验证模型边界；永不打印或写盘。 */
+        requests,
         close: () =>
           new Promise((res2, rej2) => server.close((err) => (err ? rej2(err) : res2()))),
       });
