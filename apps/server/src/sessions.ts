@@ -52,7 +52,7 @@ export interface SessionStore {
   setOriginClaims(sessionId: string, origin: string, claims: IdentityClaims): void;
   /** 记本回合激活 packId 与 generic 绑定 origin（站点边界标记判据）。 */
   setLastPackId(sessionId: string, packId: string, genericOrigin?: string): void;
-  /** 原子占用消息编号；持久化实现必须在返回 reserved 前完成耐久写入。 */
+  /** 进程内原子占用消息编号；持久化实现必须在返回 reserved 前完成耐久写入。生产部署保持单实例。 */
   reserveMessageTurn(sessionId: string, messageId: string): MessageTurnReservation;
   /** 完成或删除消息幂等状态；null 表删除最旧完成项。 */
   setMessageTurn(sessionId: string, messageId: string, state: 'complete' | null): void;
@@ -80,7 +80,7 @@ export function createMemorySessionStore(): SessionStore {
         lastPackId: null,
         lastGenericOrigin: null,
         history: [],
-        messageTurns: {},
+        messageTurns: Object.create(null) as Record<string, 'pending' | 'complete'>,
       };
       sessions.set(session.sessionId, session);
       return session;
@@ -110,8 +110,7 @@ export function createMemorySessionStore(): SessionStore {
     },
     reserveMessageTurn(sessionId, messageId) {
       const turns = mustGet(sessionId).messageTurns;
-      const existing = turns[messageId];
-      if (existing !== undefined) return existing;
+      if (Object.hasOwn(turns, messageId)) return turns[messageId]!;
       turns[messageId] = 'pending';
       return 'reserved';
     },
@@ -124,7 +123,13 @@ export function createMemorySessionStore(): SessionStore {
       sessions.delete(sessionId);
     },
     restore(state) {
-      sessions.set(state.sessionId, { ...state, messageTurns: state.messageTurns ?? {} });
+      sessions.set(state.sessionId, {
+        ...state,
+        messageTurns: Object.assign(
+          Object.create(null) as Record<string, 'pending' | 'complete'>,
+          state.messageTurns ?? {},
+        ),
+      });
     },
   };
 }
@@ -223,7 +228,7 @@ export function createPersistentSessionStore(
             lastPackId: null,
             lastGenericOrigin: null,
             history: [],
-            messageTurns: {},
+            messageTurns: Object.create(null) as Record<string, 'pending' | 'complete'>,
           };
         } else if (state === undefined) {
           continue;

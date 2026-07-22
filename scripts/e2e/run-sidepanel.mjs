@@ -107,7 +107,9 @@ async function main() {
         res.writeHead(status, headers);
         res.end(status === 202
           ? '{"accepted":true,"messageState":"pending","idle":false}'
-          : JSON.stringify({ error: `fixture-${status}` }));
+          : status === 409
+            ? '{"error":"fixture-interrupted","messageState":"interrupted","idle":true}'
+            : JSON.stringify({ error: `fixture-${status}` }));
         if (status === 202) {
           eventStreams.get(match[1])?.write(`data: ${JSON.stringify({
             type: 'turn-complete', sessionId: match[1], messageId: frame.messageId, idle: true,
@@ -183,6 +185,17 @@ async function main() {
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '404 后直接重试未创建新会话');
     assert(frameRequests[2]?.sessionId !== frameRequests[3]?.sessionId, '404 后仍复用了失效 sessionId');
     assert(frameRequests[2]?.messageId === frameRequests[3]?.messageId, '404 重试改变了 messageId，无法保证幂等');
+
+    nextFrameStatus = 409;
+    await panel.getByLabel('给 Zen 发送消息').fill('验证服务重启中断');
+    await panel.getByRole('button', { name: '发送消息' }).click();
+    await panel.getByText(/上一回合因服务重启中断.*草稿仍保留/).waitFor();
+    assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '验证服务重启中断', '中断后文本草稿未保留');
+    assert(!(await panel.getByRole('button', { name: '发送消息' }).isDisabled()), '中断后编辑器未解锁');
+    await panel.getByRole('button', { name: '发送消息' }).click();
+    await panel.getByText('验证服务重启中断', { exact: false }).waitFor();
+    assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '中断后重新提交未成功');
+    assert(frameRequests[4]?.messageId !== frameRequests[5]?.messageId, '中断后重新提交没有生成新的 messageId');
     const observed = await panel.evaluate(() => globalThis.__zaObservedComposerState);
     assert(observed.waiting, '发送后合并按钮未进入处理中状态');
     assert(observed.thinking, '发送后未即时显示思考中状态');

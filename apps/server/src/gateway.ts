@@ -371,6 +371,8 @@ interface SessionRuntime {
   /** 同会话回合串行链：user-message 依次排队，避免历史交错。 */
   turnChain: Promise<void>;
   pendingTurns: number;
+  /** 当前进程实际接管的有编号回合；用于区分重启遗留 pending 与本进程活动回合。 */
+  activeMessageIds: Set<string>;
   /** HITL 挂起等待器：hitlId → resolver；hitl-decision 到达时解析，回合恢复。 */
   pendingHitl: Map<string, (decision: HitlDecisionValue) => void>;
   /** 代执行挂起等待器：nonce → resolver；exec-result 到达时解析，回合恢复。 */
@@ -460,6 +462,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         subscribers: new Set(),
         turnChain: Promise.resolve(),
         pendingTurns: 0,
+        activeMessageIds: new Set(),
         pendingHitl: new Map(),
         pendingExec: new Map(),
         pendingSnapshot: new Map(),
@@ -1441,7 +1444,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             sendJson(res, 503, { error: '消息幂等占位不可用，未启动回合' });
             return;
           }
-          if (reservation === 'pending' && runtime.pendingTurns === 0) {
+          if (reservation === 'pending' && !runtime.activeMessageIds.has(upstream.messageId)) {
             sendJson(res, 409, {
               error: '上一回合因服务重启中断，状态无法安全恢复；请核对业务状态后重新发起',
               messageState: 'interrupted',
@@ -1458,6 +1461,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
             });
             return;
           }
+          if (reservation !== 'reserved') {
+            sendJson(res, 503, { error: '消息幂等状态异常，未启动回合' });
+            return;
+          }
           const messageTurns = Object.entries(session.messageTurns);
           if (messageTurns.length > 256) {
             const completed = messageTurns.find(([, state]) => state === 'complete');
@@ -1472,6 +1479,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           runtime.automationRuns.set(upstream.automationRunId, { status: 'running', updatedAt: Date.now() });
         }
         runtime.pendingTurns += 1;
+        if (upstream.messageId !== undefined) runtime.activeMessageIds.add(upstream.messageId);
         runtime.turnChain = runtime.turnChain
           .then(async () => {
             try {
@@ -1522,6 +1530,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           .finally(() => {
             runtime.pendingTurns = Math.max(0, runtime.pendingTurns - 1);
             if (upstream.messageId !== undefined) {
+              runtime.activeMessageIds.delete(upstream.messageId);
               deps.store.setMessageTurn(session.sessionId, upstream.messageId, 'complete');
             }
             broadcast(session.sessionId, {

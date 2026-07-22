@@ -35,6 +35,15 @@ afterEach(() => {
 });
 
 describe('createPersistentSessionStore（P2 会话持久化）', () => {
+  it('messageId 原型键仍按普通幂等键处理', () => {
+    const store = createMemorySessionStore();
+    const { sessionId } = store.create(CLAIMS);
+    for (const messageId of ['constructor', '__proto__']) {
+      expect(store.reserveMessageTurn(sessionId, messageId)).toBe('reserved');
+      expect(store.reserveMessageTurn(sessionId, messageId)).toBe('pending');
+    }
+  });
+
   it('重放恢复：新实例（模拟重启）从落盘文件重建会话历史/URL/claims', () => {
     const dir = freshDir();
     const first = persistent(dir);

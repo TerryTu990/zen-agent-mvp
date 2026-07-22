@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -329,6 +329,39 @@ describe('上行帧校验（400/404/409 闭集）', () => {
 });
 
 describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
+  it('幂等占位无法耐久写入时返回 503，且不启动回合', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'za-idempotency-failure-'));
+    const blockedSessionDir = join(base, 'not-a-directory');
+    writeFileSync(blockedSessionDir, 'x', 'utf8');
+    const unsafe = await startServer(serverOptions({ sessionDir: blockedSessionDir }));
+    try {
+      const token = await signToken();
+      const unsafeBase = `http://127.0.0.1:${unsafe.port}`;
+      const created = await fetch(`${unsafeBase}/v1/sessions`, {
+        method: 'POST',
+        headers: authHeaders(token),
+      });
+      const { sessionId } = await created.json() as { sessionId: string };
+      const response = await fetch(`${unsafeBase}/v1/sessions/${sessionId}/frames`, {
+        method: 'POST',
+        headers: authHeaders(token, { 'content-type': 'application/json' }),
+        body: JSON.stringify({
+          type: 'user-message',
+          sessionId,
+          messageId: 'must-not-run',
+          text: '不得执行',
+        }),
+      });
+      expect(response.status).toBe(503);
+      const turnState = await fetch(`${unsafeBase}/v1/sessions/${sessionId}/turn-state`, {
+        headers: authHeaders(token),
+      });
+      expect(await turnState.json()).toEqual({ running: false });
+    } finally {
+      await unsafe.close();
+    }
+  });
+
   it('服务重启后的遗留 pending 明确返回中断，不永久等待或重复启动回合', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'za-restart-session-'));
     const seeded = createPersistentSessionStore(createMemorySessionStore(), { dir });
