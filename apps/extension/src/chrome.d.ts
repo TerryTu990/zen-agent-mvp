@@ -44,8 +44,7 @@ declare namespace chrome {
   }
 
   namespace sidePanel {
-    /** 只能在用户手势（如 action 点击）内调用。 */
-    function open(options: { tabId?: number; windowId?: number }): Promise<void>;
+    function setPanelBehavior(behavior: { openPanelOnActionClick?: boolean }): Promise<void>;
   }
 
   namespace tabGroups {

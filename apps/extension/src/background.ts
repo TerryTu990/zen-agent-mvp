@@ -761,8 +761,11 @@ async function handleIconClick(tab: chrome.tabs.Tab): Promise<void> {
     await chrome.storage.session.set({ [panelGroupKey(tab.windowId)]: groupId });
   }
   await sendActivate(tab.id);
-  await chrome.sidePanel.open({ tabId: tab.id }).catch(() => {});
 }
+
+void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
+  console.error('Zen Commerce Agent 侧边栏点击行为配置失败');
+});
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === SESSION_PORT_NAME) {
