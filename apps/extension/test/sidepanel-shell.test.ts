@@ -10,6 +10,7 @@ describe('Side Panel shell', () => {
     expect(root.querySelector('.za-topbar')).toBeNull();
     expect(root.textContent).not.toContain('电商智能体');
     expect(elements.action.getAttribute('aria-label')).toBe('发送消息');
+    expect(elements.action.querySelector('.za-stop-icon')).not.toBeNull();
     expect(elements.upload.getAttribute('aria-label')).toBe('上传知识文档');
   });
 });

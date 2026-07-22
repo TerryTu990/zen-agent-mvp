@@ -373,12 +373,16 @@ interface SessionRuntime {
   pendingTurns: number;
   /** 当前进程实际接管的有编号回合；用于区分重启遗留 pending 与本进程活动回合。 */
   activeMessageIds: Set<string>;
+  /** 用户请求停止的消息编号；排队与执行中的回合都在服务端边界检查。 */
+  cancelledMessageIds: Set<string>;
+  /** 串行链上当前真正执行的消息编号。 */
+  runningMessageId: string | null;
   /** HITL 挂起等待器：hitlId → resolver；hitl-decision 到达时解析，回合恢复。 */
   pendingHitl: Map<string, (decision: HitlDecisionValue) => void>;
   /** 代执行挂起等待器：nonce → resolver；exec-result 到达时解析，回合恢复。 */
   pendingExec: Map<string, (result: ExecResultFrame) => void>;
   /** 快照挂起等待器：requestId → resolver；snapshot-report 到达时解析。 */
-  pendingSnapshot: Map<string, (report: SnapshotReportFrame) => void>;
+  pendingSnapshot: Map<string, (report: SnapshotReportFrame | null) => void>;
   /** 最近一次快照的判定上下文（ref 闭集 + 页路径）；dom 签发校验依据，无快照即 deny。 */
   domContext: DomGateContext | null;
   /** 自动扫描状态由服务端持有，供 MV3 service worker 重启后查询恢复单飞锁。 */
@@ -463,6 +467,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
         turnChain: Promise.resolve(),
         pendingTurns: 0,
         activeMessageIds: new Set(),
+        cancelledMessageIds: new Set(),
+        runningMessageId: null,
         pendingHitl: new Map(),
         pendingExec: new Map(),
         pendingSnapshot: new Map(),
@@ -817,8 +823,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
     text: string,
     claims: IdentityClaims,
     executionPreference: ExecutionPreference,
+    messageId: string | undefined,
   ): Promise<boolean> {
     const { sessionId } = session;
+    const runtime = runtimeOf(sessionId);
+    const cancelled = (): boolean => messageId !== undefined && runtime.cancelledMessageIds.has(messageId);
+    const llmRequestId = messageId === undefined ? undefined : `${sessionId}:${messageId}`;
     const preferenceInstruction = executionPreferenceInstruction(executionPreference);
     const withPreference = (content: string): string =>
       preferenceInstruction === null ? content : `${content}\n\n${preferenceInstruction}`;
@@ -946,11 +956,16 @@ export function createGateway(deps: GatewayDeps): Gateway {
     let automationFailed = false;
     // 所有用户回合统一最多选择一个 bounded intent；客户端标识只做运行关联，不改变治理约束（U7）。
     let fulfillmentBudget: { attempted: boolean; intentId?: string } = { attempted: false };
-    for (let round = 0; round < deps.maxTurnRounds; round += 1) {
+    turnLoop: for (let round = 0; round < deps.maxTurnRounds; round += 1) {
+      if (cancelled()) break;
       let roundText = '';
       let call: { toolCallId: string; name: string; params: JsonObject } | null = null;
       let recoverableError: string | null = null;
-      for await (const event of deps.llm.chat(tools.length > 0 ? { messages, tools } : { messages })) {
+      const request = tools.length > 0
+        ? { messages, tools, ...(llmRequestId !== undefined ? { requestId: llmRequestId } : {}) }
+        : { messages, ...(llmRequestId !== undefined ? { requestId: llmRequestId } : {}) };
+      for await (const event of deps.llm.chat(request)) {
+        if (cancelled()) break turnLoop;
         if (event.kind === 'text-delta') {
           roundText += event.delta;
           broadcast(sessionId, { type: 'text-delta', sessionId, delta: event.delta });
@@ -972,6 +987,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           }
         }
       }
+      if (cancelled()) break;
       // 可自愈错误（模型实参 JSON 非法/截断）：不终结回合——把失败与修正要求回喂，下一轮重新发起调用。
       if (call === null && recoverableError !== null) {
         invalidArgsRetries += 1;
@@ -1381,7 +1397,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
       turnMessages.push(execEcho, execObs);
     }
 
-    if (!settled) {
+    if (cancelled()) {
+      const notice = '已停止当前任务。';
+      tailText += notice;
+      notify(sessionId, notice);
+      automationFailed = true;
+      settled = true;
+    } else if (!settled) {
       // 轮数耗尽被截断：显式收尾而非静默停（用户视角"卡住"），并留在历史里供下回合衔接。
       const notice = '本轮操作步数已达上限，我先停在这里；回复「继续」可接着做。';
       tailText += notice;
@@ -1482,12 +1504,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
         if (upstream.messageId !== undefined) runtime.activeMessageIds.add(upstream.messageId);
         runtime.turnChain = runtime.turnChain
           .then(async () => {
+            runtime.runningMessageId = upstream.messageId ?? null;
             try {
               const succeeded = await runTurn(
                 session,
                 upstream.text,
                 claims,
                 upstream.executionPreference ?? 'auto',
+                upstream.messageId,
               );
               if (upstream.automationRunId !== undefined) {
                 runtime.automationRuns.set(upstream.automationRunId, {
@@ -1528,9 +1552,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
             });
           })
           .finally(() => {
+            if (runtime.runningMessageId === (upstream.messageId ?? null)) runtime.runningMessageId = null;
             runtime.pendingTurns = Math.max(0, runtime.pendingTurns - 1);
             if (upstream.messageId !== undefined) {
               runtime.activeMessageIds.delete(upstream.messageId);
+              runtime.cancelledMessageIds.delete(upstream.messageId);
               deps.store.setMessageTurn(session.sessionId, upstream.messageId, 'complete');
             }
             broadcast(session.sessionId, {
@@ -1584,6 +1610,51 @@ export function createGateway(deps: GatewayDeps): Gateway {
         return;
       }
     }
+  }
+
+  async function handleStop(req: IncomingMessage, res: ServerResponse, session: SessionState): Promise<void> {
+    let body: unknown;
+    try {
+      body = JSON.parse(await readBody(req));
+    } catch {
+      sendJson(res, 400, { error: '停止请求不是合法 JSON' });
+      return;
+    }
+    const messageId = typeof body === 'object' && body !== null && 'messageId' in body
+      ? (body as { messageId?: unknown }).messageId
+      : undefined;
+    if (typeof messageId !== 'string' || messageId === '' || messageId.length > 200) {
+      sendJson(res, 400, { error: '停止请求缺少合法 messageId' });
+      return;
+    }
+    const runtime = runtimeOf(session.sessionId);
+    runtime.cancelledMessageIds.add(messageId);
+    if (runtime.cancelledMessageIds.size > 256) {
+      const oldest = runtime.cancelledMessageIds.values().next().value as string | undefined;
+      if (oldest !== undefined) runtime.cancelledMessageIds.delete(oldest);
+    }
+    deps.llm.cancel?.(`${session.sessionId}:${messageId}`);
+    if (runtime.runningMessageId === messageId) {
+      for (const [hitlId, resolve] of [...runtime.pendingHitl]) {
+        runtime.pendingHitl.delete(hitlId);
+        resolve('reject');
+      }
+      for (const [nonce, resolve] of [...runtime.pendingExec]) {
+        runtime.pendingExec.delete(nonce);
+        resolve({
+          type: 'exec-result',
+          sessionId: session.sessionId,
+          nonce,
+          ok: false,
+          error: 'user-stopped',
+        });
+      }
+      for (const [requestId, resolve] of [...runtime.pendingSnapshot]) {
+        runtime.pendingSnapshot.delete(requestId);
+        resolve(null);
+      }
+    }
+    sendJson(res, 202, { accepted: true });
   }
 
   async function handleEvents(res: ServerResponse, session: SessionState): Promise<void> {
@@ -1699,7 +1770,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       return;
     }
     const automationMatch = /^\/v1\/sessions\/([^/]+)\/automation-runs\/([^/]+)$/.exec(pathname);
-    const match = /^\/v1\/sessions\/([^/]+)\/(frames|events|injection|turn-state)$/.exec(pathname);
+    const match = /^\/v1\/sessions\/([^/]+)\/(frames|events|injection|turn-state|stop)$/.exec(pathname);
     if (automationMatch && req.method === 'GET') {
       const sessionId = decodeURIComponent(automationMatch[1]!);
       const session = deps.store.get(sessionId);
@@ -1727,6 +1798,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         }
       }
       if (match[2] === 'frames' && req.method === 'POST') return handleFrames(req, res, session, claims);
+      if (match[2] === 'stop' && req.method === 'POST') return handleStop(req, res, session);
       if (match[2] === 'events' && req.method === 'GET') return await handleEvents(res, session);
       if (match[2] === 'injection' && req.method === 'GET') return handleInjection(res, session);
       if (match[2] === 'turn-state' && req.method === 'GET') return handleTurnState(res, session);

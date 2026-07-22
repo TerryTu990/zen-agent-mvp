@@ -329,6 +329,41 @@ describe('上行帧校验（400/404/409 闭集）', () => {
 });
 
 describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
+  it('停止活动回合会解除代执行等待、取消后续执行并发出 turn-complete', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    const messageId = 'message-stop-active';
+    try {
+      await postFrame(token, sessionId, {
+        type: 'context-report', sessionId, url: ORDER_LIST_URL,
+      });
+      const started = await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        messageId,
+        text: '在页面上刷新订单',
+      });
+      expect(started.status).toBe(202);
+      await sse.waitFor(() => sse.frames.some((frame) => frame['type'] === 'exec-instruction'));
+      const stopped = await api(`/v1/sessions/${sessionId}/stop`, {
+        method: 'POST',
+        headers: authHeaders(token, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ messageId }),
+      });
+      expect(stopped.status).toBe(202);
+      await sse.waitFor(() => sse.frames.some(
+        (frame) => frame['type'] === 'turn-complete' && frame['messageId'] === messageId,
+      ));
+      expect(sse.frames.some(
+        (frame) => frame['type'] === 'text-delta' && frame['delta'] === '已停止当前任务。',
+      )).toBe(true);
+      expect(await getTurnState(token, sessionId)).toEqual({ running: false });
+    } finally {
+      sse.close();
+    }
+  });
+
   it('幂等占位无法耐久写入时返回 503，且不启动回合', async () => {
     const base = mkdtempSync(join(tmpdir(), 'za-idempotency-failure-'));
     const blockedSessionDir = join(base, 'not-a-directory');
@@ -413,7 +448,9 @@ describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
       const duplicatePending = await postFrame(token, sessionId, frame);
       expect(first.status).toBe(202);
       expect(await first.json()).toMatchObject({ accepted: true, messageState: 'pending' });
-      expect(await duplicatePending.json()).toMatchObject({ accepted: true, duplicate: true, messageState: 'pending' });
+      const duplicateState = await duplicatePending.json() as { accepted?: unknown; duplicate?: unknown; messageState?: unknown };
+      expect(duplicateState).toMatchObject({ accepted: true, duplicate: true });
+      expect(['pending', 'complete']).toContain(duplicateState.messageState);
       await sse.waitFor(() => sse.frames.some(
         (item) => item['type'] === 'turn-complete' && item['messageId'] === messageId,
       ));

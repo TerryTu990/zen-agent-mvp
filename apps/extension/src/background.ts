@@ -601,6 +601,22 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     return (await deliver(message)).accepted;
   }
 
+  async function stopTurn(messageId: string): Promise<boolean> {
+    const session = await ensureSession();
+    if (session === null) return false;
+    try {
+      const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/stop`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${session.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ messageId }),
+      });
+      if (response.status === 401 || response.status === 404) await invalidateSession();
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
   async function deliver(message: UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage): Promise<MessageDeliveryResult> {
     const session = await ensureSession();
     if (session === null) return { accepted: false, ...lastSessionFailure };
@@ -809,11 +825,20 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         return;
       }
       if (message.kind === 'stop-operation') {
+        const messageId = message.messageId;
         void chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
-        postStatus('已停止当前操作并关闭闲鱼自动履约扫描。');
         for (const member of contentMembers.targets('active-page')) {
           postContent(member, { kind: 'stop-operation' });
         }
+        if (messageId === undefined) {
+          postStatus('已停止当前页面操作并关闭闲鱼自动履约扫描。');
+          postToPanels({ kind: 'stop-result', accepted: true });
+          return;
+        }
+        void stopTurn(messageId).then((accepted) => {
+          postStatus(accepted ? '已停止当前任务。' : '停止请求未被服务端接受，请稍后重试。');
+          postToPanels({ kind: 'stop-result', messageId, accepted });
+        });
         return;
       }
       if (message.kind === 'user-message') {
@@ -943,7 +968,7 @@ async function sendActivate(tabId: number): Promise<void> {
 /** 新建 zen 标签页组并命名（同 origin 多组各自独立）；返回新组 id。 */
 async function createZenGroup(tabId: number): Promise<number> {
   const groupId = await chrome.tabs.group({ tabIds: tabId });
-  await chrome.tabGroups.update(groupId, { title: 'commerce', color: 'purple' }).catch(() => {});
+  await chrome.tabGroups.update(groupId, { title: 'Zen', color: 'purple' }).catch(() => {});
   return groupId;
 }
 

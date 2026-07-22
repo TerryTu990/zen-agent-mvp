@@ -134,6 +134,7 @@ export function startSidePanel(elements: SidePanelElements): void {
   let deliveryAwaiting = false;
   let activeMessageId: string | null = null;
   const completedMessageIds = new Set<string>();
+  const stoppedMessageIds = new Set<string>();
 
   const deliveryFailureMessage = (failure: MessageDeliveryFailure | undefined, httpStatus: number | undefined): string => {
     switch (failure) {
@@ -160,11 +161,17 @@ export function startSidePanel(elements: SidePanelElements): void {
 
   const isBusy = (): boolean => submitting || deliveryAwaiting || turnInProgress || operationRunning || hitlPending;
 
+  const scrollMessagesToLatest = (): void => {
+    window.requestAnimationFrame(() => {
+      elements.messages.scrollTop = elements.messages.scrollHeight;
+    });
+  };
+
   const updateComposer = (): void => {
     const busy = isBusy();
     elements.input.disabled = !ready || submitting;
     elements.upload.disabled = !ready || busy;
-    const mode = operationRunning && !stopRequested ? 'stop' : busy ? 'waiting' : 'send';
+    const mode = busy && !stopRequested ? 'stop' : busy ? 'waiting' : 'send';
     elements.action.disabled = !ready || mode === 'waiting' || (mode === 'send' && elements.input.value.trim() === '' && selectedFiles.length === 0);
     elements.action.dataset['mode'] = mode;
     elements.action.setAttribute('aria-label', mode === 'stop' ? '停止当前操作' : mode === 'waiting' ? '正在处理' : '发送消息');
@@ -183,6 +190,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     deliveryAwaiting = false;
     activeMessageId = null;
     completedMessageIds.clear();
+    stoppedMessageIds.clear();
     ui.hideThinking();
     updateComposer();
   };
@@ -238,6 +246,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     if (event.kind === 'status') {
       ui.showStatus(event.message);
     } else if (event.kind === 'user-echo') {
+      const stopped = event.messageId !== undefined && stoppedMessageIds.delete(event.messageId);
       if (event.messageId !== undefined && event.messageId === pendingMessageId) {
         submitting = false;
         deliveryAwaiting = false;
@@ -247,8 +256,8 @@ export function startSidePanel(elements: SidePanelElements): void {
         selectedFiles = [];
         renderAttachments();
       }
-      activeMessageId = event.messageId ?? null;
-      turnInProgress = event.messageId === undefined || !completedMessageIds.has(event.messageId);
+      activeMessageId = stopped ? null : (event.messageId ?? null);
+      turnInProgress = !stopped && (event.messageId === undefined || !completedMessageIds.has(event.messageId));
       ui.appendUserMessage(event.text);
       if (turnInProgress) ui.showThinking();
       updateComposer();
@@ -281,6 +290,7 @@ export function startSidePanel(elements: SidePanelElements): void {
         send({ kind: 'hitl-decision', hitlId: frame.hitlId, decision });
       });
     }
+    scrollMessagesToLatest();
   };
 
   const routeMessage = (raw: unknown): void => {
@@ -338,11 +348,36 @@ export function startSidePanel(elements: SidePanelElements): void {
         elements.composerNotice.textContent = `${deliveryFailureMessage(message.failure, message.httpStatus)}；草稿仍保留`;
       }
       updateComposer();
+    } else if (message.kind === 'stop-result') {
+      if (!message.accepted) {
+        stopRequested = false;
+        elements.composerNotice.textContent = '停止请求未被接受，请重试';
+        updateComposer();
+      } else {
+        if (message.messageId !== undefined) stoppedMessageIds.add(message.messageId);
+        submitting = false;
+        deliveryAwaiting = false;
+        turnInProgress = false;
+        operationRunning = false;
+        stopRequested = false;
+        hitlPending = false;
+        runningTools.clear();
+        pendingMessage = null;
+        pendingMessageId = null;
+        activeMessageId = null;
+        elements.input.value = '';
+        selectedFiles = [];
+        renderAttachments();
+        ui.hideThinking();
+        elements.composerNotice.textContent = '当前任务已停止';
+        updateComposer();
+      }
     } else if (message.kind === 'hitl-result') {
       if (!message.accepted) elements.composerNotice.textContent = '确认结果未送达，确认卡已恢复，请重试';
     } else {
       renderUiEvent(message);
     }
+    scrollMessagesToLatest();
   };
 
   const announceBrowsingContext = async (): Promise<void> => {
@@ -411,6 +446,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       deliveryAwaiting = true;
       elements.composerNotice.textContent = '';
       ui.showThinking();
+      scrollMessagesToLatest();
       if (!send(pendingMessage)) {
         submitting = false;
         deliveryAwaiting = false;
@@ -426,6 +462,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     elements.composerNotice.textContent = '';
     clearEmpty();
     ui.showThinking();
+    scrollMessagesToLatest();
     updateComposer();
     let prepared: Awaited<ReturnType<typeof prepareAttachments>>;
     try {
@@ -463,8 +500,9 @@ export function startSidePanel(elements: SidePanelElements): void {
     updateComposer();
   };
   elements.action.addEventListener('click', () => {
-    if (operationRunning && !stopRequested) {
-      if (send({ kind: 'stop-operation' })) {
+    if (isBusy() && !stopRequested) {
+      const messageId = activeMessageId ?? pendingMessageId;
+      if (send({ kind: 'stop-operation', ...(messageId !== null ? { messageId } : {}) })) {
         stopRequested = true;
         updateComposer();
       }

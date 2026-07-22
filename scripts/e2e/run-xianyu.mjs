@@ -306,6 +306,9 @@ async function main() {
     const panel = await context.newPage();
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     await panel.locator('#za-input:not([disabled])').waitFor({ timeout: 10_000 });
+    const taskGroups = await sw.evaluate(() => chrome.tabGroups.query({}));
+    assert(taskGroups.some((group) => group.title === 'Zen'), '任务标签分组名称必须为 Zen');
+    assert(!taskGroups.some((group) => group.title?.toLowerCase() === 'commerce'), '任务标签分组名称不应为 commerce');
     await panel.getByLabel('执行偏好').selectOption('dom-only');
 
     console.log('[4/5] happy path：发货确认 → 卡密消息回执 → sent…');

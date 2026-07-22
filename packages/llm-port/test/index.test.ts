@@ -247,6 +247,30 @@ describe('createLlmPort · 网络瞬时失败重试', () => {
     expect(done.stopReason).toBe('error');
     expect(done.error).toContain('500');
   });
+
+  it('按 requestId 取消流式调用，AbortError 不触发网络重试', async () => {
+    pointAtMock();
+    let calls = 0;
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      calls += 1;
+      started();
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+      });
+    };
+    const cancellable = retryPort(fetchImpl);
+    const eventsPromise = collect(cancellable.chat({
+      requestId: 'cancel-me',
+      messages: [{ role: 'user', content: 'hi' }],
+    }));
+    await startedPromise;
+    cancellable.cancel?.('cancel-me');
+    const events = await eventsPromise;
+    expect(calls).toBe(1);
+    expect(doneOf(events)).toMatchObject({ stopReason: 'error', error: '上游请求失败（AbortError）' });
+  });
 });
 
 describe('createLlmPort · tool_calls 增量聚合', () => {

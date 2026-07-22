@@ -59,7 +59,7 @@ export type SidePanelToBackgroundMessage =
   | { kind: 'browsing-context'; groupId: number; url?: string; title?: string }
   | { kind: 'user-message'; messageId: string; text: string; displayText?: string; executionPreference: ExecutionPreference }
   | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
-  | { kind: 'stop-operation' }
+  | { kind: 'stop-operation'; messageId?: string }
   | { kind: 'ping' };
 
 export type BackgroundToSidePanelMessage =
@@ -75,6 +75,7 @@ export type BackgroundToSidePanelMessage =
       httpStatus?: number;
     }
   | { kind: 'hitl-result'; hitlId: string; accepted: boolean }
+  | { kind: 'stop-result'; messageId?: string; accepted: boolean }
   | { kind: 'operation-state'; running: boolean }
   | {
       kind: 'task-context';

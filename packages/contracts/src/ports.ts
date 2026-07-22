@@ -494,6 +494,8 @@ export interface LlmToolSpec {
 export interface LlmChatRequest {
   /** 省略 = 实现侧默认 provider/model（白名单内）。 */
   model?: string;
+  /** 可选调用标识；调用方可用同一 JSON 标识请求取消仍在流式输出的调用。 */
+  requestId?: string;
   messages: LlmMessage[];
   tools?: LlmToolSpec[];
 }
@@ -513,6 +515,8 @@ export type LlmStreamEvent =
 
 export interface LlmPort {
   chat(request: LlmChatRequest): AsyncIterable<LlmStreamEvent>;
+  /** 取消对应流式调用；未知或已结束 requestId 无操作。 */
+  cancel?(requestId: string): void;
 }
 
 // ---- AuditPort（⑦观测审计：record-only 旁路）----

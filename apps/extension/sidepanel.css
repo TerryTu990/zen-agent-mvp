@@ -21,12 +21,14 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #za-sidepanel { min-width: 280px; min-height: 100%; margin: 0; }
+html, body, #za-sidepanel { min-width: 280px; height: 100%; min-height: 0; margin: 0; overflow: hidden; }
 button, textarea, select { font: inherit; }
 button { cursor: pointer; }
 
 .za-shell {
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(220px, 1fr) auto;
   background: radial-gradient(circle at 100% 0, rgba(200, 145, 61, .08), transparent 28%), var(--paper);
@@ -59,6 +61,7 @@ button { cursor: pointer; }
 }
 
 [data-za-messages] {
+  min-height: 0;
   overflow-y: auto;
   padding: 22px 16px 18px;
   display: flex;
@@ -111,7 +114,7 @@ button { cursor: pointer; }
 .za-thinking-dots i:nth-child(2) { animation-delay: .14s; }
 .za-thinking-dots i:nth-child(3) { animation-delay: .28s; }
 
-.za-composer { padding: 10px 6px 14px; background: rgba(251, 250, 247, .93); backdrop-filter: blur(12px); }
+.za-composer { padding: 10px 6px 8px; background: rgba(251, 250, 247, .93); backdrop-filter: blur(12px); }
 .za-composer-surface { padding: 12px 12px 10px; border: 1px solid #d5d0c8; border-radius: 24px; background: rgba(255, 255, 255, .92); box-shadow: 0 8px 30px rgba(38, 34, 56, .08), inset 0 1px rgba(255, 255, 255, .9); transition: border-color .18s ease, box-shadow .18s ease; }
 .za-composer-surface:focus-within { border-color: #a8a1b7; box-shadow: 0 10px 32px rgba(38, 34, 56, .11), 0 0 0 3px rgba(88, 80, 129, .08); }
 .za-composer-surface[data-za-composer-state="busy"] { border-color: #c4b89f; }

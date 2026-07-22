@@ -31,9 +31,11 @@ async function main() {
   let context;
   let authServer;
   let nextFrameStatus = 401;
+  let holdNextTurn = false;
   let sessionSequence = 0;
   const eventStreams = new Map();
   const frameRequests = [];
+  const stopRequests = [];
   try {
     if (process.env.ZA_EXTENSION_E2E_DIR === undefined) {
       console.log('[1/3] 构建 extension…');
@@ -84,6 +86,19 @@ async function main() {
         return;
       }
       const match = /^\/v1\/sessions\/([^/]+)\/(events|frames)$/.exec(req.url ?? '');
+      const stopMatch = /^\/v1\/sessions\/([^/]+)\/stop$/.exec(req.url ?? '');
+      if (stopMatch && req.method === 'POST') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        const request = JSON.parse(body);
+        stopRequests.push({ sessionId: stopMatch[1], messageId: request.messageId });
+        res.writeHead(202, headers);
+        res.end('{"accepted":true}');
+        eventStreams.get(stopMatch[1])?.write(`data: ${JSON.stringify({
+          type: 'turn-complete', sessionId: stopMatch[1], messageId: request.messageId, idle: true,
+        })}\n\n`);
+        return;
+      }
       if (match?.[2] === 'events' && req.method === 'GET') {
         const sessionId = match[1];
         res.writeHead(200, {
@@ -110,7 +125,14 @@ async function main() {
           : status === 409
             ? '{"error":"fixture-interrupted","messageState":"interrupted","idle":true}'
             : JSON.stringify({ error: `fixture-${status}` }));
-        if (status === 202) {
+        if (status === 202 && holdNextTurn) {
+          holdNextTurn = false;
+          for (let index = 1; index <= 36; index += 1) {
+            eventStreams.get(match[1])?.write(`data: ${JSON.stringify({
+              type: 'text-delta', sessionId: match[1], delta: `持续回复第 ${index} 行。\n`,
+            })}\n\n`);
+          }
+        } else if (status === 202) {
           eventStreams.get(match[1])?.write(`data: ${JSON.stringify({
             type: 'turn-complete', sessionId: match[1], messageId: frame.messageId, idle: true,
           })}\n\n`);
@@ -196,6 +218,29 @@ async function main() {
     await panel.getByText('验证服务重启中断', { exact: false }).waitFor();
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '中断后重新提交未成功');
     assert(frameRequests[4]?.messageId !== frameRequests[5]?.messageId, '中断后重新提交没有生成新的 messageId');
+
+    await panel.setViewportSize({ width: 320, height: 520 });
+    const composerBottomBefore = await panel.locator('.za-composer').evaluate((element) => element.getBoundingClientRect().bottom);
+    holdNextTurn = true;
+    await panel.getByLabel('给 Zen 发送消息').fill('验证停止与自动滚动');
+    await panel.getByRole('button', { name: '发送消息' }).click();
+    const stopButton = panel.locator('[data-za-action][data-mode="stop"]:not([disabled])');
+    await stopButton.waitFor({ state: 'visible' });
+    assert(await stopButton.locator('.za-stop-icon').isVisible(), '停止状态未显示图标');
+    await panel.getByText('持续回复第 36 行。', { exact: false }).waitFor();
+    const scrollState = await panel.locator('[data-za-messages]').evaluate((element) => ({
+      scrollTop: element.scrollTop,
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    }));
+    assert(scrollState.scrollTop > 0, '长回复没有让消息区向上滚动');
+    assert(scrollState.scrollTop + scrollState.clientHeight >= scrollState.scrollHeight - 2, '消息区没有自动滚动到最新回复');
+    const composerBottomAfter = await panel.locator('.za-composer').evaluate((element) => element.getBoundingClientRect().bottom);
+    assert(Math.abs(composerBottomAfter - composerBottomBefore) < 1, '长回复把底部输入框撑开或推离固定位置');
+    await stopButton.click();
+    await panel.getByText('当前任务已停止', { exact: true }).waitFor();
+    await panel.locator('[data-za-action][data-mode="send"]').waitFor({ state: 'visible' });
+    assert(stopRequests.at(-1)?.messageId === frameRequests.at(-1)?.messageId, '停止请求未绑定当前消息编号');
     const observed = await panel.evaluate(() => globalThis.__zaObservedComposerState);
     assert(observed.waiting, '发送后合并按钮未进入处理中状态');
     assert(observed.thinking, '发送后未即时显示思考中状态');

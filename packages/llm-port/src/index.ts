@@ -23,11 +23,33 @@ export function createLlmPort(options: LlmPortOptions): LlmPort {
     fetchImpl: options.fetchImpl ?? fetch,
     retryDelayMs: options.retryDelayMs ?? 300,
   };
+  const active = new Map<string, AbortController>();
   return {
     chat(request) {
-      return chatStream(config, request);
+      if (request.requestId === undefined) return chatStream(config, request);
+      const controller = new AbortController();
+      active.set(request.requestId, controller);
+      return trackedChatStream(config, request, controller.signal, () => {
+        if (active.get(request.requestId!) === controller) active.delete(request.requestId!);
+      });
+    },
+    cancel(requestId) {
+      active.get(requestId)?.abort();
     },
   };
+}
+
+async function* trackedChatStream(
+  config: ChatConfig,
+  request: LlmChatRequest,
+  signal: AbortSignal,
+  cleanup: () => void,
+): AsyncGenerator<LlmStreamEvent> {
+  try {
+    yield* chatStream(config, request, signal);
+  } finally {
+    cleanup();
+  }
 }
 
 function doneError(error: string, errorKind?: 'invalid-tool-args'): LlmStreamEvent {
@@ -74,6 +96,7 @@ function parseUsage(data: string): LlmUsage | undefined {
 async function* chatStream(
   config: ChatConfig,
   request: LlmChatRequest,
+  signal?: AbortSignal,
 ): AsyncGenerator<LlmStreamEvent> {
   let provider = DEFAULT_PROVIDER;
   let model = request.model;
@@ -117,6 +140,7 @@ async function* chatStream(
       method: 'POST',
       headers: buildHeaders(),
       body: JSON.stringify(buildBody(model, request)),
+      ...(signal !== undefined ? { signal } : {}),
     });
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
@@ -194,7 +218,8 @@ async function fetchWithOneRetry(
 ): Promise<Response> {
   try {
     return await config.fetchImpl(url, init);
-  } catch {
+  } catch (cause) {
+    if (init.signal?.aborted) throw cause;
     await new Promise((resolve) => setTimeout(resolve, config.retryDelayMs));
     return config.fetchImpl(url, init);
   }
