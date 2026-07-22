@@ -94,13 +94,15 @@ async function main() {
         stopRequests.push({ sessionId: stopMatch[1], messageId: request.messageId });
         res.writeHead(202, headers);
         res.end('{"accepted":true}');
-        eventStreams.get(stopMatch[1])?.write(`data: ${JSON.stringify({
-          type: 'hitl-request', sessionId: stopMatch[1], hitlId: 'late-hitl', toolCallId: 'late-tool',
-          toolId: 'late-tool', params: {}, reason: '停止后迟到的授权卡',
-        })}\n\n`);
-        eventStreams.get(stopMatch[1])?.write(`data: ${JSON.stringify({
-          type: 'turn-complete', sessionId: stopMatch[1], messageId: request.messageId, idle: true,
-        })}\n\n`);
+        if (frameRequests.some((frame) => frame.messageId === request.messageId)) {
+          eventStreams.get(stopMatch[1])?.write(`data: ${JSON.stringify({
+            type: 'hitl-request', sessionId: stopMatch[1], hitlId: 'late-hitl', toolCallId: 'late-tool',
+            toolId: 'late-tool', params: {}, reason: '停止后迟到的授权卡',
+          })}\n\n`);
+          eventStreams.get(stopMatch[1])?.write(`data: ${JSON.stringify({
+            type: 'turn-complete', sessionId: stopMatch[1], messageId: request.messageId, idle: true,
+          })}\n\n`);
+        }
         return;
       }
       if (match?.[2] === 'events' && req.method === 'GET') {

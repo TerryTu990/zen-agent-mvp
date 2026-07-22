@@ -664,20 +664,17 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         ? payload.messageState
         : undefined;
       if (message.kind === 'user-message' || message.kind === 'auto-scan') {
+        const turnId = message.kind === 'auto-scan' ? message.automationRunId : message.messageId;
         if (messageState === 'complete') {
-          if ('messageId' in message) {
-            postFrame('panel', {
-              type: 'turn-complete',
-              sessionId: session.sessionId,
-              messageId: message.messageId,
-              idle: payload.idle === true,
-            });
-          }
-        } else if ('messageId' in message) {
-          if (completedTurnIds.has(message.messageId)) completedTurnIds.delete(message.messageId);
-          else activeTurnIds.add(message.messageId);
+          postFrame('panel', {
+            type: 'turn-complete',
+            sessionId: session.sessionId,
+            messageId: turnId,
+            idle: payload.idle === true,
+          });
         } else {
-          anonymousTurns += 1;
+          if (completedTurnIds.has(turnId)) completedTurnIds.delete(turnId);
+          else activeTurnIds.add(turnId);
         }
       }
       return {
@@ -843,7 +840,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           postToPanels({ kind: 'stop-result', accepted: true });
           return;
         }
-        suppressedTurnId = messageId;
+        if (activeTurnIds.has(messageId)) suppressedTurnId = messageId;
         void stopTurn(messageId).then((accepted) => {
           if (!accepted && suppressedTurnId === messageId) suppressedTurnId = null;
           if (accepted) {

@@ -377,8 +377,6 @@ interface SessionRuntime {
   cancelledMessageIds: Set<string>;
   /** 串行链上当前真正执行的消息编号。 */
   runningMessageId: string | null;
-  /** 可中断的非 LLM 长等待；messageId → 取消信号。 */
-  cancelWaiters: Map<string, () => void>;
   /** HITL 挂起等待器：hitlId → resolver；hitl-decision 到达时解析，回合恢复。 */
   pendingHitl: Map<string, (decision: HitlDecisionValue) => void>;
   /** 代执行挂起等待器：nonce → resolver；exec-result 到达时解析，回合恢复。 */
@@ -471,7 +469,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
         activeMessageIds: new Set(),
         cancelledMessageIds: new Set(),
         runningMessageId: null,
-        cancelWaiters: new Map(),
         pendingHitl: new Map(),
         pendingExec: new Map(),
         pendingSnapshot: new Map(),
@@ -860,39 +857,20 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const { sessionId } = session;
     const runtime = runtimeOf(sessionId);
     const cancelled = (): boolean => messageId !== undefined && runtime.cancelledMessageIds.has(messageId);
-    const cancellation = messageId === undefined
-      ? new Promise<void>(() => {})
-      : new Promise<void>((resolve) => {
-          if (cancelled()) resolve();
-          else runtime.cancelWaiters.set(messageId, resolve);
-        });
     const llmRequestId = messageId === undefined ? undefined : `${sessionId}:${messageId}`;
-    const cancellablePreparation = async <T extends { ok: boolean; intentId?: string }>(
-      operation: Promise<T>,
-    ): Promise<{ value: T | null; stopped: boolean }> => {
-      const outcome = await Promise.race([
-        operation.then((value) => ({ kind: 'value' as const, value })),
-        cancellation.then(() => ({ kind: 'cancelled' as const })),
-      ]);
-      if (outcome.kind === 'cancelled') {
-        void operation.then(async (value) => {
-          if (value.ok && value.intentId !== undefined && deps.fulfillment !== undefined) {
-            await deps.fulfillment.settle({ intentId: value.intentId, outcome: 'manual', note: 'user-stopped' });
-          }
-        }).catch(() => {});
-        return { value: null, stopped: true };
+    const settleCancelledPreparation = async (
+      prepared: { ok: boolean; intentId?: string } | null,
+    ): Promise<boolean> => {
+      if (prepared?.ok !== true || prepared.intentId === undefined || deps.fulfillment === undefined) return true;
+      try {
+        return (await deps.fulfillment.settle({
+          intentId: prepared.intentId,
+          outcome: 'manual',
+          note: 'user-stopped',
+        })).ok;
+      } catch {
+        return false;
       }
-      if (cancelled()) {
-        if (outcome.value.ok && outcome.value.intentId !== undefined && deps.fulfillment !== undefined) {
-          await deps.fulfillment.settle({
-            intentId: outcome.value.intentId,
-            outcome: 'manual',
-            note: 'user-stopped',
-          }).catch(() => ({ ok: false }));
-        }
-        return { value: null, stopped: true };
-      }
-      return { value: outcome.value, stopped: false };
     };
     const preferenceInstruction = executionPreferenceInstruction(executionPreference);
     const withPreference = (content: string): string =>
@@ -1176,16 +1154,17 @@ export function createGateway(deps: GatewayDeps): Gateway {
               params: call.params,
               now: Date.now(),
             });
-            if (derived !== null) {
-              const outcome = await cancellablePreparation(deps.fulfillment.prepare(derived));
-              prepared = outcome.value;
-              preparationStopped = outcome.stopped;
-            }
+            if (derived !== null) prepared = await deps.fulfillment.prepare(derived);
           } catch {
             prepared = null;
           }
         }
-        if (cancelled()) preparationStopped = true;
+        if (cancelled()) {
+          preparationStopped = true;
+          if (!(await settleCancelledPreparation(prepared))) {
+            notify(sessionId, '停止后的库存回填失败，自动履约已暂停，请人工核对。');
+          }
+        }
         if (preparationStopped) {
           broadcast(sessionId, {
             type: 'tool-card', sessionId, toolCallId: call.toolCallId,
@@ -1245,16 +1224,17 @@ export function createGateway(deps: GatewayDeps): Gateway {
               claims, context, boundedTools, evidenceRules,
               productKeys: deps.fulfillmentProductKeys, params: call.params, now: Date.now(),
             });
-            if (derived !== null) {
-              const outcome = await cancellablePreparation(deps.fulfillment.prepareShipment(derived));
-              prepared = outcome.value;
-              preparationStopped = outcome.stopped;
-            }
+            if (derived !== null) prepared = await deps.fulfillment.prepareShipment(derived);
           } catch {
             prepared = null;
           }
         }
-        if (cancelled()) preparationStopped = true;
+        if (cancelled()) {
+          preparationStopped = true;
+          if (!(await settleCancelledPreparation(prepared))) {
+            notify(sessionId, '停止后的库存回填失败，自动履约已暂停，请人工核对。');
+          }
+        }
         if (preparationStopped) {
           broadcast(sessionId, {
             type: 'tool-card', sessionId, toolCallId: call.toolCallId,
@@ -1653,7 +1633,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
           })
           .finally(() => {
             if (runtime.runningMessageId === (upstream.messageId ?? null)) runtime.runningMessageId = null;
-            if (upstream.messageId !== undefined) runtime.cancelWaiters.delete(upstream.messageId);
             runtime.pendingTurns = Math.max(0, runtime.pendingTurns - 1);
             if (upstream.messageId !== undefined) {
               runtime.activeMessageIds.delete(upstream.messageId);
@@ -1735,7 +1714,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (oldest !== undefined) runtime.cancelledMessageIds.delete(oldest);
     }
     deps.llm.cancel(`${session.sessionId}:${messageId}`);
-    runtime.cancelWaiters.get(messageId)?.();
     if (runtime.runningMessageId === messageId) {
       for (const [hitlId, resolve] of [...runtime.pendingHitl]) {
         runtime.pendingHitl.delete(hitlId);
