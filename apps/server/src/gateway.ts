@@ -490,6 +490,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
   const notify = (sessionId: string, notice: string): void => {
     broadcast(sessionId, { type: 'text-delta', sessionId, delta: notice });
   };
+  const notifySafety = (sessionId: string, notice: string): void => {
+    broadcast(sessionId, { type: 'text-delta', sessionId, delta: notice, priority: 'safety' });
+  };
 
   /**
    * 记一条审计事件（record-only 旁路，U6/C5）：网关只传 schema 允许字段（不含实参/响应体/签名/secret），
@@ -1162,7 +1165,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         if (cancelled()) {
           preparationStopped = true;
           if (!(await settleCancelledPreparation(prepared))) {
-            notify(sessionId, '停止后的库存回填失败，自动履约已暂停，请人工核对。');
+            notifySafety(sessionId, '停止后的库存回填失败，自动履约已暂停，请人工核对。');
           }
         }
         if (preparationStopped) {
@@ -1232,7 +1235,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         if (cancelled()) {
           preparationStopped = true;
           if (!(await settleCancelledPreparation(prepared))) {
-            notify(sessionId, '停止后的库存回填失败，自动履约已暂停，请人工核对。');
+            notifySafety(sessionId, '停止后的库存回填失败，自动履约已暂停，请人工核对。');
           }
         }
         if (preparationStopped) {

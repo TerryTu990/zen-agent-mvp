@@ -115,6 +115,8 @@ export interface TextDeltaFrame {
   type: 'text-delta';
   sessionId: string;
   delta: string;
+  /** 停止后仍须呈现的人工核对告警；仅服务端赋值。 */
+  priority?: 'safety';
 }
 
 export interface TurnCompleteFrame {

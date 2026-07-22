@@ -32,10 +32,15 @@ async function main() {
   let authServer;
   let nextFrameStatus = 401;
   let holdNextTurn = false;
+  let delayNextFrameResponse = false;
+  let releaseDelayedFrameResponse = null;
+  let delayedFrameStatus = null;
   let sessionSequence = 0;
   const eventStreams = new Map();
   const frameRequests = [];
   const stopRequests = [];
+  const fixtureActiveTurnIds = new Set();
+  let safetyAlertsEmitted = 0;
   try {
     if (process.env.ZA_EXTENSION_E2E_DIR === undefined) {
       console.log('[1/3] 构建 extension…');
@@ -94,14 +99,21 @@ async function main() {
         stopRequests.push({ sessionId: stopMatch[1], messageId: request.messageId });
         res.writeHead(202, headers);
         res.end('{"accepted":true}');
-        if (frameRequests.some((frame) => frame.messageId === request.messageId)) {
+        if (fixtureActiveTurnIds.has(request.messageId)) {
+          fixtureActiveTurnIds.delete(request.messageId);
+          safetyAlertsEmitted += 1;
           eventStreams.get(stopMatch[1])?.write(`data: ${JSON.stringify({
             type: 'hitl-request', sessionId: stopMatch[1], hitlId: 'late-hitl', toolCallId: 'late-tool',
             toolId: 'late-tool', params: {}, reason: '停止后迟到的授权卡',
           })}\n\n`);
           eventStreams.get(stopMatch[1])?.write(`data: ${JSON.stringify({
+            type: 'text-delta', sessionId: stopMatch[1], delta: '停止后安全告警测试', priority: 'safety',
+          })}\n\n`);
+          eventStreams.get(stopMatch[1])?.write(`data: ${JSON.stringify({
             type: 'turn-complete', sessionId: stopMatch[1], messageId: request.messageId, idle: true,
           })}\n\n`);
+          releaseDelayedFrameResponse?.();
+          releaseDelayedFrameResponse = null;
         }
         return;
       }
@@ -125,6 +137,14 @@ async function main() {
         frameRequests.push({ sessionId: match[1], authorization: req.headers.authorization, messageId: frame.messageId });
         const status = nextFrameStatus;
         nextFrameStatus = 202;
+        if (status === 202 && typeof frame.messageId === 'string') fixtureActiveTurnIds.add(frame.messageId);
+        if (delayNextFrameResponse) {
+          delayNextFrameResponse = false;
+          delayedFrameStatus = status;
+          await new Promise((resolveDelay) => {
+            releaseDelayedFrameResponse = resolveDelay;
+          });
+        }
         res.writeHead(status, headers);
         res.end(status === 202
           ? '{"accepted":true,"messageState":"pending","idle":false}'
@@ -142,6 +162,7 @@ async function main() {
           eventStreams.get(match[1])?.write(`data: ${JSON.stringify({
             type: 'turn-complete', sessionId: match[1], messageId: frame.messageId, idle: true,
           })}\n\n`);
+          fixtureActiveTurnIds.delete(frame.messageId);
         }
         return;
       }
@@ -224,6 +245,22 @@ async function main() {
     await panel.getByText('验证服务重启中断', { exact: false }).waitFor();
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '中断后重新提交未成功');
     assert(frameRequests[4]?.messageId !== frameRequests[5]?.messageId, '中断后重新提交没有生成新的 messageId');
+
+    delayNextFrameResponse = true;
+    const framesBeforeInflightStop = frameRequests.length;
+    await panel.getByLabel('给 Zen 发送消息').fill('验证投递响应返回前立即停止');
+    await panel.getByRole('button', { name: '发送消息' }).click();
+    for (let attempt = 0; attempt < 50 && frameRequests.length === framesBeforeInflightStop; attempt += 1) {
+      await panel.waitForTimeout(10);
+    }
+    assert(frameRequests.length > framesBeforeInflightStop, '未进入 /frames 已接受但响应未返回的测试窗口');
+    await panel.locator('[data-za-action][data-mode="stop"]:not([disabled])').click();
+    await panel.getByText('当前任务已停止', { exact: true }).waitFor();
+    await panel.waitForTimeout(400);
+    assert(safetyAlertsEmitted > 0, `测试夹具未命中服务端已接受但响应未返回的活动回合（status=${delayedFrameStatus}）`);
+    const inflightHitlCards = await panel.locator('[data-za-hitl]').allTextContents();
+    assert(inflightHitlCards.length === 0, `投递在途时停止仍渲染了迟到 HITL 卡片：${inflightHitlCards.join('|')}`);
+    assert((await panel.getByText('停止后安全告警测试', { exact: false }).count()) > 0, '停止期间安全告警被错误过滤');
 
     await panel.evaluate(() => {
       const original = File.prototype.text;

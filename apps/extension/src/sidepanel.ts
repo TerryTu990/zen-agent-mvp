@@ -516,7 +516,8 @@ export function startSidePanel(elements: SidePanelElements): void {
   };
   elements.action.addEventListener('click', () => {
     if (isBusy() && !stopRequested) {
-      const messageId = activeMessageId ?? pendingMessageId;
+      // 投递响应返回前 activeMessageId 仍可能指向上一回合；当前待投递编号优先。
+      const messageId = pendingMessageId ?? activeMessageId;
       if (send({ kind: 'stop-operation', ...(messageId !== null ? { messageId } : {}) })) {
         if (preparingMessageId === messageId) preparingMessageId = null;
         stopRequested = true;

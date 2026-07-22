@@ -117,7 +117,12 @@
       "properties": {
         "type": { "const": "text-delta" },
         "sessionId": { "$ref": "#/$defs/sessionId" },
-        "delta": { "type": "string" }
+        "delta": { "type": "string" },
+        "priority": {
+          "$comment": "safety 表示停止后仍须呈现的人工核对告警；仅服务端赋值。",
+          "type": "string",
+          "const": "safety"
+        }
       }
     },
     "turnComplete": {

@@ -105,6 +105,7 @@ export interface TextDeltaFrame {
   type: 'text-delta';
   sessionId: string;
   delta: string;
+  priority?: 'safety';
 }
 
 export interface TurnCompleteFrame {

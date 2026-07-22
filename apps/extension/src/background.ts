@@ -164,6 +164,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   let sessionGeneration = 0;
   const activeReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
   const activeTurnIds = new Set<string>();
+  const inflightTurnIds = new Set<string>();
   const completedTurnIds = new Set<string>();
   let anonymousTurns = 0;
   let deliveryRequests = 0;
@@ -215,8 +216,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     if (suppressedTurnId !== null) {
       const stoppedTurnCompleted = frame.type === 'turn-complete' &&
         (frame.idle || frame.messageId === suppressedTurnId);
-      if (!stoppedTurnCompleted) return;
-      suppressedTurnId = null;
+      const safetyAlert = frame.type === 'text-delta' && frame.priority === 'safety';
+      if (!stoppedTurnCompleted && !safetyAlert) return;
+      if (stoppedTurnCompleted) suppressedTurnId = null;
     }
     if (frame.type === 'turn-complete') {
       if (frame.messageId !== undefined) {
@@ -629,6 +631,12 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     const session = await ensureSession();
     if (session === null) return { accepted: false, ...lastSessionFailure };
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
+    const turnId = message.kind === 'auto-scan'
+      ? message.automationRunId
+      : message.kind === 'user-message'
+        ? message.messageId
+        : null;
+    if (turnId !== null) inflightTurnIds.add(turnId);
     deliveryRequests += 1;
     try {
       const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/frames`, {
@@ -686,6 +694,10 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       postStatus(`无法连接 zen-agent 服务（${session.baseUrl}）`);
       return { accepted: false, failure: 'unreachable' };
     } finally {
+      if (turnId !== null) {
+        inflightTurnIds.delete(turnId);
+        if (!activeTurnIds.has(turnId) && suppressedTurnId === turnId) suppressedTurnId = null;
+      }
       deliveryRequests = Math.max(0, deliveryRequests - 1);
       void applyPendingConfiguration();
     }
@@ -840,7 +852,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           postToPanels({ kind: 'stop-result', accepted: true });
           return;
         }
-        if (activeTurnIds.has(messageId)) suppressedTurnId = messageId;
+        if (activeTurnIds.has(messageId) || inflightTurnIds.has(messageId)) suppressedTurnId = messageId;
         void stopTurn(messageId).then((accepted) => {
           if (!accepted && suppressedTurnId === messageId) suppressedTurnId = null;
           if (accepted) {
