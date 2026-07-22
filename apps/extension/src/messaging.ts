@@ -13,10 +13,10 @@ import type {
 export type SidePanelUiEvent =
   | {
       kind: 'frame';
-      frame: Extract<DownstreamFrame, { type: 'text-delta' | 'tool-card' | 'hitl-request' }>;
+      frame: Extract<DownstreamFrame, { type: 'text-delta' | 'turn-complete' | 'tool-card' | 'hitl-request' }>;
     }
   | { kind: 'status'; message: string }
-  | { kind: 'user-echo'; text: string };
+  | { kind: 'user-echo'; text: string; messageId?: string };
 
 export const SESSION_PORT_NAME = 'za-session';
 export const SIDE_PANEL_PORT_NAME = 'za-side-panel';
@@ -46,7 +46,7 @@ export type BackgroundToContentMessage =
 export type SidePanelToBackgroundMessage =
   | { kind: 'panel-bind'; groupId: number }
   | { kind: 'browsing-context'; groupId: number; url?: string; title?: string }
-  | { kind: 'user-message'; text: string; displayText?: string; executionPreference: ExecutionPreference }
+  | { kind: 'user-message'; messageId: string; text: string; displayText?: string; executionPreference: ExecutionPreference }
   | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
   | { kind: 'stop-operation' }
   | { kind: 'ping' };
@@ -55,6 +55,8 @@ export type BackgroundToSidePanelMessage =
   | SidePanelUiEvent
   | { kind: 'history-replay'; events: SidePanelUiEvent[] }
   | { kind: 'panel-ready' }
+  | { kind: 'message-result'; messageId: string; accepted: boolean }
+  | { kind: 'hitl-result'; hitlId: string; accepted: boolean }
   | { kind: 'operation-state'; running: boolean }
   | {
       kind: 'task-context';

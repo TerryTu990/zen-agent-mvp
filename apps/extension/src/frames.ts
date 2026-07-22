@@ -38,6 +38,7 @@ export interface UserMessageFrame {
   type: 'user-message';
   sessionId: string;
   text: string;
+  messageId?: string;
   executionPreference?: ExecutionPreference;
   automationRunId?: string;
 }
@@ -104,6 +105,13 @@ export interface TextDeltaFrame {
   type: 'text-delta';
   sessionId: string;
   delta: string;
+}
+
+export interface TurnCompleteFrame {
+  type: 'turn-complete';
+  sessionId: string;
+  messageId?: string;
+  idle: boolean;
 }
 
 export interface ToolCardFrame {
@@ -189,6 +197,7 @@ export interface SnapshotRequestFrame {
 
 export type DownstreamFrame =
   | TextDeltaFrame
+  | TurnCompleteFrame
   | ToolCardFrame
   | HitlRequestFrame
   | ExecInstructionFrame

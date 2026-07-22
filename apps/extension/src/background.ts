@@ -201,7 +201,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
     }
     if (route === 'panel') {
-      if (frame.type === 'text-delta' || frame.type === 'tool-card' || frame.type === 'hitl-request') {
+      if (frame.type === 'text-delta' || frame.type === 'turn-complete' || frame.type === 'tool-card' || frame.type === 'hitl-request') {
         emitUi({ kind: 'frame', frame });
       }
       return;
@@ -245,7 +245,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       const resumed: Session = { baseUrl, token, sessionId: storedId };
       const stream = await openEventStream(resumed, true);
       if (stream !== null) {
-        void drainEvents(stream);
+        await reconcileTurnState(resumed);
+        void drainEvents(resumed, stream);
         return resumed;
       }
       // 复用失败（会话已失效/服务端重启）：清存根，落到新建。
@@ -275,7 +276,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     // 先建立 SSE 订阅再返回：否则首个 user-message 触发的回合可能早于订阅注册而丢失下行帧（订阅竞态）。
     const stream = await openEventStream(session);
     if (stream === null) return null;
-    void drainEvents(stream);
+    void drainEvents(session, stream);
     return session;
   }
 
@@ -314,7 +315,38 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     return { reader: response.body.getReader(), execPublicKey, expectedSessionId: sessionId };
   }
 
-  async function drainEvents({ reader, execPublicKey, expectedSessionId }: EventStream): Promise<void> {
+  async function reconcileTurnState(session: Session): Promise<void> {
+    try {
+      const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/turn-state`, {
+        headers: { authorization: `Bearer ${session.token}` },
+        signal: abort.signal,
+      });
+      if (response.ok) {
+        const state = await response.json() as { running?: unknown };
+        if (state.running === false) {
+          postFrame('panel', { type: 'turn-complete', sessionId: session.sessionId, idle: true });
+        }
+      }
+    } catch {
+      if (abort.signal.aborted) return;
+    }
+  }
+
+  async function recoverEventStream(session: Session): Promise<void> {
+    while (!abort.signal.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const stream = await openEventStream(session, true);
+      if (stream === null) continue;
+      await reconcileTurnState(session);
+      void drainEvents(session, stream);
+      return;
+    }
+  }
+
+  async function drainEvents(
+    session: Session,
+    { reader, execPublicKey, expectedSessionId }: EventStream,
+  ): Promise<void> {
     const decoder = new TextDecoder();
     const parser = createSseParser();
     try {
@@ -371,7 +403,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         }
       }
     } catch {
-      if (!abort.signal.aborted) postStatus('事件流连接中断');
+      if (abort.signal.aborted) return;
+    }
+    if (!abort.signal.aborted) {
+      postStatus('事件流连接中断，正在重连');
+      void recoverEventStream(session);
     }
   }
 
@@ -387,6 +423,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           type: 'user-message',
           sessionId,
           text: message.text,
+          ...('messageId' in message ? { messageId: message.messageId } : {}),
           executionPreference: message.executionPreference,
         };
       case 'auto-scan':
@@ -575,9 +612,22 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         }
         return;
       }
-      if (message.kind === 'user-message') emitUi({ kind: 'user-echo', text: message.displayText ?? message.text });
+      if (message.kind === 'user-message') {
+        pipeline = pipeline.then(async () => {
+          const accepted = await forward(message);
+          if (accepted) emitUi({ kind: 'user-echo', text: message.displayText ?? message.text, messageId: message.messageId });
+          postPanel(port, { kind: 'message-result', messageId: message.messageId, accepted });
+        });
+        return;
+      }
       if (message.kind === 'hitl-decision') {
-        updateHistory((history) => removeSettledHitl(history, message.hitlId));
+        pipeline = pipeline.then(async () => {
+          const accepted = await forward(message);
+          if (accepted) updateHistory((history) => removeSettledHitl(history, message.hitlId));
+          else postPanel(port, { kind: 'history-replay', events: panelHistory });
+          postPanel(port, { kind: 'hitl-result', hitlId: message.hitlId, accepted });
+        });
+        return;
       }
       pipeline = pipeline.then(async () => { await forward(message); });
     });

@@ -10,6 +10,7 @@ export type FrameRoute = 'panel' | 'active-page';
 export function routeForFrame(frame: DownstreamFrame): FrameRoute {
   switch (frame.type) {
     case 'text-delta':
+    case 'turn-complete':
     case 'tool-card':
     case 'hitl-request':
       return 'panel';

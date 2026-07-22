@@ -141,6 +141,14 @@ async function getInjection(token: string, sessionId: string): Promise<Record<st
   return (await res.json()) as Record<string, unknown>;
 }
 
+async function getTurnState(token: string, sessionId: string): Promise<Record<string, unknown>> {
+  const res = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/turn-state`, {
+    headers: authHeaders(token),
+  });
+  expect(res.status).toBe(200);
+  return await res.json() as Record<string, unknown>;
+}
+
 interface SseHandle {
   frames: Array<Record<string, unknown>>;
   raw(): string;
@@ -339,6 +347,8 @@ describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
       });
       expect(message.status).toBe(202);
       await sse.waitFor(() => textOf(sse.frames) === REPLY_R1);
+      await sse.waitFor(() => sse.frames.some((frame) => frame['type'] === 'turn-complete'));
+      expect(await getTurnState(token, sessionId)).toEqual({ running: false });
       const deltaFrames = sse.frames.filter((frame) => frame['type'] === 'text-delta');
       expect(deltaFrames.length).toBeGreaterThanOrEqual(2);
       for (const frame of deltaFrames) {

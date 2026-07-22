@@ -11,6 +11,6 @@ describe('Side Panel shell', () => {
     expect(root.querySelector('.za-brand p')?.textContent).toBe('电商智能体');
     expect(root.textContent).not.toContain('闲鱼电商智能体');
     expect(elements.action.getAttribute('aria-label')).toBe('发送消息');
-    expect(elements.upload.getAttribute('aria-label')).toBe('上传文件');
+    expect(elements.upload.getAttribute('aria-label')).toBe('上传知识文档');
   });
 });

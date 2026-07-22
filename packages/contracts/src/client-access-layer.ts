@@ -44,6 +44,7 @@ export interface UserMessageFrame {
   type: 'user-message';
   sessionId: string;
   text: string;
+  messageId?: string;
   executionPreference?: ExecutionPreference;
   /** 插件后台生成的自动扫描轮次标识；只收紧服务端单轮预算，不授予任何执行权限。 */
   automationRunId?: string;
@@ -114,6 +115,13 @@ export interface TextDeltaFrame {
   type: 'text-delta';
   sessionId: string;
   delta: string;
+}
+
+export interface TurnCompleteFrame {
+  type: 'turn-complete';
+  sessionId: string;
+  messageId?: string;
+  idle: boolean;
 }
 
 export interface ToolCardFrame {
@@ -218,6 +226,7 @@ export interface SnapshotRequestFrame {
 
 export type DownstreamFrame =
   | TextDeltaFrame
+  | TurnCompleteFrame
   | ToolCardFrame
   | HitlRequestFrame
   | ExecInstructionFrame

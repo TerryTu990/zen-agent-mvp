@@ -173,9 +173,19 @@ async function panelText(panel) {
   return (await messages.count()) === 0 ? '' : (await messages.innerText());
 }
 
-async function sendMessage(panel, text) {
+async function sendMessage(panel, text, attachment) {
   await panel.locator('#za-input').fill(text);
-  await panel.locator('[data-za-action][data-mode="send"]').click();
+  if (attachment !== undefined) {
+    await panel.locator('[data-za-file-input]').setInputFiles(attachment);
+  }
+  const action = panel.locator('[data-za-action][data-mode="send"]');
+  try {
+    await action.waitFor({ state: 'visible', timeout: 10_000 });
+  } catch {
+    const state = await panel.locator('[data-za-action]').getAttribute('data-mode');
+    throw new Error(`Side Panel 未恢复可发送状态（data-mode=${state ?? 'missing'}）`);
+  }
+  await action.click();
 }
 
 async function restartServiceWorker(context, page, scriptUrl, wake) {
@@ -299,7 +309,11 @@ async function main() {
     await panel.getByLabel('执行偏好').selectOption('dom-only');
 
     console.log('[4/5] happy path：发货确认 → 卡密消息回执 → sent…');
-    await sendMessage(panel, '执行当前订单自动发货。');
+    await sendMessage(panel, '执行当前订单自动发货。', {
+      name: 'shipping-policy.md',
+      mimeType: 'text/markdown',
+      buffer: Buffer.from('# 发货知识附件\n知识附件验收标记：只处理当前订单。'),
+    });
     await waitFor(async () => (await panelText(panel)).includes('已明确变为已发货'), '发货成功总结');
     assert(await page.evaluate(() => window.fixtureShipClicks) === 1, '发货按钮必须恰好点击一次');
     assert(inventory.stage(ORDER_ID) === 'shipped-confirmed', '库存必须推进到 shipped-confirmed');
@@ -344,6 +358,7 @@ async function main() {
 
     const panelOutput = await panelText(panel);
     const llmRequests = mock.requests.join('\n');
+    assert(llmRequests.includes('知识附件验收标记'), '知识文档正文未进入真实 gateway → LLM 请求');
     const persisted = readTree(sessionDir);
     const audit = readFileSync(auditPath, 'utf8');
     for (const [name, text] of [

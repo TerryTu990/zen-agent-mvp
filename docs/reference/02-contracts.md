@@ -58,11 +58,11 @@
 **关键字段语义**：
 - 五能力闭集（`$defs/capability`）：`identity`（身份获取）/ `context-report`（上下文上报）/ `conversation-hitl`（会话 UI+HITL 卡片）/ `page-action`（页面动作）/ `delegated-execution`（代执行）。**adr-011/013 后五能力未变**（U5 守住）——dom 观察与跨站导航都归入既有能力的帧扩展。
 - 上行 5 帧（HTTP）：`context-report`（url 必填，featureId 判定权威在服务端）、`user-message`、`hitl-decision`（客户端只采集意愿、不做放行判定）、`exec-result`（携 nonce 回传，服务端核销+ttl+resultSchema 三重校验后才回喂）、`snapshot-report`（页面可交互元素快照，dom 观察半程回传；按不可信观察对待）。
-- 下行 6 帧（SSE，D6 单向下行）：`text-delta`、`tool-card`（纯展示，只下发脱敏摘要）、`hitl-request`（展示真实实参供裁决；dom 任务卡以 task/plan/摘要功能级呈现）、`exec-instruction`（**必含 nonce/ttl/signature**；request 为服务端已定值的最终请求——http 形态或 `DomExecRequest{kind:'dom',steps}` dom 批次形态）、`guide-action`（action 闭集仅 highlight/scroll-to）、`snapshot-request`（请活跃页回传快照）。
+- 下行 7 帧（SSE，D6 单向下行）：`text-delta`、`turn-complete`（服务端权威回合终止信号，客户端据此解除输入锁）、`tool-card`（纯展示，只下发脱敏摘要）、`hitl-request`（展示真实实参供裁决；dom 任务卡以 task/plan/摘要功能级呈现）、`exec-instruction`（**必含 nonce/ttl/signature**；request 为服务端已定值的最终请求——http 形态或 `DomExecRequest{kind:'dom',steps}` dom 批次形态）、`guide-action`（action 闭集仅 highlight/scroll-to）、`snapshot-request`（请活跃页回传快照）。
 
 **升级不变量关联**：U5（五能力与帧闭集不随形态变——插件/SDK/浏览器壳同一契约）、U7（决策服务端；代执行指令一次性签名）、U1。
 
-**MVP 与标准版差异**：MVP 仅 Chrome 插件实现本契约；标准版三形态各自实现同一契约。SSE 断线重连与集群 pub/sub 是传输层演进，不动帧结构。
+**MVP 与标准版差异**：MVP 仅 Chrome 插件实现本契约；插件在 SSE 断线后自动重连，并以会话 `turn-state` 恢复可能漏收的回合完成状态。标准版三形态各自实现同一契约，集群 pub/sub 是传输层演进，不动帧结构。
 
 ## C4 配置快照（registry + pack 两级，adr-013）
 

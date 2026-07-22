@@ -58,6 +58,7 @@ const upstreamMirror: Record<UpstreamFrame['type'], true> = {
 
 const downstreamMirror: Record<DownstreamFrame['type'], true> = {
   'text-delta': true,
+  'turn-complete': true,
   'tool-card': true,
   'hitl-request': true,
   'exec-instruction': true,

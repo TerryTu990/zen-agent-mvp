@@ -73,29 +73,37 @@ async function main() {
     const panelKey = `za.panelGroup.w${windowId}`;
     await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 321 }), { key: panelKey });
     await panel.locator('[data-za-context][data-group-id="321"]').waitFor();
-    assert(!(await panel.getByRole('button', { name: '上传文件' }).isDisabled()), '迟到任务组未自动绑定');
+    assert(!(await panel.getByRole('button', { name: '上传知识文档' }).isDisabled()), '迟到任务组未自动绑定');
     await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 322 }), { key: panelKey });
     await panel.locator('[data-za-context][data-group-id="322"]').waitFor();
     await panel.getByLabel('执行偏好').selectOption('dom-only');
     assert((await panel.getByLabel('执行偏好').inputValue()) === 'dom-only', '执行偏好入口不可操作');
+    await panel.getByLabel('给 Zen 发送消息').fill('中文输入中');
+    await panel.getByLabel('给 Zen 发送消息').dispatchEvent('keydown', { key: 'Enter', isComposing: true });
+    assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '中文输入中', '输入法候选确认不应发送消息');
     const attachmentInput = panel.locator('[data-za-file-input]');
-    await attachmentInput.setInputFiles({ name: 'inventory.csv', mimeType: 'text/csv', buffer: Buffer.from('sku,card\n1,ABC') });
-    await panel.getByRole('button', { name: '移除附件 inventory.csv' }).waitFor();
+    await attachmentInput.setInputFiles({ name: 'policy.md', mimeType: 'text/markdown', buffer: Buffer.from('# Policy\nRead only') });
+    await panel.getByRole('button', { name: '移除附件 policy.md' }).waitFor();
     assert(!(await panel.getByRole('button', { name: '发送消息' }).isDisabled()), '仅附件消息应允许发送');
-    await panel.getByRole('button', { name: '移除附件 inventory.csv' }).click();
-    assert(await panel.getByRole('button', { name: '发送消息' }).isDisabled(), '空输入时发送入口必须禁用');
     await panel.getByLabel('给 Zen 发送消息').fill('检查当前页面，不要执行操作');
     assert(!(await panel.getByRole('button', { name: '发送消息' }).isDisabled()), '文本输入后发送入口未启用');
-    const busyState = await panel.evaluate(async () => {
-      document.querySelector('[data-za-action]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      await Promise.resolve();
-      return {
-        actionLabel: document.querySelector('[data-za-action]')?.getAttribute('aria-label'),
-        thinking: document.querySelector('.za-thinking')?.textContent,
-      };
+    await panel.evaluate(() => {
+      const observed = { waiting: false, thinking: false };
+      Object.assign(globalThis, { __zaObservedComposerState: observed });
+      new MutationObserver(() => {
+        if (document.querySelector('[data-za-action]')?.getAttribute('aria-label') === '正在处理') observed.waiting = true;
+        if (document.querySelector('.za-thinking')?.textContent?.includes('思考中')) observed.thinking = true;
+      }).observe(document.body, { attributes: true, childList: true, subtree: true });
     });
-    assert(busyState.actionLabel === '停止当前操作', '发送与停止未复用同一按钮');
-    assert(busyState.thinking?.includes('思考中'), '发送后未即时显示思考中状态');
+    await panel.getByRole('button', { name: '发送消息' }).click();
+    await panel.getByText('消息未被服务端接受，草稿仍保留，请检查连接后重试', { exact: true }).waitFor();
+    assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '检查当前页面，不要执行操作', '服务端拒绝后文本草稿未保留');
+    await panel.getByRole('button', { name: '移除附件 policy.md' }).waitFor();
+    const observed = await panel.evaluate(() => globalThis.__zaObservedComposerState);
+    assert(observed.waiting, '发送后合并按钮未进入处理中状态');
+    assert(observed.thinking, '发送后未即时显示思考中状态');
+    await panel.setViewportSize({ width: 280, height: 720 });
+    assert(await panel.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), '280px 窄屏出现横向溢出');
     await panel.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
     console.log('Phase 1A Side Panel E2E 全部场景通过 ✅');
   } catch (error) {

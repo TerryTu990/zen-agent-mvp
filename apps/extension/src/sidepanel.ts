@@ -60,17 +60,18 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
           <div class="za-attachments" data-za-attachments hidden></div>
           <textarea id="za-input" rows="1" aria-label="给 Zen 发送消息" placeholder="向 Zen 交代任务…" disabled></textarea>
           <div class="za-composer-actions">
-            <button class="za-icon-button za-upload" data-za-upload type="button" aria-label="上传文件" title="上传文本文件" disabled>
+            <button class="za-icon-button za-upload" data-za-upload type="button" aria-label="上传知识文档" title="上传 Markdown 或纯文本知识文档" disabled>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
             </button>
             <span class="za-composer-hint">Enter 发送 · Shift Enter 换行</span>
             <button class="za-action-button" data-za-action type="button" aria-label="发送消息" disabled>
               <svg class="za-send-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6" /></svg>
+              <span class="za-wait-icon" aria-hidden="true"></span>
               <span class="za-stop-icon" aria-hidden="true"></span>
             </button>
           </div>
         </div>
-        <input data-za-file-input type="file" accept=".txt,.md,.csv,.json,.log,.xml,.yaml,.yml,text/*,application/json" multiple hidden />
+        <input data-za-file-input type="file" accept=".txt,.md,text/plain,text/markdown" multiple hidden />
         <div class="za-composer-notice" data-za-composer-notice aria-live="polite"></div>
       </footer>
     </section>`;
@@ -123,34 +124,40 @@ export function startSidePanel(elements: SidePanelElements): void {
   let reconnectTimer: number | null = null;
   let connectionGeneration = 0;
   let ready = false;
-  let awaitingResponse = false;
-  let streamActive = false;
-  let toolRunning = false;
+  let submitting = false;
+  let turnInProgress = false;
+  const runningTools = new Set<string>();
   let operationRunning = false;
-  let streamSettleTimer: number | null = null;
+  let stopRequested = false;
+  let hitlPending = false;
   let selectedFiles: File[] = [];
+  let pendingMessageId: string | null = null;
+  let activeMessageId: string | null = null;
+  const completedMessageIds = new Set<string>();
 
-  const isBusy = (): boolean => awaitingResponse || streamActive || toolRunning || operationRunning;
+  const isBusy = (): boolean => submitting || pendingMessageId !== null || turnInProgress || operationRunning || hitlPending;
 
   const updateComposer = (): void => {
     const busy = isBusy();
-    elements.input.disabled = !ready;
+    elements.input.disabled = !ready || submitting;
     elements.upload.disabled = !ready || busy;
-    elements.action.disabled = !ready || (!busy && elements.input.value.trim() === '' && selectedFiles.length === 0);
-    elements.action.dataset['mode'] = busy ? 'stop' : 'send';
-    elements.action.setAttribute('aria-label', busy ? '停止当前操作' : '发送消息');
+    const mode = operationRunning && !stopRequested ? 'stop' : busy ? 'waiting' : 'send';
+    elements.action.disabled = !ready || mode === 'waiting' || (mode === 'send' && elements.input.value.trim() === '' && selectedFiles.length === 0);
+    elements.action.dataset['mode'] = mode;
+    elements.action.setAttribute('aria-label', mode === 'stop' ? '停止当前操作' : mode === 'waiting' ? '正在处理' : '发送消息');
     elements.action.closest<HTMLElement>('.za-composer-surface')?.setAttribute('data-za-composer-state', busy ? 'busy' : 'idle');
   };
 
   const resetActivity = (): void => {
-    if (streamSettleTimer !== null) {
-      window.clearTimeout(streamSettleTimer);
-      streamSettleTimer = null;
-    }
-    awaitingResponse = false;
-    streamActive = false;
-    toolRunning = false;
+    submitting = false;
+    turnInProgress = false;
+    runningTools.clear();
     operationRunning = false;
+    stopRequested = false;
+    hitlPending = false;
+    pendingMessageId = null;
+    activeMessageId = null;
+    completedMessageIds.clear();
     ui.hideThinking();
     updateComposer();
   };
@@ -169,6 +176,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       remove.textContent = '×';
       remove.addEventListener('click', () => {
         selectedFiles.splice(index, 1);
+        if (selectedFiles.length === 0) elements.composerNotice.textContent = '';
         renderAttachments();
         updateComposer();
       });
@@ -178,12 +186,16 @@ export function startSidePanel(elements: SidePanelElements): void {
   };
 
   const clearEmpty = (): void => elements.messages.querySelector('.za-empty')?.remove();
-  const send = (message: SidePanelToBackgroundMessage): void => {
-    if (port === null) return;
+  const send = (message: SidePanelToBackgroundMessage): boolean => {
+    if (port === null) return false;
     try {
       port.postMessage(message);
+      return true;
     } catch {
       port = null;
+      ready = false;
+      updateComposer();
+      return false;
     }
   };
 
@@ -196,35 +208,43 @@ export function startSidePanel(elements: SidePanelElements): void {
   const renderUiEvent = (event: SidePanelUiEvent): void => {
     clearEmpty();
     if (event.kind === 'status') {
-      awaitingResponse = false;
-      streamActive = false;
-      ui.hideThinking();
-      updateComposer();
       ui.showStatus(event.message);
     } else if (event.kind === 'user-echo') {
+      if (event.messageId !== undefined && event.messageId === pendingMessageId) {
+        submitting = false;
+        pendingMessageId = null;
+        elements.input.value = '';
+        selectedFiles = [];
+        renderAttachments();
+      }
+      activeMessageId = event.messageId ?? null;
+      turnInProgress = event.messageId === undefined || !completedMessageIds.has(event.messageId);
       ui.appendUserMessage(event.text);
-      if (awaitingResponse) ui.showThinking();
+      if (turnInProgress) ui.showThinking();
+      updateComposer();
     } else if (event.frame.type === 'text-delta') {
-      awaitingResponse = false;
-      streamActive = true;
       ui.hideThinking();
       ui.appendTextDelta(event.frame);
+    } else if (event.frame.type === 'turn-complete') {
+      if (event.frame.messageId !== undefined) completedMessageIds.add(event.frame.messageId);
+      if (event.frame.idle) {
+        turnInProgress = false;
+        activeMessageId = null;
+        runningTools.clear();
+        hitlPending = false;
+        ui.hideThinking();
+      } else if (event.frame.messageId !== undefined && event.frame.messageId === activeMessageId) {
+        turnInProgress = true;
+      }
       updateComposer();
-      if (streamSettleTimer !== null) window.clearTimeout(streamSettleTimer);
-      streamSettleTimer = window.setTimeout(() => {
-        streamActive = false;
-        updateComposer();
-      }, 900);
     } else if (event.frame.type === 'tool-card') {
-      awaitingResponse = false;
-      streamActive = false;
-      toolRunning = event.frame.status === 'running';
+      if (event.frame.status === 'running') runningTools.add(event.frame.toolCallId);
+      else runningTools.delete(event.frame.toolCallId);
       ui.renderToolCard(event.frame);
       updateComposer();
     } else {
-      awaitingResponse = false;
-      streamActive = false;
-      toolRunning = false;
+      runningTools.clear();
+      hitlPending = true;
       updateComposer();
       const frame = event.frame;
       void ui.promptHitl(frame).then((decision) => {
@@ -239,6 +259,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       updateContext(message);
     } else if (message.kind === 'operation-state') {
       operationRunning = message.running;
+      if (!message.running) stopRequested = false;
       updateComposer();
     } else if (message.kind === 'history-replay') {
       elements.messages.textContent = '';
@@ -247,6 +268,23 @@ export function startSidePanel(elements: SidePanelElements): void {
     } else if (message.kind === 'panel-ready') {
       ready = true;
       updateComposer();
+    } else if (message.kind === 'message-result') {
+      if (message.messageId !== pendingMessageId) return;
+      submitting = false;
+      pendingMessageId = null;
+      if (message.accepted) {
+        elements.input.value = '';
+        selectedFiles = [];
+        renderAttachments();
+        activeMessageId = message.messageId;
+        turnInProgress = !completedMessageIds.has(message.messageId);
+      } else {
+        ui.hideThinking();
+        elements.composerNotice.textContent = '消息未被服务端接受，草稿仍保留，请检查连接后重试';
+      }
+      updateComposer();
+    } else if (message.kind === 'hitl-result') {
+      if (!message.accepted) elements.composerNotice.textContent = '确认结果未送达，确认卡已恢复，请重试';
     } else {
       renderUiEvent(message);
     }
@@ -271,7 +309,11 @@ export function startSidePanel(elements: SidePanelElements): void {
     port = connected;
     connected.onMessage.addListener(routeMessage);
     connected.onDisconnect.addListener(() => {
-      if (port === connected) port = null;
+      if (port === connected) {
+        port = null;
+        ready = false;
+        updateComposer();
+      }
       if (generation !== connectionGeneration) return;
       if (reconnectTimer !== null) return;
       reconnectTimer = window.setTimeout(() => {
@@ -308,36 +350,52 @@ export function startSidePanel(elements: SidePanelElements): void {
   const submit = async (): Promise<void> => {
     const text = elements.input.value.trim();
     if ((text === '' && selectedFiles.length === 0) || isBusy()) return;
+    const files = [...selectedFiles];
+    submitting = true;
     elements.composerNotice.textContent = '';
+    clearEmpty();
+    ui.showThinking();
+    updateComposer();
     let prepared: Awaited<ReturnType<typeof prepareAttachments>>;
     try {
-      prepared = await prepareAttachments(selectedFiles);
+      prepared = await prepareAttachments(files);
     } catch (error) {
+      submitting = false;
+      ui.hideThinking();
+      updateComposer();
       elements.composerNotice.textContent = error instanceof Error ? error.message : '附件读取失败';
       return;
     }
     const displayText = text === '' ? `请查看附件：${prepared.map((file) => file.name).join('、')}` : text;
     const prompt = appendAttachmentsToPrompt(displayText, prepared);
-    elements.input.value = '';
-    selectedFiles = [];
-    renderAttachments();
-    awaitingResponse = true;
-    updateComposer();
-    clearEmpty();
-    ui.showThinking();
-    send({
+    const messageId = crypto.randomUUID();
+    pendingMessageId = messageId;
+    const sent = send({
       kind: 'user-message',
+      messageId,
       text: prompt,
       ...(prepared.length > 0 ? { displayText: `${displayText}\n附件：${prepared.map((file) => file.name).join('、')}` } : {}),
       executionPreference: elements.preference.value as ExecutionPreference,
     });
-  };
-  elements.action.addEventListener('click', () => {
-    if (isBusy()) {
-      send({ kind: 'stop-operation' });
-      resetActivity();
+    if (!sent) {
+      submitting = false;
+      pendingMessageId = null;
+      ui.hideThinking();
+      elements.composerNotice.textContent = '连接已中断，草稿仍保留；重连后请重新发送';
+      updateComposer();
       return;
     }
+    updateComposer();
+  };
+  elements.action.addEventListener('click', () => {
+    if (operationRunning && !stopRequested) {
+      if (send({ kind: 'stop-operation' })) {
+        stopRequested = true;
+        updateComposer();
+      }
+      return;
+    }
+    if (isBusy()) return;
     void submit();
   });
   elements.upload.addEventListener('click', () => elements.fileInput.click());
@@ -349,7 +407,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       return;
     }
     selectedFiles.push(...additions);
-    elements.composerNotice.textContent = '';
+    elements.composerNotice.textContent = '知识文档内容会发送给智能体；请勿上传卡密库存、令牌或凭证';
     renderAttachments();
     updateComposer();
   });
@@ -359,7 +417,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     updateComposer();
   });
   elements.input.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       void submit();
     }

@@ -3,6 +3,13 @@ import type { SidePanelUiEvent } from '../src/messaging.js';
 import { reducePanelHistory, removeSettledHitl } from '../src/panel-history.js';
 
 describe('Side Panel UI 历史', () => {
+  it('持久化回合完成信号供重连时恢复 idle 状态', () => {
+    const history: SidePanelUiEvent[] = [{ kind: 'user-echo', text: '问题' }];
+    const completed: SidePanelUiEvent = { kind: 'frame', frame: { type: 'turn-complete', sessionId: 's1', idle: true } };
+
+    expect(reducePanelHistory(history, completed)).toEqual([...history, completed]);
+  });
+
   it('连续文本增量合并，用户消息之后开启下一段 assistant 文本', () => {
     let history: SidePanelUiEvent[] = [];
     history = reducePanelHistory(history, { kind: 'frame', frame: { type: 'text-delta', sessionId: 's1', delta: '你' } });

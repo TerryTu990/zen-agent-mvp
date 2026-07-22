@@ -37,6 +37,7 @@ export type {
   SnapshotRequestFrame,
   UpstreamFrame,
   TextDeltaFrame,
+  TurnCompleteFrame,
   ToolCardFrame,
   HitlRequestFrame,
   ExecRequest,

@@ -370,6 +370,7 @@ interface SessionRuntime {
   subscribers: Set<ServerResponse>;
   /** 同会话回合串行链：user-message 依次排队，避免历史交错。 */
   turnChain: Promise<void>;
+  pendingTurns: number;
   /** HITL 挂起等待器：hitlId → resolver；hitl-decision 到达时解析，回合恢复。 */
   pendingHitl: Map<string, (decision: HitlDecisionValue) => void>;
   /** 代执行挂起等待器：nonce → resolver；exec-result 到达时解析，回合恢复。 */
@@ -458,6 +459,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       runtime = {
         subscribers: new Set(),
         turnChain: Promise.resolve(),
+        pendingTurns: 0,
         pendingHitl: new Map(),
         pendingExec: new Map(),
         pendingSnapshot: new Map(),
@@ -1440,6 +1442,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           }
           runtime.automationRuns.set(upstream.automationRunId, { status: 'running', updatedAt: Date.now() });
         }
+        runtime.pendingTurns += 1;
         runtime.turnChain = runtime.turnChain
           .then(async () => {
             try {
@@ -1485,6 +1488,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
               type: 'text-delta',
               sessionId: session.sessionId,
               delta: '服务暂时不可用（内部错误）',
+            });
+          })
+          .finally(() => {
+            runtime.pendingTurns = Math.max(0, runtime.pendingTurns - 1);
+            broadcast(session.sessionId, {
+              type: 'turn-complete',
+              sessionId: session.sessionId,
+              ...(upstream.messageId !== undefined ? { messageId: upstream.messageId } : {}),
+              idle: runtime.pendingTurns === 0,
             });
           });
         sendJson(res, 202, { accepted: true });
@@ -1577,6 +1589,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
     sendJson(res, 200, run);
   }
 
+  function handleTurnState(res: ServerResponse, session: SessionState): void {
+    sendJson(res, 200, { running: runtimeOf(session.sessionId).pendingTurns > 0 });
+  }
+
   /**
    * P0-b demo-token 签发（demo 级）：有意不要求 authorization——此端点就是发 token 的，故须先于 verifier 判定。
    * 信任模型见 demo-token.ts：真实鉴权在代执行时靠用户 cookie，伪造 hostUserId 只会被下游宿主拒绝。
@@ -1638,7 +1654,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       return;
     }
     const automationMatch = /^\/v1\/sessions\/([^/]+)\/automation-runs\/([^/]+)$/.exec(pathname);
-    const match = /^\/v1\/sessions\/([^/]+)\/(frames|events|injection)$/.exec(pathname);
+    const match = /^\/v1\/sessions\/([^/]+)\/(frames|events|injection|turn-state)$/.exec(pathname);
     if (automationMatch && req.method === 'GET') {
       const sessionId = decodeURIComponent(automationMatch[1]!);
       const session = deps.store.get(sessionId);
@@ -1668,6 +1684,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (match[2] === 'frames' && req.method === 'POST') return handleFrames(req, res, session, claims);
       if (match[2] === 'events' && req.method === 'GET') return await handleEvents(res, session);
       if (match[2] === 'injection' && req.method === 'GET') return handleInjection(res, session);
+      if (match[2] === 'turn-state' && req.method === 'GET') return handleTurnState(res, session);
     }
     sendJson(res, 404, { error: '未知路由' });
   }

@@ -137,6 +137,12 @@ describe('C3 client-access-layer 消息帧', () => {
       sessionId: 's-001',
       delta: '在列表上方的状态筛选器中',
     },
+    'turn-complete': {
+      type: 'turn-complete',
+      sessionId: 's-001',
+      messageId: 'message_001',
+      idle: true,
+    },
     'guide-action highlight 含 message': {
       type: 'guide-action',
       sessionId: 's-001',
