@@ -173,6 +173,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
   let expectedActiveTabId: number | null = null;
   let autoScanRunId: string | null = null;
+  let suppressedTurnId: string | null = null;
   let lastSessionFailure: Omit<MessageDeliveryResult, 'accepted'> = { failure: 'session-unavailable' };
   const autoScanRunReady = chrome.storage.session.get(autoScanRunKey).then((items) => {
     const stored = items[autoScanRunKey];
@@ -211,6 +212,12 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     postToPanels(event);
   };
   const postFrame = (route: FrameRoute, frame: DownstreamFrame): void => {
+    if (suppressedTurnId !== null) {
+      const stoppedTurnCompleted = frame.type === 'turn-complete' &&
+        (frame.idle || frame.messageId === suppressedTurnId);
+      if (!stoppedTurnCompleted) return;
+      suppressedTurnId = null;
+    }
     if (frame.type === 'turn-complete') {
       if (frame.messageId !== undefined) {
         activeTurnIds.delete(frame.messageId);
@@ -836,7 +843,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           postToPanels({ kind: 'stop-result', accepted: true });
           return;
         }
+        suppressedTurnId = messageId;
         void stopTurn(messageId).then((accepted) => {
+          if (!accepted && suppressedTurnId === messageId) suppressedTurnId = null;
           if (accepted) {
             updateHistory((history) => history.filter(
               (event) => !(event.kind === 'frame' && event.frame.type === 'hitl-request'),

@@ -187,6 +187,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     operationRunning = false;
     stopRequested = false;
     hitlPending = false;
+    preparingMessageId = null;
     pendingMessageId = null;
     pendingMessage = null;
     deliveryAwaiting = false;

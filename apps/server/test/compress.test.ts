@@ -11,6 +11,7 @@ import {
 /** 产出固定摘要文本的替身；error=true 时以 done error 收尾（驱动 fail-open 路径）。 */
 function fakeLlm(reply: string, opts: { error?: boolean } = {}): LlmPort {
   return {
+    cancel() {},
     async *chat(): AsyncGenerator<LlmStreamEvent> {
       if (opts.error === true) {
         yield { kind: 'done', stopReason: 'error', error: 'boom' };
@@ -87,6 +88,7 @@ describe('compressHistory（回合边界压缩）', () => {
     const history = turns(3);
     let called = false;
     const spy: LlmPort = {
+      cancel() {},
       async *chat(): AsyncGenerator<LlmStreamEvent> {
         called = true;
         yield { kind: 'done', stopReason: 'end' };
@@ -95,6 +97,22 @@ describe('compressHistory（回合边界压缩）', () => {
     const result = await compressHistory(history, { llm: spy, keepRounds: 4 });
     expect(result).toBe(history);
     expect(called).toBe(false);
+  });
+
+  it('摘要调用透传所属回合 requestId，供停止接口取消', async () => {
+    let observedRequestId: string | undefined;
+    const spy: LlmPort = {
+      cancel() {},
+      async *chat(request): AsyncGenerator<LlmStreamEvent> {
+        observedRequestId = request.requestId;
+        yield { kind: 'text-delta', delta: '摘要' };
+        yield { kind: 'done', stopReason: 'end' };
+      },
+    };
+
+    await compressHistory(turns(6), { llm: spy, keepRounds: 2, requestId: 'session:message' });
+
+    expect(observedRequestId).toBe('session:message');
   });
 
   it('任务级授权计划（dom task/summary）整句保留进摘要', async () => {

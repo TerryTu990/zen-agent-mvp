@@ -95,6 +95,10 @@ async function main() {
         res.writeHead(202, headers);
         res.end('{"accepted":true}');
         eventStreams.get(stopMatch[1])?.write(`data: ${JSON.stringify({
+          type: 'hitl-request', sessionId: stopMatch[1], hitlId: 'late-hitl', toolCallId: 'late-tool',
+          toolId: 'late-tool', params: {}, reason: '停止后迟到的授权卡',
+        })}\n\n`);
+        eventStreams.get(stopMatch[1])?.write(`data: ${JSON.stringify({
           type: 'turn-complete', sessionId: stopMatch[1], messageId: request.messageId, idle: true,
         })}\n\n`);
         return;
@@ -219,6 +223,30 @@ async function main() {
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '中断后重新提交未成功');
     assert(frameRequests[4]?.messageId !== frameRequests[5]?.messageId, '中断后重新提交没有生成新的 messageId');
 
+    await panel.evaluate(() => {
+      const original = File.prototype.text;
+      Object.assign(globalThis, { __zaOriginalFileText: original });
+      File.prototype.text = function delayedText() {
+        return new Promise((resolveText) => {
+          setTimeout(() => void original.call(this).then(resolveText), 300);
+        });
+      };
+    });
+    const framesBeforeGroupSwitch = frameRequests.length;
+    await attachmentInput.setInputFiles({
+      name: 'group-switch.md', mimeType: 'text/markdown', buffer: Buffer.from('# group switch'),
+    });
+    await panel.getByLabel('给 Zen 发送消息').fill('验证附件读取期间切换任务组');
+    await panel.getByRole('button', { name: '发送消息' }).click();
+    await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 323 }), { key: panelKey });
+    await panel.locator('[data-za-context][data-group-id="323"]').waitFor();
+    await panel.waitForTimeout(400);
+    assert(frameRequests.length === framesBeforeGroupSwitch, '附件读取期间切换分组导致跨任务误投');
+    await panel.getByRole('button', { name: '移除附件 group-switch.md' }).click();
+    await panel.evaluate(() => {
+      File.prototype.text = globalThis.__zaOriginalFileText;
+    });
+
     const framesBeforeAttachmentStop = frameRequests.length;
     await panel.evaluate(() => {
       const original = File.prototype.text;
@@ -239,6 +267,7 @@ async function main() {
     await panel.waitForTimeout(400);
     assert(frameRequests.length === framesBeforeAttachmentStop, '附件读取期间停止后仍投递了用户消息');
     assert(typeof stopRequests.at(-1)?.messageId === 'string', '附件读取期间停止未绑定预分配消息编号');
+    assert((await panel.locator('[data-za-hitl]').count()) === 0, '停止确认后迟到的 HITL 卡片仍被渲染');
     await panel.evaluate(() => {
       File.prototype.text = globalThis.__zaOriginalFileText;
     });

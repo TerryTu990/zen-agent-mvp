@@ -109,7 +109,7 @@ function serializeHead(messages: LlmMessage[]): string {
 }
 
 /** 单次 LLM 调用生成摘要正文；错误/异常/空文本 → null（由调用方 fail-open 放弃本回合压缩）。 */
-async function summarize(llm: LlmPort, head: LlmMessage[]): Promise<string | null> {
+async function summarize(llm: LlmPort, head: LlmMessage[], requestId?: string): Promise<string | null> {
   let text = '';
   let errored = false;
   try {
@@ -118,6 +118,7 @@ async function summarize(llm: LlmPort, head: LlmMessage[]): Promise<string | nul
         { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
         { role: 'user', content: SUMMARY_USER_PREFIX + serializeHead(head) },
       ],
+      ...(requestId !== undefined ? { requestId } : {}),
     })) {
       if (event.kind === 'text-delta') text += event.delta;
       else if (event.kind === 'done' && event.stopReason === 'error') errored = true;
@@ -132,6 +133,8 @@ async function summarize(llm: LlmPort, head: LlmMessage[]): Promise<string | nul
 
 export interface CompressOptions {
   llm: LlmPort;
+  /** 与所属回合共用取消编号，保证停止可中断摘要流。 */
+  requestId?: string;
   /** 保留原文的最近用户回合数，默认 4。 */
   keepRounds?: number;
 }
@@ -160,7 +163,7 @@ export async function compressHistory(
   const preservedBoundaries = head.filter(isBoundaryMarker).map((message) => message.content);
   const preservedTasks = extractTaskPlans(head);
 
-  const summaryText = await summarize(options.llm, head);
+  const summaryText = await summarize(options.llm, head, options.requestId);
   if (summaryText === null) return history;
 
   const parts = [SUMMARY_MARKER, summaryText];
