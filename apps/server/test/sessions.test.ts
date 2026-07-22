@@ -62,7 +62,7 @@ describe('createPersistentSessionStore（P2 会话持久化）', () => {
     const dir = freshDir();
     const first = persistent(dir);
     const { sessionId } = first.create(CLAIMS);
-    first.setMessageTurn(sessionId, 'message-1', 'pending');
+    expect(first.reserveMessageTurn(sessionId, 'message-1')).toBe('reserved');
     first.setMessageTurn(sessionId, 'message-2', 'complete');
 
     const revived = persistent(dir);
@@ -126,6 +126,8 @@ describe('createPersistentSessionStore（P2 会话持久化）', () => {
       store.setHistory(sessionId, [{ role: 'user', content: 'still works' }]),
     ).not.toThrow();
     expect(store.get(sessionId)!.history).toEqual([{ role: 'user', content: 'still works' }]);
+    expect(store.reserveMessageTurn(sessionId, 'unsafe-message')).toBe('storage-failed');
+    expect(store.get(sessionId)!.messageTurns).toEqual({});
     expect(warn).toHaveBeenCalled();
   });
 

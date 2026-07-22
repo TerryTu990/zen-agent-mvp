@@ -8,6 +8,7 @@ import type { CardInventoryPort } from '@zen-agent/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startServer, type RunningServer } from '../src/index.js';
 import { redactSnapshotValues } from '../src/gateway.js';
+import { createMemorySessionStore, createPersistentSessionStore } from '../src/sessions.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/host-demo/config');
@@ -328,6 +329,43 @@ describe('上行帧校验（400/404/409 闭集）', () => {
 });
 
 describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
+  it('服务重启后的遗留 pending 明确返回中断，不永久等待或重复启动回合', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'za-restart-session-'));
+    const seeded = createPersistentSessionStore(createMemorySessionStore(), { dir });
+    const seededSession = seeded.create({
+      sub: 'user-1',
+      tenant: 'demo-tenant',
+      roles: ['ops'],
+      hostUserId: 'host-u1',
+      iss: ISS,
+      exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    expect(seeded.reserveMessageTurn(seededSession.sessionId, 'interrupted-message')).toBe('reserved');
+    seeded.stop();
+
+    const restarted = await startServer(serverOptions({ sessionDir: dir }));
+    try {
+      const token = await signToken();
+      const response = await fetch(
+        `http://127.0.0.1:${restarted.port}/v1/sessions/${seededSession.sessionId}/frames`,
+        {
+          method: 'POST',
+          headers: authHeaders(token, { 'content-type': 'application/json' }),
+          body: JSON.stringify({
+            type: 'user-message',
+            sessionId: seededSession.sessionId,
+            messageId: 'interrupted-message',
+            text: '请勿重复执行',
+          }),
+        },
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ messageState: 'interrupted', idle: true });
+    } finally {
+      await restarted.close();
+    }
+  });
+
   it('相同 messageId 重投只启动一次回合，并返回当前幂等状态', async () => {
     const token = await signToken();
     const sessionId = await createSession(token);

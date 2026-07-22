@@ -1436,17 +1436,28 @@ export function createGateway(deps: GatewayDeps): Gateway {
       case 'user-message': {
         const runtime = runtimeOf(session.sessionId);
         if (upstream.messageId !== undefined) {
-          const existing = session.messageTurns[upstream.messageId];
-          if (existing !== undefined) {
+          const reservation = deps.store.reserveMessageTurn(session.sessionId, upstream.messageId);
+          if (reservation === 'storage-failed') {
+            sendJson(res, 503, { error: '消息幂等占位不可用，未启动回合' });
+            return;
+          }
+          if (reservation === 'pending' && runtime.pendingTurns === 0) {
+            sendJson(res, 409, {
+              error: '上一回合因服务重启中断，状态无法安全恢复；请核对业务状态后重新发起',
+              messageState: 'interrupted',
+              idle: true,
+            });
+            return;
+          }
+          if (reservation === 'pending' || reservation === 'complete') {
             sendJson(res, 202, {
               accepted: true,
               duplicate: true,
-              messageState: existing,
+              messageState: reservation,
               idle: runtime.pendingTurns === 0,
             });
             return;
           }
-          deps.store.setMessageTurn(session.sessionId, upstream.messageId, 'pending');
           const messageTurns = Object.entries(session.messageTurns);
           if (messageTurns.length > 256) {
             const completed = messageTurns.find(([, state]) => state === 'complete');

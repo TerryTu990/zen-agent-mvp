@@ -65,7 +65,7 @@ export interface ServerOptions {
   resolveCredential?: (ref: string) => string | undefined;
   /**
    * 会话持久化落盘目录（P2）：设置即启用 `.za/sessions/<id>.jsonl` 落盘 + 重启重放 + 闲置清理；
-   * 缺省=纯内存态（不落盘）。存储故障 fail-open、不进控制流。
+   * 缺省=纯内存态（不落盘）。普通会话历史故障 fail-open；消息幂等占位故障 fail-closed，不启动回合。
    */
   sessionDir?: string;
   /** 会话闲置 TTL 毫秒，默认 3600000（1 小时）；仅在 sessionDir 启用时生效。 */

@@ -620,6 +620,14 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         await invalidateSession();
         postStatus('服务端会话已失效，请重新发送');
         return { accepted: false, failure: 'session-expired', httpStatus: response.status };
+      } else if (response.status === 409) {
+        const payload = await response.json().catch(() => ({})) as { messageState?: unknown };
+        if (payload.messageState === 'interrupted') {
+          postStatus('上一回合因服务重启中断，请核对业务状态后再重新发送');
+          return { accepted: false, failure: 'session-interrupted', httpStatus: response.status };
+        }
+        postStatus('上行帧状态冲突（HTTP 409）');
+        return { accepted: false, failure: 'server-rejected', httpStatus: response.status };
       } else if (!response.ok) {
         postStatus(`上行帧被拒绝（HTTP ${response.status}）`);
         return { accepted: false, failure: 'server-rejected', httpStatus: response.status };

@@ -37,6 +37,8 @@ export interface SessionState {
   messageTurns: Record<string, 'pending' | 'complete'>;
 }
 
+export type MessageTurnReservation = 'reserved' | 'pending' | 'complete' | 'storage-failed';
+
 export interface SessionStore {
   create(claims: IdentityClaims): SessionState;
   get(sessionId: string): SessionState | undefined;
@@ -50,8 +52,10 @@ export interface SessionStore {
   setOriginClaims(sessionId: string, origin: string, claims: IdentityClaims): void;
   /** 记本回合激活 packId 与 generic 绑定 origin（站点边界标记判据）。 */
   setLastPackId(sessionId: string, packId: string, genericOrigin?: string): void;
-  /** 设置或删除消息幂等状态；null 表删除最旧完成项。 */
-  setMessageTurn(sessionId: string, messageId: string, state: 'pending' | 'complete' | null): void;
+  /** 原子占用消息编号；持久化实现必须在返回 reserved 前完成耐久写入。 */
+  reserveMessageTurn(sessionId: string, messageId: string): MessageTurnReservation;
+  /** 完成或删除消息幂等状态；null 表删除最旧完成项。 */
+  setMessageTurn(sessionId: string, messageId: string, state: 'complete' | null): void;
   /** 逐出会话（TTL 清理用）；不存在即无操作。 */
   delete(sessionId: string): void;
   /** 载入既有会话状态（持久化重放恢复用）；覆盖同 id 内存项。 */
@@ -103,6 +107,13 @@ export function createMemorySessionStore(): SessionStore {
       const session = mustGet(sessionId);
       session.lastPackId = packId;
       session.lastGenericOrigin = genericOrigin ?? null;
+    },
+    reserveMessageTurn(sessionId, messageId) {
+      const turns = mustGet(sessionId).messageTurns;
+      const existing = turns[messageId];
+      if (existing !== undefined) return existing;
+      turns[messageId] = 'pending';
+      return 'reserved';
     },
     setMessageTurn(sessionId, messageId, state) {
       const turns = mustGet(sessionId).messageTurns;
@@ -174,12 +185,14 @@ export function createPersistentSessionStore(
 
   const fileOf = (sessionId: string): string => join(dir, `${sessionId}.jsonl`);
 
-  const append = (sessionId: string, event: SessionEvent): void => {
+  const append = (sessionId: string, event: SessionEvent): boolean => {
     try {
       mkdirSync(dir, { recursive: true });
       appendFileSync(fileOf(sessionId), `${JSON.stringify(event)}\n`, 'utf8');
+      return true;
     } catch (cause) {
       failOpen(cause);
+      return false;
     }
   };
 
@@ -340,6 +353,15 @@ export function createPersistentSessionStore(
           ...(genericOrigin !== undefined ? { genericOrigin } : {}),
         });
       }
+    },
+    reserveMessageTurn(sessionId, messageId) {
+      const reservation = inner.reserveMessageTurn(sessionId, messageId);
+      if (reservation !== 'reserved') return reservation;
+      touch(sessionId);
+      if (append(sessionId, { t: 'message-turn', messageId, state: 'pending' })) return 'reserved';
+      // 幂等占位是副作用控制路径：耐久写失败必须撤销内存占位并 fail-closed。
+      inner.setMessageTurn(sessionId, messageId, null);
+      return 'storage-failed';
     },
     setMessageTurn(sessionId, messageId, state) {
       inner.setMessageTurn(sessionId, messageId, state);
