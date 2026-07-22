@@ -199,4 +199,15 @@ describe('promptHitl HITL 卡片裁决', () => {
 
     expect(messages.querySelector('[data-za-hitl]')).toBeNull();
   });
+
+  it('停止回合会撤下未决卡片且不产生新的裁决', async () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    ui.cancelHitl();
+
+    await expect(decision).resolves.toBeNull();
+    expect(messages.querySelector('[data-za-hitl]')).toBeNull();
+  });
 });

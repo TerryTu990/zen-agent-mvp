@@ -219,6 +219,30 @@ async function main() {
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '中断后重新提交未成功');
     assert(frameRequests[4]?.messageId !== frameRequests[5]?.messageId, '中断后重新提交没有生成新的 messageId');
 
+    const framesBeforeAttachmentStop = frameRequests.length;
+    await panel.evaluate(() => {
+      const original = File.prototype.text;
+      Object.assign(globalThis, { __zaOriginalFileText: original });
+      File.prototype.text = function delayedText() {
+        return new Promise((resolveText) => {
+          setTimeout(() => void original.call(this).then(resolveText), 300);
+        });
+      };
+    });
+    await attachmentInput.setInputFiles({
+      name: 'delayed-policy.md', mimeType: 'text/markdown', buffer: Buffer.from('# delayed attachment'),
+    });
+    await panel.getByLabel('给 Zen 发送消息').fill('验证附件读取期间停止');
+    await panel.getByRole('button', { name: '发送消息' }).click();
+    await panel.locator('[data-za-action][data-mode="stop"]:not([disabled])').click();
+    await panel.getByText('当前任务已停止', { exact: true }).waitFor();
+    await panel.waitForTimeout(400);
+    assert(frameRequests.length === framesBeforeAttachmentStop, '附件读取期间停止后仍投递了用户消息');
+    assert(typeof stopRequests.at(-1)?.messageId === 'string', '附件读取期间停止未绑定预分配消息编号');
+    await panel.evaluate(() => {
+      File.prototype.text = globalThis.__zaOriginalFileText;
+    });
+
     await panel.setViewportSize({ width: 320, height: 520 });
     const composerBottomBefore = await panel.locator('.za-composer').evaluate((element) => element.getBoundingClientRect().bottom);
     holdNextTurn = true;

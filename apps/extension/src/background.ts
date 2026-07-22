@@ -584,6 +584,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           type: 'user-message',
           sessionId,
           text: message.text,
+          messageId: message.automationRunId,
           executionPreference: message.executionPreference,
           automationRunId: message.automationRunId,
         };
@@ -825,7 +826,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         return;
       }
       if (message.kind === 'stop-operation') {
-        const messageId = message.messageId;
+        const messageId = message.messageId ?? autoScanRunId ?? undefined;
         void chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
         for (const member of contentMembers.targets('active-page')) {
           postContent(member, { kind: 'stop-operation' });
@@ -836,6 +837,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           return;
         }
         void stopTurn(messageId).then((accepted) => {
+          if (accepted) {
+            updateHistory((history) => history.filter(
+              (event) => !(event.kind === 'frame' && event.frame.type === 'hitl-request'),
+            ));
+          }
           postStatus(accepted ? '已停止当前任务。' : '停止请求未被服务端接受，请稍后重试。');
           postToPanels({ kind: 'stop-result', messageId, accepted });
         });
@@ -972,6 +978,14 @@ async function createZenGroup(tabId: number): Promise<number> {
   return groupId;
 }
 
+/** 只迁移本扩展旧版本使用的精确名称，不覆盖用户自定义的标签组标题。 */
+async function migrateLegacyGroupTitle(groupId: number): Promise<void> {
+  const group = (await chrome.tabGroups.query({}).catch(() => [])).find((candidate) => candidate.id === groupId);
+  if (group?.title === 'commerce') {
+    await chrome.tabGroups.update(groupId, { title: 'Zen', color: 'purple' }).catch(() => {});
+  }
+}
+
 /** 同窗同源 autoActivate 既有组（须仍映射会话）：供 autoJoin，避免既有多页场景重复建组。 */
 async function findAutoJoinGroup(windowId: number, origin: string): Promise<number | null> {
   const key = autoGroupKey(windowId, origin);
@@ -1026,6 +1040,7 @@ async function handleRequestActivate(
       break;
     }
   }
+  await migrateLegacyGroupTitle(activeGroupId);
   if (tab.windowId !== undefined) {
     await chrome.storage.session.set({ [panelGroupKey(tab.windowId)]: activeGroupId });
   }
@@ -1037,6 +1052,7 @@ async function handleIconClick(tab: chrome.tabs.Tab): Promise<void> {
   if (tab.id === undefined) return;
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
   const groupId = tabGroupId === TAB_GROUP_ID_NONE ? await createZenGroup(tab.id) : tabGroupId;
+  await migrateLegacyGroupTitle(groupId);
   if (tab.windowId !== undefined) {
     await chrome.storage.session.set({ [panelGroupKey(tab.windowId)]: groupId });
   }

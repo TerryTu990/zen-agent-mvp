@@ -129,12 +129,14 @@ export function startSidePanel(elements: SidePanelElements): void {
   let stopRequested = false;
   let hitlPending = false;
   let selectedFiles: File[] = [];
+  let preparingMessageId: string | null = null;
   let pendingMessageId: string | null = null;
   let pendingMessage: PendingUserMessage | null = null;
   let deliveryAwaiting = false;
   let activeMessageId: string | null = null;
   const completedMessageIds = new Set<string>();
   const stoppedMessageIds = new Set<string>();
+  const renderedMessageIds = new Set<string>();
 
   const deliveryFailureMessage = (failure: MessageDeliveryFailure | undefined, httpStatus: number | undefined): string => {
     switch (failure) {
@@ -159,7 +161,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     }
   };
 
-  const isBusy = (): boolean => submitting || deliveryAwaiting || turnInProgress || operationRunning || hitlPending;
+  const isBusy = (): boolean => stopRequested || submitting || deliveryAwaiting || turnInProgress || operationRunning || hitlPending;
 
   const scrollMessagesToLatest = (): void => {
     window.requestAnimationFrame(() => {
@@ -191,6 +193,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     activeMessageId = null;
     completedMessageIds.clear();
     stoppedMessageIds.clear();
+    renderedMessageIds.clear();
     ui.hideThinking();
     updateComposer();
   };
@@ -246,6 +249,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     if (event.kind === 'status') {
       ui.showStatus(event.message);
     } else if (event.kind === 'user-echo') {
+      if (event.messageId !== undefined) renderedMessageIds.add(event.messageId);
       const stopped = event.messageId !== undefined && stoppedMessageIds.delete(event.messageId);
       if (event.messageId !== undefined && event.messageId === pendingMessageId) {
         submitting = false;
@@ -287,7 +291,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       updateComposer();
       const frame = event.frame;
       void ui.promptHitl(frame).then((decision) => {
-        send({ kind: 'hitl-decision', hitlId: frame.hitlId, decision });
+        if (decision !== null) send({ kind: 'hitl-decision', hitlId: frame.hitlId, decision });
       });
     }
     scrollMessagesToLatest();
@@ -354,7 +358,9 @@ export function startSidePanel(elements: SidePanelElements): void {
         elements.composerNotice.textContent = '停止请求未被接受，请重试';
         updateComposer();
       } else {
-        if (message.messageId !== undefined) stoppedMessageIds.add(message.messageId);
+        if (message.messageId !== undefined && !renderedMessageIds.has(message.messageId)) {
+          stoppedMessageIds.add(message.messageId);
+        }
         submitting = false;
         deliveryAwaiting = false;
         turnInProgress = false;
@@ -362,6 +368,7 @@ export function startSidePanel(elements: SidePanelElements): void {
         stopRequested = false;
         hitlPending = false;
         runningTools.clear();
+        preparingMessageId = null;
         pendingMessage = null;
         pendingMessageId = null;
         activeMessageId = null;
@@ -369,6 +376,7 @@ export function startSidePanel(elements: SidePanelElements): void {
         selectedFiles = [];
         renderAttachments();
         ui.hideThinking();
+        ui.cancelHitl();
         elements.composerNotice.textContent = '当前任务已停止';
         updateComposer();
       }
@@ -458,6 +466,9 @@ export function startSidePanel(elements: SidePanelElements): void {
       return;
     }
     const files = [...selectedFiles];
+    const messageId = crypto.randomUUID();
+    preparingMessageId = messageId;
+    pendingMessageId = messageId;
     submitting = true;
     elements.composerNotice.textContent = '';
     clearEmpty();
@@ -468,16 +479,19 @@ export function startSidePanel(elements: SidePanelElements): void {
     try {
       prepared = await prepareAttachments(files);
     } catch (error) {
+      if (preparingMessageId !== messageId) return;
+      preparingMessageId = null;
+      pendingMessageId = null;
       submitting = false;
       ui.hideThinking();
       updateComposer();
       elements.composerNotice.textContent = error instanceof Error ? error.message : '附件读取失败';
       return;
     }
+    if (preparingMessageId !== messageId) return;
+    preparingMessageId = null;
     const displayText = text === '' ? `请查看附件：${prepared.map((file) => file.name).join('、')}` : text;
     const prompt = appendAttachmentsToPrompt(displayText, prepared);
-    const messageId = crypto.randomUUID();
-    pendingMessageId = messageId;
     deliveryAwaiting = true;
     pendingMessage = {
       kind: 'user-message',
@@ -503,6 +517,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     if (isBusy() && !stopRequested) {
       const messageId = activeMessageId ?? pendingMessageId;
       if (send({ kind: 'stop-operation', ...(messageId !== null ? { messageId } : {}) })) {
+        if (preparingMessageId === messageId) preparingMessageId = null;
         stopRequested = true;
         updateComposer();
       }

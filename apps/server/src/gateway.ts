@@ -574,9 +574,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
     tool: ToolDefinition,
     call: { toolCallId: string; params: JsonObject },
     evidenceRules: SnapshotEvidenceRule[],
+    cancelled: () => boolean,
   ): Promise<Observation> {
     const { sessionId } = session;
     const { toolCallId, params } = call;
+    if (cancelled()) {
+      return { toolCallId, ok: false, content: null, error: 'user-stopped' };
+    }
     // UI 分组用调用模式（纯展示，不承载判定）：直接取 execution 通道。
     const mode = tool.execution;
     broadcast(sessionId, {
@@ -596,6 +600,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ? params['intentId']
         : null;
     const isShipment = tool.id === XIANYU_SHIPPING_EXECUTE_TOOL_ID;
+    let inventoryBegun = false;
     const settleInventory = async (
       outcome: 'sent' | 'manual',
       note?: string,
@@ -612,11 +617,22 @@ export function createGateway(deps: GatewayDeps): Gateway {
         return false;
       }
     };
+    const stopped = async (): Promise<Observation> => {
+      const inventoryOk = inventoryBegun ? await settleInventory('manual', 'user-stopped') : true;
+      finish('failed');
+      return {
+        toolCallId,
+        ok: false,
+        content: null,
+        error: inventoryOk ? 'user-stopped' : 'fulfillment-inventory-backfill-failed',
+      };
+    };
 
     // dom 工具判定上下文来自最近一次快照（未观察不操作：无快照 toolgate 即 deny）。
     const domContext = isDomTool(tool) ? (runtimeOf(sessionId).domContext ?? undefined) : undefined;
     // 工具所属激活 pack 的 site 作用域（ADR-013）：origin 围栏 + per-origin 身份口径。
     const scope = await packScope(session, pack, claims);
+    if (cancelled()) return stopped();
     const decision = await deps.toolgate.decide({
       sessionId,
       toolCallId,
@@ -626,6 +642,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       ...scope,
       ...(domContext !== undefined ? { domContext } : {}),
     });
+    if (cancelled()) return stopped();
     recordEvent(sessionId, claims, featureId, {
       type: 'tool-decision',
       data: {
@@ -663,6 +680,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         type: 'hitl-verdict',
         data: { hitlId, toolCallId, decision: verdict },
       }, pack);
+      if (cancelled()) return stopped();
       if (verdict === 'reject') {
         const inventoryOk = await settleInventory('manual', 'user-rejected');
         finish('failed');
@@ -682,12 +700,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
         typeof params['task'] === 'string'
       ) {
         await deps.toolgate.grantHitl({ sessionId, task: params['task'] });
+        if (cancelled()) return stopped();
       }
     }
 
     // 浏览器副作用前先把发货/发送尝试写入飞书。写入或回读不确定即停，不签发任何指令；
     // 该持久化闩锁让进程在点击后、回执前崩溃时重启也不能自动重放。
     if (boundedIntentId !== null && deps.fulfillment !== undefined) {
+      if (cancelled()) return stopped();
       let begun = false;
       try {
         begun = (await (isShipment
@@ -705,6 +725,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
           error: 'fulfillment-inventory-backfill-failed',
         };
       }
+      inventoryBegun = true;
+      if (cancelled()) return stopped();
     }
 
     const startedAt = Date.now();
@@ -722,6 +744,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         claims,
         ...scope,
       });
+      if (cancelled()) return stopped();
     } else {
       const instruction = await deps.toolgate.issueExecInstruction({
         sessionId,
@@ -732,13 +755,16 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...scope,
         ...(domContext !== undefined ? { domContext } : {}),
       });
+      if (cancelled()) return stopped();
       nonce = instruction.nonce;
       instructionExpiresAt = instruction.expiresAt;
       const result = waitForExec(sessionId, instruction.nonce, instruction.ttl);
       broadcast(sessionId, instruction);
       const execResult = await result;
+      if (cancelled()) return stopped();
       if (typeof execResult.status === 'number') status = execResult.status;
       observation = await deps.toolgate.acceptExecResult({ sessionId, result: execResult });
+      if (cancelled()) return stopped();
     }
     // 有界履约的 DOM 成功只表示点击已发生，不表示状态已变更或消息已送达。网关立即强制取新快照，
     // 并在原指令绝对时限内完成页面实例绑定确认；超时/换页/证据不符一律 uncertain。
@@ -753,6 +779,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...(evidenceRules.length > 0 ? { evidenceRules } : {}),
       });
       const report = await reported;
+      if (cancelled()) return stopped();
       const confirmation = await (isShipment
         ? deps.toolgate.confirmShipmentStatus({
             sessionId,
@@ -768,6 +795,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         pageInstanceId: report?.pageInstanceId ?? '',
         evidence: report?.evidence ?? {},
           }));
+      if (cancelled()) return stopped();
       observation = confirmation.confirmed
         ? { toolCallId, ok: true, content: isShipment ? { shipmentConfirmed: true } : { deliveryConfirmed: true } }
         : {
@@ -779,6 +807,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
               : (isShipment ? 'shipment-status-unconfirmed' : 'fulfillment-receipt-unconfirmed'),
           };
     }
+    if (cancelled()) return stopped();
     if (boundedIntentId !== null) {
       let inventoryOk: boolean;
       if (isShipment && observation.ok && deps.fulfillment !== undefined) {
@@ -1294,6 +1323,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           SITE_NAVIGATE_TOOL_DEF,
           call,
           evidenceRules,
+          cancelled,
         );
         const navEcho: LlmMessage = {
           role: 'assistant',
@@ -1378,6 +1408,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           tool,
           call,
           evidenceRules,
+          cancelled,
         );
       }
       if (!observation.ok) automationFailed = true;
@@ -1419,7 +1450,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const estimate = estimateHistoryTokens(
       lastUsage !== undefined ? { history: pruned, usage: lastUsage } : { history: pruned },
     );
-    const toStore = shouldCompress(estimate, deps.compressContextWindow, deps.compressThreshold)
+    const toStore = !cancelled() && shouldCompress(estimate, deps.compressContextWindow, deps.compressThreshold)
       ? await compressHistory(pruned, { llm: deps.llm })
       : pruned;
     deps.store.setHistory(sessionId, toStore);
@@ -1633,7 +1664,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       const oldest = runtime.cancelledMessageIds.values().next().value as string | undefined;
       if (oldest !== undefined) runtime.cancelledMessageIds.delete(oldest);
     }
-    deps.llm.cancel?.(`${session.sessionId}:${messageId}`);
+    deps.llm.cancel(`${session.sessionId}:${messageId}`);
     if (runtime.runningMessageId === messageId) {
       for (const [hitlId, resolve] of [...runtime.pendingHitl]) {
         runtime.pendingHitl.delete(hitlId);

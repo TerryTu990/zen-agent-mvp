@@ -18,7 +18,9 @@ export interface ConversationUi {
   hideThinking(): void;
   renderToolCard(frame: ToolCardFrame): void;
   /** 弹 HITL 卡片等用户裁决；客户端只呈现与回传、零治理判定。 */
-  promptHitl(frame: HitlRequestFrame): Promise<HitlDecisionValue>;
+  promptHitl(frame: HitlRequestFrame): Promise<HitlDecisionValue | null>;
+  /** 停止当前回合时撤下未决授权卡；null 表示不向服务端回传新的裁决。 */
+  cancelHitl(): void;
 }
 
 const STATUS_LABEL: Record<ToolCardFrame['status'], string> = {
@@ -69,6 +71,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
   // 工具卡按调用模式归组，同 mode 的卡进同一 section body。
   const toolGroups = new Map<ToolMode, HTMLElement>();
   let thinking: HTMLElement | null = null;
+  let pendingHitl: { card: HTMLElement; resolve: (decision: HitlDecisionValue | null) => void } | null = null;
 
   const scrollToEnd = (): void => {
     messages.scrollTop = messages.scrollHeight;
@@ -197,7 +200,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
       clearStreaming();
       thinking?.remove();
       thinking = null;
-      return new Promise<HitlDecisionValue>((resolve) => {
+      return new Promise<HitlDecisionValue | null>((resolve) => {
         const card = document.createElement('div');
         card.setAttribute('data-za-hitl', '');
         card.className = 'za-hitl';
@@ -254,13 +257,18 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         messages.append(card);
         messages.scrollTop = messages.scrollHeight;
 
-        const settle = (decision: HitlDecisionValue) => {
+        const settle = (decision: HitlDecisionValue | null) => {
           card.remove();
+          if (pendingHitl?.card === card) pendingHitl = null;
           resolve(decision);
         };
+        pendingHitl = { card, resolve: settle };
         approve.addEventListener('click', () => settle('approve'));
         reject.addEventListener('click', () => settle('reject'));
       });
+    },
+    cancelHitl() {
+      pendingHitl?.resolve(null);
     },
   };
 }

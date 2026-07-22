@@ -309,6 +309,14 @@ async function main() {
     const taskGroups = await sw.evaluate(() => chrome.tabGroups.query({}));
     assert(taskGroups.some((group) => group.title === 'Zen'), '任务标签分组名称必须为 Zen');
     assert(!taskGroups.some((group) => group.title?.toLowerCase() === 'commerce'), '任务标签分组名称不应为 commerce');
+    const taskGroupId = taskGroups.find((group) => group.title === 'Zen')?.id;
+    assert(typeof taskGroupId === 'number', '未找到 Zen 任务标签组');
+    await sw.evaluate((groupId) => chrome.tabGroups.update(groupId, { title: 'commerce' }), taskGroupId);
+    await page.reload({ waitUntil: 'load' });
+    await waitFor(async () => {
+      const groups = await sw.evaluate(() => chrome.tabGroups.query({}));
+      return groups.some((group) => group.id === taskGroupId && group.title === 'Zen');
+    }, '旧 commerce 标签组自动迁移为 Zen');
     await panel.getByLabel('执行偏好').selectOption('dom-only');
 
     console.log('[4/5] happy path：发货确认 → 卡密消息回执 → sent…');

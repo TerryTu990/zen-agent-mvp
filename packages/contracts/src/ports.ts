@@ -516,7 +516,7 @@ export type LlmStreamEvent =
 export interface LlmPort {
   chat(request: LlmChatRequest): AsyncIterable<LlmStreamEvent>;
   /** 取消对应流式调用；未知或已结束 requestId 无操作。 */
-  cancel?(requestId: string): void;
+  cancel(requestId: string): void;
 }
 
 // ---- AuditPort（⑦观测审计：record-only 旁路）----
