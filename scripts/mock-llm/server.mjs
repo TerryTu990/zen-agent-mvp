@@ -145,7 +145,9 @@ function executePreparedXianyuIntentCall(obs, toolName = TOOL_XIANYU_INTENT) {
     // 保持闭集占位，让服务端 fail-closed。
   }
   return {
-    id: toolName === TOOL_XIANYU_SHIPPING ? 'call_xianyu_shipping_intent' : 'call_xianyu_intent',
+    // 同一会话可能顺序处理多个订单；调用 ID 绑定 opaque intent，避免测试 mock
+    // 把不同订单伪装成同一个 tool call 重放而被服务端正确拒绝。
+    id: `${toolName === TOOL_XIANYU_SHIPPING ? 'call_xianyu_shipping_intent' : 'call_xianyu_intent'}_${intentId}`,
     name: toolName,
     arguments: JSON.stringify({ intentId }),
   };

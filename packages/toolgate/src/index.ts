@@ -419,7 +419,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         !['textarea', 'input:text', 'contenteditable'].includes(messageElement.role) ||
         messageElement.disabled === true ||
         sendElement?.role !== 'button' ||
-        sendElement.disabled === true ||
         (sendLabel !== '发送' && sendLabel !== 'send')
       ) {
         return { allowed: false, reason: 'bounded-intent-target-mismatch' };

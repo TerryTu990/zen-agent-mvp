@@ -203,6 +203,8 @@ assets/
 - 验收：全仓 build/test、依赖 lint、功能评测和浏览器 E2E 全绿。
 - 新增唯一闲鱼浏览器入口 `pnpm test:e2e:xianyu`，覆盖真实扩展与受控夹具；执行记录写明场景数和报告路径。最终门为 `pnpm lint:deps`、`pnpm -r build`、`pnpm -r --workspace-concurrency=1 test`、`pnpm eval`、`pnpm test:e2e:xianyu`、`pnpm test:e2e:sidepanel`。
 
+实施口径（2026-07-22）：闲鱼 E2E 使用真实 Chromium、真实 MV3 extension、真实 gateway/toolgate 和 `seller.goofish.com` HTTPS origin 的受控 route fixture，不访问真实订单。覆盖发货后唯一状态确认、卡密消息新增回执、异常确认弹窗转人工且零重试，并断言卡密与链接 query canary 不进入面板、会话或审计。统一验收入口为 `pnpm verify:phase3`；生产自动扫描仍保持关闭。
+
 每个 Phase 完成后先提交，再分别由独立子 agent 从架构边界和测试/故障覆盖两个方向审查。两个 reviewer 绑定该 Phase commit hash，结论记录 P0/P1/P2、文件行号和建议；主流程以独立修复 commit 处理问题并重跑受影响验证，再由原 reviewer 或新的独立 reviewer 复核。P0/P1 必须为 0；P2 必须修复，或由用户明确接受并挂具体阶段/事件锚点。审查结论与测试命令记录到阶段执行记录，未闭环不得进入下一 Phase。
 
 ### Phase 4：发布

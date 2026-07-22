@@ -1350,6 +1350,30 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
     expect(wrongAccount).toEqual({ verdict: 'deny', reason: 'bounded-intent-context-mismatch' });
   });
 
+  it('允许发送按钮在填充消息前处于 disabled，仍只签发固定 fill→click 并依赖新回执确认', async () => {
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
+    const { intentId } = await prepare(port, 'order-send-initially-disabled');
+    const call = {
+      ...input('order-send-initially-disabled', intentId),
+      domContext: {
+        ...contextFor('order-send-initially-disabled'),
+        elements: [
+          { ref: 'za-1', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-2', role: 'button', label: '发送', disabled: true },
+        ],
+      },
+    };
+    await expect(port.decide(call)).resolves.toEqual({ verdict: 'allow' });
+    const instruction = await port.issueExecInstruction(call);
+    expect(instruction.request).toMatchObject({
+      kind: 'dom',
+      steps: [
+        { action: 'fill', ref: 'za-1', value: '固定履约内容' },
+        { action: 'click', ref: 'za-2' },
+      ],
+    });
+  });
+
   it('同一 call key 在预占、签发和终态均不可再次放行或签发', async () => {
     const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }] });
     const { intentId } = await prepare(port, 'order-call-state');
