@@ -26,6 +26,7 @@ export type MessageDeliveryFailure =
   | 'unauthorized'
   | 'session-expired'
   | 'protocol-invalid'
+  | 'delivery-unknown'
   | 'server-rejected'
   | 'unreachable'
   | 'session-unavailable';
@@ -64,6 +65,7 @@ export type BackgroundToSidePanelMessage =
   | SidePanelUiEvent
   | { kind: 'history-replay'; events: SidePanelUiEvent[] }
   | { kind: 'panel-ready' }
+  | { kind: 'session-failed'; failure: MessageDeliveryFailure }
   | {
       kind: 'message-result';
       messageId: string;

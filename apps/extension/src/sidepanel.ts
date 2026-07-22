@@ -15,6 +15,7 @@ import {
 } from './messaging.js';
 
 const EXECUTION_PREFERENCE_KEY = 'za.executionPreference';
+type PendingUserMessage = Extract<SidePanelToBackgroundMessage, { kind: 'user-message' }>;
 
 export interface SidePanelElements {
   messages: HTMLElement;
@@ -129,6 +130,7 @@ export function startSidePanel(elements: SidePanelElements): void {
   let hitlPending = false;
   let selectedFiles: File[] = [];
   let pendingMessageId: string | null = null;
+  let pendingMessage: PendingUserMessage | null = null;
   let activeMessageId: string | null = null;
   const completedMessageIds = new Set<string>();
 
@@ -142,6 +144,8 @@ export function startSidePanel(elements: SidePanelElements): void {
         return '会话已失效，已准备重新连接，请直接重试';
       case 'protocol-invalid':
         return '服务端安全握手失败，请检查服务地址或签名配置';
+      case 'delivery-unknown':
+        return '消息投递状态暂时无法确认；将使用同一消息编号安全重试';
       case 'unreachable':
         return '无法连接服务端，请检查网络和服务地址后重试';
       case 'server-rejected':
@@ -172,6 +176,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     stopRequested = false;
     hitlPending = false;
     pendingMessageId = null;
+    pendingMessage = null;
     activeMessageId = null;
     completedMessageIds.clear();
     ui.hideThinking();
@@ -191,6 +196,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       remove.setAttribute('aria-label', `移除附件 ${file.name}`);
       remove.textContent = '×';
       remove.addEventListener('click', () => {
+        pendingMessage = null;
         selectedFiles.splice(index, 1);
         if (selectedFiles.length === 0) elements.composerNotice.textContent = '';
         renderAttachments();
@@ -229,6 +235,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       if (event.messageId !== undefined && event.messageId === pendingMessageId) {
         submitting = false;
         pendingMessageId = null;
+        pendingMessage = null;
         elements.input.value = '';
         selectedFiles = [];
         renderAttachments();
@@ -283,12 +290,14 @@ export function startSidePanel(elements: SidePanelElements): void {
       for (const event of message.events) renderUiEvent(event);
     } else if (message.kind === 'panel-ready') {
       ready = true;
-      if (pendingMessageId !== null) {
-        submitting = false;
-        pendingMessageId = null;
-        ui.hideThinking();
-        elements.composerNotice.textContent = '连接已恢复，但无法确认上次消息是否送达；草稿仍保留，请重试';
-      }
+      if (pendingMessage !== null) send(pendingMessage);
+      updateComposer();
+    } else if (message.kind === 'session-failed') {
+      submitting = false;
+      pendingMessageId = null;
+      turnInProgress = false;
+      ui.hideThinking();
+      elements.composerNotice.textContent = `${deliveryFailureMessage(message.failure, undefined)}；草稿仍保留`;
       updateComposer();
     } else if (message.kind === 'message-result') {
       if (message.messageId !== pendingMessageId) return;
@@ -298,10 +307,12 @@ export function startSidePanel(elements: SidePanelElements): void {
         elements.input.value = '';
         selectedFiles = [];
         renderAttachments();
+        pendingMessage = null;
         activeMessageId = message.messageId;
         turnInProgress = !completedMessageIds.has(message.messageId);
       } else {
         ui.hideThinking();
+        pendingMessageId = null;
         elements.composerNotice.textContent = `${deliveryFailureMessage(message.failure, message.httpStatus)}；草稿仍保留`;
       }
       updateComposer();
@@ -372,6 +383,20 @@ export function startSidePanel(elements: SidePanelElements): void {
   const submit = async (): Promise<void> => {
     const text = elements.input.value.trim();
     if ((text === '' && selectedFiles.length === 0) || isBusy()) return;
+    if (pendingMessage !== null) {
+      submitting = true;
+      pendingMessageId = pendingMessage.messageId;
+      elements.composerNotice.textContent = '';
+      ui.showThinking();
+      if (!send(pendingMessage)) {
+        submitting = false;
+        pendingMessageId = null;
+        ui.hideThinking();
+        elements.composerNotice.textContent = '连接已中断，草稿仍保留；重连后请重新发送';
+      }
+      updateComposer();
+      return;
+    }
     const files = [...selectedFiles];
     submitting = true;
     elements.composerNotice.textContent = '';
@@ -392,16 +417,18 @@ export function startSidePanel(elements: SidePanelElements): void {
     const prompt = appendAttachmentsToPrompt(displayText, prepared);
     const messageId = crypto.randomUUID();
     pendingMessageId = messageId;
-    const sent = send({
+    pendingMessage = {
       kind: 'user-message',
       messageId,
       text: prompt,
       ...(prepared.length > 0 ? { displayText: `${displayText}\n附件：${prepared.map((file) => file.name).join('、')}` } : {}),
       executionPreference: elements.preference.value as ExecutionPreference,
-    });
+    };
+    const sent = send(pendingMessage);
     if (!sent) {
       submitting = false;
       pendingMessageId = null;
+      pendingMessage = null;
       ui.hideThinking();
       elements.composerNotice.textContent = '连接已中断，草稿仍保留；重连后请重新发送';
       updateComposer();
@@ -422,6 +449,7 @@ export function startSidePanel(elements: SidePanelElements): void {
   });
   elements.upload.addEventListener('click', () => elements.fileInput.click());
   elements.fileInput.addEventListener('change', () => {
+    pendingMessage = null;
     const additions = [...(elements.fileInput.files ?? [])];
     elements.fileInput.value = '';
     if (selectedFiles.length + additions.length > MAX_ATTACHMENT_COUNT) {
@@ -434,6 +462,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     updateComposer();
   });
   elements.input.addEventListener('input', () => {
+    pendingMessage = null;
     elements.input.style.height = 'auto';
     elements.input.style.height = `${Math.min(elements.input.scrollHeight, 144)}px`;
     updateComposer();
@@ -445,6 +474,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     }
   });
   elements.preference.addEventListener('change', () => {
+    pendingMessage = null;
     void chrome.storage.local.set({ [EXECUTION_PREFERENCE_KEY]: elements.preference.value });
   });
   chrome.tabs.onActivated.addListener((activeInfo) => {

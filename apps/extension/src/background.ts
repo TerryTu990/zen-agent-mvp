@@ -67,6 +67,8 @@ interface MessageDeliveryResult {
   accepted: boolean;
   failure?: MessageDeliveryFailure;
   httpStatus?: number;
+  messageState?: 'pending' | 'complete';
+  idle?: boolean;
 }
 
 async function readServerBaseUrl(): Promise<string> {
@@ -130,6 +132,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   const nonceKey = execNonceKeyForGroup(groupId);
   const autoScanRunKey = xianyuAutoScanRunKeyForGroup(groupId);
   const seenExecNonces = new Set<string>();
+  const echoedMessageIds = new Set<string>();
   let nonceHistory: Array<{ nonce: string; expiresAt: number }> = [];
   const nonceHistoryReady = chrome.storage.session.get(nonceKey).then((items) => {
     const stored = items[nonceKey];
@@ -148,11 +151,23 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   });
   let historyChain = chrome.storage.session.get(historyKey).then((items) => {
     const stored = items[historyKey];
-    if (Array.isArray(stored)) panelHistory = stored as SidePanelUiEvent[];
+    if (Array.isArray(stored)) {
+      panelHistory = stored as SidePanelUiEvent[];
+      for (const event of panelHistory) {
+        if (event.kind === 'user-echo' && event.messageId !== undefined) echoedMessageIds.add(event.messageId);
+      }
+    }
   });
   let sessionPromise: Promise<Session | null> | null = null;
+  let downlinkPromise: Promise<boolean> | null = null;
+  let downlinkReady = false;
   let sessionGeneration = 0;
   const activeReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
+  const activeTurnIds = new Set<string>();
+  const completedTurnIds = new Set<string>();
+  let anonymousTurns = 0;
+  let deliveryRequests = 0;
+  let configurationDirty = false;
   // 组内任一页面同源读取的宿主用户 id；无 za.token 时用于向 demo-token 端点自取（P0-b）。
   let hostUserId: string | null = null;
   // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
@@ -188,10 +203,25 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     });
   };
   const emitUi = (event: SidePanelUiEvent): void => {
+    if (event.kind === 'user-echo' && event.messageId !== undefined) {
+      if (echoedMessageIds.has(event.messageId)) return;
+      echoedMessageIds.add(event.messageId);
+    }
     updateHistory((history) => reducePanelHistory(history, event));
     postToPanels(event);
   };
   const postFrame = (route: FrameRoute, frame: DownstreamFrame): void => {
+    if (frame.type === 'turn-complete') {
+      if (frame.messageId !== undefined) {
+        activeTurnIds.delete(frame.messageId);
+        completedTurnIds.add(frame.messageId);
+      }
+      if (frame.idle) {
+        activeTurnIds.clear();
+        anonymousTurns = 0;
+      }
+      void applyPendingConfiguration();
+    }
     if (isXianyuAutoScanCompletion(autoScanRunId, frame)) {
       const failed = frame.type === 'tool-card' && frame.status === 'failed';
       autoScanRunId = null;
@@ -227,9 +257,22 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   async function invalidateSession(): Promise<void> {
     sessionGeneration += 1;
     sessionPromise = null;
+    downlinkPromise = null;
+    downlinkReady = false;
     for (const reader of activeReaders) void reader.cancel().catch(() => {});
     activeReaders.clear();
     await chrome.storage.session.remove(sessionKeyForGroup(groupId));
+  }
+
+  async function applyPendingConfiguration(): Promise<void> {
+    if (!configurationDirty || deliveryRequests !== 0 || activeTurnIds.size !== 0 || anonymousTurns !== 0) return;
+    configurationDirty = false;
+    await invalidateSession();
+  }
+
+  function configurationChanged(): void {
+    configurationDirty = true;
+    void applyPendingConfiguration();
   }
 
   // 错误消息只含键名/状态码等可定位信息，不回显 token 值（SEC-04）。
@@ -271,6 +314,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       const stream = await openEventStream(resumed, true);
       if (stream !== null && generation === sessionGeneration) {
         await reconcileTurnState(resumed);
+        downlinkReady = true;
         void drainEvents(resumed, stream);
         return resumed;
       }
@@ -306,21 +350,43 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     // 先建立 SSE 订阅再返回：否则首个 user-message 触发的回合可能早于订阅注册而丢失下行帧（订阅竞态）。
     const stream = await openEventStream(session);
     if (stream === null) return null;
+    downlinkReady = true;
     void drainEvents(session, stream);
     return session;
   }
 
   function ensureSession(): Promise<Session | null> {
+    const existing = sessionPromise;
+    if (existing !== null) {
+      return existing.then(async (session) => {
+        if (session === null || session.generation !== sessionGeneration) return ensureSession();
+        return (await ensureDownlink(session)) ? session : null;
+      });
+    }
     const generation = sessionGeneration;
-    sessionPromise ??= openSession().then((session) => {
-      if (session === null) sessionPromise = null;
-      return session;
+    const created = openSession();
+    sessionPromise = created;
+    return created.then(async (session) => {
+      const stale = generation !== sessionGeneration || (session !== null && session.generation !== sessionGeneration);
+      if (sessionPromise === created && (session === null || stale)) sessionPromise = null;
+      if (stale || session === null) return stale ? ensureSession() : null;
+      return (await ensureDownlink(session)) ? session : null;
     });
-    return sessionPromise.then((session) => {
-      if (session === null && generation === sessionGeneration) return null;
-      if (session !== null && session.generation === sessionGeneration) return session;
-      sessionPromise = null;
-      return ensureSession();
+  }
+
+  function ensureDownlink(session: Session): Promise<boolean> {
+    if (downlinkReady) return Promise.resolve(true);
+    const existing = downlinkPromise;
+    if (existing !== null) return existing;
+    const created = openEventStream(session).then((stream) => {
+      if (stream === null || session.generation !== sessionGeneration) return false;
+      downlinkReady = true;
+      void drainEvents(session, stream);
+      return true;
+    });
+    downlinkPromise = created;
+    return created.finally(() => {
+      if (downlinkPromise === created) downlinkPromise = null;
     });
   }
 
@@ -396,17 +462,25 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           lastSessionFailure.failure === 'session-expired' ||
           lastSessionFailure.failure === 'protocol-invalid'
         ) {
-          if (lastSessionFailure.failure !== 'protocol-invalid') await invalidateSession();
+          if (lastSessionFailure.failure === 'unauthorized' || lastSessionFailure.failure === 'session-expired') {
+            await invalidateSession();
+          }
+          postToPanels({ kind: 'session-failed', failure: lastSessionFailure.failure ?? 'session-unavailable' });
           postStatus('事件流无法恢复，请检查连接配置后重试');
           return;
         }
         continue;
       }
       await reconcileTurnState(session);
+      downlinkReady = true;
       void drainEvents(session, stream);
       return;
     }
-    if (!abort.signal.aborted && session.generation === sessionGeneration) postStatus('事件流重连失败，请检查网络后重试');
+    if (!abort.signal.aborted && session.generation === sessionGeneration) {
+      downlinkReady = false;
+      postToPanels({ kind: 'session-failed', failure: 'unreachable' });
+      postStatus('事件流重连失败，请检查网络后重试');
+    }
   }
 
   async function drainEvents(
@@ -479,6 +553,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       activeReaders.delete(reader);
     }
     if (!abort.signal.aborted && generation === sessionGeneration) {
+      downlinkReady = false;
       postStatus('事件流连接中断，正在重连');
       void recoverEventStream(session);
     }
@@ -525,6 +600,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     const session = await ensureSession();
     if (session === null) return { accepted: false, ...lastSessionFailure };
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
+    deliveryRequests += 1;
     try {
       const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/frames`, {
         method: 'POST',
@@ -543,10 +619,41 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         postStatus(`上行帧被拒绝（HTTP ${response.status}）`);
         return { accepted: false, failure: 'server-rejected', httpStatus: response.status };
       }
-      return { accepted: true };
+      if (session.generation !== sessionGeneration) {
+        return { accepted: false, failure: 'delivery-unknown' };
+      }
+      const payload = await response.json().catch(() => ({})) as { messageState?: unknown; idle?: unknown };
+      const messageState = payload.messageState === 'pending' || payload.messageState === 'complete'
+        ? payload.messageState
+        : undefined;
+      if (message.kind === 'user-message' || message.kind === 'auto-scan') {
+        if (messageState === 'complete') {
+          if ('messageId' in message) {
+            postFrame('panel', {
+              type: 'turn-complete',
+              sessionId: session.sessionId,
+              messageId: message.messageId,
+              idle: payload.idle === true,
+            });
+          }
+        } else if ('messageId' in message) {
+          if (completedTurnIds.has(message.messageId)) completedTurnIds.delete(message.messageId);
+          else activeTurnIds.add(message.messageId);
+        } else {
+          anonymousTurns += 1;
+        }
+      }
+      return {
+        accepted: true,
+        ...(messageState !== undefined ? { messageState } : {}),
+        ...(typeof payload.idle === 'boolean' ? { idle: payload.idle } : {}),
+      };
     } catch {
       postStatus(`无法连接 zen-agent 服务（${session.baseUrl}）`);
       return { accepted: false, failure: 'unreachable' };
+    } finally {
+      deliveryRequests = Math.max(0, deliveryRequests - 1);
+      void applyPendingConfiguration();
     }
   }
 
@@ -788,7 +895,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     return 'started';
   }
 
-  return { attachContent, attachPanel, triggerAutoScan, invalidateSession, close };
+  return { attachContent, attachPanel, triggerAutoScan, configurationChanged, close };
 }
 
 type GroupBridge = ReturnType<typeof createGroupBridge>;
@@ -971,7 +1078,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     areaName === 'local' &&
     (changes['za.token'] !== undefined || changes['za.serverBaseUrl'] !== undefined)
   ) {
-    for (const bridge of groups.values()) void bridge.invalidateSession();
+    for (const bridge of groups.values()) bridge.configurationChanged();
   }
   if (
     areaName === 'local' &&

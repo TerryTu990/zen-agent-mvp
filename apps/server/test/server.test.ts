@@ -328,6 +328,36 @@ describe('上行帧校验（400/404/409 闭集）', () => {
 });
 
 describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
+  it('相同 messageId 重投只启动一次回合，并返回当前幂等状态', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    const messageId = 'message-idempotent-1';
+    try {
+      await postFrame(token, sessionId, {
+        type: 'context-report', sessionId, url: ORDER_LIST_URL,
+      });
+      const frame = { type: 'user-message', sessionId, messageId, text: '已完成的订单还能取消吗？' };
+      const first = await postFrame(token, sessionId, frame);
+      const duplicatePending = await postFrame(token, sessionId, frame);
+      expect(first.status).toBe(202);
+      expect(await first.json()).toMatchObject({ accepted: true, messageState: 'pending' });
+      expect(await duplicatePending.json()).toMatchObject({ accepted: true, duplicate: true, messageState: 'pending' });
+      await sse.waitFor(() => sse.frames.some(
+        (item) => item['type'] === 'turn-complete' && item['messageId'] === messageId,
+      ));
+      const duplicateComplete = await postFrame(token, sessionId, frame);
+      expect(await duplicateComplete.json()).toMatchObject({
+        accepted: true, duplicate: true, messageState: 'complete', idle: true,
+      });
+      expect(sse.frames.filter(
+        (item) => item['type'] === 'turn-complete' && item['messageId'] === messageId,
+      )).toHaveLength(1);
+    } finally {
+      sse.close();
+    }
+  });
+
   it('context-report + user-message → SSE 收到 R1 事实回答（流式 ≥2 帧）', async () => {
     const token = await signToken();
     const sessionId = await createSession(token);
