@@ -4,7 +4,9 @@ import { dirname, join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
+const EXTENSION_DIR = process.env.ZA_EXTENSION_E2E_DIR
+  ? resolve(process.env.ZA_EXTENSION_E2E_DIR)
+  : join(REPO_ROOT, 'apps', 'extension');
 const PROFILE_DIR = join(REPO_ROOT, '.za', 'e2e-profile-sidepanel');
 
 function run(command, args, options = {}) {
@@ -26,8 +28,12 @@ async function waitServiceWorker(context) {
 async function main() {
   let context;
   try {
-    console.log('[1/3] 构建 extension…');
-    await run('pnpm', ['--filter', '@zen-agent/extension', 'build']);
+    if (process.env.ZA_EXTENSION_E2E_DIR === undefined) {
+      console.log('[1/3] 构建 extension…');
+      await run('pnpm', ['--filter', '@zen-agent/extension', 'build']);
+    } else {
+      console.log(`[1/3] 使用最终 zip 解包目录：${EXTENSION_DIR}`);
+    }
     console.log('[2/3] 真实 Chromium 加载 MV3 extension…');
     let sw;
     for (const headless of [true, false]) {

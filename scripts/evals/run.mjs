@@ -6,8 +6,7 @@
  * 与脱敏（Goal-f）。环境编排复用 scripts/e2e/run-m3.mjs 的形态（mock LLM + node dist/main.js + 宿主 API mock）。
  */
 import { spawn } from 'node:child_process';
-import { execFileSync } from 'node:child_process';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
@@ -656,12 +655,23 @@ function checkAuditIntegrity() {
 }
 
 function renderReport({ results, auditReport, dimensionSummary }) {
-  const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
-  const pnpmVersion = execFileSync('pnpm', ['--version'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+  const sourceHash = createHash('sha256');
+  const addTree = (path) => {
+    const entries = readdirSync(path, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) addTree(child);
+      else if (entry.isFile()) sourceHash.update(child.slice(REPO_ROOT.length)).update(readFileSync(child));
+    }
+  };
+  sourceHash.update(readFileSync(SCENARIOS_PATH));
+  addTree(ACCEPTANCE_ROOT);
+  addTree(COMMERCE_ROOT);
+  const project = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
   const lines = [];
   lines.push('# Zen Commerce Agent Phase 1 评测报告 — 2026-07-22');
   lines.push('');
-  lines.push(`证据环境：commit \`${commit}\`；Node \`${process.version}\`；pnpm \`${pnpmVersion}\`；LLM=确定性 mock（非真实模型）。`);
+  lines.push(`证据环境：评测输入 SHA-256 \`${sourceHash.digest('hex')}\`；Node \`${project.engines.node}\`；\`${project.packageManager}\`；LLM=确定性 mock（非真实模型）。`);
   lines.push(`runner：\`scripts/evals/run.mjs\`；每场景重复 ${RUNS} 次，需 ${RUNS}/${RUNS} 全过才算该场景通过（ZA-C-EVAL-02）。`);
   lines.push('');
   lines.push('## 场景通过率');

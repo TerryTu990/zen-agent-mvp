@@ -15,7 +15,21 @@ if (!dockerfile.includes('ZA_SYSTEM_PROMPT_PATH=/app/snapshot/system-prompt.md')
 if (envExample.includes('ZA_FEISHU_CARD_GUIDE_URL') || !envExample.includes('ZA_FULFILLMENT_GUIDE_URL')) {
   throw new Error('Feishu guide env contract drifted from server configuration');
 }
-for (const marker of ['await port.listSites()', 'await port.allTools()', 'current-release', 'flock -x']) {
+for (const marker of [
+  'await port.listSites()',
+  'await port.allTools()',
+  'current-release',
+  'flock -x',
+  'cp -p ${REMOTE_DIR}/docker-compose.yml',
+  'register-legacy-release.sh',
+]) {
   if (!deploy.includes(marker)) throw new Error(`deploy preflight/atomicity marker missing: ${marker}`);
+}
+const registerLegacy = read('release/remote/register-legacy-release.sh');
+if (!registerLegacy.includes('flock -x 9') || !registerLegacy.includes('已有 current-release')) {
+  throw new Error('legacy baseline registration must use the activation lock and compare-and-set');
+}
+if (!read('release/remote/activate-release.sh').includes('/data/za/.release-write-probe-')) {
+  throw new Error('activation must verify the non-root data bind with a write/read/delete probe');
 }
 console.log('release static contracts passed');

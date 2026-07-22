@@ -21,6 +21,7 @@ flock -n 9 || { echo '已有部署正在执行，拒绝并发切换' >&2; exit 3
 [[ -d "${SNAPSHOT_DIR}" ]] || { echo "缺快照：${SNAPSHOT_DIR}" >&2; exit 1; }
 [[ -f "${SNAPSHOT_DIR}/system-prompt.md" ]] || { echo '快照缺 system-prompt.md' >&2; exit 1; }
 install -d -m 700 -o 1000 -g 1000 "${LARK_DIR}"
+install -d -m 700 -o 1000 -g 1000 "${ROOT}/data/za"
 
 OLD_RELEASE=""
 if [[ -L "${CURRENT_LINK}" ]]; then
@@ -65,14 +66,25 @@ validate_release() {
   actual_snapshot="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination \"/app/snapshot\"}}{{.Source}}{{end}}{{end}}' "${cid}")"
   [[ "${actual_snapshot}" == "${expected_snapshot}" ]] || { echo '活动快照与 release 不一致' >&2; return 1; }
 
-  compose "${release_dir}" exec -T zen-agent lark-cli --version >/dev/null
+  # 审计/会话为 fail-open，单看 health 无法发现 bind 目录不可写；实际写读删一个无敏感探针。
+  compose "${release_dir}" exec -T zen-agent sh -eu -c '
+    probe="/data/za/.release-write-probe-$$"
+    umask 077
+    printf ok >"${probe}"
+    test "$(cat "${probe}")" = ok
+    rm -f "${probe}"
+  ' || { echo '持久数据卷不可写' >&2; return 1; }
+  compose "${release_dir}" exec -T zen-agent lark-cli --version >/dev/null || {
+    echo 'lark-cli 不可执行' >&2
+    return 1
+  }
   # 只有三项卡密配置同时存在时才要求 general（或显式 profile）可读、可刷新。
   compose "${release_dir}" exec -T zen-agent sh -eu -c '
     if [ -n "${ZA_FEISHU_CARD_BASE_TOKEN:-}" ] && [ -n "${ZA_FEISHU_CARD_TABLE_ID:-}" ] && [ -n "${ZA_FULFILLMENT_GUIDE_URL:-}" ]; then
       umask 077
       lark-cli --profile "${ZA_FEISHU_PROFILE:-general}" whoami >/dev/null
     fi
-  '
+  ' || { echo '飞书 profile smoke 失败' >&2; return 1; }
 }
 
 rollback() {

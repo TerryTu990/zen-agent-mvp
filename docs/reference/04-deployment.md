@@ -61,7 +61,7 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 - **发布新站点/改配置**：升 `manifest.json` version，上传到不可变 `snapshots/<version>`，以目标镜像强制调用 `listSites()`/`allTools()` 完整加载，再激活版本化 release。
 - **回滚**：服务器侧 `flock` 内恢复上一 release 的 compose、镜像和快照，复验 health、单副本、镜像及挂载后才算成功；首次失败则停止新服务。`current-release` 软链只在冒烟全绿后原子切换。
 - **勿做**：exec 进容器改快照文件（违反 U4，且下次重建即丢）。
-- **远端发布**：`release/deploy-server.sh --snapshot assets` 创建 `releases/<deploy-id>`；healthz、单副本、镜像/挂载或飞书 smoke 失败时恢复完整旧 release。未显式传快照会 fail-closed。
+- **远端发布**：`release/deploy-server.sh --snapshot assets` 创建 `releases/<deploy-id>`；healthz、单副本、镜像/挂载、`/data/za` 非 root 写读删或飞书 smoke 失败时恢复完整旧 release。首次从单体 compose 升级时保存实际旧 compose 并验证其可重放后才登记回滚基线。未显式传快照会 fail-closed。公网域名 health 属激活后的反代报告检查，失败不回滚已在服务器本机全绿的 release。
 
 ## 6. 运维检查单
 

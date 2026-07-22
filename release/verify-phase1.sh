@@ -5,10 +5,15 @@ cd "$(dirname "$0")/.."
 
 TAG="phase1-verify"
 IMAGE="zen-commerce:${TAG}"
+EXTENSION_VERSION="$(node -p "JSON.parse(require('fs').readFileSync('apps/extension/manifest.json','utf8')).version")"
+EXTENSION_ZIP="release/artifacts/zen-commerce-agent-extension-${EXTENSION_VERSION}.zip"
+UNPACKED_EXTENSION="$(mktemp -d)"
+trap 'rm -rf "${UNPACKED_EXTENSION}"' EXIT
 
-pnpm test:e2e:sidepanel
 bash release/build-extension.sh
 node release/test/verify-extension-artifact.mjs
+unzip -q "${EXTENSION_ZIP}" -d "${UNPACKED_EXTENSION}"
+ZA_EXTENSION_E2E_DIR="${UNPACKED_EXTENSION}" node scripts/e2e/run-sidepanel.mjs
 node release/test/verify-release-contract.mjs
 docker build --pull=false --platform linux/amd64 --progress=plain -t "${IMAGE}" .
 docker run --rm --platform linux/amd64 --user node "${IMAGE}" lark-cli --version >/dev/null
