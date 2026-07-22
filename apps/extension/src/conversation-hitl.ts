@@ -14,6 +14,8 @@ export interface ConversationUi {
   appendTextDelta(frame: TextDeltaFrame): void;
   /** 呈现可定位、不含 token/密钥值的错误或状态说明（SEC-04）。 */
   showStatus(message: string): void;
+  showThinking(): void;
+  hideThinking(): void;
   renderToolCard(frame: ToolCardFrame): void;
   /** 弹 HITL 卡片等用户裁决；客户端只呈现与回传、零治理判定。 */
   promptHitl(frame: HitlRequestFrame): Promise<HitlDecisionValue>;
@@ -66,6 +68,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
   const toolCards = new Map<string, HTMLElement>();
   // 工具卡按调用模式归组，同 mode 的卡进同一 section body。
   const toolGroups = new Map<ToolMode, HTMLElement>();
+  let thinking: HTMLElement | null = null;
 
   const scrollToEnd = (): void => {
     messages.scrollTop = messages.scrollHeight;
@@ -144,14 +147,34 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
     },
     showStatus(message) {
       clearStreaming();
+      thinking?.remove();
+      thinking = null;
       const status = document.createElement('div');
       status.className = 'za-status';
       status.textContent = message;
       messages.append(status);
       messages.scrollTop = messages.scrollHeight;
     },
+    showThinking() {
+      if (thinking !== null) return;
+      thinking = document.createElement('div');
+      thinking.className = 'za-thinking';
+      thinking.setAttribute('role', 'status');
+      thinking.innerHTML = `
+        <span class="za-thinking-mark" aria-hidden="true">Z</span>
+        <span>思考中</span>
+        <span class="za-thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span>`;
+      messages.append(thinking);
+      scrollToEnd();
+    },
+    hideThinking() {
+      thinking?.remove();
+      thinking = null;
+    },
     renderToolCard(frame) {
       clearStreaming();
+      thinking?.remove();
+      thinking = null;
       let card = toolCards.get(frame.toolCallId) ?? null;
       if (card === null) {
         card = document.createElement('div');
@@ -161,11 +184,19 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         ensureToolGroup(frame.mode ?? 'client').append(card);
       }
       card.setAttribute('data-status', frame.status);
-      card.textContent = `${STATUS_LABEL[frame.status]}：${frame.summary ?? frame.toolId}`;
+      card.textContent = '';
+      const state = document.createElement('span');
+      state.className = 'za-toolcard-state';
+      state.setAttribute('aria-hidden', 'true');
+      const copy = document.createElement('span');
+      copy.textContent = `${STATUS_LABEL[frame.status]}：${frame.summary ?? frame.toolId}`;
+      card.append(state, copy);
       scrollToEnd();
     },
     promptHitl(frame) {
       clearStreaming();
+      thinking?.remove();
+      thinking = null;
       return new Promise<HitlDecisionValue>((resolve) => {
         const card = document.createElement('div');
         card.setAttribute('data-za-hitl', '');

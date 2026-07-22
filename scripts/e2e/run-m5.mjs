@@ -159,7 +159,7 @@ async function waitServiceWorker(context, timeoutMs) {
 
 async function sendMessage(page, text) {
   await page.locator('#za-input').fill(text);
-  await page.locator('#za-send').click();
+  await page.locator('[data-za-action][data-mode="send"]').click();
 }
 
 async function panelText(page) {
@@ -271,8 +271,8 @@ async function runScenarios(context, packAPage, panelPage) {
 
   await sendMessage(panelPage, '停止演练：执行两步页面操作');
   await approveOneCard(panelPage, '停止演练：等待任务授权');
-  await panelPage.locator('[data-za-stop]:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
-  await panelPage.locator('[data-za-stop]').click();
+  await panelPage.locator('[data-za-action][data-mode="stop"]:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
+  await panelPage.locator('[data-za-action][data-mode="stop"]').click();
   await waitFor(async () => (await panelText(panelPage)).includes('已按用户要求停止'), {
     label: '停止演练：等待停止总结', timeoutMs: 20000,
   });

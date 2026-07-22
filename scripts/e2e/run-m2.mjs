@@ -153,7 +153,7 @@ async function waitServiceWorker(context, timeoutMs) {
 
 async function sendMessage(page, text) {
   await page.locator('#za-input').fill(text);
-  await page.locator('#za-send').click();
+  await page.locator('[data-za-action][data-mode="send"]').click();
 }
 
 /** 宿主页（light DOM）当前是否有元素带 za 高亮 class；#btn-export 命中与否是 DOM 事实、非治理判定。 */

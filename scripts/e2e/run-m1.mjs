@@ -222,7 +222,7 @@ async function waitAssistantBubble(page, index, predicate, { timeoutMs = 15000 }
 
 async function sendMessage(page, text) {
   await page.locator('#za-input').fill(text);
-  await page.locator('#za-send').click();
+  await page.locator('[data-za-action][data-mode="send"]').click();
 }
 
 function assert(condition, message) {

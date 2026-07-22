@@ -8,6 +8,7 @@ const EXTENSION_DIR = process.env.ZA_EXTENSION_E2E_DIR
   ? resolve(process.env.ZA_EXTENSION_E2E_DIR)
   : join(REPO_ROOT, 'apps', 'extension');
 const PROFILE_DIR = join(REPO_ROOT, '.za', 'e2e-profile-sidepanel');
+const SCREENSHOT_PATH = join(REPO_ROOT, '.za', 'e2e-sidepanel.png');
 
 function run(command, args, options = {}) {
   return new Promise((resolveRun, reject) => {
@@ -60,23 +61,42 @@ async function main() {
 
     console.log('[3/3] 打开打包后的 Side Panel 并验证需求入口…');
     const panel = await context.newPage();
+    await panel.setViewportSize({ width: 420, height: 780 });
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     await panel.locator('section[aria-label="Zen Commerce Agent 控制台"]').waitFor();
-    assert((await panel.locator('.za-brand h1').textContent()) === 'Zen Commerce', '生产品牌未切换为 Zen Commerce');
+    assert((await panel.locator('.za-brand h1').textContent()) === 'Zen Commerce Agent', 'Side Panel 主标题不正确');
+    assert((await panel.locator('.za-brand p').textContent()) === '电商智能体', 'Side Panel 副标题不正确');
     await panel.getByText('没有可恢复的 Zen 任务', { exact: true }).waitFor();
-    assert(await panel.getByRole('button', { name: '发送' }).isDisabled(), '无任务组时发送入口必须禁用');
+    assert(await panel.getByRole('button', { name: '发送消息' }).isDisabled(), '无任务组时发送入口必须禁用');
     const windowId = await panel.evaluate(async () => (await chrome.windows.getCurrent()).id);
     assert(typeof windowId === 'number', '无法识别 Side Panel 所在窗口');
     const panelKey = `za.panelGroup.w${windowId}`;
     await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 321 }), { key: panelKey });
     await panel.locator('[data-za-context][data-group-id="321"]').waitFor();
-    assert(!(await panel.getByRole('button', { name: '发送' }).isDisabled()), '迟到任务组未自动绑定');
+    assert(!(await panel.getByRole('button', { name: '上传文件' }).isDisabled()), '迟到任务组未自动绑定');
     await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 322 }), { key: panelKey });
     await panel.locator('[data-za-context][data-group-id="322"]').waitFor();
     await panel.getByLabel('执行偏好').selectOption('dom-only');
     assert((await panel.getByLabel('执行偏好').inputValue()) === 'dom-only', '执行偏好入口不可操作');
-    assert(!(await panel.getByRole('button', { name: '发送' }).isDisabled()), '切换任务组后发送入口未恢复');
-    assert(await panel.getByRole('button', { name: '停止当前操作' }).isDisabled(), '无运行任务时停止按钮必须禁用');
+    const attachmentInput = panel.locator('[data-za-file-input]');
+    await attachmentInput.setInputFiles({ name: 'inventory.csv', mimeType: 'text/csv', buffer: Buffer.from('sku,card\n1,ABC') });
+    await panel.getByRole('button', { name: '移除附件 inventory.csv' }).waitFor();
+    assert(!(await panel.getByRole('button', { name: '发送消息' }).isDisabled()), '仅附件消息应允许发送');
+    await panel.getByRole('button', { name: '移除附件 inventory.csv' }).click();
+    assert(await panel.getByRole('button', { name: '发送消息' }).isDisabled(), '空输入时发送入口必须禁用');
+    await panel.getByLabel('给 Zen 发送消息').fill('检查当前页面，不要执行操作');
+    assert(!(await panel.getByRole('button', { name: '发送消息' }).isDisabled()), '文本输入后发送入口未启用');
+    const busyState = await panel.evaluate(async () => {
+      document.querySelector('[data-za-action]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      return {
+        actionLabel: document.querySelector('[data-za-action]')?.getAttribute('aria-label'),
+        thinking: document.querySelector('.za-thinking')?.textContent,
+      };
+    });
+    assert(busyState.actionLabel === '停止当前操作', '发送与停止未复用同一按钮');
+    assert(busyState.thinking?.includes('思考中'), '发送后未即时显示思考中状态');
+    await panel.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
     console.log('Phase 1A Side Panel E2E 全部场景通过 ✅');
   } catch (error) {
     console.error(`Phase 1A Side Panel E2E 失败：${error instanceof Error ? error.message : String(error)}`);

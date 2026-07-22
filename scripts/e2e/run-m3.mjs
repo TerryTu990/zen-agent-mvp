@@ -178,7 +178,7 @@ async function waitServiceWorker(context, timeoutMs) {
 
 async function sendMessage(page, text) {
   await page.locator('#za-input').fill(text);
-  await page.locator('#za-send').click();
+  await page.locator('[data-za-action][data-mode="send"]').click();
 }
 
 async function panelText(page) {

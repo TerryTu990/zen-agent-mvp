@@ -575,7 +575,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         }
         return;
       }
-      if (message.kind === 'user-message') emitUi({ kind: 'user-echo', text: message.text });
+      if (message.kind === 'user-message') emitUi({ kind: 'user-echo', text: message.displayText ?? message.text });
       if (message.kind === 'hitl-decision') {
         updateHistory((history) => removeSettledHitl(history, message.hitlId));
       }

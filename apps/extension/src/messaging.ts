@@ -46,7 +46,7 @@ export type BackgroundToContentMessage =
 export type SidePanelToBackgroundMessage =
   | { kind: 'panel-bind'; groupId: number }
   | { kind: 'browsing-context'; groupId: number; url?: string; title?: string }
-  | { kind: 'user-message'; text: string; executionPreference: ExecutionPreference }
+  | { kind: 'user-message'; text: string; displayText?: string; executionPreference: ExecutionPreference }
   | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
   | { kind: 'stop-operation' }
   | { kind: 'ping' };

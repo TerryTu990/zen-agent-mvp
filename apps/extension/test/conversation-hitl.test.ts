@@ -139,6 +139,21 @@ describe('appendTextDelta assistant 气泡 markdown 渲染', () => {
   });
 });
 
+describe('thinking indicator', () => {
+  it('is idempotent and can be removed when the response starts', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.showThinking();
+    ui.showThinking();
+    expect(messages.querySelectorAll('.za-thinking').length).toBe(1);
+    expect(messages.querySelector('.za-thinking')?.textContent).toContain('思考中');
+
+    ui.hideThinking();
+    expect(messages.querySelector('.za-thinking')).toBeNull();
+  });
+});
+
 describe('promptHitl HITL 卡片裁决', () => {
   it('approve：点确认按钮 → Promise 解析为 approve', async () => {
     const messages = messagesEl();

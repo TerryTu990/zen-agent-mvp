@@ -175,7 +175,7 @@ async function panelText(panel) {
 
 async function sendMessage(panel, text) {
   await panel.locator('#za-input').fill(text);
-  await panel.locator('#za-send').click();
+  await panel.locator('[data-za-action][data-mode="send"]').click();
 }
 
 async function restartServiceWorker(context, page, scriptUrl, wake) {
