@@ -35,7 +35,10 @@ ssh "${HOST}" "test -f ${REMOTE_DIR}/.env" || {
 # 从现有 /root/zen-agent 单体 compose 平滑迁移：只读取活动容器的非敏感镜像名/挂载源，
 # 生成可供本次失败回滚的首个版本化 descriptor；不重启、不读取 .env 内容。
 if ! ssh "${HOST}" "test -L ${REMOTE_DIR}/current-release"; then
-  LEGACY_CID="$(ssh "${HOST}" "docker compose -p zen-agent -f ${REMOTE_DIR}/docker-compose.yml ps -q zen-agent | sed -n '1p'")"
+  LEGACY_CID=""
+  if ssh "${HOST}" "test -f ${REMOTE_DIR}/docker-compose.yml"; then
+    LEGACY_CID="$(ssh "${HOST}" "docker compose -p zen-agent -f ${REMOTE_DIR}/docker-compose.yml ps -q zen-agent | sed -n '1p'")"
+  fi
   if [[ -n "${LEGACY_CID}" ]]; then
     LEGACY_IMAGE="$(ssh "${HOST}" "docker inspect --format '{{.Config.Image}}' ${LEGACY_CID}")"
     LEGACY_SNAPSHOT="$(ssh "${HOST}" "docker inspect --format '{{range .Mounts}}{{if eq .Destination \"/app/snapshot\"}}{{.Source}}{{end}}{{end}}' ${LEGACY_CID}")"

@@ -22,6 +22,7 @@ for (const marker of [
   'flock -x',
   'cp -p ${REMOTE_DIR}/docker-compose.yml',
   'register-legacy-release.sh',
+  'test -f ${REMOTE_DIR}/docker-compose.yml',
 ]) {
   if (!deploy.includes(marker)) throw new Error(`deploy preflight/atomicity marker missing: ${marker}`);
 }
