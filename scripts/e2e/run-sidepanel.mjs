@@ -63,6 +63,8 @@ async function main() {
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     await panel.locator('section[aria-label="Zen Commerce Agent 控制台"]').waitFor();
     assert((await panel.locator('.za-brand h1').textContent()) === 'Zen Commerce', '生产品牌未切换为 Zen Commerce');
+    await panel.getByText('没有可恢复的 Zen 任务', { exact: true }).waitFor();
+    assert(await panel.getByRole('button', { name: '发送' }).isDisabled(), '无任务组时发送入口必须禁用');
     const windowId = await panel.evaluate(async () => (await chrome.windows.getCurrent()).id);
     assert(typeof windowId === 'number', '无法识别 Side Panel 所在窗口');
     const panelKey = `za.panelGroup.w${windowId}`;
