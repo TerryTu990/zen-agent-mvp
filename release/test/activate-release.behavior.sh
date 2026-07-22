@@ -108,6 +108,9 @@ make_release() {
   : >"${root}/snapshots/${name}/system-prompt.md"
   printf 'ZA_IMAGE_TAG=%s\nZA_SNAPSHOT_HOST_DIR=%s\nZA_LARK_CONFIG_HOST_DIR=%s\n' \
     "${tag}" "${root}/snapshots/${name}" "${root}/lark-cli" >"${root}/releases/${name}/deployment.env"
+  if [[ "${tag}" == old ]]; then
+    printf '%s\n' 'ZA_RELEASE_LEGACY=1' >>"${root}/releases/${name}/deployment.env"
+  fi
 }
 
 run_case() {
@@ -160,6 +163,26 @@ PATH="${MOCK_BIN}:${PATH}" MOCK_STATE="${success_state}" MOCK_CARD_ENABLED=0 \
     "${success_root}/snapshots/new" "${success_root}/lark-cli"
 grep -qx 'whoami:new:skipped' "${success_state}/operations"
 [[ "$(readlink -f "${success_root}/current-release")" == "${success_root}/releases/new" ]]
+
+# 显式 legacy descriptor 可作为人工回滚目标：允许旧快照无外置 prompt，且不要求后来才加入的 lark-cli。
+legacy_root="${TEST_ROOT}/legacy-target"
+legacy_state="${legacy_root}/state"
+mkdir -p "${legacy_state}"
+make_release "${legacy_root}" old old
+make_release "${legacy_root}" new new
+rm "${legacy_root}/snapshots/old/system-prompt.md"
+ln -s "${legacy_root}/releases/new" "${legacy_root}/current-release"
+printf 'zen-agent-server:new\n' >"${legacy_state}/image"
+printf '%s\n' "${legacy_root}/snapshots/new" >"${legacy_state}/snapshot"
+PATH="${MOCK_BIN}:${PATH}" MOCK_STATE="${legacy_state}" \
+  ZA_DEPLOY_HEALTH_ATTEMPTS=1 ZA_DEPLOY_HEALTH_DELAY=0 \
+  bash "${SUBJECT}" "${legacy_root}" "${legacy_root}/releases/old" old \
+    "${legacy_root}/snapshots/old" "${legacy_root}/lark-cli"
+[[ "$(readlink -f "${legacy_root}/current-release")" == "${legacy_root}/releases/old" ]]
+if grep -q '^lark:old:' "${legacy_state}/operations"; then
+  echo 'legacy target 不应要求后来才加入的 lark-cli' >&2
+  exit 1
+fi
 
 # 首次激活失败必须清理新服务且不创建 current-release。
 first_root="${TEST_ROOT}/first"

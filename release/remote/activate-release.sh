@@ -19,7 +19,11 @@ flock -n 9 || { echo '已有部署正在执行，拒绝并发切换' >&2; exit 3
 
 [[ -f "${COMPOSE_FILE}" ]] || { echo "缺 compose：${COMPOSE_FILE}" >&2; exit 1; }
 [[ -d "${SNAPSHOT_DIR}" ]] || { echo "缺快照：${SNAPSHOT_DIR}" >&2; exit 1; }
-[[ -f "${SNAPSHOT_DIR}/system-prompt.md" ]] || { echo '快照缺 system-prompt.md' >&2; exit 1; }
+LEGACY_RELEASE=0
+if [[ -f "${DEPLOYMENT_ENV}" ]] && grep -qx 'ZA_RELEASE_LEGACY=1' "${DEPLOYMENT_ENV}"; then
+  LEGACY_RELEASE=1
+fi
+[[ "${LEGACY_RELEASE}" == 1 || -f "${SNAPSHOT_DIR}/system-prompt.md" ]] || { echo '快照缺 system-prompt.md' >&2; exit 1; }
 install -d -m 700 -o 1000 -g 1000 "${LARK_DIR}"
 install -d -m 700 -o 1000 -g 1000 "${ROOT}/data/za"
 
@@ -33,6 +37,9 @@ printf '%s\n' \
   "ZA_IMAGE_TAG=${IMAGE_TAG}" \
   "ZA_SNAPSHOT_HOST_DIR=${SNAPSHOT_DIR}" \
   "ZA_LARK_CONFIG_HOST_DIR=${LARK_DIR}" >"${tmp_env}"
+if [[ "${LEGACY_RELEASE}" == 1 ]]; then
+  printf '%s\n' 'ZA_RELEASE_LEGACY=1' >>"${tmp_env}"
+fi
 chmod 600 "${tmp_env}"
 mv -f "${tmp_env}" "${DEPLOYMENT_ENV}"
 
@@ -74,17 +81,19 @@ validate_release() {
     test "$(cat "${probe}")" = ok
     rm -f "${probe}"
   ' || { echo '持久数据卷不可写' >&2; return 1; }
-  compose "${release_dir}" exec -T zen-agent lark-cli --version >/dev/null || {
-    echo 'lark-cli 不可执行' >&2
-    return 1
-  }
-  # 只有三项卡密配置同时存在时才要求 general（或显式 profile）可读、可刷新。
-  compose "${release_dir}" exec -T zen-agent sh -eu -c '
-    if [ -n "${ZA_FEISHU_CARD_BASE_TOKEN:-}" ] && [ -n "${ZA_FEISHU_CARD_TABLE_ID:-}" ] && [ -n "${ZA_FULFILLMENT_GUIDE_URL:-}" ]; then
-      umask 077
-      lark-cli --profile "${ZA_FEISHU_PROFILE:-general}" whoami >/dev/null
-    fi
-  ' || { echo '飞书 profile smoke 失败' >&2; return 1; }
+  if ! grep -qx 'ZA_RELEASE_LEGACY=1' "${release_dir}/deployment.env"; then
+    compose "${release_dir}" exec -T zen-agent lark-cli --version >/dev/null || {
+      echo 'lark-cli 不可执行' >&2
+      return 1
+    }
+    # 只有三项卡密配置同时存在时才要求 general（或显式 profile）可读、可刷新。
+    compose "${release_dir}" exec -T zen-agent sh -eu -c '
+      if [ -n "${ZA_FEISHU_CARD_BASE_TOKEN:-}" ] && [ -n "${ZA_FEISHU_CARD_TABLE_ID:-}" ] && [ -n "${ZA_FULFILLMENT_GUIDE_URL:-}" ]; then
+        umask 077
+        lark-cli --profile "${ZA_FEISHU_PROFILE:-general}" whoami >/dev/null
+      fi
+    ' || { echo '飞书 profile smoke 失败' >&2; return 1; }
+  fi
 }
 
 rollback() {

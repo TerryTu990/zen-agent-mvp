@@ -21,6 +21,7 @@ for (const marker of [
   'current-release',
   'flock -x',
   'cp -p ${REMOTE_DIR}/docker-compose.yml',
+  'ZA_RELEASE_LEGACY=1',
   'register-legacy-release.sh',
   'test -f ${REMOTE_DIR}/docker-compose.yml',
 ]) {
@@ -42,5 +43,8 @@ for (const [name, script] of [['register', registerLegacy], ['activate', activat
 }
 if (!activateRelease.includes('/data/za/.release-write-probe-')) {
   throw new Error('activation must verify the non-root data bind with a write/read/delete probe');
+}
+if (!activateRelease.includes("grep -qx 'ZA_RELEASE_LEGACY=1'")) {
+  throw new Error('activation must scope compatibility exceptions to an explicit legacy descriptor');
 }
 console.log('release static contracts passed');

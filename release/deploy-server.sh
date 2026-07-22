@@ -51,7 +51,7 @@ if ! ssh "${HOST}" "test -L ${REMOTE_DIR}/current-release"; then
     BOOTSTRAP_DIR="${REMOTE_DIR}/releases/bootstrap-${DEPLOY_ID}"
     ssh "${HOST}" "install -d -m 700 ${REMOTE_DIR}/releases ${BOOTSTRAP_DIR}"
     # 保留实际旧 compose，而不是拿新模板描述旧镜像；相对 env_file 通过同目录只读软链继续指向唯一 .env。
-    ssh "${HOST}" "cp -p ${REMOTE_DIR}/docker-compose.yml ${BOOTSTRAP_DIR}/docker-compose.yml && ln -s ${REMOTE_DIR}/.env ${BOOTSTRAP_DIR}/.env && printf '%s\n' 'ZA_IMAGE_TAG=${LEGACY_TAG}' 'ZA_SNAPSHOT_HOST_DIR=${LEGACY_SNAPSHOT}' 'ZA_LARK_CONFIG_HOST_DIR=${REMOTE_DIR}/lark-cli' > ${BOOTSTRAP_DIR}/deployment.env.tmp && chmod 600 ${BOOTSTRAP_DIR}/deployment.env.tmp && mv ${BOOTSTRAP_DIR}/deployment.env.tmp ${BOOTSTRAP_DIR}/deployment.env"
+    ssh "${HOST}" "cp -p ${REMOTE_DIR}/docker-compose.yml ${BOOTSTRAP_DIR}/docker-compose.yml && ln -s ${REMOTE_DIR}/.env ${BOOTSTRAP_DIR}/.env && printf '%s\n' 'ZA_IMAGE_TAG=${LEGACY_TAG}' 'ZA_SNAPSHOT_HOST_DIR=${LEGACY_SNAPSHOT}' 'ZA_LARK_CONFIG_HOST_DIR=${REMOTE_DIR}/lark-cli' 'ZA_RELEASE_LEGACY=1' > ${BOOTSTRAP_DIR}/deployment.env.tmp && chmod 600 ${BOOTSTRAP_DIR}/deployment.env.tmp && mv ${BOOTSTRAP_DIR}/deployment.env.tmp ${BOOTSTRAP_DIR}/deployment.env"
     scp -q release/remote/register-legacy-release.sh "${HOST}:${BOOTSTRAP_DIR}/register-legacy-release.sh"
     ssh "${HOST}" "chmod 700 ${BOOTSTRAP_DIR}/register-legacy-release.sh && ${BOOTSTRAP_DIR}/register-legacy-release.sh ${REMOTE_DIR} ${BOOTSTRAP_DIR} ${LEGACY_CID} ${LEGACY_IMAGE} ${LEGACY_SNAPSHOT}"
     echo "已登记现有服务为回滚基线：${BOOTSTRAP_DIR}"
