@@ -63,9 +63,17 @@ async function main() {
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     await panel.locator('section[aria-label="Zen Commerce Agent 控制台"]').waitFor();
     assert((await panel.locator('.za-brand h1').textContent()) === 'Zen Commerce', '生产品牌未切换为 Zen Commerce');
+    const windowId = await panel.evaluate(async () => (await chrome.windows.getCurrent()).id);
+    assert(typeof windowId === 'number', '无法识别 Side Panel 所在窗口');
+    const panelKey = `za.panelGroup.w${windowId}`;
+    await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 321 }), { key: panelKey });
+    await panel.locator('[data-za-context][data-group-id="321"]').waitFor();
+    assert(!(await panel.getByRole('button', { name: '发送' }).isDisabled()), '迟到任务组未自动绑定');
+    await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 322 }), { key: panelKey });
+    await panel.locator('[data-za-context][data-group-id="322"]').waitFor();
     await panel.getByLabel('执行偏好').selectOption('dom-only');
     assert((await panel.getByLabel('执行偏好').inputValue()) === 'dom-only', '执行偏好入口不可操作');
-    assert(await panel.getByRole('button', { name: '发送' }).isDisabled(), '未绑定任务页时发送按钮必须禁用');
+    assert(!(await panel.getByRole('button', { name: '发送' }).isDisabled()), '切换任务组后发送入口未恢复');
     assert(await panel.getByRole('button', { name: '停止当前操作' }).isDisabled(), '无运行任务时停止按钮必须禁用');
     console.log('Phase 1A Side Panel E2E 全部场景通过 ✅');
   } catch (error) {

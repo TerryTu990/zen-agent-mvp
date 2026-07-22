@@ -1,6 +1,10 @@
 /** 本插件实际触达的 chrome.* 最小面（MV3 Promise 形态）；不引 @types/chrome 全量类型。 */
 declare namespace chrome {
   namespace storage {
+    interface StorageChange {
+      oldValue?: unknown;
+      newValue?: unknown;
+    }
     interface StorageArea {
       get(keys: string | string[]): Promise<Record<string, unknown>>;
       set(items: Record<string, unknown>): Promise<void>;
@@ -10,7 +14,7 @@ declare namespace chrome {
     /** 跨 SW 重启存活、随浏览器关闭清除；会话存根的正确层（adr-012）。 */
     const session: StorageArea;
     const onChanged: {
-      addListener(callback: (changes: Record<string, unknown>, areaName: string) => void): void;
+      addListener(callback: (changes: Record<string, StorageChange>, areaName: string) => void): void;
     };
   }
 

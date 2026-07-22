@@ -78,12 +78,13 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
   return { messages, input, send, stop, preference, context, contextTitle, contextDetail };
 }
 
-function startSidePanel(elements: SidePanelElements): void {
+export function startSidePanel(elements: SidePanelElements): void {
   let ui = createConversationUi(elements.messages);
   let port: chrome.runtime.Port | null = null;
   let boundGroupId: number | null = null;
   let windowId: number | null = null;
   let reconnectTimer: number | null = null;
+  let connectionGeneration = 0;
 
   const clearEmpty = (): void => elements.messages.querySelector('.za-empty')?.remove();
   const send = (message: SidePanelToBackgroundMessage): void => {
@@ -150,19 +151,45 @@ function startSidePanel(elements: SidePanelElements): void {
 
   const connect = (): void => {
     if (boundGroupId === null) return;
+    const groupId = boundGroupId;
+    const generation = connectionGeneration;
     const connected = chrome.runtime.connect({ name: SIDE_PANEL_PORT_NAME });
     port = connected;
     connected.onMessage.addListener(routeMessage);
     connected.onDisconnect.addListener(() => {
       if (port === connected) port = null;
+      if (generation !== connectionGeneration) return;
       if (reconnectTimer !== null) return;
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
         connect();
       }, 300);
     });
-    connected.postMessage({ kind: 'panel-bind', groupId: boundGroupId } satisfies SidePanelToBackgroundMessage);
+    connected.postMessage({ kind: 'panel-bind', groupId } satisfies SidePanelToBackgroundMessage);
     void announceBrowsingContext();
+  };
+
+  const bindGroup = (groupId: number): void => {
+    if (groupId === TAB_GROUP_ID_NONE || (boundGroupId === groupId && port !== null)) return;
+    connectionGeneration += 1;
+    if (reconnectTimer !== null) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    const previous = port;
+    port = null;
+    previous?.disconnect();
+    boundGroupId = groupId;
+    elements.context.dataset['groupId'] = String(groupId);
+    elements.context.dataset['state'] = 'waiting';
+    elements.contextTitle.textContent = '正在连接任务页面';
+    elements.contextDetail.textContent = `任务组 ${groupId}`;
+    elements.messages.textContent = '';
+    ui = createConversationUi(elements.messages);
+    elements.input.disabled = true;
+    elements.send.disabled = true;
+    elements.stop.disabled = true;
+    connect();
   };
 
   const submit = (): void => {
@@ -202,15 +229,20 @@ function startSidePanel(elements: SidePanelElements): void {
     if (tab?.windowId === undefined) return;
     windowId = tab.windowId;
     const key = panelGroupKey(windowId);
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'session') return;
+      const changed = changes[key]?.newValue;
+      if (typeof changed === 'number') bindGroup(changed);
+    });
     const stored = (await chrome.storage.session.get(key))[key];
     const fallback = tab.groupId ?? TAB_GROUP_ID_NONE;
-    boundGroupId = typeof stored === 'number' ? stored : fallback;
-    if (boundGroupId === TAB_GROUP_ID_NONE) {
+    const initialGroupId = typeof stored === 'number' ? stored : fallback;
+    if (initialGroupId === TAB_GROUP_ID_NONE) {
       elements.contextTitle.textContent = '没有可恢复的 Zen 任务';
       elements.contextDetail.textContent = '在目标页面点击 Zen 图标创建任务组';
       return;
     }
-    connect();
+    bindGroup(initialGroupId);
   });
 }
 
