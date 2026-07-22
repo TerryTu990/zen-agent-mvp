@@ -22,9 +22,10 @@ const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
 // acceptance 根跑 codeflow-console/mail-126 两验收 pack（origin 为 codeflow.asia/mail.126.com，与 host-demo 不同源，故须独立载入）。
 const SNAPSHOT_ROOT = join(REPO_ROOT, 'examples', 'host-demo', 'config');
 const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
+const COMMERCE_ROOT = join(REPO_ROOT, 'assets');
 const AUDIT_SCHEMA_PATH = join(REPO_ROOT, 'packages', 'contracts', 'schemas', 'audit-event.schema.json');
 const AUDIT_SINK_PATH = join(REPO_ROOT, '.za', 'eval-events.jsonl');
-const REPORT_PATH = join(REPO_ROOT, 'evals', 'runs', '2026-07-04-eval.md');
+const REPORT_PATH = join(REPO_ROOT, 'evals', 'runs', '2026-07-22-commerce-phase1.md');
 
 const JWT_SECRET = 'za-test-secret';
 const SIGNING_SECRET = 'za-test-signing-secret';
@@ -716,13 +717,14 @@ function makeStop(child) {
 }
 
 /** 逐 pack 跑其 eval/scenarios.json（发现为空即打印跳过），结果并入 results。 */
-async function runPackSets(root, token, results) {
+async function runPackSets(root, token, results, excludedPackIds = new Set()) {
   const packSets = discoverPackScenarios(root);
   if (packSets.length === 0) {
     console.log(`  未发现 pack 级评测素材（${join(root, 'packs')}/*/eval/scenarios.json），跳过。`);
     return;
   }
   for (const { packId, scenarios: packScenarios } of packSets) {
+    if (excludedPackIds.has(packId)) continue;
     console.log(`  pack「${packId}」：${packScenarios.length} 个场景 × ${RUNS} 次`);
     for (const scenario of packScenarios) {
       const runOutcomes = [];
@@ -808,8 +810,17 @@ async function main() {
     await waitServerReady();
 
     console.log('\n按根发现 pack 级评测（acceptance 根 · packs/*/eval/scenarios.json）…');
-    await runPackSets(ACCEPTANCE_ROOT, token, results);
+    await runPackSets(ACCEPTANCE_ROOT, token, results, new Set(['xianyu-seller']));
     await stopServer2();
+
+    console.log('\n换起 Zen Commerce Agent 生产快照 server…');
+    const stopServer3 = makeStop(startServer(COMMERCE_ROOT));
+    cleanups.push(stopServer3);
+    await waitServerReady();
+
+    console.log('\n按根发现生产 pack 级评测（assets/packs/*/eval/scenarios.json）…');
+    await runPackSets(COMMERCE_ROOT, token, results);
+    await stopServer3();
 
     console.log('\n审计完整性校验…');
     const auditReport = checkAuditIntegrity();

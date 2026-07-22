@@ -16,6 +16,12 @@ RUN pnpm install --frozen-lockfile --filter @zen-agent/server... \
 
 FROM node:22-slim
 ENV NODE_ENV=production
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && npm install -g @larksuite/cli@1.0.72 \
+  && lark-cli --version \
+  && npm cache clean --force \
+  && rm -rf /var/lib/apt/lists/*
 # 基座提示默认从镜像自带副本读取；挂卷覆盖 ZA_SYSTEM_PROMPT_PATH 可换。
 COPY assets/system-prompt.md /app/assets/system-prompt.md
 COPY --from=builder /deploy /app/server
@@ -25,10 +31,12 @@ ENV ZA_HOST=0.0.0.0 \
     ZA_PORT=8787 \
     ZA_SYSTEM_PROMPT_PATH=/app/assets/system-prompt.md \
     ZA_AUDIT_SINK=/data/za/events.jsonl \
-    ZA_SESSION_DIR=/data/za/sessions
+    ZA_SESSION_DIR=/data/za/sessions \
+    ZA_LARK_CLI_PATH=lark-cli \
+    LARKSUITE_CLI_CONFIG_DIR=/data/lark-cli
 # 镜像内预建数据目录并授 node 属主：named volume 首挂继承该属主，
 # 否则挂载点归 root、非 root 进程不可写 → 审计/会话 fail-open 静默丢数据。
-RUN mkdir -p /data/za && chown -R node:node /data/za
+RUN mkdir -p /data/za /data/lark-cli && chown -R node:node /data/za /data/lark-cli
 USER node
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \

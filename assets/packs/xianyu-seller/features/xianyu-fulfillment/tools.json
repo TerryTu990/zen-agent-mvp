@@ -1,0 +1,146 @@
+[
+  {
+    "id": "xianyu-fulfillment.compose-test-message",
+    "featureIds": ["xianyu-fulfillment"],
+    "description": "在闲鱼聊天页填写并读取一段非秘密测试占位内容，不点击发送。只允许用户本次明确提供、可进入模型上下文的测试文字；真实卡密、token、密码等 secret 禁止作为 value。使用前 page_snapshot 并核对路由 orderId；steps 只能包含 fill/read，ref 来自最近快照；填写后重新快照确认发送按钮状态。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "steps", "summary"],
+      "properties": {
+        "task": { "type": "string", "description": "测试消息任务标题" },
+        "plan": { "type": "array", "items": { "type": "string" }, "description": "首批操作计划" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["action", "ref"],
+            "properties": {
+              "action": { "enum": ["fill", "read"] },
+              "ref": { "type": "string" },
+              "value": { "type": "string" },
+              "name": { "type": "string" }
+            }
+          }
+        },
+        "summary": { "type": "string", "description": "明确说明仅填写非秘密测试占位内容且不发送" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/"],
+      "snapshotEvidence": [
+        {
+          "id": "message-receipts",
+          "itemSelector": "[class*=\"message-content\"]",
+          "statusSelector": "[class*=\"read-status-text\"]",
+          "statuses": ["未读", "已读"]
+        }
+      ]
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": ["reads", "completedSteps"],
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "number" },
+        "url": { "type": "string" }
+      }
+    }
+  },
+  {
+    "id": "xianyu-fulfillment.send-test-message",
+    "featureIds": ["xianyu-fulfillment"],
+    "description": "点击闲鱼聊天页的“发 送”按钮，发送已准备好的非秘密测试占位内容。每次调用独立确认；使用前必须重新 page_snapshot 核对 orderId、textarea 内容与发送按钮可用，steps 只能有一个 click。发送后必须再次 page_snapshot；没有明确页面回显时判为结果不明确并停止，禁止自动重发。不得用于真实卡密。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task", "steps", "summary"],
+      "properties": {
+        "task": { "type": "string", "description": "本次测试发送任务标题" },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["action", "ref"],
+            "properties": {
+              "action": { "enum": ["click"] },
+              "ref": { "type": "string" }
+            }
+          }
+        },
+        "summary": { "type": "string", "description": "明确说明将对外发送非秘密测试占位内容" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "hitlMode": "every-call",
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/"],
+      "snapshotEvidence": [
+        {
+          "id": "message-receipts",
+          "itemSelector": "[class*=\"message-content\"]",
+          "statusSelector": "[class*=\"read-status-text\"]",
+          "statuses": ["未读", "已读"]
+        }
+      ]
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": ["reads", "completedSteps"],
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "number" },
+        "url": { "type": "string" }
+      }
+    }
+  },
+  {
+    "id": "xianyu-fulfillment.execute-intent",
+    "featureIds": ["xianyu-fulfillment"],
+    "description": "执行可信服务端连接器已经登记的一次性履约意图。参数只能是 opaque intentId；消息正文、订单、商品、数量和固定 DOM 步骤均从 toolgate 内存意图取得，模型不得自报或改写。无有效意图时拒绝。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intentId"],
+      "properties": {
+        "intentId": { "type": "string", "minLength": 1, "description": "可信连接器返回的一次性履约意图标识" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "hitlMode": "every-call",
+    "authorization": { "kind": "bounded-fulfillment", "intentIdParam": "intentId" },
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/"],
+      "snapshotEvidence": [
+        {
+          "id": "message-receipts",
+          "itemSelector": "[class*=\"message-content\"]",
+          "statusSelector": "[class*=\"read-status-text\"]",
+          "statuses": ["未读", "已读"]
+        }
+      ]
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": ["reads", "completedSteps"],
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "integer", "const": 2 },
+        "url": { "type": "string" }
+      }
+    }
+  }
+]

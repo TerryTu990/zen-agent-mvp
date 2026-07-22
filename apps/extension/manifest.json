@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "minimum_chrome_version": "137",
-  "name": "zen-agent",
-  "version": "0.2.0",
-  "description": "宿主系统功能辅助智能体（讲解 / UI 引导 / API 调用协助）",
+  "name": "Zen Commerce Agent",
+  "version": "0.3.0",
+  "description": "闲鱼订单识别、卡密履约与经营辅助智能体",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -19,7 +19,7 @@
     "open_in_tab": true
   },
   "action": {
-    "default_title": "zen",
+    "default_title": "Zen Commerce Agent",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",

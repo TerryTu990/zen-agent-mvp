@@ -1,16 +1,12 @@
-# assets/ — 生产配置快照根（C4 布局）
+# assets/ — Zen Commerce Agent 生产配置快照根
 
 本目录是运行期装配制品的生产快照根：`system-prompt.md`（跨功能稳定基座）+
-`features/<id>/` 三件套 + `skills/<fn>/SKILL.md` + 根 `manifest.json`。
-布局与消费方式见 `features/README.md` 与 `skills/README.md`。
+`packs/<packId>/` 站点包 + 根 `manifest.json` registry。生产首期只安装
+`xianyu-seller`，未命中闲鱼 URL 时只装配稳定基座。
 
-## 根 manifest.json 暂缺说明
+## 发布纪律
 
-`config-snapshot` 契约要求 `featureIdRules` 至少 1 条，且装配引擎对每条规则指向的
-featureId 做 fail-closed 校验（功能目录三件套必须齐备，否则整快照拒载）。当前
-`features/` 尚无实体功能，任何 manifest 都必然指向不存在的功能而被拒载，故不放置
-占位 manifest（禁造假配置）。
-
-- 补齐锚点：首个生产功能配置（`features/<id>/` 三件套）落地时，同步补
-  `manifest.json{version, featureIdRules, features}`。
-- 在此之前，开发与 E2E 以 `examples/host-demo/config/` 为快照根（server 启动参数指定）。
+- 快照内容变更必须同时提升 registry/pack 版本。
+- 发布前运行 `pnpm verify:phase1` 和命中 pack 的功能评测。
+- 生产按版本目录上传、完整拒载校验后切换；禁止覆盖活动快照目录。
+- `examples/acceptance/packs/xianyu-seller` 保留为多 pack 验收输入，生产事实权威为本目录。

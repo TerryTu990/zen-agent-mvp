@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createAssemblyPort } from '../src/index.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
-const acceptanceRoot = join(repoRoot, 'examples/acceptance');
+const acceptanceRoot = join(repoRoot, 'assets');
 const systemPromptPath = join(repoRoot, 'assets/system-prompt.md');
 
 function acceptancePort() {

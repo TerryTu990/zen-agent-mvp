@@ -5,7 +5,7 @@
 
 ## 1. 设计原则
 
-1. **站点包不进镜像**：快照根以只读卷挂入（`ZA_SNAPSHOT_ROOT=/app/snapshot`）。换站点配置 = 替换宿主机目录内容后重启容器，无需重建镜像——这是 U4（改配置=发新版本）在部署面的体现，也为标准版"配置中心发布"预留了同构接缝（届时只是换快照目录的生产端）。
+1. **站点包不进镜像**：快照根以只读卷挂入（`ZA_SNAPSHOT_ROOT=/app/snapshot`）。新快照先上传到版本目录并完整校验，再切换 compose 挂载；禁止覆盖活动目录。这是 U4（改配置=发新版本）在部署面的体现。
 2. **secret 只走运行时 env**：`ZA_JWT_SECRET` / `ZA_SIGNING_SECRET` / `ZA_LLM_API_KEY` / `ZA_CRED_*` 经环境注入（compose `${VAR:?required}` / K8s Secret），MUST NOT bake 进镜像层或写入 compose 文件。
 3. **日志双通道，不可混淆**：
    - **容器日志（stdout/stderr）**= 运维排障流：启动信息、请求异常、LLM 上游错误、fail-open 告警（均已脱敏，SEC-04）；交给容器平台采集（`docker logs` / Loki / CloudWatch）。
@@ -61,6 +61,7 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 - **发布新站点/改配置**：在宿主机准备新版本快照目录（升 `manifest.json` 的 `version`）→ 原子替换挂载目录内容（或切换挂载指向新目录）→ 重启容器。装配器启动期 fail-fast：坏配置容器起不来（`快照拒载：…`），旧容器可继续跑——天然的发布安全阀。
 - **回滚**：切回旧版本目录 → 重启。审计事件里的 `snapshotVersion` 可核对每轮对话用的是哪个版本。
 - **勿做**：exec 进容器改快照文件（违反 U4，且下次重建即丢）。
+- **远端发布**：`release/deploy-server.sh --snapshot assets` 同时记录旧镜像与旧快照挂载，目标镜像校验新快照后成对切换；healthz 或单副本检查失败时成对回滚。
 
 ## 6. 运维检查单
 

@@ -6,7 +6,7 @@
 
 ## 决策
 
-首版不建设 Zen 管理后台或独立库存数据库，只使用一张私有飞书多维表登记卡密及 `available / reserved / sent / manual` 状态。运行时复用 `/Users/terrytu/Workspace2025/Working/feishu` 的 `general` profile 与既有 token 获取/刷新边界，通过 `lark-cli --as user` 访问；Zen 不实现第二套飞书 OAuth、token 存储或共享权限管理。
+首版不建设 Zen 管理后台或独立库存数据库，只使用一张私有飞书多维表登记卡密及 `available / reserved / sent / manual` 状态。运行时通过镜像内固定版本的 `lark-cli --profile general --as user` 访问；profile 与 token 位于服务器受控持久卷，刷新结果可写回且容器重建不丢。Zen Commerce Agent 不实现第二套飞书 OAuth、token 存储或共享权限管理，也不依赖外部本地工作目录。
 
 库存存储与履约编排分成两个模块。`packages/card-inventory` 只负责同订单查重、领取、预占与终态回填；`packages/fulfillment` 只负责“先预占 → 登记 opaque toolgate intent → 按页面回执回填”。两者只依赖 `@zen-agent/contracts`，唯一接线点仍是 `apps/server`。模型只见 `intentId`，卡密原文只在服务端库存端口、履约编排和最终签名 DOM 指令之间短暂流转，不进入模型、会话历史、审计或日志。
 

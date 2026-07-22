@@ -1,0 +1,6 @@
+{
+  "version": "1.0.0",
+  "packs": [
+    { "packId": "xianyu-seller", "version": "0.6.0" }
+  ]
+}

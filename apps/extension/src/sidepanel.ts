@@ -23,16 +23,16 @@ interface SidePanelElements {
 
 export function mountSidePanel(root: HTMLElement): SidePanelElements {
   root.innerHTML = `
-    <section class="za-shell" aria-label="Zen Agent 控制台">
+    <section class="za-shell" aria-label="Zen Commerce Agent 控制台">
       <header class="za-topbar">
         <div class="za-mark" aria-hidden="true">Z</div>
-        <div class="za-brand"><h1>Zen Agent</h1><p>Browser operation console</p></div>
+        <div class="za-brand"><h1>Zen Commerce</h1><p>闲鱼电商智能体</p></div>
       </header>
       <section class="za-context" data-za-context data-state="waiting" aria-live="polite">
         <span class="za-context-dot" aria-hidden="true"></span>
         <div class="za-context-copy">
           <div class="za-context-title">等待连接任务页面</div>
-          <div class="za-context-detail">打开目标站点后点击 Zen 图标</div>
+          <div class="za-context-detail">打开闲鱼卖家后台后点击 Zen Commerce 图标</div>
         </div>
         <label>
           <span hidden>执行偏好</span>

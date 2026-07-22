@@ -193,6 +193,7 @@
 | `ZA_FULFILLMENT_PRODUCT_KEYS_JSON` | `{}` | 闲鱼 `itemId` 到飞书 `product_key` 的服务端 JSON 对象；为空时不向模型注入零参数真实履约准备工具 |
 | `ZA_FEISHU_PROFILE` | `general` | `lark-cli` profile；运行时 token 获取/刷新复用飞书项目现有边界 |
 | `ZA_LARK_CLI_PATH` | `lark-cli` | 可选 CLI 可执行文件路径（容器/sidecar 部署时显式设置） |
+| `LARKSUITE_CLI_CONFIG_DIR` | CLI 默认目录；生产为 `/data/lark-cli` | 飞书 profile 与 token 刷新状态目录；生产必须挂服务器受控持久卷，不进镜像或仓库 |
 
 ### 凭证与演示
 

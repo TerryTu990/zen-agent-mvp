@@ -1,0 +1,28 @@
+{
+  "packId": "xianyu-seller",
+  "version": "0.6.0",
+  "summary": "闲鱼卖家 PC 端：数据导航、订单识别与受控履约",
+  "site": {
+    "origin": "https://seller.goofish.com",
+    "locations": ["/"]
+  },
+  "featureIdRules": [
+    {
+      "urlPattern": "seller\\.goofish\\.com/.*#/seller-trade/order-manage/order-detail(?:\\?|$)",
+      "featureId": "xianyu-orders"
+    },
+    {
+      "urlPattern": "seller\\.goofish\\.com/.*#/seller-trade/order-manage(?:\\?|$)",
+      "featureId": "xianyu-orders"
+    },
+    {
+      "urlPattern": "seller\\.goofish\\.com/.*#/im(?:\\?|$)",
+      "featureId": "xianyu-fulfillment"
+    },
+    {
+      "urlPattern": "seller\\.goofish\\.com/.*#/seller-data/data(?:\\?|$)",
+      "featureId": "xianyu-seller-data"
+    }
+  ],
+  "features": ["xianyu-seller-data", "xianyu-orders", "xianyu-fulfillment"]
+}

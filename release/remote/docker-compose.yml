@@ -10,9 +10,12 @@ services:
       - .env
     environment:
       ZA_SNAPSHOT_ROOT: /app/snapshot
+      LARKSUITE_CLI_CONFIG_DIR: /data/lark-cli
     volumes:
-      # 站点包快照（只读）：换站点配置 = 更新本目录内容后 docker compose restart。
-      - /root/zen-agent/snapshot:/app/snapshot:ro
+      # 快照由 deploy-server.sh 以版本目录切换；禁止覆盖活动目录。
+      - ${ZA_SNAPSHOT_HOST_DIR:-/root/zen-agent/snapshot}:/app/snapshot:ro
       # 运行数据（可写）：审计 events.jsonl + 会话 sessions/，容器重建不丢。
       - /root/zen-agent/data/za:/data/za
+      # 飞书 profile/token 刷新状态：服务器受控目录，容器重建不丢。
+      - ${ZA_LARK_CONFIG_HOST_DIR:-/root/zen-agent/lark-cli}:/data/lark-cli
     restart: unless-stopped

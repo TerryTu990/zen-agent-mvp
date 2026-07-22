@@ -688,7 +688,7 @@ async function sendActivate(tabId: number): Promise<void> {
 /** 新建 zen 标签页组并命名（同 origin 多组各自独立）；返回新组 id。 */
 async function createZenGroup(tabId: number): Promise<number> {
   const groupId = await chrome.tabs.group({ tabIds: tabId });
-  await chrome.tabGroups.update(groupId, { title: 'zen', color: 'purple' }).catch(() => {});
+  await chrome.tabGroups.update(groupId, { title: 'commerce', color: 'purple' }).catch(() => {});
   return groupId;
 }
 

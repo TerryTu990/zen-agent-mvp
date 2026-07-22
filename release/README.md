@@ -24,7 +24,7 @@ release/
 │   ├── docker-compose.yml     # 服务器侧 compose（/root/zen-agent 挂载布局）
 │   └── env.example            # 服务器侧 .env 模板（真值只在服务器上填）
 └── artifacts/                 # 本地产物输出（gitignore）
-    ├── zen-agent-extension-<version>.zip
+    ├── zen-commerce-agent-extension-<version>.zip
     └── zen-agent-server-<tag>.tar.gz   # deploy 脚本临时产物
 ```
 
@@ -34,9 +34,12 @@ release/
 /root/zen-agent/
 ├── docker-compose.yml   # 由 deploy-server.sh 同步
 ├── .env                 # secret 与环境参数（手工维护，不入仓、不经本机传输）
-├── snapshot/            # 站点包快照根（只读挂入容器；换配置=换内容+重启）
-│   ├── manifest.json
-│   └── packs/…
+├── deployment.env      # 当前镜像 tag 与快照版本目录（无 secret）
+├── snapshots/          # 不可变版本目录；至少保留当前和上一版
+│   └── <version>/
+│       ├── manifest.json
+│       └── packs/…
+├── lark-cli/           # 飞书 general profile 与 token 刷新状态（受控持久目录）
 └── data/za/             # 审计 events.jsonl + 会话 sessions/（可写挂载，容器重建不丢）
 ```
 
@@ -45,7 +48,7 @@ release/
 | 形态 | 产物 | 分发 |
 |---|---|---|
 | 服务端 | docker 镜像 `zen-agent-server:<git-sha>` | `deploy-server.sh` 到 lingm2 |
-| Chrome 插件 | `artifacts/zen-agent-extension-<version>.zip`（生产服务端地址已烤入缺省值） | 手工分发/企业策略/商店 |
+| Chrome 插件 | `artifacts/zen-commerce-agent-extension-<version>.zip`（生产服务端地址已烤入缺省值） | 手工分发/企业策略/商店 |
 | 嵌入 SDK / 浏览器壳 | （未有产物） | 锚点：S3 多形态客户端落地时补 `build-sdk.sh` 等 |
 
 ## 用户认证（当前形态：管理员签发令牌）
@@ -65,10 +68,11 @@ cd /root/zen-agent && ./sign-token.sh <宿主用户id>        # 默认 30 天；
 
 ```bash
 release/build-server-image.sh          # 1. 构建 amd64 镜像
-release/deploy-server.sh               # 2. 传输 + 远端 up -d + healthz 冒烟
+release/deploy-server.sh --snapshot assets # 2. 上传版本快照 + 校验 + 成对切换 + 冒烟
 release/build-extension.sh             # 3. （插件有变更时）打 zip
 release/sign-token.sh -u <用户id>      # 4. 给新用户签发访问令牌
 ```
 
 首次部署前提（人工，一次性）：服务器 `/root/zen-agent/.env` 按 `remote/env.example` 填好真值；
-`snapshot/` 就位；1panel 反代已指向 `127.0.0.1:9010`（SSE 需关闭响应缓冲，见 04-deployment §6）。
+飞书启用时在受控 `lark-cli/` 卷完成 `general` profile 授权；1panel 反代已指向
+`127.0.0.1:9010`（SSE 需关闭响应缓冲，见 04-deployment §6）。

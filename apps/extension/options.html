@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>zen-agent 设置</title>
+  <title>Zen Commerce Agent 设置</title>
   <style>
     body { font: 14px/1.6 system-ui, -apple-system, sans-serif; color: #1c1b18; background: #faf9f6; margin: 0; padding: 32px; }
     .card { max-width: 560px; margin: 0 auto; background: #fff; border: 1px solid #e4e1da; border-radius: 14px; padding: 24px 28px; }
@@ -22,14 +22,14 @@
 </head>
 <body>
   <div class="card">
-    <h1>zen-agent 设置</h1>
+    <h1>Zen Commerce Agent 设置</h1>
     <p class="sub">访问令牌由管理员签发；令牌仅存于本浏览器（chrome.storage.local），不会发给服务端以外的任何地方。</p>
     <label>访问令牌<span class="hint">向管理员获取，过期后重新获取并更新</span></label>
     <textarea id="token" placeholder="粘贴管理员发给你的令牌（eyJ 开头的一长串）"></textarea>
     <label>服务端地址<span class="hint">一般无需修改</span></label>
     <input id="baseUrl" placeholder="留空使用默认" />
     <label class="check"><input id="xianyuAutoScan" type="checkbox" />启用闲鱼自动履约扫描</label>
-    <p class="sub">默认关闭。只唤醒已打开且已加入 zen 会话组的闲鱼订单/聊天页；不会自动新建页面。任一不确定状态会暂停。</p>
+    <p class="sub">默认关闭。只唤醒已打开且已加入 Commerce 会话组的闲鱼订单/聊天页；不会自动新建页面。任一不确定状态会暂停。</p>
     <label>扫描周期（分钟）<span class="hint">1–60；建议 5 分钟</span></label>
     <input id="xianyuAutoScanMinutes" type="number" min="1" max="60" step="1" value="5" />
     <div class="row">

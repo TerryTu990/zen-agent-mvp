@@ -14,7 +14,7 @@ pnpm --filter @zen-agent/extension build >/dev/null
 
 VERSION="$(node -p "JSON.parse(require('fs').readFileSync('apps/extension/manifest.json','utf8')).version")"
 OUT_DIR="release/artifacts"
-OUT="${OUT_DIR}/zen-agent-extension-${VERSION}.zip"
+OUT="${OUT_DIR}/zen-commerce-agent-extension-${VERSION}.zip"
 mkdir -p "${OUT_DIR}"
 rm -f "${OUT}"
 

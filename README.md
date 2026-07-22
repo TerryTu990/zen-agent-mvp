@@ -1,7 +1,7 @@
-# zen-agent-mvp
+# Zen Commerce Agent
 
-嵌入式"功能辅助智能体"平台：在 ToB 宿主系统上叠加 agent，按用户当前功能动态装配
-规则/skills/工具集，提供功能讲解、UI 引导与 API 调用协助。
+面向电商经营的可治理浏览器智能体。首期在闲鱼卖家 PC 端完成订单识别、飞书卡密预占、
+受控履约和页面结果复核；客服、商品发布与经营分析按真实业务里程碑扩展。
 
 **双版本一句话**：MVP = 模块化单体 + Chrome 插件 + git 文件配置 + 客户端代执行通道；
 标准版 = 七系统独立部署 + 三形态客户端 + 双执行通道 + 配置中心——靠升级不变量 U1-U7
@@ -25,7 +25,7 @@ packages/
 apps/
 ├── server/       # 模块化单体组装点（唯一同时依赖全部包，U2）
 └── extension/    # Chrome 插件（C3 接入层契约实现，零 @zen-agent 依赖、经 HTTP/SSE 通信）
-assets/           # 运行期治理制品：system-prompt.md（ZA-SYS-*）+ features/ + skills/
+assets/           # Zen Commerce Agent 生产快照：稳定基座 + xianyu-seller pack
 examples/host-demo/   # 静态 demo 宿主页 + 示例功能配置（开发与评测锚定样例）
 ```
 
