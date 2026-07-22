@@ -28,7 +28,7 @@ replicas="$(printf '%s\n' "${descriptor_cid}" | sed '/^$/d' | wc -l | tr -d ' ')
   echo 'legacy 活动镜像已变化，拒绝登记陈旧基线' >&2
   exit 1
 }
-[[ "$(docker inspect --format '{{range .Mounts}}{{if eq .Destination \"/app/snapshot\"}}{{.Source}}{{end}}{{end}}' "${LEGACY_CID}")" == "${LEGACY_SNAPSHOT}" ]] || {
+[[ "$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/snapshot"}}{{.Source}}{{end}}{{end}}' "${LEGACY_CID}")" == "${LEGACY_SNAPSHOT}" ]] || {
   echo 'legacy 活动快照已变化，拒绝登记陈旧基线' >&2
   exit 1
 }

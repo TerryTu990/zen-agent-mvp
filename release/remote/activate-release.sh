@@ -63,7 +63,7 @@ validate_release() {
   cid="$(compose "${release_dir}" ps -q zen-agent)"
   actual_image="$(docker inspect --format '{{.Config.Image}}' "${cid}")"
   [[ "${actual_image}" == "${expected_image}" ]] || { echo '活动镜像与 release 不一致' >&2; return 1; }
-  actual_snapshot="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination \"/app/snapshot\"}}{{.Source}}{{end}}{{end}}' "${cid}")"
+  actual_snapshot="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/snapshot"}}{{.Source}}{{end}}{{end}}' "${cid}")"
   [[ "${actual_snapshot}" == "${expected_snapshot}" ]] || { echo '活动快照与 release 不一致' >&2; return 1; }
 
   # 审计/会话为 fail-open，单看 health 无法发现 bind 目录不可写；实际写读删一个无敏感探针。

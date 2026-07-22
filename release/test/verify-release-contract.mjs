@@ -27,6 +27,7 @@ for (const marker of [
   if (!deploy.includes(marker)) throw new Error(`deploy preflight/atomicity marker missing: ${marker}`);
 }
 const registerLegacy = read('release/remote/register-legacy-release.sh');
+const activateRelease = read('release/remote/activate-release.sh');
 if (
   !registerLegacy.includes('flock -x 9') ||
   !registerLegacy.includes('已有 current-release') ||
@@ -34,7 +35,12 @@ if (
 ) {
   throw new Error('legacy baseline registration must use the activation lock and compare-and-set');
 }
-if (!read('release/remote/activate-release.sh').includes('/data/za/.release-write-probe-')) {
+for (const [name, script] of [['register', registerLegacy], ['activate', activateRelease]]) {
+  if (!script.includes('{{if eq .Destination "/app/snapshot"}}')) {
+    throw new Error(`${name} docker inspect template must use valid unescaped Go-template quotes`);
+  }
+}
+if (!activateRelease.includes('/data/za/.release-write-probe-')) {
   throw new Error('activation must verify the non-root data bind with a write/read/delete probe');
 }
 console.log('release static contracts passed');
