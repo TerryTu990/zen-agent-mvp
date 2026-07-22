@@ -399,6 +399,9 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     if (intent === undefined || intent.used || intent.expiresAt < now()) {
       return { allowed: false, reason: 'bounded-intent-invalid' };
     }
+    if (mapping.workflow !== intent.kind) {
+      return { allowed: false, reason: 'bounded-intent-workflow-mismatch' };
+    }
     if (
       input.claims.hostUserId !== intent.accountId ||
       input.toolId !== intent.toolId ||
@@ -720,7 +723,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       input: PrepareFulfillmentIntentInput,
     ): Promise<PrepareFulfillmentIntentResult> {
       const tool = toolsById.get(input.toolId);
-      if (tool?.authorization?.kind !== 'bounded-fulfillment' || !isDomTool(tool)) {
+      if (tool?.authorization?.kind !== 'bounded-fulfillment' ||
+        tool.authorization.workflow !== 'delivery' || !isDomTool(tool)) {
         throw new Error('履约意图目标工具不支持有界授权');
       }
       let pageOrigin: string;
@@ -799,7 +803,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       input: PrepareShipmentIntentInput,
     ): Promise<PrepareFulfillmentIntentResult> {
       const tool = toolsById.get(input.toolId);
-      if (tool?.authorization?.kind !== 'bounded-fulfillment' || !isDomTool(tool)) {
+      if (tool?.authorization?.kind !== 'bounded-fulfillment' ||
+        tool.authorization.workflow !== 'shipment' || !isDomTool(tool)) {
         throw new Error('发货意图目标工具不支持有界授权');
       }
       let pageOrigin: string;
@@ -986,6 +991,10 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
             : input.params;
         if (tool.authorization?.kind === 'bounded-fulfillment' && intent === undefined) {
           throw new Error('有界履约签发拒绝：无可信意图预占');
+        }
+        if (intent !== undefined && tool.authorization?.kind === 'bounded-fulfillment' &&
+          tool.authorization.workflow !== intent.kind) {
+          throw new Error('有界履约签发拒绝：工具工作流与可信意图不一致');
         }
         if (
           intent !== undefined &&

@@ -75,9 +75,10 @@
     "boundedFulfillmentAuthorization": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "intentIdParam"],
+      "required": ["kind", "workflow", "intentIdParam"],
       "properties": {
         "kind": { "const": "bounded-fulfillment" },
+        "workflow": { "enum": ["shipment", "delivery"] },
         "intentIdParam": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" }
       }
     },

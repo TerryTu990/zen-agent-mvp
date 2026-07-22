@@ -113,7 +113,8 @@ function safeHrefOf(el: Element): string | undefined {
   if (!(el instanceof HTMLAnchorElement)) return undefined;
   try {
     const url = new URL(el.href, document.location.href);
-    return (url.protocol === 'https:' || url.protocol === 'http:') && url.username === '' && url.password === ''
+    return (url.protocol === 'https:' || url.protocol === 'http:') && url.username === '' &&
+      url.password === '' && url.href.length <= 2048
       ? url.href
       : undefined;
   } catch {

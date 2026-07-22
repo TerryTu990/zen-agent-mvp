@@ -240,6 +240,9 @@ describe('飞书卡密库存端口', () => {
       .resolves.toEqual({ ok: true });
     await expect(port(queuedRunner([confirmed])).reserve({ productKey: 'product-a', orderId: 'order-s' }))
       .resolves.toMatchObject({ ok: true, status: 'reserved', stage: 'shipped-confirmed', reused: true });
+    await expect(port(queuedRunner([confirmed])).confirmShipment({
+      cardId: 'cs1', orderId: 'order-s', confirmed: true,
+    })).resolves.toEqual({ ok: true });
   });
 
   it('写命令成功但回读字段不符时 fail-closed；manual 或未决 attempt 会暂停同商品下一单', async () => {
@@ -290,6 +293,25 @@ describe('飞书卡密库存端口', () => {
     ])).settle({ cardId: 'c14', orderId: 'order-14', status: 'sent' })).resolves.toEqual({
       ok: false,
       error: 'inventory-write-failed',
+    });
+  });
+
+  it('beginShipment 与 confirmShipment 写后回读不一致必须 fail-closed', async () => {
+    const reserved = listPayload([
+      { id: 'rsf', values: ['csf', 'product-a', 'fixture-sf', ['reserved'], 'order-sf', 'reserved'] },
+    ]);
+    await expect(port(queuedRunner([
+      reserved, { available: true, identity: 'user' }, { ok: true }, reserved,
+    ])).beginShipment({ cardId: 'csf', orderId: 'order-sf' })).resolves.toEqual({
+      ok: false, error: 'inventory-write-failed',
+    });
+    const attempted = listPayload([
+      { id: 'rsf', values: ['csf', 'product-a', 'fixture-sf', ['reserved'], 'order-sf', 'shipping-attempted'] },
+    ]);
+    await expect(port(queuedRunner([
+      attempted, { available: true, identity: 'user' }, { ok: true }, attempted,
+    ])).confirmShipment({ cardId: 'csf', orderId: 'order-sf', confirmed: true })).resolves.toEqual({
+      ok: false, error: 'inventory-write-failed',
     });
   });
 

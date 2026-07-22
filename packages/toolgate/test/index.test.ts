@@ -238,6 +238,7 @@ const boundedFulfillmentTool: ToolDefinition = {
   hitlMode: 'every-call',
   authorization: {
     kind: 'bounded-fulfillment',
+    workflow: 'delivery',
     intentIdParam: 'intentId',
   },
   adapter: { kind: 'dom', pathPrefixes: ['/console'] },
@@ -247,6 +248,13 @@ const boundedFulfillmentTool: ToolDefinition = {
     properties: { ok: { type: 'boolean' } },
     additionalProperties: false,
   },
+};
+
+const boundedShippingTool: ToolDefinition = {
+  ...boundedFulfillmentTool,
+  id: 'xianyu.ship-order',
+  description: '更新确定性订单发货状态',
+  authorization: { kind: 'bounded-fulfillment', workflow: 'shipment', intentIdParam: 'intentId' },
 };
 
 /** dom 判定上下文夹具：快照页在围栏内、含 za-1/za-2 两个 ref。 */
@@ -276,6 +284,7 @@ const allTools: ToolDefinition[] = [
   domHitlTool,
   httpTaskHitlTool,
   boundedFulfillmentTool,
+  boundedShippingTool,
 ];
 
 interface PortOverrides {
@@ -290,7 +299,9 @@ function makePort(overrides?: PortOverrides) {
   return createToolGatePort({
     tools: allTools,
     sites: [{ packId: 'seller-pack', origin: 'https://seller.example', locations: ['/console'] }],
-    toolOwnership: [{ packId: 'seller-pack', toolId: boundedFulfillmentTool.id }],
+    toolOwnership: [boundedFulfillmentTool, boundedShippingTool].map((tool) => ({
+      packId: 'seller-pack', toolId: tool.id,
+    })),
     signingSecret: SIGN_FIXTURE,
     ...(overrides?.ttlMs !== undefined ? { ttlMs: overrides.ttlMs } : {}),
     ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
@@ -1097,6 +1108,11 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
     dailyOrderLimit: 1,
     dayBoundaryOffsetMinutes: 480,
   };
+  const shippingPolicy: BoundedFulfillmentPolicy = {
+    ...policy,
+    id: 'seller-main-product-a-shipping',
+    toolId: boundedShippingTool.id,
+  };
   const contextFor = (orderId: string) => ({
     ...domContext,
     url: `https://seller.example/console/token?order=${orderId}`,
@@ -1149,22 +1165,23 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
   });
 
   it('发货意图只签发唯一“发货”单击，并以新快照唯一“已发货”状态确认', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 3 }] });
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...shippingPolicy, dailyOrderLimit: 3 }] });
     const orderId = 'order-shipping';
     const pageUrl = contextFor(orderId).url;
     const authorization = await port.preauthorizeFulfillment({
-      accountId: 'host-1', toolId: boundedFulfillmentTool.id, productId: 'product-a',
+      accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a',
       orderId, quantity: 1, pageUrl, expiresAt: 1_500_000,
     });
     const prepared = await port.prepareShipmentIntent({
       authorizationId: authorization.authorizationId,
-      accountId: 'host-1', toolId: boundedFulfillmentTool.id, productId: 'product-a',
+      accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a',
       orderId, quantity: 1, pageUrl, pageInstanceId: 'page-instance-1', actionRef: 'za-2',
       statusEvidenceId: 'order-shipment-status', statusBaseline: '待发货',
       statusSuccessStatuses: ['已发货'], expiresAt: 1_500_000,
     });
     const call = {
       ...input(orderId, prepared.intentId, 'shipping-call'),
+      toolId: boundedShippingTool.id,
       domContext: {
         ...contextFor(orderId),
         elements: [{ ref: 'za-2', role: 'button', label: '发 货' }],
@@ -1187,24 +1204,79 @@ describe('toolgate ADR-016 有界自动履约授权', () => {
   });
 
   it('发货按钮语义或状态证据不唯一时 fail-closed', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 3 }] });
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...shippingPolicy, dailyOrderLimit: 3 }] });
     const orderId = 'order-shipping-denied';
     const pageUrl = contextFor(orderId).url;
     const authorization = await port.preauthorizeFulfillment({
-      accountId: 'host-1', toolId: boundedFulfillmentTool.id, productId: 'product-a',
+      accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a',
       orderId, quantity: 1, pageUrl, expiresAt: 1_500_000,
     });
     const prepared = await port.prepareShipmentIntent({
       authorizationId: authorization.authorizationId,
-      accountId: 'host-1', toolId: boundedFulfillmentTool.id, productId: 'product-a', orderId,
+      accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a', orderId,
       quantity: 1, pageUrl, pageInstanceId: 'page-instance-1', actionRef: 'za-2',
       statusEvidenceId: 'order-shipment-status', statusBaseline: '待发货',
       statusSuccessStatuses: ['已发货'], expiresAt: 1_500_000,
     });
     await expect(port.decide({
       ...input(orderId, prepared.intentId, 'shipping-denied-call'),
+      toolId: boundedShippingTool.id,
       domContext: { ...contextFor(orderId), elements: [{ ref: 'za-2', role: 'button', label: '确认发货' }] },
     })).resolves.toEqual({ verdict: 'deny', reason: 'bounded-intent-target-mismatch' });
+  });
+
+  it('shipment 与 delivery 工具工作流不可交叉登记 intent', async () => {
+    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [
+      { ...policy, dailyOrderLimit: 3 }, { ...shippingPolicy, dailyOrderLimit: 3 },
+    ] });
+    const pageUrl = contextFor('order-workflow').url;
+    const deliveryAuth = await port.preauthorizeFulfillment({
+      accountId: 'host-1', toolId: boundedFulfillmentTool.id, productId: 'product-a',
+      orderId: 'order-workflow', quantity: 1, pageUrl, expiresAt: 1_500_000,
+    });
+    await expect(port.prepareShipmentIntent({
+      authorizationId: deliveryAuth.authorizationId,
+      accountId: 'host-1', toolId: boundedFulfillmentTool.id, productId: 'product-a',
+      orderId: 'order-workflow', quantity: 1, pageUrl, pageInstanceId: 'page-instance-1',
+      actionRef: 'za-2', statusEvidenceId: 'order-shipment-status', statusBaseline: '待发货',
+      statusSuccessStatuses: ['已发货'], expiresAt: 1_500_000,
+    })).rejects.toThrow(/不支持有界授权/);
+  });
+
+  it('发货后旧状态或多个允许状态同时存在均不得确认', async () => {
+    for (const [suffix, evidence] of [
+      ['stale', { count: 1, latest: '待发货' }],
+      ['ambiguous', { count: 2, latest: '已发货' }],
+    ] as const) {
+      const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...shippingPolicy, dailyOrderLimit: 3 }] });
+      const orderId = `order-shipping-${suffix}`;
+      const pageUrl = contextFor(orderId).url;
+      const authorization = await port.preauthorizeFulfillment({
+        accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a',
+        orderId, quantity: 1, pageUrl, expiresAt: 1_500_000,
+      });
+      const prepared = await port.prepareShipmentIntent({
+        authorizationId: authorization.authorizationId,
+        accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a', orderId,
+        quantity: 1, pageUrl, pageInstanceId: 'page-instance-1', actionRef: 'za-2',
+        statusEvidenceId: 'order-shipment-status', statusBaseline: '待发货',
+        statusSuccessStatuses: ['已发货'], expiresAt: 1_500_000,
+      });
+      const call = {
+        ...input(orderId, prepared.intentId, `shipping-${suffix}-call`), toolId: boundedShippingTool.id,
+        domContext: { ...contextFor(orderId), elements: [{ ref: 'za-2', role: 'button', label: '发货' }] },
+      };
+      expect(await port.decide(call)).toEqual({ verdict: 'allow' });
+      const instruction = await port.issueExecInstruction(call);
+      await port.acceptExecResult({
+        sessionId: call.sessionId,
+        result: { type: 'exec-result', sessionId: call.sessionId, nonce: instruction.nonce, ok: true, body: { ok: true } },
+      });
+      await expect(port.confirmShipmentStatus({
+        sessionId: call.sessionId, toolCallId: call.toolCallId, pageUrl,
+        pageInstanceId: 'page-instance-1', evidence: { 'order-shipment-status': evidence },
+      })).resolves.toEqual({ confirmed: false, state: 'uncertain' });
+    }
   });
 
   it('库存前预授权原子占住订单与日额度，释放后可重试且授权不可跨订单使用', async () => {

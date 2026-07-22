@@ -120,7 +120,7 @@
     "execution": "client",
     "riskTier": "hitl",
     "hitlMode": "every-call",
-    "authorization": { "kind": "bounded-fulfillment", "intentIdParam": "intentId" },
+    "authorization": { "kind": "bounded-fulfillment", "workflow": "delivery", "intentIdParam": "intentId" },
     "adapter": {
       "kind": "dom",
       "pathPrefixes": ["/"],

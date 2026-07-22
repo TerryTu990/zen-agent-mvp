@@ -10,7 +10,7 @@ const claims: IdentityClaims = {
 };
 const shippingTool = {
   id: XIANYU_SHIPPING_EXECUTE_TOOL_ID,
-  authorization: { kind: 'bounded-fulfillment', intentIdParam: 'intentId' },
+  authorization: { kind: 'bounded-fulfillment', workflow: 'shipment', intentIdParam: 'intentId' },
 } as unknown as ToolDefinition;
 const otherTool = { ...shippingTool, id: 'xianyu-fulfillment.execute-intent' } as ToolDefinition;
 const evidenceRules = [{
@@ -62,5 +62,10 @@ describe('闲鱼零参数发货证据投影', () => {
     expect(derive({ context: { ...context, elements: [...context.elements!, context.elements![2]!] } })).toBeNull();
     expect(derive({ boundedTools: [otherTool] })).toBeNull();
     expect(derive({ evidenceRules: [] })).toBeNull();
+    expect(derive({ context: { ...context, url: context.url!.replace('order-a', 'order') } })).toBeNull();
+    expect(derive({ context: { ...context, elements: context.elements!.map((element) =>
+      element.ref === 'za-order' ? { ...element, label: '订单编号：prefix-order-a-suffix' } : element) } })).toBeNull();
+    expect(derive({ context: { ...context, elements: context.elements!.map((element) =>
+      element.ref === 'za-item' ? { ...element, href: `${element.href}&token=query-canary` } : element) } })).toBeNull();
   });
 });

@@ -14,7 +14,7 @@ describe('Zen Commerce Agent 生产快照', () => {
       url: 'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage',
     });
     expect(resolved).toMatchObject({
-      snapshotVersion: '1.0.0',
+      snapshotVersion: '1.1.0',
       packId: 'xianyu-seller',
       featureId: 'xianyu-orders',
     });
@@ -27,7 +27,9 @@ describe('Zen Commerce Agent 生产快照', () => {
       packId: resolved.packId,
       featureId: resolved.featureId,
     });
-    expect(composed.tools.map((tool) => tool.id)).toEqual(['xianyu-orders.page-operate']);
+    expect(composed.tools.map((tool) => tool.id)).toEqual([
+      'xianyu-orders.page-operate', 'xianyu-shipping.execute-intent',
+    ]);
   });
 
   it('非闲鱼页面只装配稳定基座', async () => {

@@ -35,18 +35,24 @@ describe('xianyu-seller pack 装配', () => {
     expect(resolved).toMatchObject({ packId: 'xianyu-seller', featureId: 'xianyu-orders' });
   });
 
-  it('订单工具只允许可见 DOM 通道且首批服务端 HITL', async () => {
+  it('订单页装配人工读取与受控发货两个独立工具', async () => {
     const composed = await port.compose({
       sessionId: 'xianyu-orders',
       packId: 'xianyu-seller',
       featureId: 'xianyu-orders',
     });
-    expect(composed.tools).toHaveLength(1);
+    expect(composed.tools).toHaveLength(2);
     expect(composed.tools[0]).toMatchObject({
       id: 'xianyu-orders.page-operate',
       execution: 'client',
       riskTier: 'hitl',
       adapter: { kind: 'dom', pathPrefixes: ['/'] },
+    });
+    expect(composed.tools[1]).toMatchObject({
+      id: 'xianyu-shipping.execute-intent',
+      execution: 'client', riskTier: 'hitl', hitlMode: 'every-call',
+      authorization: { kind: 'bounded-fulfillment', workflow: 'shipment', intentIdParam: 'intentId' },
+      resultSchema: { properties: { completedSteps: { type: 'integer', const: 1 } } },
     });
   });
 
@@ -88,7 +94,7 @@ describe('xianyu-seller pack 装配', () => {
       riskTier: 'hitl',
       hitlMode: 'every-call',
       execution: 'client',
-      authorization: { kind: 'bounded-fulfillment', intentIdParam: 'intentId' },
+      authorization: { kind: 'bounded-fulfillment', workflow: 'delivery', intentIdParam: 'intentId' },
       resultSchema: {
         properties: { completedSteps: { type: 'integer', const: 2 } },
       },

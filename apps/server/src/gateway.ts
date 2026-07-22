@@ -300,8 +300,13 @@ function originOf(url: string): string {
   }
 }
 
-/** 输入控件值永不进入 toolgate 以外的快照上下文；即使旧/篡改客户端上报也在服务端剥离。 */
+/** 模型安全投影：输入值与链接都不进入 LLM/history；href 只留给服务端可信连接器机械派生。 */
 export function redactSnapshotValues(elements: SnapshotReportFrame['elements']): SnapshotReportFrame['elements'] {
+  return elements.map(({ value: _value, href: _href, ...element }) => element);
+}
+
+/** toolgate/可信连接器投影：仍剥离输入值；href 后续必须由站点连接器按 origin/path/query 白名单消费。 */
+function trustedSnapshotElements(elements: SnapshotReportFrame['elements']): SnapshotReportFrame['elements'] {
   return elements.map(({ value: _value, ...element }) => element);
 }
 
@@ -1019,15 +1024,16 @@ export function createGateway(deps: GatewayDeps): Gateway {
           turnMessages.push(snapshotEcho, snapshotObs);
           continue;
         }
+        const trustedElements = trustedSnapshotElements(report.elements);
         const safeElements = redactSnapshotValues(report.elements);
         const runtime = runtimeOf(sessionId);
         runtime.domContext = {
-          refs: safeElements.map((element) => element.ref),
+          refs: trustedElements.map((element) => element.ref),
           path: pathOf(report.url),
           origin: originOf(report.url),
           url: report.url,
           ...(report.pageInstanceId !== undefined ? { pageInstanceId: report.pageInstanceId } : {}),
-          elements: safeElements,
+          elements: trustedElements,
           ...(report.evidence !== undefined ? { evidence: report.evidence } : {}),
         };
         const snapshotEcho: LlmMessage = {

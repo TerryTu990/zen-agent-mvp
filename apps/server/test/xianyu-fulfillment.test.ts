@@ -12,7 +12,7 @@ const claims: IdentityClaims = {
 };
 const boundedTool = {
   id: 'xianyu-fulfillment.execute-intent',
-  authorization: { kind: 'bounded-fulfillment', intentIdParam: 'intentId' },
+  authorization: { kind: 'bounded-fulfillment', workflow: 'delivery', intentIdParam: 'intentId' },
 } as unknown as ToolDefinition;
 const evidenceRules = [{
   id: 'message-receipts',

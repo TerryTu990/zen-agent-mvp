@@ -364,9 +364,11 @@ export function createLarkBaseCardInventoryPort(
         if (records === null) return { ok: false, error: 'inventory-unavailable' };
         if (records.length !== 1) return { ok: false, error: records.length === 0 ? 'inventory-invalid-record' : 'inventory-ambiguous' };
         const record = records[0]!;
-        if (record.orderId !== orderId || record.status !== 'reserved' || record.note !== SHIPPING_ATTEMPTED_NOTE) {
+        if (record.orderId !== orderId || record.status !== 'reserved') {
           return { ok: false, error: 'inventory-invalid-record' };
         }
+        if (input.confirmed && record.note === SHIPPED_CONFIRMED_NOTE) return { ok: true };
+        if (record.note !== SHIPPING_ATTEMPTED_NOTE) return { ok: false, error: 'inventory-invalid-record' };
         const status = input.confirmed ? 'reserved' : 'manual';
         const note = input.confirmed ? SHIPPED_CONFIRMED_NOTE : (input.note ?? 'shipping-unconfirmed');
         return (await patchAndVerify(record, { status, note }, { status, orderId, note }))

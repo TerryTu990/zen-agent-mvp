@@ -245,6 +245,7 @@ export function createFulfillmentCoordinator(
     async confirmShipment(intentId: string): Promise<SettleCardFulfillmentResult> {
       const item = prepared.get(intentId);
       if (item === undefined) return { ok: false, error: 'unknown-intent' };
+      if (item.kind === 'shipment' && item.outcome === 'sent') return { ok: true };
       if (item.kind !== 'shipment' || !item.actionBegun || item.outcome !== null) {
         return { ok: false, error: 'outcome-conflict' };
       }

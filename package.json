@@ -20,7 +20,7 @@
     "eval": "node scripts/evals/run.mjs",
     "verify:phase1:core": "pnpm lint:deps && pnpm -r build && pnpm -r --workspace-concurrency=1 test && pnpm eval",
     "verify:phase1": "pnpm verify:phase1:core && bash release/verify-phase1.sh",
-    "verify:phase2": "pnpm lint:deps && pnpm -r build && pnpm exec vitest run packages/contracts/test/schemas.test.ts packages/card-inventory/test/index.test.ts packages/fulfillment/test/index.test.ts packages/toolgate/test/index.test.ts apps/server/test/xianyu-shipping.test.ts apps/server/test/xianyu-fulfillment.test.ts apps/server/test/server.test.ts apps/extension/test/frames-schema.test.ts apps/extension/test/page-snapshot.test.ts apps/extension/test/dom-steps.test.ts && pnpm eval && git diff --check"
+    "verify:phase2": "pnpm lint:deps && pnpm -r build && pnpm exec vitest run packages/contracts/test/schemas.test.ts packages/assembly/test/production-snapshot.test.ts packages/assembly/test/xianyu-pack.test.ts packages/card-inventory/test/index.test.ts packages/fulfillment/test/index.test.ts packages/toolgate/test/index.test.ts apps/server/test/xianyu-shipping.test.ts apps/server/test/xianyu-fulfillment.test.ts apps/server/test/server.test.ts apps/extension/test/frames-schema.test.ts apps/extension/test/page-snapshot.test.ts apps/extension/test/dom-steps.test.ts && pnpm -r --workspace-concurrency=1 test && pnpm eval && git diff --check"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",

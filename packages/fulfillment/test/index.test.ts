@@ -74,6 +74,7 @@ describe('卡密履约编排', () => {
     await expect(built.port.prepareShipment(shipmentInput)).resolves.toEqual({ ok: true, intentId: 'shipment-intent-a' });
     await expect(built.port.beginShipment('shipment-intent-a')).resolves.toEqual({ ok: true });
     await expect(built.port.confirmShipment('shipment-intent-a')).resolves.toEqual({ ok: true });
+    await expect(built.port.confirmShipment('shipment-intent-a')).resolves.toEqual({ ok: true });
     await expect(built.port.prepare(input)).resolves.toEqual({ ok: true, intentId: 'intent-a' });
   });
 

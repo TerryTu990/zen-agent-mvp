@@ -22,6 +22,8 @@ export type HitlMode = 'per-task' | 'every-call';
  */
 export interface BoundedFulfillmentAuthorization {
   kind: 'bounded-fulfillment';
+  /** 固定副作用种类；toolgate 据此拒绝把发货 intent 用在消息工具上或反向错配。 */
+  workflow: 'shipment' | 'delivery';
   /** 模型只传服务端一次性意图 id；商品/订单/数量/消息步骤由可信连接器登记，不采信模型自报。 */
   intentIdParam: string;
 }

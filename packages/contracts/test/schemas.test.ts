@@ -487,6 +487,7 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
       hitlMode: 'every-call',
       authorization: {
         kind: 'bounded-fulfillment',
+        workflow: 'delivery',
         intentIdParam: 'intentId',
       },
       adapter: { kind: 'dom', pathPrefixes: ['/'] },
@@ -512,6 +513,10 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
       authorization: {
         kind: 'bounded-fulfillment',
       },
+    },
+    '有界授权映射缺工作流类型被拒': {
+      ...baseTool,
+      authorization: { kind: 'bounded-fulfillment', intentIdParam: 'intentId' },
     },
   };
 

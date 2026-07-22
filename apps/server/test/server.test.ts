@@ -30,15 +30,15 @@ const REPLY_NO_ANCHOR = 'MOCK-NO-ANCHOR';
 const ORDER_LIST_URL = 'http://127.0.0.1:4173/order-list.html';
 const UNKNOWN_URL = 'http://127.0.0.1:4173/unknown.html';
 
-it('服务端二次剥离快照输入值，fill 后失败遗留正文也不进入模型', () => {
+it('服务端二次剥离快照输入值与 href query，均不进入模型', () => {
   expect(
     redactSnapshotValues([
       { ref: 'za-message', role: 'textarea', label: '消息', value: '不应进入模型' },
-      { ref: 'za-send', role: 'button', label: '发送' },
+      { ref: 'za-send', role: 'link', label: '发送', href: 'https://example.test/?token=query-canary' },
     ]),
   ).toEqual([
     { ref: 'za-message', role: 'textarea', label: '消息' },
-    { ref: 'za-send', role: 'button', label: '发送' },
+    { ref: 'za-send', role: 'link', label: '发送' },
   ]);
 });
 

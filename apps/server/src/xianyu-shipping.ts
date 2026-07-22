@@ -31,6 +31,14 @@ function normalized(value: string): string {
   return value.replace(/\s+/g, '');
 }
 
+const BUSINESS_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+function exactOrderEvidence(label: string, orderId: string): boolean {
+  const value = normalized(label);
+  return value === orderId || value === `订单编号${orderId}` ||
+    value === `订单编号:${orderId}` || value === `订单编号：${orderId}`;
+}
+
 /** 只把订单详情页的闭集证据投影为可信发货输入；任一证据含糊即返回 null。 */
 export function deriveXianyuShipmentInput(input: DeriveInput): PrepareCardShipmentInput | null {
   const { context } = input;
@@ -50,8 +58,10 @@ export function deriveXianyuShipmentInput(input: DeriveInput): PrepareCardShipme
       if (element.href === undefined) return false;
       try {
         const itemUrl = new URL(element.href);
-        return itemUrl.origin === 'https://www.goofish.com' && itemUrl.pathname === '/item' &&
-          (itemUrl.searchParams.get('id')?.trim() ?? '') !== '';
+        const itemId = itemUrl.searchParams.get('id')?.trim() ?? '';
+        return itemUrl.origin === 'https://www.goofish.com' && itemUrl.username === '' &&
+          itemUrl.password === '' && itemUrl.pathname === '/item' && itemUrl.hash === '' &&
+          [...itemUrl.searchParams.keys()].length === 1 && BUSINESS_ID.test(itemId);
       } catch {
         return false;
       }
@@ -60,9 +70,8 @@ export function deriveXianyuShipmentInput(input: DeriveInput): PrepareCardShipme
     const productId = productIds.length === 1 ? productIds[0]! : '';
     const productKey = input.productKeys[productId];
     const orderEvidence = context.elements.filter((element) => {
-      const label = normalized(element.label);
       return ['cell', 'td', 'dt', 'dd', 'span'].includes(element.role) &&
-        label.includes('订单编号') && label.includes(orderId);
+        exactOrderEvidence(element.label, orderId);
     });
     const actionButtons = context.elements.filter(
       (element) => element.role === 'button' && element.disabled !== true && normalized(element.label) === '发货',
@@ -71,7 +80,7 @@ export function deriveXianyuShipmentInput(input: DeriveInput): PrepareCardShipme
     const status = context.evidence['order-shipment-status'];
     if (
       url.origin !== 'https://seller.goofish.com' ||
-      route !== '/seller-trade/order-manage/order-detail' || orderId === '' || shippingTools.length !== 1 ||
+      route !== '/seller-trade/order-manage/order-detail' || !BUSINESS_ID.test(orderId) || shippingTools.length !== 1 ||
       productId === '' || productKey === undefined || itemLinks.length !== 1 || orderEvidence.length !== 1 || actionButtons.length !== 1 ||
       statusRule === undefined || status === undefined || status.count !== 1 || status.latest !== '待发货' ||
       !statusRule.statuses.includes('待发货') || !statusRule.statuses.includes('已发货')

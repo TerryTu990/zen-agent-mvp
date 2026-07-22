@@ -289,6 +289,24 @@ describe('createSnapshotter：页面提示文本 notices 采集', () => {
     expect(JSON.stringify({ evidence, notices })).not.toContain('兑换内容');
   });
 
+  it('按闲鱼发货配方从 Ant Steps 生成唯一状态证据', () => {
+    document.body.innerHTML = `
+      <div class="ant-steps-item"><div class="ant-steps-item-title">买家已付款</div></div>
+      <div class="ant-steps-item"><div class="ant-steps-item-title">待发货</div></div>
+    `;
+    const rule = {
+      id: 'order-shipment-status', itemSelector: '.ant-steps-item',
+      statusSelector: '.ant-steps-item-title', statuses: ['待发货', '已发货'],
+    };
+    expect(createSnapshotter().collect([rule]).evidence).toEqual({
+      'order-shipment-status': { count: 1, latest: '待发货' },
+    });
+    document.body.innerHTML += '<div class="ant-steps-item"><div class="ant-steps-item-title">已发货</div></div>';
+    expect(createSnapshotter().collect([rule]).evidence).toEqual({
+      'order-shipment-status': { count: 2, latest: '已发货' },
+    });
+  });
+
   it('同一消息容器多个状态叶节点只计一次，取最后允许状态', () => {
     document.body.innerHTML = `
       <div class="message-content">
