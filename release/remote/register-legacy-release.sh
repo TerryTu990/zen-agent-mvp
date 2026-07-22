@@ -17,8 +17,13 @@ if [[ -L "${CURRENT_LINK}" ]]; then
 fi
 
 compose=(docker compose -p zen-agent -f "${BOOTSTRAP_DIR}/docker-compose.yml" --env-file "${BOOTSTRAP_DIR}/deployment.env")
-replicas="$("${compose[@]}" ps -q zen-agent | sed '/^$/d' | wc -l | tr -d ' ')"
+descriptor_cid="$("${compose[@]}" ps -q zen-agent | sed '/^$/d')"
+replicas="$(printf '%s\n' "${descriptor_cid}" | sed '/^$/d' | wc -l | tr -d ' ')"
 [[ "${replicas}" == 1 ]] || { echo 'legacy descriptor 无法识别唯一活动副本' >&2; exit 1; }
+[[ "${descriptor_cid}" == "${LEGACY_CID}" ]] || {
+  echo 'legacy descriptor 与发现的活动容器不一致，拒绝登记陈旧基线' >&2
+  exit 1
+}
 [[ "$(docker inspect --format '{{.Config.Image}}' "${LEGACY_CID}")" == "${LEGACY_IMAGE}" ]] || {
   echo 'legacy 活动镜像已变化，拒绝登记陈旧基线' >&2
   exit 1

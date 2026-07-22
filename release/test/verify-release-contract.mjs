@@ -26,7 +26,11 @@ for (const marker of [
   if (!deploy.includes(marker)) throw new Error(`deploy preflight/atomicity marker missing: ${marker}`);
 }
 const registerLegacy = read('release/remote/register-legacy-release.sh');
-if (!registerLegacy.includes('flock -x 9') || !registerLegacy.includes('已有 current-release')) {
+if (
+  !registerLegacy.includes('flock -x 9') ||
+  !registerLegacy.includes('已有 current-release') ||
+  !registerLegacy.includes('descriptor_cid')
+) {
   throw new Error('legacy baseline registration must use the activation lock and compare-and-set');
 }
 if (!read('release/remote/activate-release.sh').includes('/data/za/.release-write-probe-')) {
