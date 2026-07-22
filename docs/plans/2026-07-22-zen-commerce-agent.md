@@ -215,6 +215,8 @@ assets/
 - 用生产插件在登录态闲鱼页完成无副作用 pack 命中和页面识别，并执行一次旧版本回滚演练后恢复目标版本。
 - 生产自动扫描保持关闭；真实订单验收等待用户明确指定低价值待发货订单。
 
+实施口径（2026-07-22）：代码与快照已发布为 `zen-agent-server:04d3c02` + snapshot `1.1.0`，活动 release 为 `04d3c02-20260722T051649Z-55552`；最终扩展 zip 为 `zen-commerce-agent-extension-0.3.0.zip`。旧 `7843bd8` 已完成健康回滚并恢复目标版。生产飞书 `general` profile 尚未授权，库存坐标、商品映射和独立 shipment/delivery 策略未配置，因此当前状态为 `deployed-disabled`：服务和电商 pack 已上线，但真实自动履约 fail-closed 不可用，自动扫描保持关闭。
+
 ## 9. 后续能力锚点
 
 | 能力 | 启动锚点 | 首个实现范围 |
