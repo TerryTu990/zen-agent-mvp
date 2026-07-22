@@ -32,6 +32,12 @@ const INTERACTIVE_SELECTOR = [
   '[role="rowheader"]',
   '[role="cell"]',
   '[role="gridcell"]',
+  // 详情页常用 definition-list / descriptions 组件承载“字段名 + 静态值”，与 table cell 同类：
+  // 只采短标签文本、不读控件 value，供订单号等页面证据与 URL 交叉绑定。
+  'dl dt',
+  'dl dd',
+  '[class$="descriptions-item-label"]',
+  '[class$="descriptions-item-content"]',
 ].join(', ');
 
 /**
@@ -101,6 +107,18 @@ function labelOf(el: Element): string {
   const name = el.getAttribute('name');
   if (name !== null && name.trim() !== '') return name;
   return UNLABELED_PLACEHOLDER;
+}
+
+function safeHrefOf(el: Element): string | undefined {
+  if (!(el instanceof HTMLAnchorElement)) return undefined;
+  try {
+    const url = new URL(el.href, document.location.href);
+    return (url.protocol === 'https:' || url.protocol === 'http:') && url.username === '' && url.password === ''
+      ? url.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** 内联 display/visibility 显隐（含祖先）——宿主的模态层与校验提示常以内联样式切换。 */
@@ -238,10 +256,12 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
         const disabled = el instanceof HTMLButtonElement || el instanceof HTMLInputElement
           ? el.disabled
           : false;
+        const href = safeHrefOf(el);
         elements.push({
           ref,
           role: roleOf(el),
           label: labelOf(el),
+          ...(href !== undefined ? { href } : {}),
           ...(disabled ? { disabled } : {}),
         });
       };

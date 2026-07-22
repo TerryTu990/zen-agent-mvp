@@ -29,6 +29,8 @@ const TOOL_XIANYU_ORDERS = 'xianyu-orders.page-operate';
 const TOOL_XIANYU_SEND = 'xianyu-fulfillment.send-test-message';
 const TOOL_XIANYU_INTENT = 'xianyu-fulfillment.execute-intent';
 const TOOL_XIANYU_PREPARE = 'prepare_xianyu_fulfillment';
+const TOOL_XIANYU_SHIPPING = 'xianyu-shipping.execute-intent';
+const TOOL_XIANYU_SHIPPING_PREPARE = 'prepare_xianyu_shipping';
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {
@@ -134,7 +136,7 @@ function executeXianyuIntentCall(userText) {
   };
 }
 
-function executePreparedXianyuIntentCall(obs) {
+function executePreparedXianyuIntentCall(obs, toolName = TOOL_XIANYU_INTENT) {
   let intentId = 'missing-intent';
   try {
     const parsed = JSON.parse(obs);
@@ -143,8 +145,8 @@ function executePreparedXianyuIntentCall(obs) {
     // 保持闭集占位，让服务端 fail-closed。
   }
   return {
-    id: 'call_xianyu_intent',
-    name: TOOL_XIANYU_INTENT,
+    id: toolName === TOOL_XIANYU_SHIPPING ? 'call_xianyu_shipping_intent' : 'call_xianyu_intent',
+    name: toolName,
     arguments: JSON.stringify({ intentId }),
   };
 }
@@ -509,10 +511,23 @@ function decide(sys, u, body) {
   if (obs === null && u.includes('自动履约扫描') && hasTool(body, TOOL_XIANYU_PREPARE)) {
     return { toolCall: snapshotCall() };
   }
+  if (obs === null && u.includes('自动发货') && hasTool(body, TOOL_XIANYU_SHIPPING_PREPARE)) {
+    return { toolCall: snapshotCall() };
+  }
   if (obs === null && u.includes('履约意图') && hasTool(body, TOOL_XIANYU_INTENT)) {
     return { toolCall: snapshotCall() };
   }
   if (obs !== null) {
+    const shippingIntentCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_SHIPPING);
+    if (shippingIntentCount > 0) {
+      return obs.includes('"shipmentConfirmed":true')
+        ? { text: '订单平台状态已明确变为已发货。' }
+        : { text: '订单发货状态未能明确确认，已转人工且不会自动重试。' };
+    }
+    const shippingPrepareCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_SHIPPING_PREPARE);
+    if (shippingPrepareCount > 0 && obs.includes('"intentId"')) {
+      return { toolCall: executePreparedXianyuIntentCall(obs, TOOL_XIANYU_SHIPPING) };
+    }
     const xianyuIntentCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_INTENT);
     if (xianyuIntentCount > 0 && u.includes('旧意图再新单') && hasTool(body, TOOL_XIANYU_PREPARE)) {
       if (obs.includes('"deliveryConfirmed":true')) return { toolCall: snapshotCall() };
@@ -572,6 +587,15 @@ function decide(sys, u, body) {
       const notice = firstNotice(obs);
       if (notice !== null) return { text: `页面提示：${notice}，已停止操作，请先处理该提示。` };
       return { toolCall: pageOperateCall(obs) };
+    }
+    if (obs.includes('"elements"') && u.includes('自动发货') && hasTool(body, TOOL_XIANYU_SHIPPING_PREPARE)) {
+      return {
+        toolCall: {
+          id: 'call_xianyu_shipping_prepare',
+          name: TOOL_XIANYU_SHIPPING_PREPARE,
+          arguments: JSON.stringify({}),
+        },
+      };
     }
     if (obs.includes('"elements"') && hasTool(body, TOOL_XIANYU_ORDERS)) {
       const notice = firstNotice(obs);

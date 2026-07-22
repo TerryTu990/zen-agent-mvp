@@ -25,5 +25,43 @@
         "url": { "type": "string" }
       }
     }
+  },
+  {
+    "id": "xianyu-shipping.execute-intent",
+    "featureIds": ["xianyu-orders"],
+    "description": "执行可信服务端连接器登记的一次性订单发货意图。参数只能是 opaque intentId；订单、商品和固定单击步骤均从 toolgate 内存意图取得。执行后必须由新快照精确确认平台状态已变为“已发货”，否则转人工且不重试。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intentId"],
+      "properties": {
+        "intentId": { "type": "string", "minLength": 1, "description": "可信连接器返回的一次性发货意图标识" }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "hitlMode": "every-call",
+    "authorization": { "kind": "bounded-fulfillment", "intentIdParam": "intentId" },
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": ["/"],
+      "snapshotEvidence": [
+        {
+          "id": "order-shipment-status",
+          "itemSelector": ".ant-steps-item",
+          "statusSelector": ".ant-steps-item-title",
+          "statuses": ["待发货", "已发货"]
+        }
+      ]
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": ["reads", "completedSteps"],
+      "properties": {
+        "reads": { "type": "object" },
+        "completedSteps": { "type": "integer", "const": 1 },
+        "url": { "type": "string" }
+      }
+    }
   }
 ]

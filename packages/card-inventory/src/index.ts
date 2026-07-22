@@ -3,7 +3,9 @@ import { promisify } from 'node:util';
 import type {
   CardInventoryPort,
   CardInventoryStatus,
+  CardInventoryStage,
   BeginCardDeliveryInput,
+  ConfirmCardShipmentInput,
   ReserveCardInput,
   ReserveCardResult,
   SettleCardInput,
@@ -35,7 +37,18 @@ interface InventoryRecord {
   note: string;
 }
 
+const RESERVED_NOTE = 'reserved';
+const SHIPPING_ATTEMPTED_NOTE = 'shipping-attempted';
+const SHIPPED_CONFIRMED_NOTE = 'shipped-confirmed';
 const DELIVERY_ATTEMPTED_NOTE = 'delivery-attempted';
+
+function stageOf(note: string): CardInventoryStage | null {
+  if (note === '' || note === RESERVED_NOTE) return 'reserved';
+  if (note === SHIPPING_ATTEMPTED_NOTE || note === SHIPPED_CONFIRMED_NOTE || note === DELIVERY_ATTEMPTED_NOTE) {
+    return note;
+  }
+  return null;
+}
 
 function objectOf(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -230,11 +243,15 @@ export function createLarkBaseCardInventoryPort(
     );
     if (manual === null) return null;
     if (manual.length > 0) return true;
-    const attempted = await list(
-      { logic: 'and', conditions: [['product_key', '==', productKey], ['note', '==', DELIVERY_ATTEMPTED_NOTE]] },
-      1,
-    );
-    return attempted === null ? null : attempted.length > 0;
+    for (const note of [SHIPPING_ATTEMPTED_NOTE, DELIVERY_ATTEMPTED_NOTE]) {
+      const attempted = await list(
+        { logic: 'and', conditions: [['product_key', '==', productKey], ['note', '==', note]] },
+        1,
+      );
+      if (attempted === null) return null;
+      if (attempted.length > 0) return true;
+    }
+    return false;
   }
 
   let operation = Promise.resolve();
@@ -253,34 +270,34 @@ export function createLarkBaseCardInventoryPort(
           return { ok: false, error: 'inventory-invalid-record' };
         }
         const existing = await byOrder(orderId);
-      if (existing === null) return { ok: false, error: 'inventory-unavailable' };
-      if (existing.length > 1) return { ok: false, error: 'inventory-ambiguous' };
-      const prior = existing[0];
-      if (prior !== undefined) {
-        if (prior.productKey !== productKey || prior.status === 'available') {
-          return { ok: false, error: 'inventory-invalid-record' };
-        }
-        if (prior.status === 'reserved' && prior.note === DELIVERY_ATTEMPTED_NOTE) {
-          return { ok: false, error: 'inventory-paused' };
-        }
-        if (prior.status !== 'reserved') {
-          return { ok: true, cardId: prior.cardId, status: prior.status, reused: true };
+        if (existing === null) return { ok: false, error: 'inventory-unavailable' };
+        if (existing.length > 1) return { ok: false, error: 'inventory-ambiguous' };
+        const prior = existing[0];
+        if (prior !== undefined) {
+          if (prior.productKey !== productKey || prior.status === 'available') {
+            return { ok: false, error: 'inventory-invalid-record' };
+          }
+          if (prior.status !== 'reserved') {
+            return { ok: true, cardId: prior.cardId, status: prior.status, reused: true };
+          }
+          const stage = stageOf(prior.note);
+          if (stage === null) return { ok: false, error: 'inventory-invalid-record' };
+          if (stage === 'shipping-attempted' || stage === 'delivery-attempted') {
+            return { ok: false, error: 'inventory-paused' };
+          }
+          return {
+            ok: true,
+            cardId: prior.cardId,
+            cardSecret: prior.cardSecret,
+            status: prior.status,
+            stage,
+            reused: true,
+          };
         }
         const paused = await productHasUncertainAttempt(productKey);
         if (paused === null) return { ok: false, error: 'inventory-unavailable' };
         if (paused) return { ok: false, error: 'inventory-paused' };
-        return {
-          ok: true,
-          cardId: prior.cardId,
-          cardSecret: prior.cardSecret,
-          status: prior.status,
-          reused: true,
-        };
-      }
-      const paused = await productHasUncertainAttempt(productKey);
-      if (paused === null) return { ok: false, error: 'inventory-unavailable' };
-      if (paused) return { ok: false, error: 'inventory-paused' };
-      const available = await list(
+        const available = await list(
         {
           logic: 'and',
           conditions: [
@@ -290,7 +307,7 @@ export function createLarkBaseCardInventoryPort(
         },
         2,
       );
-      if (available === null) return { ok: false, error: 'inventory-unavailable' };
+        if (available === null) return { ok: false, error: 'inventory-unavailable' };
       if (available.length === 0) return { ok: false, error: 'inventory-empty' };
       const selected = available[0];
       if (selected === undefined || selected.orderId !== '' || selected.status !== 'available') {
@@ -298,8 +315,8 @@ export function createLarkBaseCardInventoryPort(
       }
       if (!(await patchAndVerify(
         selected,
-        { status: 'reserved', order_id: orderId, note: '' },
-        { status: 'reserved', orderId, note: '' },
+        { status: 'reserved', order_id: orderId, note: RESERVED_NOTE },
+        { status: 'reserved', orderId, note: RESERVED_NOTE },
       ))) {
         return { ok: false, error: 'inventory-write-failed' };
       }
@@ -308,12 +325,13 @@ export function createLarkBaseCardInventoryPort(
         cardId: selected.cardId,
         cardSecret: selected.cardSecret,
         status: 'reserved',
+        stage: 'reserved',
         reused: false,
       };
       });
     },
 
-    beginDelivery(input: BeginCardDeliveryInput): Promise<SettleCardResult> {
+    beginShipment(input: BeginCardDeliveryInput): Promise<SettleCardResult> {
       return serialized(async () => {
         const cardId = input.cardId.trim();
         const orderId = input.orderId.trim();
@@ -327,7 +345,48 @@ export function createLarkBaseCardInventoryPort(
         if (record.orderId !== orderId || record.status !== 'reserved') {
           return { ok: false, error: 'inventory-invalid-record' };
         }
+        if (record.note === SHIPPING_ATTEMPTED_NOTE) return { ok: true };
+        if (stageOf(record.note) !== 'reserved') return { ok: false, error: 'inventory-invalid-record' };
+        return (await patchAndVerify(
+          record,
+          { note: SHIPPING_ATTEMPTED_NOTE },
+          { status: 'reserved', orderId, note: SHIPPING_ATTEMPTED_NOTE },
+        )) ? { ok: true } : { ok: false, error: 'inventory-write-failed' };
+      });
+    },
+
+    confirmShipment(input: ConfirmCardShipmentInput): Promise<SettleCardResult> {
+      return serialized(async () => {
+        const cardId = input.cardId.trim();
+        const orderId = input.orderId.trim();
+        if (cardId === '' || orderId === '') return { ok: false, error: 'inventory-invalid-record' };
+        const records = await byCard(cardId);
+        if (records === null) return { ok: false, error: 'inventory-unavailable' };
+        if (records.length !== 1) return { ok: false, error: records.length === 0 ? 'inventory-invalid-record' : 'inventory-ambiguous' };
+        const record = records[0]!;
+        if (record.orderId !== orderId || record.status !== 'reserved' || record.note !== SHIPPING_ATTEMPTED_NOTE) {
+          return { ok: false, error: 'inventory-invalid-record' };
+        }
+        const status = input.confirmed ? 'reserved' : 'manual';
+        const note = input.confirmed ? SHIPPED_CONFIRMED_NOTE : (input.note ?? 'shipping-unconfirmed');
+        return (await patchAndVerify(record, { status, note }, { status, orderId, note }))
+          ? { ok: true }
+          : { ok: false, error: 'inventory-write-failed' };
+      });
+    },
+
+    beginDelivery(input: BeginCardDeliveryInput): Promise<SettleCardResult> {
+      return serialized(async () => {
+        const cardId = input.cardId.trim();
+        const orderId = input.orderId.trim();
+        if (cardId === '' || orderId === '') return { ok: false, error: 'inventory-invalid-record' };
+        const records = await byCard(cardId);
+        if (records === null) return { ok: false, error: 'inventory-unavailable' };
+        if (records.length !== 1) return { ok: false, error: records.length === 0 ? 'inventory-invalid-record' : 'inventory-ambiguous' };
+        const record = records[0]!;
+        if (record.orderId !== orderId || record.status !== 'reserved') return { ok: false, error: 'inventory-invalid-record' };
         if (record.note === DELIVERY_ATTEMPTED_NOTE) return { ok: true };
+        if (record.note !== SHIPPED_CONFIRMED_NOTE) return { ok: false, error: 'inventory-invalid-record' };
         return (await patchAndVerify(
           record,
           { note: DELIVERY_ATTEMPTED_NOTE },

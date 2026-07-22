@@ -23,10 +23,13 @@ import type {
   Observation,
   PrepareFulfillmentIntentInput,
   PrepareFulfillmentIntentResult,
+  PrepareShipmentIntentInput,
   PreauthorizeFulfillmentInput,
   PreauthorizeFulfillmentResult,
   ConfirmFulfillmentReceiptInput,
   ConfirmFulfillmentReceiptResult,
+  ConfirmShipmentStatusInput,
+  ConfirmShipmentStatusResult,
   SiteDescriptor,
   ToolDefinition,
   ToolGatePort,
@@ -127,11 +130,21 @@ interface FulfillmentAuthorization extends PreauthorizeFulfillmentInput {
   used: boolean;
 }
 
-interface FulfillmentIntent extends PrepareFulfillmentIntentInput {
+interface DeliveryFulfillmentIntent extends PrepareFulfillmentIntentInput {
+  kind: 'delivery';
   intentId: string;
   used: boolean;
   steps: [DomStep, DomStep];
 }
+
+interface ShipmentFulfillmentIntent extends PrepareShipmentIntentInput {
+  kind: 'shipment';
+  intentId: string;
+  used: boolean;
+  steps: [DomStep];
+}
+
+type FulfillmentIntent = DeliveryFulfillmentIntent | ShipmentFulfillmentIntent;
 
 type FulfillmentCallState = 'reserved' | 'issued' | 'terminal';
 
@@ -394,18 +407,26 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     ) {
       return { allowed: false, reason: 'bounded-intent-context-mismatch' };
     }
-    const messageElement = input.domContext.elements?.find((element) => element.ref === intent.messageRef);
-    const sendElement = input.domContext.elements?.find((element) => element.ref === intent.sendRef);
-    const sendLabel = sendElement?.label.replace(/\s+/g, '').toLowerCase();
-    if (
-      messageElement === undefined ||
-      !['textarea', 'input:text', 'contenteditable'].includes(messageElement.role) ||
-      messageElement.disabled === true ||
-      sendElement?.role !== 'button' ||
-      sendElement.disabled === true ||
-      (sendLabel !== '发送' && sendLabel !== 'send')
-    ) {
-      return { allowed: false, reason: 'bounded-intent-target-mismatch' };
+    if (intent.kind === 'delivery') {
+      const messageElement = input.domContext.elements?.find((element) => element.ref === intent.messageRef);
+      const sendElement = input.domContext.elements?.find((element) => element.ref === intent.sendRef);
+      const sendLabel = sendElement?.label.replace(/\s+/g, '').toLowerCase();
+      if (
+        messageElement === undefined ||
+        !['textarea', 'input:text', 'contenteditable'].includes(messageElement.role) ||
+        messageElement.disabled === true ||
+        sendElement?.role !== 'button' ||
+        sendElement.disabled === true ||
+        (sendLabel !== '发送' && sendLabel !== 'send')
+      ) {
+        return { allowed: false, reason: 'bounded-intent-target-mismatch' };
+      }
+    } else {
+      const actionElement = input.domContext.elements?.find((element) => element.ref === intent.actionRef);
+      const actionLabel = actionElement?.label.replace(/\s+/g, '');
+      if (actionElement?.role !== 'button' || actionElement.disabled === true || actionLabel !== '发货') {
+        return { allowed: false, reason: 'bounded-intent-target-mismatch' };
+      }
     }
     const validatedIntentSteps = validateDomSteps(
       tool as DomToolDefinition,
@@ -762,6 +783,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       const intentId = randomUUID();
       fulfillmentIntents.set(intentId, {
         ...input,
+        kind: 'delivery',
         orderId: input.orderId.trim(),
         intentId,
         used: false,
@@ -769,6 +791,60 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
           { action: 'fill', ref: input.messageRef, value: input.message },
           { action: 'click', ref: input.sendRef },
         ],
+      });
+      return { intentId };
+    },
+
+    async prepareShipmentIntent(
+      input: PrepareShipmentIntentInput,
+    ): Promise<PrepareFulfillmentIntentResult> {
+      const tool = toolsById.get(input.toolId);
+      if (tool?.authorization?.kind !== 'bounded-fulfillment' || !isDomTool(tool)) {
+        throw new Error('发货意图目标工具不支持有界授权');
+      }
+      let pageOrigin: string;
+      try {
+        pageOrigin = new URL(input.pageUrl).origin;
+      } catch {
+        throw new Error('发货意图页面 URL 非法');
+      }
+      if (
+        input.accountId.trim() === '' || input.productId.trim() === '' || input.orderId.trim() === '' ||
+        input.pageInstanceId.trim() === '' || input.actionRef.trim() === '' ||
+        !/^[a-z][a-z0-9-]{0,63}$/.test(input.statusEvidenceId) || input.statusBaseline.trim() === '' ||
+        input.statusSuccessStatuses.length === 0 || input.statusSuccessStatuses.some((status) => status.trim() === '') ||
+        input.statusSuccessStatuses.includes(input.statusBaseline) ||
+        new Set(input.statusSuccessStatuses).size !== input.statusSuccessStatuses.length ||
+        !Number.isInteger(input.quantity) || input.quantity < 1 || input.expiresAt <= now()
+      ) {
+        throw new Error('发货意图字段非法');
+      }
+      const eligible = fulfillmentPolicies.filter(
+        (policy) => policy.accountId === input.accountId && policy.toolId === input.toolId &&
+          policy.siteOrigin === pageOrigin && policy.validUntil >= input.expiresAt &&
+          policy.productIds.includes(input.productId) && input.quantity <= policy.maxCodesPerOrder,
+      );
+      if (eligible.length !== 1) throw new Error('发货意图未唯一命中预批准策略');
+      const authorization = fulfillmentAuthorizations.get(input.authorizationId);
+      const reservation = authorization === undefined ? undefined : fulfillmentReservations.get(authorization.reservationKey);
+      if (
+        authorization === undefined || authorization.used || authorization.expiresAt < now() ||
+        reservation?.state !== 'authorized' || authorization.accountId !== input.accountId ||
+        authorization.toolId !== input.toolId || authorization.productId !== input.productId ||
+        authorization.orderId !== input.orderId.trim() || authorization.quantity !== input.quantity ||
+        authorization.pageUrl !== input.pageUrl || authorization.expiresAt !== input.expiresAt
+      ) {
+        throw new Error('发货预授权与意图不匹配');
+      }
+      authorization.used = true;
+      const intentId = randomUUID();
+      fulfillmentIntents.set(intentId, {
+        ...input,
+        kind: 'shipment',
+        orderId: input.orderId.trim(),
+        intentId,
+        used: false,
+        steps: [{ action: 'click', ref: input.actionRef }],
       });
       return { intentId };
     },
@@ -781,7 +857,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       const intentId = intentByCall.get(keyForCall);
       const reservation = reservationKey === undefined ? undefined : fulfillmentReservations.get(reservationKey);
       const intent = intentId === undefined ? undefined : fulfillmentIntents.get(intentId);
-      if (reservation?.state !== 'pending' || intent === undefined) {
+      if (reservation?.state !== 'pending' || intent?.kind !== 'delivery') {
         return { confirmed: false, state: 'uncertain' };
       }
       if (input.pageUrl !== intent.pageUrl || input.pageInstanceId !== intent.pageInstanceId) {
@@ -793,6 +869,28 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         receipt !== undefined &&
         receipt.count === intent.receiptBaselineCount + 1 &&
         intent.receiptSuccessStatuses.includes(receipt.latest);
+      reservation.state = confirmed ? 'completed' : 'uncertain';
+      return { confirmed, state: reservation.state };
+    },
+
+    async confirmShipmentStatus(
+      input: ConfirmShipmentStatusInput,
+    ): Promise<ConfirmShipmentStatusResult> {
+      const keyForCall = callKey(input.sessionId, input.toolCallId);
+      const reservationKey = reservationByCall.get(keyForCall);
+      const intentId = intentByCall.get(keyForCall);
+      const reservation = reservationKey === undefined ? undefined : fulfillmentReservations.get(reservationKey);
+      const intent = intentId === undefined ? undefined : fulfillmentIntents.get(intentId);
+      if (reservation?.state !== 'pending' || intent?.kind !== 'shipment') {
+        return { confirmed: false, state: 'uncertain' };
+      }
+      if (input.pageUrl !== intent.pageUrl || input.pageInstanceId !== intent.pageInstanceId) {
+        reservation.state = 'uncertain';
+        return { confirmed: false, state: 'uncertain' };
+      }
+      const status = input.evidence[intent.statusEvidenceId];
+      const confirmed = status !== undefined && status.count === 1 &&
+        status.latest !== intent.statusBaseline && intent.statusSuccessStatuses.includes(status.latest);
       reservation.state = confirmed ? 'completed' : 'uncertain';
       return { confirmed, state: reservation.state };
     },

@@ -195,6 +195,8 @@ assets/
 - 验收状态：达到 `engineering-verified`，不能替代真实订单验收。
 - Phase 2 实现时新增唯一聚合命令 `pnpm verify:phase2`，固定执行 contracts、card-inventory、fulfillment、toolgate、server、extension 的明确测试文件闭集与 `git diff --check`；阶段执行记录附被执行的文件清单和计数。
 
+实施口径（2026-07-22）：发货与消息投递使用两个独立的 bounded tool 和两条独立运营策略。飞书最小状态链为 `reserved → shipping-attempted → shipped-confirmed → delivery-attempted → sent`；详情页只允许服务端派生的唯一“发货”单击，点击后必须由同 URL、同页面生命周期的新快照唯一确认“已发货”。当前生产账号待发货为零，未观察到真实确认弹窗，因此本阶段只达到 `engineering-verified`；若真实按钮打开额外弹窗，当前实现会因状态未确认而转人工，不会猜测或追加点击。
+
 ### Phase 3：E2E 与加固
 
 - 扩充 Harness、浏览器 E2E、SW 恢复和回归用例。

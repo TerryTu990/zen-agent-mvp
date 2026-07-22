@@ -186,7 +186,7 @@
 | `ZA_AUDIT_SINK` | `.za/events.jsonl` | 审计事件落点（append-only JSONL，落盘前脱敏，旁路 fail-open） |
 | `ZA_SESSION_DIR` | `.za/sessions` | 会话持久化目录（`<sessionId>.jsonl`，TTL 清理，fail-open） |
 | `ZA_SESSION_TTL_MS` | `3600000` | 会话闲置 TTL（1h） |
-| `ZA_FULFILLMENT_POLICIES_JSON` | `[]` | ADR-016 有界履约策略 JSON 数组；绑定账号、工具、站点 origin、商品、有效期、单笔数量、每日限额与 `dayBoundaryOffsetMinutes`；与工具声明联合校验，非法配置拒绝启动 |
+| `ZA_FULFILLMENT_POLICIES_JSON` | `[]` | ADR-016 有界履约策略 JSON 数组；首期每个商品分别为 `xianyu-shipping.execute-intent` 与 `xianyu-fulfillment.execute-intent` 配置独立策略，绑定账号、站点 origin、商品、有效期、单笔数量、每日限额与 `dayBoundaryOffsetMinutes`；缺少任一工具策略时对应阶段 fail-closed，与工具声明联合校验非法则拒绝启动 |
 | `ZA_FEISHU_CARD_BASE_TOKEN` | 无 | 飞书卡密库存 Base token；与表 ID、使用说明 URL 三项同时配置才启用，不是应用凭证 |
 | `ZA_FEISHU_CARD_TABLE_ID` | 无 | 飞书卡密库存表 ID |
 | `ZA_FULFILLMENT_GUIDE_URL` | 无 | 固定写入履约通知的 HTTPS 使用说明链接，不接受模型或客户端覆盖 |

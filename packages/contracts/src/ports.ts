@@ -178,6 +178,23 @@ export interface PrepareFulfillmentIntentInput {
   expiresAt: number;
 }
 
+export interface PrepareShipmentIntentInput {
+  authorizationId: string;
+  accountId: string;
+  toolId: string;
+  productId: string;
+  orderId: string;
+  quantity: number;
+  pageUrl: string;
+  pageInstanceId: string;
+  /** 当前详情页唯一、可用且标签为“发货”的按钮 ref。 */
+  actionRef: string;
+  statusEvidenceId: string;
+  statusBaseline: string;
+  statusSuccessStatuses: string[];
+  expiresAt: number;
+}
+
 export interface PreauthorizeFulfillmentInput {
   accountId: string;
   toolId: string;
@@ -208,6 +225,9 @@ export interface ConfirmFulfillmentReceiptResult {
   confirmed: boolean;
   state: 'completed' | 'uncertain';
 }
+
+export type ConfirmShipmentStatusInput = ConfirmFulfillmentReceiptInput;
+export type ConfirmShipmentStatusResult = ConfirmFulfillmentReceiptResult;
 
 /**
  * ADR-013 任务组：工具所属激活 pack 的 site 上下文（网关按激活 pack 计算传入）。
@@ -279,8 +299,12 @@ export interface ToolGatePort {
   releaseFulfillmentAuthorization(authorizationId: string): Promise<void>;
   /** 仅供 apps/server 内可信连接器调用；不暴露为模型工具或客户端 API。 */
   prepareFulfillmentIntent(input: PrepareFulfillmentIntentInput): Promise<PrepareFulfillmentIntentResult>;
+  /** 登记固定单击“发货”的一次性 intent；模型只取得 opaque id。 */
+  prepareShipmentIntent(input: PrepareShipmentIntentInput): Promise<PrepareFulfillmentIntentResult>;
   /** DOM 执行成功后，以发送后新快照回执确认最终交付；未精确增加 1 一律 uncertain。 */
   confirmFulfillmentReceipt(input: ConfirmFulfillmentReceiptInput): Promise<ConfirmFulfillmentReceiptResult>;
+  /** 订单动作后以新快照状态枚举确认“已发货”；不匹配即 uncertain。 */
+  confirmShipmentStatus(input: ConfirmShipmentStatusInput): Promise<ConfirmShipmentStatusResult>;
   decide(input: GateDecisionInput): Promise<GateDecision>;
   /**
    * 登记任务级授权：同 (sessionId,task) 的后续 decide 放行（跨工具共享，every-call 工具除外），
@@ -302,6 +326,7 @@ export interface ToolGatePort {
 // ---- CardInventoryPort（飞书只承担轻量库存账本；卡密不得进入模型/审计/日志）----
 
 export type CardInventoryStatus = 'available' | 'reserved' | 'sent' | 'manual';
+export type CardInventoryStage = 'reserved' | 'shipping-attempted' | 'shipped-confirmed' | 'delivery-attempted';
 
 export type CardInventoryError =
   | 'inventory-unavailable'
@@ -323,6 +348,7 @@ export type ReserveCardResult =
       /** 仅在服务端履约编排内短暂流转；MUST NOT 进入模型、审计或日志。 */
       cardSecret: string;
       status: 'reserved';
+      stage: CardInventoryStage;
       reused: boolean;
     }
   | {
@@ -336,6 +362,11 @@ export type ReserveCardResult =
 export interface BeginCardDeliveryInput {
   cardId: string;
   orderId: string;
+}
+
+export interface ConfirmCardShipmentInput extends BeginCardDeliveryInput {
+  confirmed: boolean;
+  note?: string;
 }
 
 export interface SettleCardInput {
@@ -352,6 +383,10 @@ export type SettleCardResult =
 export interface CardInventoryPort {
   /** 同订单优先复用；否则领取一条 available 并先写 reserved。单执行器串行前提见实施计划。 */
   reserve(input: ReserveCardInput): Promise<ReserveCardResult>;
+  /** 点击发货前写 shipping-attempted；该状态重启后不得再次点击。 */
+  beginShipment(input: BeginCardDeliveryInput): Promise<SettleCardResult>;
+  /** 订单状态复核后写 shipped-confirmed；不明确则写 manual。 */
+  confirmShipment(input: ConfirmCardShipmentInput): Promise<SettleCardResult>;
   /** 在浏览器副作用前持久化 attempt 闩锁；重启后看到该闩锁只能转人工，不得重发。 */
   beginDelivery(input: BeginCardDeliveryInput): Promise<SettleCardResult>;
   /** 页面回执明确后写 sent；任何不明确结果写 manual。 */
@@ -375,6 +410,22 @@ export interface PrepareCardFulfillmentInput {
   expiresAt: number;
 }
 
+export interface PrepareCardShipmentInput {
+  accountId: string;
+  toolId: string;
+  productId: string;
+  productKey: string;
+  orderId: string;
+  quantity: number;
+  pageUrl: string;
+  pageInstanceId: string;
+  actionRef: string;
+  statusEvidenceId: string;
+  statusBaseline: string;
+  statusSuccessStatuses: string[];
+  expiresAt: number;
+}
+
 export type PrepareCardFulfillmentResult =
   | { ok: true; intentId: string }
   | {
@@ -383,6 +434,7 @@ export type PrepareCardFulfillmentResult =
         | CardInventoryError
         | 'already-sent'
         | 'manual-review'
+        | 'shipment-required'
         | 'fulfillment-paused'
         | 'unsupported-quantity'
         | 'authorization-denied'
@@ -400,8 +452,14 @@ export type SettleCardFulfillmentResult =
   | { ok: false; error: CardInventoryError | 'unknown-intent' | 'outcome-conflict' };
 
 export interface FulfillmentCoordinatorPort {
+  /** 预授权后先预占卡密，再登记一次性订单发货 intent。 */
+  prepareShipment(input: PrepareCardShipmentInput): Promise<PrepareCardFulfillmentResult>;
   /** 先由 toolgate 原子占住授权/额度，再领取卡密并登记不向模型暴露正文的一次性 intent。 */
   prepare(input: PrepareCardFulfillmentInput): Promise<PrepareCardFulfillmentResult>;
+  /** 发货副作用前持久化 shipping-attempted。 */
+  beginShipment(intentId: string): Promise<SettleCardFulfillmentResult>;
+  /** 状态复核成功写 shipped-confirmed；不明确由 settle(manual) 终止。 */
+  confirmShipment(intentId: string): Promise<SettleCardFulfillmentResult>;
   /** toolgate 放行后、浏览器指令签发前写入不可重放的发送尝试闩锁。 */
   beginDelivery(intentId: string): Promise<SettleCardFulfillmentResult>;
   /** 闲鱼回执闭环后回填库存终态；失败必须阻断后续自动处理。 */

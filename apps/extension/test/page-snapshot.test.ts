@@ -25,6 +25,28 @@ describe('createSnapshotter：可交互元素采集与 ref 映射', () => {
     expect(snapshotter.resolve('za-2')).toBe(document.querySelector('button'));
   });
 
+  it('只采集无凭证的 http(s) 链接绝对地址', () => {
+    document.body.innerHTML = `
+      <a href="/item?id=item-a">商品</a>
+      <a href="https://user:pass@example.test/private">带凭证</a>
+      <a href="javascript:alert(1)">脚本</a>
+    `;
+    const links = createSnapshotter().collect().elements;
+    expect(links[0]?.href).toBe(new URL('/item?id=item-a', document.location.href).href);
+    expect(links[1]?.href).toBeUndefined();
+    expect(links[2]?.href).toBeUndefined();
+  });
+
+  it('采集详情页 description 静态字段但不读取控件值', () => {
+    document.body.innerHTML = `
+      <span class="ant-descriptions-item-content">订单编号：order-a</span>
+      <dl><dt>状态</dt><dd>待发货</dd></dl>
+    `;
+    expect(createSnapshotter().collect().elements.map((element) => element.label)).toEqual([
+      '订单编号：order-a', '状态', '待发货',
+    ]);
+  });
+
   it('声明式隐藏元素不采集：hidden 祖先 / aria-hidden / input[type=hidden]', () => {
     document.body.innerHTML = `
       <div hidden><button>藏起来的</button></div>

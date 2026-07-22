@@ -64,6 +64,7 @@ export interface SnapshotElement {
   ref: string;
   role: string;
   label: string;
+  href?: string;
   value?: string;
   disabled?: boolean;
 }

@@ -75,6 +75,8 @@ export interface SnapshotElement {
   role: string;
   /** 可读标签：aria-label / 文本 / placeholder，客户端截断。 */
   label: string;
+  /** 仅 a[href] 的绝对 http(s) URL；供服务端把商品/订单证据绑定到可见链接。 */
+  href?: string;
   value?: string;
   disabled?: boolean;
 }

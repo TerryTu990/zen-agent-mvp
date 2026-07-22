@@ -25,7 +25,7 @@ const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
 const COMMERCE_ROOT = join(REPO_ROOT, 'assets');
 const AUDIT_SCHEMA_PATH = join(REPO_ROOT, 'packages', 'contracts', 'schemas', 'audit-event.schema.json');
 const AUDIT_SINK_PATH = join(REPO_ROOT, '.za', 'eval-events.jsonl');
-const REPORT_PATH = join(REPO_ROOT, 'evals', 'runs', '2026-07-22-commerce-phase1.md');
+const REPORT_PATH = join(REPO_ROOT, 'evals', 'runs', '2026-07-22-commerce-phase2.md');
 
 const JWT_SECRET = 'za-test-secret';
 const SIGNING_SECRET = 'za-test-signing-secret';
@@ -669,7 +669,7 @@ function renderReport({ results, auditReport, dimensionSummary }) {
   addTree(COMMERCE_ROOT);
   const project = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
   const lines = [];
-  lines.push('# Zen Commerce Agent Phase 1 评测报告 — 2026-07-22');
+  lines.push('# Zen Commerce Agent Phase 2 评测报告 — 2026-07-22');
   lines.push('');
   lines.push(`证据环境：评测输入 SHA-256 \`${sourceHash.digest('hex')}\`；Node \`${project.engines.node}\`；\`${project.packageManager}\`；LLM=确定性 mock（非真实模型）。`);
   lines.push(`runner：\`scripts/evals/run.mjs\`；每场景重复 ${RUNS} 次，需 ${RUNS}/${RUNS} 全过才算该场景通过（ZA-C-EVAL-02）。`);

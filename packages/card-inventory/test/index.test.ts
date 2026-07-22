@@ -59,13 +59,15 @@ describe('飞书卡密库存端口', () => {
       cardId: 'card-1',
       cardSecret: 'fixture-value-not-real',
       status: 'reserved',
+      stage: 'reserved',
       reused: true,
     });
-    expect(runner.calls).toHaveLength(3);
+    expect(runner.calls).toHaveLength(1);
   });
 
   it('新订单先查重，再选择 available，whoami 通过后写 reserved', async () => {
     const runner = queuedRunner([
+      listPayload([]),
       listPayload([]),
       listPayload([]),
       listPayload([]),
@@ -80,7 +82,7 @@ describe('飞书卡密库存端口', () => {
       listPayload([
         {
           id: 'rec-2',
-          values: ['card-2', 'product-a', 'fixture-value-not-real', ['reserved'], 'order-2', ''],
+          values: ['card-2', 'product-a', 'fixture-value-not-real', ['reserved'], 'order-2', 'reserved'],
         },
       ]),
     ]);
@@ -89,9 +91,11 @@ describe('飞书卡密库存端口', () => {
       cardId: 'card-2',
       cardSecret: 'fixture-value-not-real',
       status: 'reserved',
+      stage: 'reserved',
       reused: false,
     });
     expect(runner.calls.map((args) => args[1])).toEqual([
+      '+record-list',
       '+record-list',
       '+record-list',
       '+record-list',
@@ -100,7 +104,7 @@ describe('飞书卡密库存端口', () => {
       '+record-batch-update',
       '+record-list',
     ]);
-    const writeArgs = runner.calls[5]!.join(' ');
+    const writeArgs = runner.calls[6]!.join(' ');
     expect(writeArgs).toContain('reserved');
     expect(writeArgs).toContain('order-2');
     expect(writeArgs).not.toContain('fixture-value-not-real');
@@ -108,7 +112,7 @@ describe('飞书卡密库存端口', () => {
 
   it('缺货、重复订单记录、身份失败和写失败均 fail-closed', async () => {
     await expect(
-      port(queuedRunner([listPayload([]), listPayload([]), listPayload([]), listPayload([])])).reserve({
+      port(queuedRunner([listPayload([]), listPayload([]), listPayload([]), listPayload([]), listPayload([])])).reserve({
         productKey: 'product-a',
         orderId: 'order-empty',
       }),
@@ -127,6 +131,7 @@ describe('飞书卡密库存端口', () => {
     ]);
     await expect(
       port(queuedRunner([
+        listPayload([]),
         listPayload([]),
         listPayload([]),
         listPayload([]),
@@ -185,7 +190,7 @@ describe('飞书卡密库存端口', () => {
     ]);
     const runner = queuedRunner([
       listPayload([
-        { id: 'r7', values: ['c7', 'product-a', 'fixture-g', ['reserved'], 'order-7', ''] },
+        { id: 'r7', values: ['c7', 'product-a', 'fixture-g', ['reserved'], 'order-7', 'shipped-confirmed'] },
       ]),
       { available: true, identity: 'user' },
       { ok: true },
@@ -197,9 +202,7 @@ describe('飞书卡密库存端口', () => {
       port(queuedRunner([attempted])).reserve({ productKey: 'product-a', orderId: 'order-7' }),
     ).resolves.toEqual({ ok: false, error: 'inventory-paused' });
 
-    const resumable = listPayload([
-      { id: 'r10', values: ['c10', 'product-a', 'fixture-j', ['reserved'], 'order-10', ''] },
-    ]);
+    const resumable = listPayload([]);
     const otherManual = listPayload([
       { id: 'r11', values: ['c11', 'product-a', 'fixture-k', ['manual'], 'order-11', 'timeout'] },
     ]);
@@ -211,10 +214,32 @@ describe('飞书卡密库存端口', () => {
     const otherAttempted = listPayload([
       { id: 'r12', values: ['c12', 'product-a', 'fixture-l', ['reserved'], 'order-12', 'delivery-attempted'] },
     ]);
-    await expect(port(queuedRunner([resumable, listPayload([]), otherAttempted])).reserve({
+    await expect(port(queuedRunner([resumable, listPayload([]), listPayload([]), otherAttempted])).reserve({
       productKey: 'product-a',
       orderId: 'order-10',
     })).resolves.toEqual({ ok: false, error: 'inventory-paused' });
+  });
+
+  it('发货副作用前写 shipping-attempted，明确状态后写 shipped-confirmed', async () => {
+    const reserved = listPayload([
+      { id: 'rs1', values: ['cs1', 'product-a', 'fixture-s', ['reserved'], 'order-s', 'reserved'] },
+    ]);
+    const attempted = listPayload([
+      { id: 'rs1', values: ['cs1', 'product-a', 'fixture-s', ['reserved'], 'order-s', 'shipping-attempted'] },
+    ]);
+    const confirmed = listPayload([
+      { id: 'rs1', values: ['cs1', 'product-a', 'fixture-s', ['reserved'], 'order-s', 'shipped-confirmed'] },
+    ]);
+    const runner = queuedRunner([
+      reserved, { available: true, identity: 'user' }, { ok: true }, attempted,
+      attempted, { available: true, identity: 'user' }, { ok: true }, confirmed,
+    ]);
+    const inventory = port(runner);
+    await expect(inventory.beginShipment({ cardId: 'cs1', orderId: 'order-s' })).resolves.toEqual({ ok: true });
+    await expect(inventory.confirmShipment({ cardId: 'cs1', orderId: 'order-s', confirmed: true }))
+      .resolves.toEqual({ ok: true });
+    await expect(port(queuedRunner([confirmed])).reserve({ productKey: 'product-a', orderId: 'order-s' }))
+      .resolves.toMatchObject({ ok: true, status: 'reserved', stage: 'shipped-confirmed', reused: true });
   });
 
   it('写命令成功但回读字段不符时 fail-closed；manual 或未决 attempt 会暂停同商品下一单', async () => {
@@ -225,7 +250,7 @@ describe('飞书卡密库存端口', () => {
       { id: 'r8', values: ['c8', 'product-a', 'fixture-h', ['available'], null] },
     ]);
     await expect(port(queuedRunner([
-      listPayload([]), listPayload([]), listPayload([]), candidate,
+      listPayload([]), listPayload([]), listPayload([]), listPayload([]), candidate,
       { available: true, identity: 'user' }, { ok: true }, stale,
     ])).reserve({ productKey: 'product-a', orderId: 'order-8' })).resolves.toEqual({
       ok: false,
@@ -242,7 +267,7 @@ describe('飞书卡密库存端口', () => {
 
   it('beginDelivery 与 settle 的写后回读不一致也必须 fail-closed', async () => {
     const before = listPayload([
-      { id: 'r13', values: ['c13', 'product-a', 'fixture-m', ['reserved'], 'order-13', ''] },
+      { id: 'r13', values: ['c13', 'product-a', 'fixture-m', ['reserved'], 'order-13', 'shipped-confirmed'] },
     ]);
     await expect(port(queuedRunner([
       before,

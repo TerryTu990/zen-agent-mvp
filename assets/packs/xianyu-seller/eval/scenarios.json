@@ -16,9 +16,9 @@
     "url": "https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage",
     "expect": {
       "featureId": "xianyu-orders",
-      "toolIncludes": ["xianyu-orders.page-operate"],
+      "toolIncludes": ["xianyu-orders.page-operate", "xianyu-shipping.execute-intent"],
       "toolExcludesPrefixes": ["xianyu-seller-data."],
-      "behavior": "订单管理只装配订单读取工具"
+      "behavior": "订单管理装配订单读取工具和只接受服务端一次性意图的受控发货工具"
     }
   },
   {

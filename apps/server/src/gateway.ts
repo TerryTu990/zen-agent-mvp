@@ -65,6 +65,12 @@ import {
   PREPARE_XIANYU_FULFILLMENT_TOOL_NAME,
   PREPARE_XIANYU_FULFILLMENT_TOOL_SPEC,
 } from './xianyu-fulfillment.js';
+import {
+  deriveXianyuShipmentInput,
+  PREPARE_XIANYU_SHIPPING_TOOL_NAME,
+  PREPARE_XIANYU_SHIPPING_TOOL_SPEC,
+  XIANYU_SHIPPING_EXECUTE_TOOL_ID,
+} from './xianyu-shipping.js';
 
 export interface GatewayDeps {
   assembly: AssemblyPort;
@@ -573,6 +579,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       tool.authorization?.kind === 'bounded-fulfillment' && typeof params['intentId'] === 'string'
         ? params['intentId']
         : null;
+    const isShipment = tool.id === XIANYU_SHIPPING_EXECUTE_TOOL_ID;
     const settleInventory = async (
       outcome: 'sent' | 'manual',
       note?: string,
@@ -662,12 +669,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
     }
 
-    // 浏览器副作用前先把发送尝试写入飞书。写入或回读不确定即停，不签发任何指令；
-    // 该持久化闩锁让进程在点击后、回执前崩溃时重启也不能自动重发。
+    // 浏览器副作用前先把发货/发送尝试写入飞书。写入或回读不确定即停，不签发任何指令；
+    // 该持久化闩锁让进程在点击后、回执前崩溃时重启也不能自动重放。
     if (boundedIntentId !== null && deps.fulfillment !== undefined) {
       let begun = false;
       try {
-        begun = (await deps.fulfillment.beginDelivery(boundedIntentId)).ok;
+        begun = (await (isShipment
+          ? deps.fulfillment.beginShipment(boundedIntentId)
+          : deps.fulfillment.beginDelivery(boundedIntentId))).ok;
       } catch {
         begun = false;
       }
@@ -715,7 +724,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (typeof execResult.status === 'number') status = execResult.status;
       observation = await deps.toolgate.acceptExecResult({ sessionId, result: execResult });
     }
-    // 有界履约的 DOM 成功只表示点击已发生，不表示消息送达。网关（非模型）立即强制取回执快照，
+    // 有界履约的 DOM 成功只表示点击已发生，不表示状态已变更或消息已送达。网关立即强制取新快照，
     // 并在原指令绝对时限内完成页面实例绑定确认；超时/换页/证据不符一律 uncertain。
     if (tool.authorization?.kind === 'bounded-fulfillment' && observation.ok) {
       const requestId = randomUUID();
@@ -728,27 +737,46 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...(evidenceRules.length > 0 ? { evidenceRules } : {}),
       });
       const report = await reported;
-      const confirmation = await deps.toolgate.confirmFulfillmentReceipt({
+      const confirmation = await (isShipment
+        ? deps.toolgate.confirmShipmentStatus({
+            sessionId,
+            toolCallId,
+            pageUrl: report?.url ?? '',
+            pageInstanceId: report?.pageInstanceId ?? '',
+            evidence: report?.evidence ?? {},
+          })
+        : deps.toolgate.confirmFulfillmentReceipt({
         sessionId,
         toolCallId,
         pageUrl: report?.url ?? '',
         pageInstanceId: report?.pageInstanceId ?? '',
         evidence: report?.evidence ?? {},
-      });
+          }));
       observation = confirmation.confirmed
-        ? { toolCallId, ok: true, content: { deliveryConfirmed: true } }
+        ? { toolCallId, ok: true, content: isShipment ? { shipmentConfirmed: true } : { deliveryConfirmed: true } }
         : {
             toolCallId,
             ok: false,
             content: null,
-            error: report === null ? 'fulfillment-receipt-timeout' : 'fulfillment-receipt-unconfirmed',
+            error: report === null
+              ? (isShipment ? 'shipment-status-timeout' : 'fulfillment-receipt-timeout')
+              : (isShipment ? 'shipment-status-unconfirmed' : 'fulfillment-receipt-unconfirmed'),
           };
     }
     if (boundedIntentId !== null) {
-      const inventoryOk = await settleInventory(
-        observation.ok ? 'sent' : 'manual',
-        observation.ok ? undefined : (observation.error ?? 'fulfillment-unconfirmed'),
-      );
+      let inventoryOk: boolean;
+      if (isShipment && observation.ok && deps.fulfillment !== undefined) {
+        try {
+          inventoryOk = (await deps.fulfillment.confirmShipment(boundedIntentId)).ok;
+        } catch {
+          inventoryOk = false;
+        }
+      } else {
+        inventoryOk = await settleInventory(
+          observation.ok ? 'sent' : 'manual',
+          observation.ok ? undefined : (observation.error ?? 'fulfillment-unconfirmed'),
+        );
+      }
       if (!inventoryOk) {
         observation = {
           toolCallId,
@@ -832,11 +860,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ? [RECORD_APPLICATION_TOOL_SPEC, LIST_APPLICATIONS_TOOL_SPEC]
           : [];
       const fulfillmentPrepareTools: LlmToolSpec[] =
-        featureId === 'xianyu-fulfillment' &&
-        deps.fulfillment !== undefined &&
-        Object.keys(deps.fulfillmentProductKeys).length > 0 &&
+        deps.fulfillment !== undefined && Object.keys(deps.fulfillmentProductKeys).length > 0 &&
         selectedHostTools.some((tool) => tool.authorization?.kind === 'bounded-fulfillment')
-          ? [PREPARE_XIANYU_FULFILLMENT_TOOL_SPEC]
+          ? featureId === 'xianyu-fulfillment'
+            ? [PREPARE_XIANYU_FULFILLMENT_TOOL_SPEC]
+            : featureId === 'xianyu-orders'
+              ? [PREPARE_XIANYU_SHIPPING_TOOL_SPEC]
+              : []
           : [];
       const tools: LlmToolSpec[] = [
         ...guideTools,
@@ -1081,6 +1111,53 @@ export function createGateway(deps: GatewayDeps): Gateway {
           toolId: PREPARE_XIANYU_FULFILLMENT_TOOL_NAME,
           status: prepared?.ok === true ? 'succeeded' : 'failed',
           mode: 'server',
+        });
+        messages.push(prepareEcho, prepareObs);
+        turnMessages.push(prepareEcho, prepareObs);
+        continue;
+      }
+
+      if (call.name === PREPARE_XIANYU_SHIPPING_TOOL_NAME) {
+        broadcast(sessionId, {
+          type: 'tool-card', sessionId, toolCallId: call.toolCallId,
+          toolId: PREPARE_XIANYU_SHIPPING_TOOL_NAME, status: 'running',
+          summary: PREPARE_XIANYU_SHIPPING_TOOL_NAME, mode: 'server',
+        });
+        const context = runtimeOf(sessionId).domContext;
+        const boundedTools = [...hostToolsById.values()].filter(
+          (tool) => tool.authorization?.kind === 'bounded-fulfillment',
+        );
+        let prepared: Awaited<ReturnType<NonNullable<typeof deps.fulfillment>['prepareShipment']>> | null = null;
+        let prepareError: string | null = null;
+        if (fulfillmentBudget.attempted) prepareError = 'automation-order-limit';
+        else fulfillmentBudget = { attempted: true };
+        if (prepareError === null && deps.fulfillment !== undefined) {
+          try {
+            const derived = deriveXianyuShipmentInput({
+              claims, context, boundedTools, evidenceRules,
+              productKeys: deps.fulfillmentProductKeys, params: call.params, now: Date.now(),
+            });
+            if (derived !== null) prepared = await deps.fulfillment.prepareShipment(derived);
+          } catch {
+            prepared = null;
+          }
+        }
+        if (prepared?.ok === true) fulfillmentBudget = { attempted: true, intentId: prepared.intentId };
+        else automationFailed = true;
+        const prepareEcho: LlmMessage = {
+          role: 'assistant', content: roundText,
+          toolCalls: [{ id: call.toolCallId, name: call.name, params: {} }],
+        };
+        const prepareObs: LlmMessage = {
+          role: 'tool', toolCallId: call.toolCallId,
+          content: JSON.stringify(prepared?.ok === true
+            ? { intentId: prepared.intentId }
+            : { error: prepareError ?? prepared?.error ?? 'shipping-prepare-denied' }),
+        };
+        broadcast(sessionId, {
+          type: 'tool-card', sessionId, toolCallId: call.toolCallId,
+          toolId: PREPARE_XIANYU_SHIPPING_TOOL_NAME,
+          status: prepared?.ok === true ? 'succeeded' : 'failed', mode: 'server',
         });
         messages.push(prepareEcho, prepareObs);
         turnMessages.push(prepareEcho, prepareObs);

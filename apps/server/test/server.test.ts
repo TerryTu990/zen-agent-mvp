@@ -12,6 +12,7 @@ import { redactSnapshotValues } from '../src/gateway.js';
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/host-demo/config');
 const acceptanceRoot = join(repoRoot, 'examples/acceptance');
+const productionRoot = join(repoRoot, 'assets');
 const systemPromptPath = join(repoRoot, 'assets/system-prompt.md');
 // 共享测试 server 的审计落点：审计链测试按 sessionId 过滤本流事件，与其它测试的事件互不干扰。
 const AUDIT_SINK = join(mkdtempSync(join(tmpdir(), 'za-server-audit-')), 'events.jsonl');
@@ -633,6 +634,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         cardId: 'card-a',
         cardSecret: 'fixture-value-not-real',
         status: 'reserved',
+        stage: 'shipped-confirmed',
         reused: false,
       })),
       beginDelivery: inventoryBegin,
@@ -824,6 +826,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         cardId: 'card-timeout',
         cardSecret: 'fixture-value-not-real',
         status: 'reserved',
+        stage: 'shipped-confirmed',
         reused: false,
       })),
       beginDelivery: vi.fn(async () => ({ ok: true })),
@@ -939,6 +942,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       cardId: 'card-auto',
       cardSecret: 'fixture-value-not-real',
       status: 'reserved' as const,
+      stage: 'shipped-confirmed' as const,
       reused: false,
     }));
     const beginDelivery = vi.fn(async () => ({ ok: true as const }));
@@ -1078,12 +1082,90 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
     }
   });
 
+  it('订单自动发货：零参数准备只签发固定单击，新快照确认已发货后持久化阶段', async () => {
+    const pageUrl = 'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage/order-detail?orderId=order-ship';
+    const beginShipment = vi.fn(async () => ({ ok: true as const }));
+    const confirmShipment = vi.fn(async () => ({ ok: true as const }));
+    const inventory: CardInventoryPort = {
+      reserve: vi.fn(async () => ({
+        ok: true, cardId: 'card-ship', cardSecret: 'fixture-value-not-real',
+        status: 'reserved', stage: 'reserved', reused: false,
+      })),
+      beginShipment,
+      confirmShipment,
+      beginDelivery: vi.fn(async () => ({ ok: true })),
+      settle: vi.fn(async () => ({ ok: true })),
+    };
+    const shippingServer = await startServer(serverOptions({
+      snapshotRoot: productionRoot,
+      cardInventoryPort: inventory,
+      cardInventoryGuideUrl: 'https://example.test/guide',
+      fulfillmentProductKeys: { 'item-ship': 'product-ship' },
+      fulfillmentPolicies: [{
+        id: 'shipping-policy', accountId: 'host-u1', toolId: 'xianyu-shipping.execute-intent',
+        siteOrigin: 'https://seller.goofish.com', productIds: ['item-ship'],
+        validUntil: Date.now() + 120_000, maxCodesPerOrder: 1, dailyOrderLimit: 5,
+        dayBoundaryOffsetMinutes: 480,
+      }],
+    }));
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${shippingServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: pageUrl });
+      await postFrame(token, sessionId, {
+        type: 'user-message', sessionId, text: '执行当前订单自动发货。', executionPreference: 'dom-only',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      const before = framesByType(sse.frames, 'snapshot-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report', sessionId, requestId: String(before['requestId']),
+        url: pageUrl, pageInstanceId: 'page-ship', title: '订单详情',
+        elements: [
+          { ref: 'za-order', role: 'td', label: '订单编号：order-ship' },
+          { ref: 'za-item', role: 'link', label: '商品', href: 'https://www.goofish.com/item?id=item-ship' },
+          { ref: 'za-ship', role: 'button', label: '发 货' },
+        ],
+        evidence: { 'order-shipment-status': { count: 1, latest: '待发货' } },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
+      expect(beginShipment).toHaveBeenCalledWith({ cardId: 'card-ship', orderId: 'order-ship' });
+      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
+      const instruction = framesByType(sse.frames, 'exec-instruction')[0]!;
+      expect(instruction['request']).toEqual({
+        kind: 'dom', expectedPageUrl: pageUrl, expectedPageInstanceId: 'page-ship',
+        steps: [{ action: 'click', ref: 'za-ship' }],
+      });
+      await postFrame(token, sessionId, {
+        type: 'exec-result', sessionId, nonce: String(instruction['nonce']), ok: true,
+        body: { reads: {}, completedSteps: 1, url: pageUrl },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 2);
+      const after = framesByType(sse.frames, 'snapshot-request')[1]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report', sessionId, requestId: String(after['requestId']),
+        url: pageUrl, pageInstanceId: 'page-ship', title: '订单详情', elements: [],
+        evidence: { 'order-shipment-status': { count: 1, latest: '已发货' } },
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-shipping.execute-intent') === 'succeeded');
+      expect(confirmShipment).toHaveBeenCalledWith({ cardId: 'card-ship', orderId: 'order-ship', confirmed: true });
+      expect(textOf(sse.frames)).toContain('已明确变为已发货');
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await shippingServer.close();
+    }
+  });
+
   it('自动履约网关边界：过期策略与多控件不触达库存，自动轮次第二次准备被机械拒绝', async () => {
     const reserve = vi.fn(async () => ({
       ok: true as const,
       cardId: 'card-boundary',
       cardSecret: 'fixture-value-not-real',
       status: 'reserved' as const,
+      stage: 'shipped-confirmed' as const,
       reused: false,
     }));
     const inventory: CardInventoryPort = {
@@ -1208,6 +1290,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       cardId: 'card-expired',
       cardSecret: 'fixture-value-not-real',
       status: 'reserved' as const,
+      stage: 'shipped-confirmed' as const,
       reused: false,
     }));
     const expiredServer = await startServer(serverOptions({
@@ -1266,6 +1349,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       cardId: 'card-old',
       cardSecret: 'fixture-value-not-real',
       status: 'reserved' as const,
+      stage: 'shipped-confirmed' as const,
       reused: false,
     }));
     const budgetServer = await startServer(serverOptions({
@@ -1359,6 +1443,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         cardId: 'card-backfill',
         cardSecret: 'fixture-value-not-real',
         status: 'reserved',
+        stage: 'shipped-confirmed',
         reused: false,
       })),
       beginDelivery: vi.fn(async () => ({ ok: true })),
