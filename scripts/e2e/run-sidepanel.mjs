@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { chromium } from 'playwright';
@@ -28,6 +29,7 @@ async function waitServiceWorker(context) {
 
 async function main() {
   let context;
+  let authServer;
   try {
     if (process.env.ZA_EXTENSION_E2E_DIR === undefined) {
       console.log('[1/3] 构建 extension…');
@@ -59,13 +61,28 @@ async function main() {
     assert(manifest.side_panel?.default_path === 'sidepanel.html', 'manifest 未声明 Side Panel 页面');
     assert(manifest.permissions?.includes('sidePanel'), 'manifest 未声明 sidePanel 权限');
 
+    authServer = createServer((_req, res) => {
+      res.writeHead(401, {
+        'content-type': 'application/json',
+        'access-control-allow-origin': '*',
+        'access-control-allow-headers': 'authorization,content-type',
+        'access-control-allow-methods': 'GET,POST,OPTIONS',
+      });
+      res.end('{"error":"unauthorized-fixture"}');
+    });
+    await new Promise((resolveListen) => authServer.listen(0, '127.0.0.1', resolveListen));
+    const authAddress = authServer.address();
+    assert(authAddress !== null && typeof authAddress === 'object', '无法启动鉴权失败夹具');
+    await sw.evaluate(async (baseUrl) => {
+      await chrome.storage.local.set({ 'za.token': 'e2e-invalid-token', 'za.serverBaseUrl': baseUrl });
+    }, `http://127.0.0.1:${authAddress.port}`);
+
     console.log('[3/3] 打开打包后的 Side Panel 并验证需求入口…');
     const panel = await context.newPage();
     await panel.setViewportSize({ width: 420, height: 780 });
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     await panel.locator('section[aria-label="Zen Commerce Agent 控制台"]').waitFor();
-    assert((await panel.locator('.za-brand h1').textContent()) === 'Zen Commerce Agent', 'Side Panel 主标题不正确');
-    assert((await panel.locator('.za-brand p').textContent()) === '电商智能体', 'Side Panel 副标题不正确');
+    assert((await panel.locator('.za-topbar').count()) === 0, 'Side Panel 不应重复渲染 Chrome 原生标题');
     await panel.getByText('没有可恢复的 Zen 任务', { exact: true }).waitFor();
     assert(await panel.getByRole('button', { name: '发送消息' }).isDisabled(), '无任务组时发送入口必须禁用');
     const windowId = await panel.evaluate(async () => (await chrome.windows.getCurrent()).id);
@@ -96,7 +113,7 @@ async function main() {
       }).observe(document.body, { attributes: true, childList: true, subtree: true });
     });
     await panel.getByRole('button', { name: '发送消息' }).click();
-    await panel.getByText('消息未被服务端接受，草稿仍保留，请检查连接后重试', { exact: true }).waitFor();
+    await panel.getByText('访问令牌无效或已过期，请在扩展设置中更新后重试；草稿仍保留', { exact: true }).waitFor();
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '检查当前页面，不要执行操作', '服务端拒绝后文本草稿未保留');
     await panel.getByRole('button', { name: '移除附件 policy.md' }).waitFor();
     const observed = await panel.evaluate(() => globalThis.__zaObservedComposerState);
@@ -111,6 +128,9 @@ async function main() {
     process.exitCode = 1;
   } finally {
     await context?.close().catch(() => {});
+    if (authServer !== undefined) {
+      await new Promise((resolveClose) => authServer.close(() => resolveClose())).catch(() => {});
+    }
   }
 }
 

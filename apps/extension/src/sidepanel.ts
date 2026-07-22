@@ -9,6 +9,7 @@ import type { ExecutionPreference } from './frames.js';
 import {
   SIDE_PANEL_PORT_NAME,
   type BackgroundToSidePanelMessage,
+  type MessageDeliveryFailure,
   type SidePanelUiEvent,
   type SidePanelToBackgroundMessage,
 } from './messaging.js';
@@ -32,10 +33,6 @@ export interface SidePanelElements {
 export function mountSidePanel(root: HTMLElement): SidePanelElements {
   root.innerHTML = `
     <section class="za-shell" aria-label="Zen Commerce Agent 控制台">
-      <header class="za-topbar">
-        <div class="za-mark" aria-hidden="true">Z</div>
-        <div class="za-brand"><h1>Zen Commerce Agent</h1><p>电商智能体</p></div>
-      </header>
       <section class="za-context" data-za-context data-state="waiting" aria-live="polite">
         <span class="za-context-dot" aria-hidden="true"></span>
         <div class="za-context-copy">
@@ -134,6 +131,23 @@ export function startSidePanel(elements: SidePanelElements): void {
   let pendingMessageId: string | null = null;
   let activeMessageId: string | null = null;
   const completedMessageIds = new Set<string>();
+
+  const deliveryFailureMessage = (failure: MessageDeliveryFailure | undefined, httpStatus: number | undefined): string => {
+    switch (failure) {
+      case 'configuration':
+        return '扩展连接配置不完整，请在扩展设置中检查访问令牌和服务地址';
+      case 'unauthorized':
+        return '访问令牌无效或已过期，请在扩展设置中更新后重试';
+      case 'session-expired':
+        return '会话已失效，请重新打开闲鱼页面后重试';
+      case 'unreachable':
+        return '无法连接服务端，请检查网络和服务地址后重试';
+      case 'server-rejected':
+        return httpStatus === undefined ? '服务端拒绝了消息，请稍后重试' : `服务端拒绝了消息（HTTP ${httpStatus}），请稍后重试`;
+      default:
+        return '会话暂不可用，请重新打开闲鱼页面后重试';
+    }
+  };
 
   const isBusy = (): boolean => submitting || pendingMessageId !== null || turnInProgress || operationRunning || hitlPending;
 
@@ -280,7 +294,7 @@ export function startSidePanel(elements: SidePanelElements): void {
         turnInProgress = !completedMessageIds.has(message.messageId);
       } else {
         ui.hideThinking();
-        elements.composerNotice.textContent = '消息未被服务端接受，草稿仍保留，请检查连接后重试';
+        elements.composerNotice.textContent = `${deliveryFailureMessage(message.failure, message.httpStatus)}；草稿仍保留`;
       }
       updateComposer();
     } else if (message.kind === 'hitl-result') {

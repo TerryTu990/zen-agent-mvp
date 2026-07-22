@@ -22,6 +22,7 @@ import {
   type SidePanelUiEvent,
   type ContentRuntimeMessage,
   type BackgroundRuntimeMessage,
+  type MessageDeliveryFailure,
 } from './messaging.js';
 import { reducePanelHistory, removeSettledHitl } from './panel-history.js';
 import { verifyExecInstruction } from './exec-verification.js';
@@ -58,6 +59,12 @@ interface EventStream {
   reader: ReadableStreamDefaultReader<Uint8Array>;
   execPublicKey: string;
   expectedSessionId: string;
+}
+
+interface MessageDeliveryResult {
+  accepted: boolean;
+  failure?: MessageDeliveryFailure;
+  httpStatus?: number;
 }
 
 async function readServerBaseUrl(): Promise<string> {
@@ -147,6 +154,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
   let expectedActiveTabId: number | null = null;
   let autoScanRunId: string | null = null;
+  let lastSessionFailure: Omit<MessageDeliveryResult, 'accepted'> = { failure: 'session-unavailable' };
   const autoScanRunReady = chrome.storage.session.get(autoScanRunKey).then((items) => {
     const stored = items[autoScanRunKey];
     if (typeof stored === 'string' && stored !== '') autoScanRunId = stored;
@@ -214,10 +222,12 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
 
   // 错误消息只含键名/状态码等可定位信息，不回显 token 值（SEC-04）。
   async function openSession(): Promise<Session | null> {
+    lastSessionFailure = { failure: 'session-unavailable' };
     let baseUrl: string;
     try {
       baseUrl = await readServerBaseUrl();
     } catch (error) {
+      lastSessionFailure = { failure: 'configuration' };
       postStatus(error instanceof Error ? error.message : '服务地址配置无效');
       return null;
     }
@@ -226,6 +236,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       token = await identity.getToken();
     } catch (error) {
       if (hostUserId === null) {
+        lastSessionFailure = { failure: 'configuration' };
         postStatus(error instanceof Error ? error.message : '访问令牌读取失败');
         return null;
       }
@@ -233,6 +244,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       try {
         token = await identity.provisionToken(baseUrl, hostUserId);
       } catch {
+        lastSessionFailure = { failure: 'session-unavailable' };
         postStatus('自动获取访问令牌失败，请确认已登录宿主系统或手动配置 za.token');
         return null;
       }
@@ -259,14 +271,17 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         headers: { authorization: `Bearer ${token}` },
       });
     } catch {
+      lastSessionFailure = { failure: 'unreachable' };
       postStatus(`无法连接 zen-agent 服务（${baseUrl}）`);
       return null;
     }
     if (response.status === 401) {
+      lastSessionFailure = { failure: 'unauthorized', httpStatus: response.status };
       postStatus('身份校验未通过（HTTP 401），请检查 za.token 配置');
       return null;
     }
     if (!response.ok) {
+      lastSessionFailure = { failure: 'server-rejected', httpStatus: response.status };
       postStatus(`会话创建失败（HTTP ${response.status}）`);
       return null;
     }
@@ -303,12 +318,18 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         signal: abort.signal,
       });
     } catch {
+      lastSessionFailure = { failure: 'unreachable' };
       if (!abort.signal.aborted && !quiet) postStatus('事件流连接中断');
       return null;
     }
     const algorithm = response.headers.get('x-zen-agent-exec-algorithm');
     const execPublicKey = response.headers.get('x-zen-agent-exec-public-key');
     if (!response.ok || response.body === null || algorithm !== 'Ed25519' || !execPublicKey) {
+      lastSessionFailure = response.status === 401
+        ? { failure: 'unauthorized', httpStatus: response.status }
+        : response.status === 404
+          ? { failure: 'session-expired', httpStatus: response.status }
+          : { failure: 'server-rejected', httpStatus: response.status };
       if (!quiet) postStatus(`事件流建立失败（HTTP ${response.status}）`);
       return null;
     }
@@ -445,8 +466,12 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   }
 
   async function forward(message: UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage): Promise<boolean> {
+    return (await deliver(message)).accepted;
+  }
+
+  async function deliver(message: UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage): Promise<MessageDeliveryResult> {
     const session = await ensureSession();
-    if (session === null) return false;
+    if (session === null) return { accepted: false, ...lastSessionFailure };
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
     try {
       const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/frames`, {
@@ -456,13 +481,20 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       });
       if (response.status === 401) {
         postStatus('身份校验未通过（HTTP 401），请检查 za.token 配置');
+        return { accepted: false, failure: 'unauthorized', httpStatus: response.status };
+      } else if (response.status === 404) {
+        sessionPromise = null;
+        await chrome.storage.session.remove(sessionKeyForGroup(groupId));
+        postStatus('服务端会话已失效，请重新发送');
+        return { accepted: false, failure: 'session-expired', httpStatus: response.status };
       } else if (!response.ok) {
         postStatus(`上行帧被拒绝（HTTP ${response.status}）`);
+        return { accepted: false, failure: 'server-rejected', httpStatus: response.status };
       }
-      return response.ok;
+      return { accepted: true };
     } catch {
       postStatus(`无法连接 zen-agent 服务（${session.baseUrl}）`);
-      return false;
+      return { accepted: false, failure: 'unreachable' };
     }
   }
 
@@ -614,9 +646,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
       if (message.kind === 'user-message') {
         pipeline = pipeline.then(async () => {
-          const accepted = await forward(message);
-          if (accepted) emitUi({ kind: 'user-echo', text: message.displayText ?? message.text, messageId: message.messageId });
-          postPanel(port, { kind: 'message-result', messageId: message.messageId, accepted });
+          const result = await deliver(message);
+          if (result.accepted) emitUi({ kind: 'user-echo', text: message.displayText ?? message.text, messageId: message.messageId });
+          postPanel(port, { kind: 'message-result', messageId: message.messageId, ...result });
         });
         return;
       }

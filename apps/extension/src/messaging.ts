@@ -21,6 +21,14 @@ export type SidePanelUiEvent =
 export const SESSION_PORT_NAME = 'za-session';
 export const SIDE_PANEL_PORT_NAME = 'za-side-panel';
 
+export type MessageDeliveryFailure =
+  | 'configuration'
+  | 'unauthorized'
+  | 'session-expired'
+  | 'server-rejected'
+  | 'unreachable'
+  | 'session-unavailable';
+
 export type ContentToBackgroundMessage =
   | { kind: 'context-report'; url: string; title: string }
   // content 在页面环境代执行后回传整帧；sessionId 权威仍由 background 组帧时盖章。
@@ -55,7 +63,13 @@ export type BackgroundToSidePanelMessage =
   | SidePanelUiEvent
   | { kind: 'history-replay'; events: SidePanelUiEvent[] }
   | { kind: 'panel-ready' }
-  | { kind: 'message-result'; messageId: string; accepted: boolean }
+  | {
+      kind: 'message-result';
+      messageId: string;
+      accepted: boolean;
+      failure?: MessageDeliveryFailure;
+      httpStatus?: number;
+    }
   | { kind: 'hitl-result'; hitlId: string; accepted: boolean }
   | { kind: 'operation-state'; running: boolean }
   | {
