@@ -52,6 +52,26 @@ release/
 | Chrome 插件 | `artifacts/zen-commerce-agent-extension-<version>.zip`（生产服务端地址已烤入缺省值） | 手工分发/企业策略/商店 |
 | 嵌入 SDK / 浏览器壳 | （未有产物） | 锚点：S3 多形态客户端落地时补 `build-sdk.sh` 等 |
 
+## 安装生产 Chrome 扩展（本机）
+
+Chrome 的“加载已解压的扩展程序”不能选择 zip 文件，必须选择**内部直接包含 `manifest.json` 的目录**。
+
+当前生产扩展：
+
+- zip：`/Users/terrytu/Workspace2025/Working/zen-agent-mvp/release/artifacts/zen-commerce-agent-extension-0.3.0.zip`
+- 已解压、可直接选择的目录：`/Users/terrytu/Workspace2025/Working/zen-agent-mvp/release/artifacts/zen-commerce-agent-extension-0.3.0`
+- Chrome 文件选择器中应看到该目录内有 `manifest.json`、`options.html`、`dist/` 和 `icons/`；选择这个目录本身，不要进入 `dist/`，也不要选择 zip。
+
+安装步骤：
+
+1. 在 Chrome 地址栏输入 `chrome://extensions` 并回车。
+2. 打开页面右上角“开发者模式”。
+3. 点击左上角“加载已解压的扩展程序”。
+4. 在文件选择器中按 `Command+Shift+G`，粘贴上述“已解压目录”的绝对路径，回车后选择该目录。
+5. 在扩展卡片中打开“详细信息 → 扩展程序选项”，确认服务端地址为 `https://agent.flash-api.com`，粘贴管理员在服务器签发的令牌并保存。令牌不得写入仓库或聊天。
+
+`release/artifacts/` 被 gitignore；重新构建生产扩展后，需要重新解压对应版本 zip，不能沿用旧版本目录。
+
 ## 用户认证（当前形态：管理员签发令牌）
 
 平台不建账号；用户须持管理员签发的短期 JWT 方可使用（服务端验签 fail-closed）。宿主 SSO 接入是终局形态，届时由其签发、本流程退场。
