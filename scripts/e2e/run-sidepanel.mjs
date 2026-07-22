@@ -57,8 +57,6 @@ async function main() {
     const manifest = await sw.evaluate(() => chrome.runtime.getManifest());
     assert(manifest.side_panel?.default_path === 'sidepanel.html', 'manifest 未声明 Side Panel 页面');
     assert(manifest.permissions?.includes('sidePanel'), 'manifest 未声明 sidePanel 权限');
-    const panelBehavior = await sw.evaluate(() => chrome.sidePanel.getPanelBehavior());
-    assert(panelBehavior.openPanelOnActionClick === true, '工具栏图标未配置为直接打开 Side Panel');
 
     console.log('[3/3] 打开打包后的 Side Panel 并验证需求入口…');
     const panel = await context.newPage();

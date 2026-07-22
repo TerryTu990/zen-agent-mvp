@@ -26,6 +26,7 @@ import {
 import { reducePanelHistory, removeSettledHitl } from './panel-history.js';
 import { verifyExecInstruction } from './exec-verification.js';
 import { normalizeTrustedServerBaseUrl } from './server-url.js';
+import { runToolbarSidePanelAction } from './side-panel-action.js';
 import {
   isXianyuAutoScanWorkPage,
   isXianyuAutoScanCompletion,
@@ -763,10 +764,6 @@ async function handleIconClick(tab: chrome.tabs.Tab): Promise<void> {
   await sendActivate(tab.id);
 }
 
-void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {
-  console.error('Zen Commerce Agent 侧边栏点击行为配置失败');
-});
-
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === SESSION_PORT_NAME) {
     bridgeFor(groupIdOf(port)).attachContent(port);
@@ -787,7 +784,14 @@ chrome.runtime.onMessage.addListener((raw, sender) => {
 });
 
 chrome.action.onClicked.addListener((tab) => {
-  void handleIconClick(tab);
+  if (tab.id === undefined) return;
+  const tabId = tab.id;
+  void runToolbarSidePanelAction({
+    openPanel: () => chrome.sidePanel.open({ tabId }),
+    activatePage: () => handleIconClick(tab),
+  }).catch(() => {
+    console.error('Zen Commerce Agent 工具栏激活失败');
+  });
 });
 
 async function syncXianyuAutoScanAlarm(): Promise<void> {
