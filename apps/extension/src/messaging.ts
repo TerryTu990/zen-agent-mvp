@@ -25,6 +25,7 @@ export type MessageDeliveryFailure =
   | 'configuration'
   | 'unauthorized'
   | 'session-expired'
+  | 'protocol-invalid'
   | 'server-rejected'
   | 'unreachable'
   | 'session-unavailable';

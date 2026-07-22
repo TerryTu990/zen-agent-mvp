@@ -53,12 +53,14 @@ interface Session {
   baseUrl: string;
   token: string;
   sessionId: string;
+  generation: number;
 }
 
 interface EventStream {
   reader: ReadableStreamDefaultReader<Uint8Array>;
   execPublicKey: string;
   expectedSessionId: string;
+  generation: number;
 }
 
 interface MessageDeliveryResult {
@@ -149,6 +151,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     if (Array.isArray(stored)) panelHistory = stored as SidePanelUiEvent[];
   });
   let sessionPromise: Promise<Session | null> | null = null;
+  let sessionGeneration = 0;
+  const activeReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
   // 组内任一页面同源读取的宿主用户 id；无 za.token 时用于向 demo-token 端点自取（P0-b）。
   let hostUserId: string | null = null;
   // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
@@ -220,8 +224,17 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   };
   const postStatus = (message: string): void => emitUi({ kind: 'status', message });
 
+  async function invalidateSession(): Promise<void> {
+    sessionGeneration += 1;
+    sessionPromise = null;
+    for (const reader of activeReaders) void reader.cancel().catch(() => {});
+    activeReaders.clear();
+    await chrome.storage.session.remove(sessionKeyForGroup(groupId));
+  }
+
   // 错误消息只含键名/状态码等可定位信息，不回显 token 值（SEC-04）。
   async function openSession(): Promise<Session | null> {
+    const generation = sessionGeneration;
     lastSessionFailure = { failure: 'session-unavailable' };
     let baseUrl: string;
     try {
@@ -254,9 +267,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     const key = sessionKeyForGroup(groupId);
     const storedId = (await chrome.storage.session.get(key))[key];
     if (typeof storedId === 'string' && storedId !== '') {
-      const resumed: Session = { baseUrl, token, sessionId: storedId };
+      const resumed: Session = { baseUrl, token, sessionId: storedId, generation };
       const stream = await openEventStream(resumed, true);
-      if (stream !== null) {
+      if (stream !== null && generation === sessionGeneration) {
         await reconcileTurnState(resumed);
         void drainEvents(resumed, stream);
         return resumed;
@@ -264,6 +277,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       // 复用失败（会话已失效/服务端重启）：清存根，落到新建。
       await chrome.storage.session.remove(key);
     }
+    if (generation !== sessionGeneration) return null;
     let response: Response;
     try {
       response = await fetch(`${baseUrl}/v1/sessions`, {
@@ -286,8 +300,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       return null;
     }
     const { sessionId } = (await response.json()) as { sessionId: string };
+    if (generation !== sessionGeneration) return null;
     await chrome.storage.session.set({ [key]: sessionId });
-    const session = { baseUrl, token, sessionId };
+    const session = { baseUrl, token, sessionId, generation };
     // 先建立 SSE 订阅再返回：否则首个 user-message 触发的回合可能早于订阅注册而丢失下行帧（订阅竞态）。
     const stream = await openEventStream(session);
     if (stream === null) return null;
@@ -296,11 +311,17 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   }
 
   function ensureSession(): Promise<Session | null> {
+    const generation = sessionGeneration;
     sessionPromise ??= openSession().then((session) => {
       if (session === null) sessionPromise = null;
       return session;
     });
-    return sessionPromise;
+    return sessionPromise.then((session) => {
+      if (session === null && generation === sessionGeneration) return null;
+      if (session !== null && session.generation === sessionGeneration) return session;
+      sessionPromise = null;
+      return ensureSession();
+    });
   }
 
   /**
@@ -308,9 +329,10 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
    * quiet=true 用于复用探测：会话已失效属预期，不向用户报状态。
    */
   async function openEventStream(
-    { baseUrl, token, sessionId }: Session,
+    session: Session,
     quiet = false,
   ): Promise<EventStream | null> {
+    const { baseUrl, token, sessionId } = session;
     let response: Response;
     try {
       response = await fetch(`${baseUrl}/v1/sessions/${sessionId}/events`, {
@@ -324,7 +346,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
     const algorithm = response.headers.get('x-zen-agent-exec-algorithm');
     const execPublicKey = response.headers.get('x-zen-agent-exec-public-key');
-    if (!response.ok || response.body === null || algorithm !== 'Ed25519' || !execPublicKey) {
+    if (!response.ok) {
       lastSessionFailure = response.status === 401
         ? { failure: 'unauthorized', httpStatus: response.status }
         : response.status === 404
@@ -333,7 +355,17 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       if (!quiet) postStatus(`事件流建立失败（HTTP ${response.status}）`);
       return null;
     }
-    return { reader: response.body.getReader(), execPublicKey, expectedSessionId: sessionId };
+    if (response.body === null || algorithm !== 'Ed25519' || !execPublicKey) {
+      lastSessionFailure = { failure: 'protocol-invalid' };
+      if (!quiet) postStatus('事件流安全握手失败');
+      return null;
+    }
+    return {
+      reader: response.body!.getReader(),
+      execPublicKey: execPublicKey!,
+      expectedSessionId: sessionId,
+      generation: session.generation,
+    };
   }
 
   async function reconcileTurnState(session: Session): Promise<void> {
@@ -354,20 +386,38 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   }
 
   async function recoverEventStream(session: Session): Promise<void> {
-    while (!abort.signal.aborted) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    for (let attempt = 0; attempt < 5 && !abort.signal.aborted && session.generation === sessionGeneration; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+      if (session.generation !== sessionGeneration) return;
       const stream = await openEventStream(session, true);
-      if (stream === null) continue;
+      if (stream === null) {
+        if (
+          lastSessionFailure.failure === 'unauthorized' ||
+          lastSessionFailure.failure === 'session-expired' ||
+          lastSessionFailure.failure === 'protocol-invalid'
+        ) {
+          if (lastSessionFailure.failure !== 'protocol-invalid') await invalidateSession();
+          postStatus('事件流无法恢复，请检查连接配置后重试');
+          return;
+        }
+        continue;
+      }
       await reconcileTurnState(session);
       void drainEvents(session, stream);
       return;
     }
+    if (!abort.signal.aborted && session.generation === sessionGeneration) postStatus('事件流重连失败，请检查网络后重试');
   }
 
   async function drainEvents(
     session: Session,
-    { reader, execPublicKey, expectedSessionId }: EventStream,
+    { reader, execPublicKey, expectedSessionId, generation }: EventStream,
   ): Promise<void> {
+    if (generation !== sessionGeneration) {
+      await reader.cancel().catch(() => {});
+      return;
+    }
+    activeReaders.add(reader);
     const decoder = new TextDecoder();
     const parser = createSseParser();
     try {
@@ -425,8 +475,10 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
     } catch {
       if (abort.signal.aborted) return;
+    } finally {
+      activeReaders.delete(reader);
     }
-    if (!abort.signal.aborted) {
+    if (!abort.signal.aborted && generation === sessionGeneration) {
       postStatus('事件流连接中断，正在重连');
       void recoverEventStream(session);
     }
@@ -480,11 +532,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         body: JSON.stringify(frame),
       });
       if (response.status === 401) {
+        await invalidateSession();
         postStatus('身份校验未通过（HTTP 401），请检查 za.token 配置');
         return { accepted: false, failure: 'unauthorized', httpStatus: response.status };
       } else if (response.status === 404) {
-        sessionPromise = null;
-        await chrome.storage.session.remove(sessionKeyForGroup(groupId));
+        await invalidateSession();
         postStatus('服务端会话已失效，请重新发送');
         return { accepted: false, failure: 'session-expired', httpStatus: response.status };
       } else if (!response.ok) {
@@ -648,7 +700,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         pipeline = pipeline.then(async () => {
           const result = await deliver(message);
           if (result.accepted) emitUi({ kind: 'user-echo', text: message.displayText ?? message.text, messageId: message.messageId });
-          postPanel(port, { kind: 'message-result', messageId: message.messageId, ...result });
+          postToPanels({ kind: 'message-result', messageId: message.messageId, ...result });
         });
         return;
       }
@@ -657,7 +709,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           const accepted = await forward(message);
           if (accepted) updateHistory((history) => removeSettledHitl(history, message.hitlId));
           else postPanel(port, { kind: 'history-replay', events: panelHistory });
-          postPanel(port, { kind: 'hitl-result', hitlId: message.hitlId, accepted });
+          postToPanels({ kind: 'hitl-result', hitlId: message.hitlId, accepted });
         });
         return;
       }
@@ -736,7 +788,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     return 'started';
   }
 
-  return { attachContent, attachPanel, triggerAutoScan, close };
+  return { attachContent, attachPanel, triggerAutoScan, invalidateSession, close };
 }
 
 type GroupBridge = ReturnType<typeof createGroupBridge>;
@@ -915,6 +967,12 @@ void syncXianyuAutoScanAlarm();
 chrome.runtime.onStartup.addListener(() => void syncXianyuAutoScanAlarm());
 chrome.runtime.onInstalled.addListener(() => void syncXianyuAutoScanAlarm());
 chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (
+    areaName === 'local' &&
+    (changes['za.token'] !== undefined || changes['za.serverBaseUrl'] !== undefined)
+  ) {
+    for (const bridge of groups.values()) void bridge.invalidateSession();
+  }
   if (
     areaName === 'local' &&
     (changes[XIANYU_AUTO_SCAN_ENABLED_KEY] !== undefined ||

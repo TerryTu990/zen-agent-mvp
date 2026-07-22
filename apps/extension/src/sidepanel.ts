@@ -139,7 +139,9 @@ export function startSidePanel(elements: SidePanelElements): void {
       case 'unauthorized':
         return '访问令牌无效或已过期，请在扩展设置中更新后重试';
       case 'session-expired':
-        return '会话已失效，请重新打开闲鱼页面后重试';
+        return '会话已失效，已准备重新连接，请直接重试';
+      case 'protocol-invalid':
+        return '服务端安全握手失败，请检查服务地址或签名配置';
       case 'unreachable':
         return '无法连接服务端，请检查网络和服务地址后重试';
       case 'server-rejected':
@@ -281,6 +283,12 @@ export function startSidePanel(elements: SidePanelElements): void {
       for (const event of message.events) renderUiEvent(event);
     } else if (message.kind === 'panel-ready') {
       ready = true;
+      if (pendingMessageId !== null) {
+        submitting = false;
+        pendingMessageId = null;
+        ui.hideThinking();
+        elements.composerNotice.textContent = '连接已恢复，但无法确认上次消息是否送达；草稿仍保留，请重试';
+      }
       updateComposer();
     } else if (message.kind === 'message-result') {
       if (message.messageId !== pendingMessageId) return;

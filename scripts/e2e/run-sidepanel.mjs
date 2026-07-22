@@ -30,6 +30,9 @@ async function waitServiceWorker(context) {
 async function main() {
   let context;
   let authServer;
+  let nextFrameStatus = 401;
+  let sessionSequence = 0;
+  const eventStreams = new Map();
   try {
     if (process.env.ZA_EXTENSION_E2E_DIR === undefined) {
       console.log('[1/3] 构建 extension…');
@@ -61,14 +64,55 @@ async function main() {
     assert(manifest.side_panel?.default_path === 'sidepanel.html', 'manifest 未声明 Side Panel 页面');
     assert(manifest.permissions?.includes('sidePanel'), 'manifest 未声明 sidePanel 权限');
 
-    authServer = createServer((_req, res) => {
-      res.writeHead(401, {
+    authServer = createServer(async (req, res) => {
+      const headers = {
         'content-type': 'application/json',
         'access-control-allow-origin': '*',
         'access-control-allow-headers': 'authorization,content-type',
         'access-control-allow-methods': 'GET,POST,OPTIONS',
-      });
-      res.end('{"error":"unauthorized-fixture"}');
+      };
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, headers);
+        res.end();
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/v1/sessions') {
+        sessionSequence += 1;
+        res.writeHead(201, headers);
+        res.end(JSON.stringify({ sessionId: `sidepanel-e2e-${sessionSequence}` }));
+        return;
+      }
+      const match = /^\/v1\/sessions\/([^/]+)\/(events|frames)$/.exec(req.url ?? '');
+      if (match?.[2] === 'events' && req.method === 'GET') {
+        const sessionId = match[1];
+        res.writeHead(200, {
+          ...headers,
+          'content-type': 'text/event-stream',
+          'x-zen-agent-exec-algorithm': 'Ed25519',
+          'x-zen-agent-exec-public-key': 'sidepanel-e2e-public-key',
+        });
+        res.write(': ping\n\n');
+        eventStreams.set(sessionId, res);
+        req.on('close', () => eventStreams.delete(sessionId));
+        return;
+      }
+      if (match?.[2] === 'frames' && req.method === 'POST') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        const frame = JSON.parse(body);
+        const status = nextFrameStatus;
+        nextFrameStatus = 202;
+        res.writeHead(status, headers);
+        res.end(status === 202 ? '{"accepted":true}' : JSON.stringify({ error: `fixture-${status}` }));
+        if (status === 202) {
+          eventStreams.get(match[1])?.write(`data: ${JSON.stringify({
+            type: 'turn-complete', sessionId: match[1], messageId: frame.messageId, idle: true,
+          })}\n\n`);
+        }
+        return;
+      }
+      res.writeHead(404, headers);
+      res.end('{"error":"fixture-not-found"}');
     });
     await new Promise((resolveListen) => authServer.listen(0, '127.0.0.1', resolveListen));
     const authAddress = authServer.address();
@@ -116,6 +160,19 @@ async function main() {
     await panel.getByText('访问令牌无效或已过期，请在扩展设置中更新后重试；草稿仍保留', { exact: true }).waitFor();
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '检查当前页面，不要执行操作', '服务端拒绝后文本草稿未保留');
     await panel.getByRole('button', { name: '移除附件 policy.md' }).waitFor();
+    await sw.evaluate(() => chrome.storage.local.set({ 'za.token': 'e2e-refreshed-token' }));
+    await panel.getByRole('button', { name: '发送消息' }).click();
+    await panel.getByText('检查当前页面，不要执行操作', { exact: false }).waitFor();
+    assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '更新令牌后重试未使用新会话');
+    await panel.getByRole('button', { name: '发送消息' }).waitFor();
+
+    nextFrameStatus = 404;
+    await panel.getByLabel('给 Zen 发送消息').fill('验证失效会话恢复');
+    await panel.getByRole('button', { name: '发送消息' }).click();
+    await panel.getByText('会话已失效，已准备重新连接，请直接重试；草稿仍保留', { exact: true }).waitFor();
+    await panel.getByRole('button', { name: '发送消息' }).click();
+    await panel.getByText('验证失效会话恢复', { exact: false }).waitFor();
+    assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '404 后直接重试未创建新会话');
     const observed = await panel.evaluate(() => globalThis.__zaObservedComposerState);
     assert(observed.waiting, '发送后合并按钮未进入处理中状态');
     assert(observed.thinking, '发送后未即时显示思考中状态');
@@ -129,6 +186,7 @@ async function main() {
   } finally {
     await context?.close().catch(() => {});
     if (authServer !== undefined) {
+      for (const stream of eventStreams.values()) stream.end();
       await new Promise((resolveClose) => authServer.close(() => resolveClose())).catch(() => {});
     }
   }
