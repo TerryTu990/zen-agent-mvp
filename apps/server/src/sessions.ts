@@ -33,6 +33,8 @@ export interface SessionState {
   lastGenericOrigin: string | null;
   /** 用户/助手文本轮 + 工具轮（assistant toolCalls 回声 + role:tool 观测）；system 注入每轮整段重建，不进历史。 */
   history: LlmMessage[];
+  /** 客户端消息幂等状态；随会话持久化，服务重启后相同 messageId 不会重复启动回合。 */
+  messageTurns: Record<string, 'pending' | 'complete'>;
 }
 
 export interface SessionStore {
@@ -48,6 +50,8 @@ export interface SessionStore {
   setOriginClaims(sessionId: string, origin: string, claims: IdentityClaims): void;
   /** 记本回合激活 packId 与 generic 绑定 origin（站点边界标记判据）。 */
   setLastPackId(sessionId: string, packId: string, genericOrigin?: string): void;
+  /** 设置或删除消息幂等状态；null 表删除最旧完成项。 */
+  setMessageTurn(sessionId: string, messageId: string, state: 'pending' | 'complete' | null): void;
   /** 逐出会话（TTL 清理用）；不存在即无操作。 */
   delete(sessionId: string): void;
   /** 载入既有会话状态（持久化重放恢复用）；覆盖同 id 内存项。 */
@@ -72,6 +76,7 @@ export function createMemorySessionStore(): SessionStore {
         lastPackId: null,
         lastGenericOrigin: null,
         history: [],
+        messageTurns: {},
       };
       sessions.set(session.sessionId, session);
       return session;
@@ -99,11 +104,16 @@ export function createMemorySessionStore(): SessionStore {
       session.lastPackId = packId;
       session.lastGenericOrigin = genericOrigin ?? null;
     },
+    setMessageTurn(sessionId, messageId, state) {
+      const turns = mustGet(sessionId).messageTurns;
+      if (state === null) delete turns[messageId];
+      else turns[messageId] = state;
+    },
     delete(sessionId) {
       sessions.delete(sessionId);
     },
     restore(state) {
-      sessions.set(state.sessionId, state);
+      sessions.set(state.sessionId, { ...state, messageTurns: state.messageTurns ?? {} });
     },
   };
 }
@@ -115,7 +125,8 @@ type SessionEvent =
   | { t: 'history'; history: LlmMessage[] }
   | { t: 'claims'; claims: IdentityClaims }
   | { t: 'origin-claims'; origin: string; claims: IdentityClaims }
-  | { t: 'last-pack'; packId: string; genericOrigin?: string };
+  | { t: 'last-pack'; packId: string; genericOrigin?: string }
+  | { t: 'message-turn'; messageId: string; state: 'pending' | 'complete' | null };
 
 export interface PersistentSessionStore extends SessionStore {
   /** 逐出闲置超时的会话（内存项 + 落盘文件）；由内部定时器驱动，测试可直接调用。 */
@@ -199,6 +210,7 @@ export function createPersistentSessionStore(
             lastPackId: null,
             lastGenericOrigin: null,
             history: [],
+            messageTurns: {},
           };
         } else if (state === undefined) {
           continue;
@@ -213,6 +225,9 @@ export function createPersistentSessionStore(
         } else if (event.t === 'last-pack') {
           state.lastPackId = event.packId;
           state.lastGenericOrigin = event.genericOrigin ?? null;
+        } else if (event.t === 'message-turn') {
+          if (event.state === null) delete state.messageTurns[event.messageId];
+          else state.messageTurns[event.messageId] = event.state;
         }
       }
     } catch (cause) {
@@ -325,6 +340,11 @@ export function createPersistentSessionStore(
           ...(genericOrigin !== undefined ? { genericOrigin } : {}),
         });
       }
+    },
+    setMessageTurn(sessionId, messageId, state) {
+      inner.setMessageTurn(sessionId, messageId, state);
+      touch(sessionId);
+      append(sessionId, { t: 'message-turn', messageId, state });
     },
     delete(sessionId) {
       inner.delete(sessionId);

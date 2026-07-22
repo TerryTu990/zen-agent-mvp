@@ -371,8 +371,6 @@ interface SessionRuntime {
   /** 同会话回合串行链：user-message 依次排队，避免历史交错。 */
   turnChain: Promise<void>;
   pendingTurns: number;
-  /** messageId 幂等状态：MV3 重连可用同一 id 重投，服务端不得重复启动回合。 */
-  messageTurns: Map<string, 'pending' | 'complete'>;
   /** HITL 挂起等待器：hitlId → resolver；hitl-decision 到达时解析，回合恢复。 */
   pendingHitl: Map<string, (decision: HitlDecisionValue) => void>;
   /** 代执行挂起等待器：nonce → resolver；exec-result 到达时解析，回合恢复。 */
@@ -462,7 +460,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
         subscribers: new Set(),
         turnChain: Promise.resolve(),
         pendingTurns: 0,
-        messageTurns: new Map(),
         pendingHitl: new Map(),
         pendingExec: new Map(),
         pendingSnapshot: new Map(),
@@ -1439,7 +1436,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       case 'user-message': {
         const runtime = runtimeOf(session.sessionId);
         if (upstream.messageId !== undefined) {
-          const existing = runtime.messageTurns.get(upstream.messageId);
+          const existing = session.messageTurns[upstream.messageId];
           if (existing !== undefined) {
             sendJson(res, 202, {
               accepted: true,
@@ -1449,10 +1446,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
             });
             return;
           }
-          runtime.messageTurns.set(upstream.messageId, 'pending');
-          if (runtime.messageTurns.size > 256) {
-            const completed = [...runtime.messageTurns].find(([, state]) => state === 'complete');
-            if (completed !== undefined) runtime.messageTurns.delete(completed[0]);
+          deps.store.setMessageTurn(session.sessionId, upstream.messageId, 'pending');
+          const messageTurns = Object.entries(session.messageTurns);
+          if (messageTurns.length > 256) {
+            const completed = messageTurns.find(([, state]) => state === 'complete');
+            if (completed !== undefined) deps.store.setMessageTurn(session.sessionId, completed[0], null);
           }
         }
         if (upstream.automationRunId !== undefined) {
@@ -1512,7 +1510,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
           })
           .finally(() => {
             runtime.pendingTurns = Math.max(0, runtime.pendingTurns - 1);
-            if (upstream.messageId !== undefined) runtime.messageTurns.set(upstream.messageId, 'complete');
+            if (upstream.messageId !== undefined) {
+              deps.store.setMessageTurn(session.sessionId, upstream.messageId, 'complete');
+            }
             broadcast(session.sessionId, {
               type: 'turn-complete',
               sessionId: session.sessionId,

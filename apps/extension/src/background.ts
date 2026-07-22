@@ -374,11 +374,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     });
   }
 
-  function ensureDownlink(session: Session): Promise<boolean> {
+  function ensureDownlink(session: Session, quiet = false): Promise<boolean> {
     if (downlinkReady) return Promise.resolve(true);
     const existing = downlinkPromise;
     if (existing !== null) return existing;
-    const created = openEventStream(session).then((stream) => {
+    const created = openEventStream(session, quiet).then((stream) => {
       if (stream === null || session.generation !== sessionGeneration) return false;
       downlinkReady = true;
       void drainEvents(session, stream);
@@ -451,12 +451,19 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
+  const failTrackedTurns = (failure: MessageDeliveryFailure): void => {
+    activeTurnIds.clear();
+    anonymousTurns = 0;
+    postToPanels({ kind: 'session-failed', failure });
+    void applyPendingConfiguration();
+  };
+
   async function recoverEventStream(session: Session): Promise<void> {
     for (let attempt = 0; attempt < 5 && !abort.signal.aborted && session.generation === sessionGeneration; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
       if (session.generation !== sessionGeneration) return;
-      const stream = await openEventStream(session, true);
-      if (stream === null) {
+      const ready = await ensureDownlink(session, true);
+      if (!ready) {
         if (
           lastSessionFailure.failure === 'unauthorized' ||
           lastSessionFailure.failure === 'session-expired' ||
@@ -465,20 +472,18 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           if (lastSessionFailure.failure === 'unauthorized' || lastSessionFailure.failure === 'session-expired') {
             await invalidateSession();
           }
-          postToPanels({ kind: 'session-failed', failure: lastSessionFailure.failure ?? 'session-unavailable' });
+          failTrackedTurns(lastSessionFailure.failure ?? 'session-unavailable');
           postStatus('事件流无法恢复，请检查连接配置后重试');
           return;
         }
         continue;
       }
       await reconcileTurnState(session);
-      downlinkReady = true;
-      void drainEvents(session, stream);
       return;
     }
     if (!abort.signal.aborted && session.generation === sessionGeneration) {
       downlinkReady = false;
-      postToPanels({ kind: 'session-failed', failure: 'unreachable' });
+      failTrackedTurns('unreachable');
       postStatus('事件流重连失败，请检查网络后重试');
     }
   }

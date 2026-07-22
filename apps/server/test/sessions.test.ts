@@ -58,6 +58,24 @@ describe('createPersistentSessionStore（P2 会话持久化）', () => {
     expect(restored!.claims.hostUserId).toBe('host-u1');
   });
 
+  it('重放恢复消息幂等状态，服务重启后相同 messageId 不会重复执行', () => {
+    const dir = freshDir();
+    const first = persistent(dir);
+    const { sessionId } = first.create(CLAIMS);
+    first.setMessageTurn(sessionId, 'message-1', 'pending');
+    first.setMessageTurn(sessionId, 'message-2', 'complete');
+
+    const revived = persistent(dir);
+    expect(revived.get(sessionId)?.messageTurns).toEqual({
+      'message-1': 'pending',
+      'message-2': 'complete',
+    });
+
+    revived.setMessageTurn(sessionId, 'message-1', null);
+    const restartedAgain = persistent(dir);
+    expect(restartedAgain.get(sessionId)?.messageTurns).toEqual({ 'message-2': 'complete' });
+  });
+
   it('落盘不含 JWT 原文/secret（只含已解析 claims 与对话）', () => {
     const dir = freshDir();
     const store = persistent(dir);

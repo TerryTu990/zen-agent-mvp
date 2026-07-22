@@ -131,6 +131,7 @@ export function startSidePanel(elements: SidePanelElements): void {
   let selectedFiles: File[] = [];
   let pendingMessageId: string | null = null;
   let pendingMessage: PendingUserMessage | null = null;
+  let deliveryAwaiting = false;
   let activeMessageId: string | null = null;
   const completedMessageIds = new Set<string>();
 
@@ -155,7 +156,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     }
   };
 
-  const isBusy = (): boolean => submitting || pendingMessageId !== null || turnInProgress || operationRunning || hitlPending;
+  const isBusy = (): boolean => submitting || deliveryAwaiting || turnInProgress || operationRunning || hitlPending;
 
   const updateComposer = (): void => {
     const busy = isBusy();
@@ -177,6 +178,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     hitlPending = false;
     pendingMessageId = null;
     pendingMessage = null;
+    deliveryAwaiting = false;
     activeMessageId = null;
     completedMessageIds.clear();
     ui.hideThinking();
@@ -197,6 +199,8 @@ export function startSidePanel(elements: SidePanelElements): void {
       remove.textContent = '×';
       remove.addEventListener('click', () => {
         pendingMessage = null;
+        pendingMessageId = null;
+        deliveryAwaiting = false;
         selectedFiles.splice(index, 1);
         if (selectedFiles.length === 0) elements.composerNotice.textContent = '';
         renderAttachments();
@@ -234,6 +238,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     } else if (event.kind === 'user-echo') {
       if (event.messageId !== undefined && event.messageId === pendingMessageId) {
         submitting = false;
+        deliveryAwaiting = false;
         pendingMessageId = null;
         pendingMessage = null;
         elements.input.value = '';
@@ -290,11 +295,20 @@ export function startSidePanel(elements: SidePanelElements): void {
       for (const event of message.events) renderUiEvent(event);
     } else if (message.kind === 'panel-ready') {
       ready = true;
-      if (pendingMessage !== null) send(pendingMessage);
+      if (deliveryAwaiting && pendingMessage !== null) {
+        submitting = true;
+        ui.showThinking();
+        if (!send(pendingMessage)) {
+          submitting = false;
+          deliveryAwaiting = false;
+          ui.hideThinking();
+          elements.composerNotice.textContent = '连接仍未恢复，草稿已保留，请稍后重试';
+        }
+      }
       updateComposer();
     } else if (message.kind === 'session-failed') {
       submitting = false;
-      pendingMessageId = null;
+      deliveryAwaiting = false;
       turnInProgress = false;
       ui.hideThinking();
       elements.composerNotice.textContent = `${deliveryFailureMessage(message.failure, undefined)}；草稿仍保留`;
@@ -302,17 +316,17 @@ export function startSidePanel(elements: SidePanelElements): void {
     } else if (message.kind === 'message-result') {
       if (message.messageId !== pendingMessageId) return;
       submitting = false;
-      pendingMessageId = null;
+      deliveryAwaiting = false;
       if (message.accepted) {
         elements.input.value = '';
         selectedFiles = [];
         renderAttachments();
         pendingMessage = null;
+        pendingMessageId = null;
         activeMessageId = message.messageId;
         turnInProgress = !completedMessageIds.has(message.messageId);
       } else {
         ui.hideThinking();
-        pendingMessageId = null;
         elements.composerNotice.textContent = `${deliveryFailureMessage(message.failure, message.httpStatus)}；草稿仍保留`;
       }
       updateComposer();
@@ -386,10 +400,12 @@ export function startSidePanel(elements: SidePanelElements): void {
     if (pendingMessage !== null) {
       submitting = true;
       pendingMessageId = pendingMessage.messageId;
+      deliveryAwaiting = true;
       elements.composerNotice.textContent = '';
       ui.showThinking();
       if (!send(pendingMessage)) {
         submitting = false;
+        deliveryAwaiting = false;
         pendingMessageId = null;
         ui.hideThinking();
         elements.composerNotice.textContent = '连接已中断，草稿仍保留；重连后请重新发送';
@@ -417,6 +433,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     const prompt = appendAttachmentsToPrompt(displayText, prepared);
     const messageId = crypto.randomUUID();
     pendingMessageId = messageId;
+    deliveryAwaiting = true;
     pendingMessage = {
       kind: 'user-message',
       messageId,
@@ -427,6 +444,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     const sent = send(pendingMessage);
     if (!sent) {
       submitting = false;
+      deliveryAwaiting = false;
       pendingMessageId = null;
       pendingMessage = null;
       ui.hideThinking();
@@ -450,6 +468,8 @@ export function startSidePanel(elements: SidePanelElements): void {
   elements.upload.addEventListener('click', () => elements.fileInput.click());
   elements.fileInput.addEventListener('change', () => {
     pendingMessage = null;
+    pendingMessageId = null;
+    deliveryAwaiting = false;
     const additions = [...(elements.fileInput.files ?? [])];
     elements.fileInput.value = '';
     if (selectedFiles.length + additions.length > MAX_ATTACHMENT_COUNT) {
@@ -463,6 +483,8 @@ export function startSidePanel(elements: SidePanelElements): void {
   });
   elements.input.addEventListener('input', () => {
     pendingMessage = null;
+    pendingMessageId = null;
+    deliveryAwaiting = false;
     elements.input.style.height = 'auto';
     elements.input.style.height = `${Math.min(elements.input.scrollHeight, 144)}px`;
     updateComposer();
@@ -475,6 +497,8 @@ export function startSidePanel(elements: SidePanelElements): void {
   });
   elements.preference.addEventListener('change', () => {
     pendingMessage = null;
+    pendingMessageId = null;
+    deliveryAwaiting = false;
     void chrome.storage.local.set({ [EXECUTION_PREFERENCE_KEY]: elements.preference.value });
   });
   chrome.tabs.onActivated.addListener((activeInfo) => {
