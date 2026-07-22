@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 部署服务端到 lingm2：镜像传输 → 版本化快照校验/切换 → compose up → healthz；失败成对回滚镜像与快照。
+# 部署到 lingm2：传镜像 → 上传不可变快照/release → 服务器侧加锁激活并验证/回滚。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -9,78 +9,75 @@ TAG="$(git rev-parse --short HEAD)"
 IMAGE="zen-agent-server:${TAG}"
 SNAPSHOT_DIR=""
 SNAPSHOT_VERSION=""
+DEPLOY_ID="${TAG}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+RELEASE_DIR="${REMOTE_DIR}/releases/${DEPLOY_ID}"
 
 if [[ "${1:-}" == "--snapshot" ]]; then
   SNAPSHOT_DIR="${2:?--snapshot 需要目录参数}"
   [[ -f "${SNAPSHOT_DIR}/manifest.json" ]] || { echo "快照根缺 manifest.json：${SNAPSHOT_DIR}" >&2; exit 1; }
+  [[ -f "${SNAPSHOT_DIR}/system-prompt.md" ]] || { echo "快照根缺 system-prompt.md：${SNAPSHOT_DIR}" >&2; exit 1; }
   SNAPSHOT_VERSION="$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(String(m.version??""))' "${SNAPSHOT_DIR}/manifest.json")"
-  [[ "${SNAPSHOT_VERSION}" =~ ^[0-9A-Za-z][0-9A-Za-z.-]*$ ]] || { echo "快照 version 非法" >&2; exit 1; }
+  [[ "${SNAPSHOT_VERSION}" =~ ^[0-9A-Za-z][0-9A-Za-z.-]*$ ]] || { echo '快照 version 非法' >&2; exit 1; }
+else
+  echo '生产发布必须显式传 --snapshot <dir>，拒绝不确定的首次/沿用快照' >&2
+  exit 1
 fi
 
 docker image inspect "${IMAGE}" >/dev/null 2>&1 || {
-  echo "本地无镜像 ${IMAGE}：先跑 release/build-server-image.sh" >&2; exit 1;
+  echo "本地无镜像 ${IMAGE}：先跑 release/build-server-image.sh" >&2
+  exit 1
 }
 ssh "${HOST}" "test -f ${REMOTE_DIR}/.env" || {
-  echo "服务器缺 ${REMOTE_DIR}/.env：按 release/remote/env.example 在服务器上创建" >&2; exit 1;
+  echo "服务器缺 ${REMOTE_DIR}/.env：按 release/remote/env.example 在服务器上创建" >&2
+  exit 1
 }
 
-echo "[1/6] 记录当前非敏感部署状态并传输 ${IMAGE}…"
-OLD_IMAGE="$(ssh "${HOST}" "docker inspect --format '{{.Config.Image}}' \$(docker compose -f ${REMOTE_DIR}/docker-compose.yml ps -q zen-agent 2>/dev/null | head -n 1) 2>/dev/null || true")"
-OLD_SNAPSHOT="$(ssh "${HOST}" "docker inspect --format '{{range .Mounts}}{{if eq .Destination \"/app/snapshot\"}}{{.Source}}{{end}}{{end}}' \$(docker compose -f ${REMOTE_DIR}/docker-compose.yml ps -q zen-agent 2>/dev/null | head -n 1) 2>/dev/null || true")"
-docker save "${IMAGE}" | gzip | ssh "${HOST}" 'gunzip | docker load'
-
-echo "[2/6] 同步 compose、签发脚本与目录骨架…"
-scp -q release/remote/docker-compose.yml "${HOST}:${REMOTE_DIR}/docker-compose.yml"
-scp -q release/remote/sign-token.sh "${HOST}:${REMOTE_DIR}/sign-token.sh"
-ssh "${HOST}" "chmod +x ${REMOTE_DIR}/sign-token.sh && mkdir -p ${REMOTE_DIR}/snapshots ${REMOTE_DIR}/data/za ${REMOTE_DIR}/lark-cli && chown -R 1000:1000 ${REMOTE_DIR}/data/za ${REMOTE_DIR}/lark-cli"
-
-TARGET_SNAPSHOT="${OLD_SNAPSHOT:-${REMOTE_DIR}/snapshot}"
-if [[ -n "${SNAPSHOT_DIR}" ]]; then
-  TARGET_SNAPSHOT="${REMOTE_DIR}/snapshots/${SNAPSHOT_VERSION}"
-  STAGING_SNAPSHOT="${REMOTE_DIR}/snapshots/.staging-${SNAPSHOT_VERSION}-${TAG}"
-  echo "[3/6] 上传并校验快照 ${SNAPSHOT_VERSION}…"
-  ssh "${HOST}" "test ! -e ${STAGING_SNAPSHOT}"
-  rsync -az "${SNAPSHOT_DIR}/" "${HOST}:${STAGING_SNAPSHOT}/"
-  ssh "${HOST}" "docker run --rm -v ${STAGING_SNAPSHOT}:/app/snapshot:ro ${IMAGE} node --input-type=module -e \"import { createAssemblyPort } from '@zen-agent/assembly'; createAssemblyPort({snapshotRoot:'/app/snapshot',systemPromptPath:'/app/assets/system-prompt.md'});\""
-  if ssh "${HOST}" "test -d ${TARGET_SNAPSHOT}"; then
-    ssh "${HOST}" "diff -qr ${STAGING_SNAPSHOT} ${TARGET_SNAPSHOT} >/dev/null && rm -rf ${STAGING_SNAPSHOT}" || {
-      echo "同版本快照内容不同，拒绝覆盖：${TARGET_SNAPSHOT}" >&2
+# 从现有 /root/zen-agent 单体 compose 平滑迁移：只读取活动容器的非敏感镜像名/挂载源，
+# 生成可供本次失败回滚的首个版本化 descriptor；不重启、不读取 .env 内容。
+if ! ssh "${HOST}" "test -L ${REMOTE_DIR}/current-release"; then
+  LEGACY_CID="$(ssh "${HOST}" "docker ps --filter label=com.docker.compose.service=zen-agent --format '{{.ID}}' | head -n 1")"
+  if [[ -n "${LEGACY_CID}" ]]; then
+    LEGACY_IMAGE="$(ssh "${HOST}" "docker inspect --format '{{.Config.Image}}' ${LEGACY_CID}")"
+    LEGACY_SNAPSHOT="$(ssh "${HOST}" "docker inspect --format '{{range .Mounts}}{{if eq .Destination \"/app/snapshot\"}}{{.Source}}{{end}}{{end}}' ${LEGACY_CID}")"
+    [[ "${LEGACY_IMAGE}" =~ ^zen-agent-server:([0-9A-Za-z][0-9A-Za-z._-]*)$ ]] || {
+      echo "现有镜像无法安全纳入自动回滚：${LEGACY_IMAGE}" >&2
       exit 1
     }
-  else
-    ssh "${HOST}" "mv ${STAGING_SNAPSHOT} ${TARGET_SNAPSHOT}"
+    LEGACY_TAG="${BASH_REMATCH[1]}"
+    [[ -n "${LEGACY_SNAPSHOT}" ]] || { echo '现有服务缺 /app/snapshot 挂载，拒绝无回滚部署' >&2; exit 1; }
+    BOOTSTRAP_DIR="${REMOTE_DIR}/releases/bootstrap-${DEPLOY_ID}"
+    ssh "${HOST}" "install -d -m 700 ${REMOTE_DIR}/releases ${BOOTSTRAP_DIR}"
+    scp -q release/remote/docker-compose.yml "${HOST}:${BOOTSTRAP_DIR}/docker-compose.yml"
+    ssh "${HOST}" "printf '%s\n' 'ZA_IMAGE_TAG=${LEGACY_TAG}' 'ZA_SNAPSHOT_HOST_DIR=${LEGACY_SNAPSHOT}' 'ZA_LARK_CONFIG_HOST_DIR=${REMOTE_DIR}/lark-cli' > ${BOOTSTRAP_DIR}/deployment.env.tmp && chmod 600 ${BOOTSTRAP_DIR}/deployment.env.tmp && mv ${BOOTSTRAP_DIR}/deployment.env.tmp ${BOOTSTRAP_DIR}/deployment.env && ln -sfn ${BOOTSTRAP_DIR} ${REMOTE_DIR}/current-release.next && mv -Tf ${REMOTE_DIR}/current-release.next ${REMOTE_DIR}/current-release"
+    echo "已登记现有服务为回滚基线：${BOOTSTRAP_DIR}"
   fi
-else
-  echo "[3/6] 沿用当前快照 ${TARGET_SNAPSHOT}"
 fi
 
-rollback() {
-  if [[ -n "${OLD_IMAGE}" && -n "${OLD_SNAPSHOT}" ]]; then
-    local old_tag="${OLD_IMAGE##*:}"
-    echo "部署失败，回滚镜像 ${OLD_IMAGE} 与快照 ${OLD_SNAPSHOT}…" >&2
-    ssh "${HOST}" "printf '%s\n' 'ZA_IMAGE_TAG=${old_tag}' 'ZA_SNAPSHOT_HOST_DIR=${OLD_SNAPSHOT}' > ${REMOTE_DIR}/deployment.env && cd ${REMOTE_DIR} && docker compose --env-file deployment.env up -d" || true
-  fi
+echo "[1/6] 传输 ${IMAGE}…"
+docker save "${IMAGE}" | gzip | ssh "${HOST}" 'gunzip | docker load'
+
+echo "[2/6] 创建版本化 release ${DEPLOY_ID}…"
+ssh "${HOST}" "install -d -m 700 ${REMOTE_DIR}/releases ${REMOTE_DIR}/snapshots && install -d -m 700 ${RELEASE_DIR}"
+scp -q release/remote/docker-compose.yml release/remote/activate-release.sh "${HOST}:${RELEASE_DIR}/"
+scp -q release/remote/sign-token.sh "${HOST}:${REMOTE_DIR}/sign-token.sh"
+ssh "${HOST}" "chmod 700 ${RELEASE_DIR}/activate-release.sh ${REMOTE_DIR}/sign-token.sh"
+
+TARGET_SNAPSHOT="${REMOTE_DIR}/snapshots/${SNAPSHOT_VERSION}"
+STAGING_SNAPSHOT="${REMOTE_DIR}/snapshots/.staging-${SNAPSHOT_VERSION}-${DEPLOY_ID}"
+echo "[3/6] 上传并真正装配校验快照 ${SNAPSHOT_VERSION}…"
+ssh "${HOST}" "test ! -e ${STAGING_SNAPSHOT}"
+rsync -az "${SNAPSHOT_DIR}/" "${HOST}:${STAGING_SNAPSHOT}/"
+ssh "${HOST}" "docker run --rm -v ${STAGING_SNAPSHOT}:/app/snapshot:ro ${IMAGE} node --input-type=module -e \"import { createAssemblyPort } from '@zen-agent/assembly'; const port=createAssemblyPort({snapshotRoot:'/app/snapshot',systemPromptPath:'/app/snapshot/system-prompt.md'}); await port.listSites(); await port.allTools();\""
+ssh "${HOST}" "flock -x ${REMOTE_DIR}/snapshot.lock -c 'if test -d ${TARGET_SNAPSHOT}; then diff -qr ${STAGING_SNAPSHOT} ${TARGET_SNAPSHOT} >/dev/null && rm -rf ${STAGING_SNAPSHOT}; else mv ${STAGING_SNAPSHOT} ${TARGET_SNAPSHOT}; fi'" || {
+  echo "同版本快照内容不同，拒绝覆盖：${TARGET_SNAPSHOT}" >&2
+  exit 1
 }
-trap rollback ERR
 
-echo "[4/6] 成对切换镜像 tag=${TAG} 与快照 ${TARGET_SNAPSHOT}…"
-ssh "${HOST}" "printf '%s\n' 'ZA_IMAGE_TAG=${TAG}' 'ZA_SNAPSHOT_HOST_DIR=${TARGET_SNAPSHOT}' 'ZA_LARK_CONFIG_HOST_DIR=${REMOTE_DIR}/lark-cli' > ${REMOTE_DIR}/deployment.env && cd ${REMOTE_DIR} && docker compose --env-file deployment.env up -d"
+echo "[4/6] 服务器侧串行激活；失败自动恢复完整旧 release…"
+ssh "${HOST}" "${RELEASE_DIR}/activate-release.sh ${REMOTE_DIR} ${RELEASE_DIR} ${TAG} ${TARGET_SNAPSHOT} ${REMOTE_DIR}/lark-cli"
 
-echo "[5/6] 本机 healthz 与单副本冒烟…"
-ready=0
-for _ in $(seq 1 15); do
-  if ssh "${HOST}" 'curl -fsS --max-time 3 http://127.0.0.1:9010/healthz' 2>/dev/null; then
-    ready=1
-    break
-  fi
-  sleep 2
-done
-[[ "${ready}" == "1" ]] || { echo "冒烟失败：容器未就绪" >&2; exit 1; }
-replicas="$(ssh "${HOST}" "cd ${REMOTE_DIR} && docker compose --env-file deployment.env ps -q zen-agent | wc -l | tr -d ' '")"
-[[ "${replicas}" == "1" ]] || { echo "生产必须保持单副本，当前 ${replicas}" >&2; exit 1; }
+echo '[5/6] 对外站点 healthz…'
+curl -fsS --max-time 10 https://agent.flash-api.com/healthz >/dev/null
 
-echo "[6/6] 验证镜像内 lark-cli 可执行…"
-ssh "${HOST}" "cd ${REMOTE_DIR} && docker compose --env-file deployment.env exec -T zen-agent lark-cli --version >/dev/null"
-trap - ERR
-echo ""
-echo "部署完成：${IMAGE} @ ${HOST}，snapshot=${TARGET_SNAPSHOT}"
+echo '[6/6] 完成。'
+echo "部署完成：${IMAGE} @ ${HOST}，snapshot=${TARGET_SNAPSHOT}，release=${DEPLOY_ID}"

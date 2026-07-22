@@ -18,7 +18,8 @@
     "test:e2e:real": "node --env-file=../tmp/zen-agent-demo/.env scripts/e2e/run-real-llm.mjs",
     "lint:deps": "node scripts/lint-deps.mjs",
     "eval": "node scripts/evals/run.mjs",
-    "verify:phase1": "pnpm lint:deps && pnpm -r build && pnpm -r --workspace-concurrency=1 test && pnpm eval"
+    "verify:phase1:core": "pnpm lint:deps && pnpm -r build && pnpm -r --workspace-concurrency=1 test && pnpm eval",
+    "verify:phase1": "pnpm verify:phase1:core && bash release/verify-phase1.sh"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",

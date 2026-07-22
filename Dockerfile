@@ -22,14 +22,12 @@ RUN apt-get update \
   && lark-cli --version \
   && npm cache clean --force \
   && rm -rf /var/lib/apt/lists/*
-# 基座提示默认从镜像自带副本读取；挂卷覆盖 ZA_SYSTEM_PROMPT_PATH 可换。
-COPY assets/system-prompt.md /app/assets/system-prompt.md
 COPY --from=builder /deploy /app/server
 WORKDIR /app/server
 # 容器内默认对外监听 + 数据落 /data（外挂卷）；一切可被运行时 env 覆盖。
 ENV ZA_HOST=0.0.0.0 \
     ZA_PORT=8787 \
-    ZA_SYSTEM_PROMPT_PATH=/app/assets/system-prompt.md \
+    ZA_SYSTEM_PROMPT_PATH=/app/snapshot/system-prompt.md \
     ZA_AUDIT_SINK=/data/za/events.jsonl \
     ZA_SESSION_DIR=/data/za/sessions \
     ZA_LARK_CLI_PATH=lark-cli \

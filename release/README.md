@@ -19,9 +19,10 @@ release/
 ├── README.md                  # 本文件
 ├── build-server-image.sh      # 构建 linux/amd64 服务端镜像（tag=git short SHA）
 ├── build-extension.sh         # 打包 Chrome 插件 zip → release/artifacts/
-├── deploy-server.sh           # 镜像 save|ssh|load + 同步 compose/快照 + up -d + 冒烟
+├── deploy-server.sh           # 镜像传输 + 不可变快照/release + 远端原子激活
 ├── remote/
-│   ├── docker-compose.yml     # 服务器侧 compose（/root/zen-agent 挂载布局）
+│   ├── docker-compose.yml     # 每个 release 自带的 compose
+│   ├── activate-release.sh    # flock、冒烟、完整回滚状态机
 │   └── env.example            # 服务器侧 .env 模板（真值只在服务器上填）
 └── artifacts/                 # 本地产物输出（gitignore）
     ├── zen-commerce-agent-extension-<version>.zip
@@ -32,14 +33,14 @@ release/
 
 ```
 /root/zen-agent/
-├── docker-compose.yml   # 由 deploy-server.sh 同步
 ├── .env                 # secret 与环境参数（手工维护，不入仓、不经本机传输）
-├── deployment.env      # 当前镜像 tag 与快照版本目录（无 secret）
+├── current-release -> releases/<deploy-id>/ # 当前完整部署描述符（原子切换）
+├── releases/           # 每次部署的 compose + deployment.env（无 secret）
 ├── snapshots/          # 不可变版本目录；至少保留当前和上一版
 │   └── <version>/
 │       ├── manifest.json
 │       └── packs/…
-├── lark-cli/           # 飞书 general profile 与 token 刷新状态（受控持久目录）
+├── lark-cli/           # 0700；飞书 general profile 与 token 刷新状态
 └── data/za/             # 审计 events.jsonl + 会话 sessions/（可写挂载，容器重建不丢）
 ```
 
@@ -74,5 +75,6 @@ release/sign-token.sh -u <用户id>      # 4. 给新用户签发访问令牌
 ```
 
 首次部署前提（人工，一次性）：服务器 `/root/zen-agent/.env` 按 `remote/env.example` 填好真值；
-飞书启用时在受控 `lark-cli/` 卷完成 `general` profile 授权；1panel 反代已指向
+飞书启用时在受控 `lark-cli/` 卷完成 `general` profile 授权；发布冒烟会在三项卡密配置启用时执行
+`whoami`（不回显身份正文）；1panel 反代已指向
 `127.0.0.1:9010`（SSE 需关闭响应缓冲，见 04-deployment §6）。

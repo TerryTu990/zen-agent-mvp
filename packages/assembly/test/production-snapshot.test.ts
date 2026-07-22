@@ -9,7 +9,7 @@ const systemPromptPath = join(snapshotRoot, 'system-prompt.md');
 describe('Zen Commerce Agent 生产快照', () => {
   const port = createAssemblyPort({ snapshotRoot, systemPromptPath });
 
-  it('只安装闲鱼站点包并装配订单工具', async () => {
+  it('只安装闲鱼站点包并真实装配订单页工具', async () => {
     const resolved = await port.resolveFeature({
       url: 'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage',
     });
@@ -21,6 +21,13 @@ describe('Zen Commerce Agent 生产快照', () => {
 
     const sites = await port.listSites();
     expect(sites.map((site) => site.packId)).toEqual(['xianyu-seller']);
+
+    const composed = await port.compose({
+      sessionId: 'production-xianyu-orders',
+      packId: resolved.packId,
+      featureId: resolved.featureId,
+    });
+    expect(composed.tools.map((tool) => tool.id)).toEqual(['xianyu-orders.page-operate']);
   });
 
   it('非闲鱼页面只装配稳定基座', async () => {

@@ -55,7 +55,8 @@ async function main() {
     console.log('[3/3] 打开打包后的 Side Panel 并验证需求入口…');
     const panel = await context.newPage();
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-    await panel.locator('main[aria-label="Zen Agent 控制台"], section[aria-label="Zen Agent 控制台"]').waitFor();
+    await panel.locator('section[aria-label="Zen Commerce Agent 控制台"]').waitFor();
+    assert((await panel.locator('.za-brand h1').textContent()) === 'Zen Commerce', '生产品牌未切换为 Zen Commerce');
     await panel.getByLabel('执行偏好').selectOption('dom-only');
     assert((await panel.getByLabel('执行偏好').inputValue()) === 'dom-only', '执行偏好入口不可操作');
     assert(await panel.getByRole('button', { name: '发送' }).isDisabled(), '未绑定任务页时发送按钮必须禁用');

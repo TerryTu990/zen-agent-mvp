@@ -1,5 +1,6 @@
-# M4 评测报告 — 2026-07-04
+# Zen Commerce Agent Phase 1 评测报告 — 2026-07-22
 
+证据环境：commit `8faf05c`；Node `v24.11.0`；pnpm `10.32.1`；LLM=确定性 mock（非真实模型）。
 runner：`scripts/evals/run.mjs`；每场景重复 3 次，需 3/3 全过才算该场景通过（ZA-C-EVAL-02）。
 
 ## 场景通过率

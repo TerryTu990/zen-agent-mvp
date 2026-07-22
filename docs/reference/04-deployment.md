@@ -18,7 +18,7 @@
 
 - **builder**：`node:22-slim` + corepack 固定 `pnpm@10.32.1` → `pnpm install --frozen-lockfile --filter @zen-agent/server...`（含 workspace 依赖拓扑）→ 递归 build → **`pnpm deploy` 收敛生产依赖**。
   - 为什么必须 `pnpm deploy`：workspace `workspace:*` 是软链，直接拷 `node_modules` 不可移植；且 `packages/contracts/schemas/*.json` 是**运行时** `require.resolve` 读取的非 dist 资产，deploy 会把它们随包实体带入——只拷 `dist/` 的天真多阶段构建会在启动期崩。
-- **runtime**：`node:22-slim`，仅含 deploy 产物 + 镜像自带的 `assets/system-prompt.md` 副本（可被 `ZA_SYSTEM_PROMPT_PATH` 挂卷覆盖）；以 `node` 非 root 用户运行。
+- **runtime**：`node:22-slim`，仅含 deploy 产物与固定版本 `lark-cli`；站点包及 `system-prompt.md` 均来自同一个只读快照卷，以 `node` 非 root 用户运行。
 - 镜像内默认 env：`ZA_HOST=0.0.0.0`（容器内必须对外，否则端口发布后外部不可达）、数据路径固定绝对路径 `/data/za/*`（规避"相对 cwd"陷阱——本机 `pnpm start` 的 cwd 是 `apps/server`，`.za/` 会落在意外位置）。
 - `HEALTHCHECK`：内置 `GET /healthz`（无鉴权存活探针，仅证明进程在监听；其余路径一律先过验签——`GET /` 返回 401 是预期而非故障）。
 
@@ -50,7 +50,7 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 | 必填 secret | `ZA_JWT_SECRET` `ZA_SIGNING_SECRET` | 运行时注入，勿进镜像/compose 文件 |
 | LLM 上游 | `ZA_LLM_BASE_URL` `ZA_LLM_API_KEY` `ZA_LLM_MODEL` | openai 兼容端点 |
 | 快照 | `ZA_SNAPSHOT_ROOT=/app/snapshot` | 指向只读卷挂载点 |
-| 已在镜像固化（可覆盖） | `ZA_HOST=0.0.0.0` `ZA_PORT=8787` `ZA_AUDIT_SINK=/data/za/events.jsonl` `ZA_SESSION_DIR=/data/za/sessions` `ZA_SYSTEM_PROMPT_PATH=/app/assets/system-prompt.md` | 绝对路径，规避 cwd 陷阱 |
+| 已在镜像固化（可覆盖） | `ZA_HOST=0.0.0.0` `ZA_PORT=8787` `ZA_AUDIT_SINK=/data/za/events.jsonl` `ZA_SESSION_DIR=/data/za/sessions` `ZA_SYSTEM_PROMPT_PATH=/app/snapshot/system-prompt.md` | prompt 与 registry/pack 成为同一不可变快照；绝对路径规避 cwd 陷阱 |
 | 按需 | `ZA_CORS_ORIGIN` `ZA_JWT_ISS_ALLOWLIST` `ZA_MAX_TURN_ROUNDS` `ZA_CRED_*` | 见配置参考 |
 | 禁用于生产 | `ZA_DEMO_TOKEN_ENABLED` | 自签 token 端点仅演示环境 |
 
@@ -58,10 +58,10 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 
 快照不可变（U4）在容器部署下的操作语义：
 
-- **发布新站点/改配置**：在宿主机准备新版本快照目录（升 `manifest.json` 的 `version`）→ 原子替换挂载目录内容（或切换挂载指向新目录）→ 重启容器。装配器启动期 fail-fast：坏配置容器起不来（`快照拒载：…`），旧容器可继续跑——天然的发布安全阀。
-- **回滚**：切回旧版本目录 → 重启。审计事件里的 `snapshotVersion` 可核对每轮对话用的是哪个版本。
+- **发布新站点/改配置**：升 `manifest.json` version，上传到不可变 `snapshots/<version>`，以目标镜像强制调用 `listSites()`/`allTools()` 完整加载，再激活版本化 release。
+- **回滚**：服务器侧 `flock` 内恢复上一 release 的 compose、镜像和快照，复验 health、单副本、镜像及挂载后才算成功；首次失败则停止新服务。`current-release` 软链只在冒烟全绿后原子切换。
 - **勿做**：exec 进容器改快照文件（违反 U4，且下次重建即丢）。
-- **远端发布**：`release/deploy-server.sh --snapshot assets` 同时记录旧镜像与旧快照挂载，目标镜像校验新快照后成对切换；healthz 或单副本检查失败时成对回滚。
+- **远端发布**：`release/deploy-server.sh --snapshot assets` 创建 `releases/<deploy-id>`；healthz、单副本、镜像/挂载或飞书 smoke 失败时恢复完整旧 release。未显式传快照会 fail-closed。
 
 ## 6. 运维检查单
 

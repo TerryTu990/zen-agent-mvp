@@ -6,6 +6,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SERVER_BASE_URL="${ZA_SERVER_BASE_URL:-https://agent.flash-api.com}"
+restore_dist() {
+  pnpm --filter @zen-agent/extension build >/dev/null
+}
+trap restore_dist EXIT
 
 # 先走常规构建（含 tsc --noEmit 类型门禁与 content.js），再以生产地址重打 background.js。
 pnpm --filter @zen-agent/extension build >/dev/null
@@ -19,8 +23,7 @@ mkdir -p "${OUT_DIR}"
 rm -f "${OUT}"
 
 (cd apps/extension && zip -qr "../../${OUT}" manifest.json options.html sidepanel.html sidepanel.css dist icons)
-# 打包后把 dist 恢复为开发构建，避免生产地址残留在工作区影响本机调试。
-pnpm --filter @zen-agent/extension build >/dev/null
+# EXIT trap 恢复开发构建；即使 esbuild/zip 中途失败也不把生产地址留在工作区。
 
 echo "已打包 ${OUT}（服务端缺省地址：${SERVER_BASE_URL}）"
 echo "用户流程：装扩展 → 扩展选项页粘贴管理员签发的令牌（release/sign-token.sh）→ 打开宿主站点点图标即用"

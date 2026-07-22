@@ -1,4 +1,4 @@
-# 服务器侧 compose（/root/zen-agent/docker-compose.yml，由 deploy-server.sh 同步）。
+# 服务器侧版本化 compose（/root/zen-agent/releases/<deploy-id>/docker-compose.yml）。
 # 端口只绑 127.0.0.1:9010——对外经 1panel 反代 https://agent.flash-api.com 进入，容器不直接暴露公网。
 # secret 与环境参数全在同目录 .env（手工维护，不入仓）。
 services:
@@ -7,9 +7,10 @@ services:
     ports:
       - '127.0.0.1:9010:8787'
     env_file:
-      - .env
+      - /root/zen-agent/.env
     environment:
       ZA_SNAPSHOT_ROOT: /app/snapshot
+      ZA_SYSTEM_PROMPT_PATH: /app/snapshot/system-prompt.md
       LARKSUITE_CLI_CONFIG_DIR: /data/lark-cli
     volumes:
       # 快照由 deploy-server.sh 以版本目录切换；禁止覆盖活动目录。
