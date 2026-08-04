@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2478,6 +2478,128 @@ describe('adr-019 自动化描述符端点（pack 声明下发）', () => {
       expect(response.status).toBe(401);
     } finally {
       await srv.close();
+    }
+  });
+});
+
+describe('adr-019 批次④验收：第二站点 pack 零核心改动接入', () => {
+  it('非闲鱼 pack 声明 preparation+automations 后，prepare 工具面与描述符即由声明驱动', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'za-shop-'));
+    const packRoot = join(tmp, 'packs', 'demo-shop');
+    mkdirSync(join(packRoot, 'features', 'shop-orders'), { recursive: true });
+    writeFileSync(
+      join(tmp, 'manifest.json'),
+      JSON.stringify({ version: '1.0.0', packs: [{ packId: 'demo-shop', version: '1.0.0' }] }),
+    );
+    writeFileSync(
+      join(packRoot, 'pack.json'),
+      JSON.stringify({
+        packId: 'demo-shop',
+        version: '1.0.0',
+        site: { origin: 'http://shop.example', locations: ['/'] },
+        featureIdRules: [{ urlPattern: 'shop\\.example', featureId: 'shop-orders' }],
+        features: ['shop-orders'],
+        automations: [{
+          id: 'shop-auto-scan',
+          prompt: '执行店铺自动履约扫描。',
+          workRoutes: ['#/im'],
+          executionPreference: 'dom-only',
+          defaultPeriodMinutes: 10,
+        }],
+      }),
+    );
+    writeFileSync(join(packRoot, 'features', 'shop-orders', 'feature.md'), '# ZA-FEAT-01 演示\n');
+    writeFileSync(join(packRoot, 'features', 'shop-orders', 'facts.md'), '演示事实\n');
+    writeFileSync(
+      join(packRoot, 'features', 'shop-orders', 'tools.json'),
+      JSON.stringify([{
+        id: 'demo-shop-orders.execute-intent',
+        featureIds: ['shop-orders'],
+        description: '执行已登记的一次性履约意图。',
+        params: {
+          type: 'object', additionalProperties: false, required: ['intentId'],
+          properties: { intentId: { type: 'string', minLength: 1 } },
+        },
+        execution: 'client',
+        riskTier: 'hitl',
+        hitlMode: 'every-call',
+        authorization: {
+          kind: 'bounded-fulfillment', workflow: 'delivery', intentIdParam: 'intentId',
+          preparation: {
+            description: '在店铺聊天页准备一次履约。',
+            routes: ['/im'],
+            params: {
+              productId: { source: 'hash-query', name: 'itemId' },
+              orderId: { source: 'hash-query', name: 'orderId' },
+            },
+            productParam: 'productId',
+            elements: { messageRef: { role: 'textarea' }, sendRef: { role: 'button', label: '发送' } },
+            evidence: { rule: 'shop-receipts' },
+            intentTtlMs: 45000,
+          },
+        },
+        adapter: {
+          kind: 'dom', pathPrefixes: ['/'],
+          snapshotEvidence: [{
+            id: 'shop-receipts', itemSelector: '.msg', statusSelector: '.st', statuses: ['未读', '已读'],
+          }],
+        },
+        resultSchema: { type: 'object' },
+      }]),
+    );
+
+    const capturing = await startCapturingMock();
+    const prevBaseUrl = process.env['ZA_LLM_BASE_URL'];
+    process.env['ZA_LLM_BASE_URL'] = `http://127.0.0.1:${capturing.port}/v1`;
+    const inventory: CardInventoryPort = {
+      reserve: vi.fn(async () => ({
+        ok: true, cardId: 'card-1', cardSecret: 'fixture-value-not-real',
+        status: 'reserved', stage: 'reserved', reused: false,
+      })),
+      beginShipment: vi.fn(async () => ({ ok: true })),
+      confirmShipment: vi.fn(async () => ({ ok: true })),
+      beginDelivery: vi.fn(async () => ({ ok: true })),
+      settle: vi.fn(async () => ({ ok: true })),
+    };
+    const srv = await startServer(serverOptions({
+      snapshotRoot: tmp,
+      cardInventoryPort: inventory,
+      cardInventoryGuideUrl: 'https://example.test/guide',
+      fulfillmentProductKeys: { 'i-1': 'p-1' },
+    }));
+    try {
+      const token = await signToken();
+      const base = `http://127.0.0.1:${srv.port}`;
+
+      const descriptorResponse = await fetch(`${base}/v1/automation-descriptors`, { headers: authHeaders(token) });
+      expect(descriptorResponse.status).toBe(200);
+      const { descriptors } = (await descriptorResponse.json()) as { descriptors: Array<Record<string, unknown>> };
+      expect(descriptors).toEqual([expect.objectContaining({ packId: 'demo-shop', origin: 'http://shop.example' })]);
+
+      const created = await fetch(`${base}/v1/sessions`, { method: 'POST', headers: authHeaders(token) });
+      const { sessionId } = (await created.json()) as { sessionId: string };
+      const post = (frame: Record<string, unknown>): Promise<Response> =>
+        fetch(`${base}/v1/sessions/${sessionId}/frames`, {
+          method: 'POST',
+          headers: authHeaders(token, { 'content-type': 'application/json' }),
+          body: JSON.stringify(frame),
+        });
+      await post({ type: 'context-report', sessionId, url: 'http://shop.example/?x=1#/im?itemId=i-1&orderId=o-1' });
+      await post({ type: 'user-message', sessionId, text: '你好' });
+      const deadline = Date.now() + 8000;
+      while (capturing.requests.length === 0) {
+        if (Date.now() > deadline) throw new Error('等待 LLM 调用捕获超时');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const req = capturing.requests[capturing.requests.length - 1]!;
+      const tools = (req['tools'] ?? []) as Array<{ name?: string; function?: { name?: string } }>;
+      const toolNames = tools.map((t) => (t.function?.name ?? t.name ?? '').replaceAll('__', '.'));
+      expect(toolNames).toContain('prepare.demo-shop-orders.execute-intent');
+      expect(toolNames).toContain('demo-shop-orders.execute-intent');
+    } finally {
+      await srv.close();
+      await capturing.close();
+      if (prevBaseUrl !== undefined) process.env['ZA_LLM_BASE_URL'] = prevBaseUrl;
     }
   });
 });

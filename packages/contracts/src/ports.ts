@@ -473,7 +473,7 @@ export interface FulfillmentCoordinatorPort {
   confirmShipment(intentId: string): Promise<SettleCardFulfillmentResult>;
   /** toolgate 放行后、浏览器指令签发前写入不可重放的发送尝试闩锁。 */
   beginDelivery(intentId: string): Promise<SettleCardFulfillmentResult>;
-  /** 闲鱼回执闭环后回填库存终态；失败必须阻断后续自动处理。 */
+  /** 站点回执闭环后回填库存终态；失败必须阻断后续自动处理。 */
   settle(input: SettleCardFulfillmentInput): Promise<SettleCardFulfillmentResult>;
 }
 
