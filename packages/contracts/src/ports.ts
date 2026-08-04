@@ -14,6 +14,7 @@ import type {
   SnapshotEvidence,
 } from './client-access-layer.js';
 import type { AuditEvent, GateVerdict } from './audit-event.js';
+import type { PackAutomation } from './config-snapshot.js';
 
 // ---- AssemblyPort（②会话网关 ← ⑤配置中心：featureId 定位 + 注入组合）----
 
@@ -123,6 +124,14 @@ export interface ToolOwnership {
   toolId: string;
 }
 
+/** pack 周期自动化描述符（adr-019）：客户端调度与展示用的纯数据；治理（一单预算/run 状态机）全在服务端。 */
+export interface AutomationDescriptor {
+  packId: string;
+  /** 所属 pack 的 site.origin：客户端工作页判定的 origin 围栏。 */
+  origin: string;
+  automation: PackAutomation;
+}
+
 export interface AssemblyPort {
   resolveFeature(input: ResolveFeatureInput): Promise<ResolveFeatureResult>;
   compose(input: ComposeInput): Promise<ComposeResult>;
@@ -135,6 +144,8 @@ export interface AssemblyPort {
   listSites(): Promise<SiteDescriptor[]>;
   /** 逐 pack 列出工具归属（未去重）：toolgate 载入期命名空间纪律检测用。 */
   listToolOwnership(): Promise<ToolOwnership[]>;
+  /** 全 pack 自动化描述符（adr-019）：id 跨 pack 唯一（载入期查重拒载）；generic pack 无（schema 禁声明）。 */
+  listAutomations(): Promise<AutomationDescriptor[]>;
 }
 
 // ---- ToolGatePort（③工具执行层：唯一决策点 + 代执行指令签发/回收）----

@@ -1549,7 +1549,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   type: 'tool-card',
                   sessionId: session.sessionId,
                   toolCallId: upstream.automationRunId,
-                  toolId: 'xianyu-auto-scan',
+                  toolId: upstream.automationId ?? 'automation',
                   status: succeeded ? 'succeeded' : 'failed',
                   mode: 'server',
                 });
@@ -1561,7 +1561,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   type: 'tool-card',
                   sessionId: session.sessionId,
                   toolCallId: upstream.automationRunId,
-                  toolId: 'xianyu-auto-scan',
+                  toolId: upstream.automationId ?? 'automation',
                   status: 'failed',
                   mode: 'server',
                 });
@@ -1794,6 +1794,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
         data: { clientKind: 'extension', iss: claims.iss },
       });
       sendJson(res, 201, { sessionId: session.sessionId });
+      return;
+    }
+    if (pathname === '/v1/automation-descriptors' && req.method === 'GET') {
+      // adr-019：pack 声明的周期自动化描述符（纯调度/提示词数据）；客户端据此调度 alarm 与渲染开关，治理仍全在服务端。
+      sendJson(res, 200, { descriptors: await deps.assembly.listAutomations() });
       return;
     }
     const automationMatch = /^\/v1\/sessions\/([^/]+)\/automation-runs\/([^/]+)$/.exec(pathname);

@@ -561,6 +561,74 @@ describe('非法快照 fail-closed 拒载', () => {
     });
   });
 
+  const automationSnapshot = (packs: Array<{ packId: string; automations?: unknown[] }>): string => {
+    const tmp = mkdtempSync(join(tmpdir(), 'za-auto-'));
+    tmpDirs.push(tmp);
+    writeFileSync(
+      join(tmp, 'manifest.json'),
+      JSON.stringify({
+        version: '1.0.0',
+        packs: packs.map(({ packId }) => ({ packId, version: '1.0.0' })),
+      }),
+    );
+    for (const [index, { packId, automations }] of packs.entries()) {
+      const packRoot = join(tmp, 'packs', packId);
+      mkdirSync(join(packRoot, 'features', 'f'), { recursive: true });
+      writeFileSync(
+        join(packRoot, 'pack.json'),
+        JSON.stringify({
+          packId,
+          version: '1.0.0',
+          site: { origin: `http://${index}.example`, locations: ['/'] },
+          featureIdRules: [{ urlPattern: '.*', featureId: 'f' }],
+          features: ['f'],
+          ...(automations !== undefined ? { automations } : {}),
+        }),
+      );
+      writeFileSync(join(packRoot, 'features', 'f', 'feature.md'), 'F\n');
+      writeFileSync(join(packRoot, 'features', 'f', 'facts.md'), 'F\n');
+      writeFileSync(join(packRoot, 'features', 'f', 'tools.json'), '[]');
+    }
+    return tmp;
+  };
+  const anAutomation = (id: string): unknown => ({
+    id,
+    prompt: '执行自动扫描。',
+    workRoutes: ['#/orders'],
+    executionPreference: 'dom-only',
+    defaultPeriodMinutes: 5,
+  });
+
+  it('listAutomations 输出各 pack 描述符（adr-019）', async () => {
+    const tmp = automationSnapshot([
+      { packId: 'a', automations: [anAutomation('a-scan')] },
+      { packId: 'b' },
+    ]);
+    const port = createAssemblyPort({ snapshotRoot: tmp, systemPromptPath: fixturePromptPath });
+    await expect(port.listAutomations()).resolves.toEqual([
+      {
+        packId: 'a',
+        origin: 'http://0.example',
+        automation: {
+          id: 'a-scan',
+          prompt: '执行自动扫描。',
+          workRoutes: ['#/orders'],
+          executionPreference: 'dom-only',
+          defaultPeriodMinutes: 5,
+        },
+      },
+    ]);
+  });
+
+  it('automation id 跨 pack 重复 → 拒载（adr-019）', async () => {
+    const tmp = automationSnapshot([
+      { packId: 'a', automations: [anAutomation('same-scan')] },
+      { packId: 'b', automations: [anAutomation('same-scan')] },
+    ]);
+    const port = createAssemblyPort({ snapshotRoot: tmp, systemPromptPath: fixturePromptPath });
+    await expect(port.listAutomations()).rejects.toThrow(/same-scan/);
+  });
+
   it('systemPromptPath 不存在 → 拒载', async () => {
     const port = createAssemblyPort({
       snapshotRoot: join(fixturesDir, 'valid'),

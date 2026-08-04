@@ -9,7 +9,7 @@ import {
   panelGroupKey,
   panelHistoryKeyForGroup,
   execNonceKeyForGroup,
-  xianyuAutoScanRunKeyForGroup,
+  autoScanRunKeyForGroup,
   TAB_GROUP_ID_NONE,
 } from './activation.js';
 import {
@@ -29,17 +29,23 @@ import { verifyExecInstruction } from './exec-verification.js';
 import { normalizeTrustedServerBaseUrl } from './server-url.js';
 import { runToolbarSidePanelAction } from './side-panel-action.js';
 import {
-  isXianyuAutoScanWorkPage,
-  isXianyuAutoScanCompletion,
+  isAutoScanWorkPage,
+  isAutoScanCompletion,
   decideAutoScanRecovery,
   autoScanDispatch,
   type AutoScanRecoveryStatus,
+  type AutoScanRun,
+  type AutomationDescriptor,
   normalizeAutoScanMinutes,
-  shouldPauseXianyuAutoScan,
-  XIANYU_AUTO_SCAN_ALARM,
-  XIANYU_AUTO_SCAN_ENABLED_KEY,
-  XIANYU_AUTO_SCAN_MINUTES_KEY,
-} from './xianyu-auto-scan.js';
+  parseAutoScanRun,
+  parseAutomationDescriptors,
+  shouldPauseAutoScan,
+  autoScanAlarmFor,
+  automationIdOfAlarm,
+  autoScanEnabledKeyFor,
+  autoScanMinutesKeyFor,
+  AUTOMATION_DESCRIPTORS_KEY,
+} from './auto-scan.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
 // 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
@@ -113,8 +119,9 @@ type UpstreamPanelMessage = Extract<
 interface AutoScanMessage {
   kind: 'auto-scan';
   text: string;
-  executionPreference: 'dom-only';
+  executionPreference: AutomationDescriptor['automation']['executionPreference'];
   automationRunId: string;
+  automationId: string;
 }
 
 /**
@@ -130,7 +137,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   let panelHistory: SidePanelUiEvent[] = [];
   const historyKey = panelHistoryKeyForGroup(groupId);
   const nonceKey = execNonceKeyForGroup(groupId);
-  const autoScanRunKey = xianyuAutoScanRunKeyForGroup(groupId);
+  const autoScanRunKey = autoScanRunKeyForGroup(groupId);
   const seenExecNonces = new Set<string>();
   const echoedMessageIds = new Set<string>();
   let nonceHistory: Array<{ nonce: string; expiresAt: number }> = [];
@@ -173,12 +180,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   let hostUserId: string | null = null;
   // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
   let expectedActiveTabId: number | null = null;
-  let autoScanRunId: string | null = null;
+  let autoScanRun: AutoScanRun | null = null;
   let suppressedTurnId: string | null = null;
   let lastSessionFailure: Omit<MessageDeliveryResult, 'accepted'> = { failure: 'session-unavailable' };
   const autoScanRunReady = chrome.storage.session.get(autoScanRunKey).then((items) => {
-    const stored = items[autoScanRunKey];
-    if (typeof stored === 'string' && stored !== '') autoScanRunId = stored;
+    autoScanRun = parseAutoScanRun(items[autoScanRunKey]);
   });
 
   const postContent = (target: chrome.runtime.Port, message: BackgroundToContentMessage): void => {
@@ -231,19 +237,20 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
       void applyPendingConfiguration();
     }
-    if (isXianyuAutoScanCompletion(autoScanRunId, frame)) {
+    if (isAutoScanCompletion(autoScanRun, frame)) {
       const failed = frame.type === 'tool-card' && frame.status === 'failed';
-      autoScanRunId = null;
+      const finishedId = autoScanRun!.automationId;
+      autoScanRun = null;
       void chrome.storage.session.remove(autoScanRunKey);
       if (failed) {
-        void chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
-        postStatus('闲鱼自动履约回合异常结束，扫描已暂停。');
+        void chrome.storage.local.set({ [autoScanEnabledKeyFor(finishedId)]: false });
+        postStatus(`自动化「${finishedId}」回合异常结束，已暂停。`);
       }
       return;
     }
-    if (shouldPauseXianyuAutoScan(autoScanRunId, frame)) {
-      void chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
-      postStatus('闲鱼自动履约已因异常暂停；核对页面、库存与策略后可在设置页重新启用。');
+    if (shouldPauseAutoScan(autoScanRun, frame)) {
+      void chrome.storage.local.set({ [autoScanEnabledKeyFor(autoScanRun!.automationId)]: false });
+      postStatus(`自动化「${autoScanRun!.automationId}」已因异常暂停；核对页面与策略后可在设置页重新启用。`);
       if (frame.type === 'hitl-request') {
         // 自动回合本不应进入人工确认；安全拒绝可让服务端回合收尾并发出明确完成帧，避免单飞锁悬挂。
         pipeline = pipeline.then(async () => {
@@ -842,13 +849,13 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         return;
       }
       if (message.kind === 'stop-operation') {
-        const messageId = message.messageId ?? autoScanRunId ?? undefined;
-        void chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
+        const messageId = message.messageId ?? autoScanRun?.runId ?? undefined;
+        void disableAllAutomations();
         for (const member of contentMembers.targets('active-page')) {
           postContent(member, { kind: 'stop-operation' });
         }
         if (messageId === undefined) {
-          postStatus('已停止当前页面操作并关闭闲鱼自动履约扫描。');
+          postStatus('已停止当前页面操作并关闭周期自动化。');
           postToPanels({ kind: 'stop-result', accepted: true });
           return;
         }
@@ -887,13 +894,13 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     port.onDisconnect.addListener(() => detachPanel(port));
   }
 
-  async function recoverAutoScanRun(runId: string): Promise<'busy' | 'settled' | 'paused'> {
+  async function recoverAutoScanRun(run: AutoScanRun): Promise<'busy' | 'settled' | 'paused'> {
     const session = await ensureSession();
     let status: AutoScanRecoveryStatus = 'unavailable';
     if (session !== null) {
       try {
         const response = await fetch(
-          `${session.baseUrl}/v1/sessions/${session.sessionId}/automation-runs/${encodeURIComponent(runId)}`,
+          `${session.baseUrl}/v1/sessions/${session.sessionId}/automation-runs/${encodeURIComponent(run.runId)}`,
           { headers: { authorization: `Bearer ${session.token}` } },
         );
         if (response.status === 404) status = 'missing';
@@ -909,47 +916,53 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
     const decision = decideAutoScanRecovery(status);
     if (decision === 'keep-busy') return 'busy';
-    if (autoScanRunId === runId) {
-      autoScanRunId = null;
+    if (autoScanRun?.runId === run.runId) {
+      autoScanRun = null;
       await chrome.storage.session.remove(autoScanRunKey);
     }
     if (decision === 'release-and-pause') {
-      await chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
-      postStatus('闲鱼自动履约上次回合状态异常，扫描已暂停。');
+      await chrome.storage.local.set({ [autoScanEnabledKeyFor(run.automationId)]: false });
+      postStatus(`自动化「${run.automationId}」上次回合状态异常，已暂停。`);
       return 'paused';
     }
     return 'settled';
   }
 
-  async function triggerAutoScan(tabId: number, tabUrl: string, tabTitle: string): Promise<'started' | 'busy' | 'settled' | 'paused' | 'unavailable'> {
+  async function triggerAutoScan(
+    descriptor: AutomationDescriptor,
+    tabId: number,
+    tabUrl: string,
+    tabTitle: string,
+  ): Promise<'started' | 'busy' | 'settled' | 'paused' | 'unavailable'> {
     await autoScanRunReady;
-    const enabled = await chrome.storage.local.get(XIANYU_AUTO_SCAN_ENABLED_KEY);
-    if (enabled[XIANYU_AUTO_SCAN_ENABLED_KEY] !== true) return 'unavailable';
-    if (autoScanRunId !== null) return recoverAutoScanRun(autoScanRunId);
+    const enabledKey = autoScanEnabledKeyFor(descriptor.automation.id);
+    const enabled = await chrome.storage.local.get(enabledKey);
+    if (enabled[enabledKey] !== true) return 'unavailable';
+    if (autoScanRun !== null) return recoverAutoScanRun(autoScanRun);
     const target = contentMembers.members().find((member) => member.sender?.tab?.id === tabId);
     if (target === undefined) return 'unavailable';
     contentMembers.markActive(target);
-    const runId = crypto.randomUUID();
-    autoScanRunId = runId;
-    await chrome.storage.session.set({ [autoScanRunKey]: runId });
-    postStatus('闲鱼自动履约扫描已触发；本轮最多处理一笔。');
+    const run: AutoScanRun = { runId: crypto.randomUUID(), automationId: descriptor.automation.id };
+    autoScanRun = run;
+    await chrome.storage.session.set({ [autoScanRunKey]: run });
+    postStatus(`自动化「${run.automationId}」已触发。`);
     pipeline = pipeline.then(async () => {
-      const current = await chrome.storage.local.get(XIANYU_AUTO_SCAN_ENABLED_KEY);
-      if (current[XIANYU_AUTO_SCAN_ENABLED_KEY] !== true || autoScanRunId !== runId) {
-        if (autoScanRunId === runId) {
-          autoScanRunId = null;
+      const current = await chrome.storage.local.get(enabledKey);
+      if (current[enabledKey] !== true || autoScanRun?.runId !== run.runId) {
+        if (autoScanRun?.runId === run.runId) {
+          autoScanRun = null;
           await chrome.storage.session.remove(autoScanRunKey);
         }
         return;
       }
-      const [contextMessage, scanMessage] = autoScanDispatch(tabUrl, tabTitle, runId);
+      const [contextMessage, scanMessage] = autoScanDispatch(descriptor, tabUrl, tabTitle, run.runId);
       if (!(await forward(contextMessage))) {
-        if (autoScanRunId === runId) {
-          autoScanRunId = null;
+        if (autoScanRun?.runId === run.runId) {
+          autoScanRun = null;
           await chrome.storage.session.remove(autoScanRunKey);
         }
-        await chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
-        postStatus('闲鱼工作页上下文同步失败，扫描已暂停。');
+        await chrome.storage.local.set({ [enabledKey]: false });
+        postStatus(`自动化「${run.automationId}」工作页上下文同步失败，已暂停。`);
         return;
       }
       await forward(scanMessage);
@@ -1107,27 +1120,93 @@ chrome.action.onClicked.addListener((tab) => {
   });
 });
 
-async function syncXianyuAutoScanAlarm(): Promise<void> {
-  const settings = await chrome.storage.local.get([
-    XIANYU_AUTO_SCAN_ENABLED_KEY,
-    XIANYU_AUTO_SCAN_MINUTES_KEY,
-  ]);
-  await chrome.alarms.clear(XIANYU_AUTO_SCAN_ALARM);
-  if (settings[XIANYU_AUTO_SCAN_ENABLED_KEY] !== true) return;
-  const periodInMinutes = normalizeAutoScanMinutes(settings[XIANYU_AUTO_SCAN_MINUTES_KEY]);
-  chrome.alarms.create(XIANYU_AUTO_SCAN_ALARM, { periodInMinutes });
+async function readAutomationDescriptors(): Promise<AutomationDescriptor[]> {
+  const items = await chrome.storage.local.get(AUTOMATION_DESCRIPTORS_KEY);
+  return parseAutomationDescriptors(items[AUTOMATION_DESCRIPTORS_KEY]);
 }
 
-async function triggerXianyuAutoScan(): Promise<void> {
-  const settings = await chrome.storage.local.get(XIANYU_AUTO_SCAN_ENABLED_KEY);
-  if (settings[XIANYU_AUTO_SCAN_ENABLED_KEY] !== true) return;
+async function disableAllAutomations(): Promise<void> {
+  const descriptors = await readAutomationDescriptors();
+  const entries: Record<string, false> = {};
+  for (const descriptor of descriptors) entries[autoScanEnabledKeyFor(descriptor.automation.id)] = false;
+  if (Object.keys(entries).length > 0) await chrome.storage.local.set(entries);
+}
+
+/** 描述符来自服务端 pack 声明（纯数据）；拉取失败保持现缓存，绝不凭空启用（fail-closed 不扫描）。 */
+async function refreshAutomationDescriptors(): Promise<void> {
+  try {
+    const items = await chrome.storage.local.get('za.token');
+    const token = items['za.token'];
+    if (typeof token !== 'string' || token === '') return;
+    const baseUrl = await readServerBaseUrl();
+    const response = await fetch(`${baseUrl}/v1/automation-descriptors`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return;
+    const body = await response.json() as { descriptors?: unknown };
+    const descriptors = parseAutomationDescriptors(body.descriptors);
+    await chrome.storage.local.set({ [AUTOMATION_DESCRIPTORS_KEY]: descriptors });
+  } catch {
+    // 网络/配置异常不影响既有缓存与会话主链路。
+  }
+}
+
+/** 旧版单一闲鱼开关 → 按 automation id 命名的通用键；只在新键未写过时迁移一次。 */
+async function migrateLegacyAutoScanSettings(): Promise<void> {
+  const legacyEnabledKey = 'za.xianyuAutoScanEnabled';
+  const legacyMinutesKey = 'za.xianyuAutoScanMinutes';
+  const newEnabledKey = autoScanEnabledKeyFor('xianyu-auto-scan');
+  const newMinutesKey = autoScanMinutesKeyFor('xianyu-auto-scan');
+  const items = await chrome.storage.local.get([
+    legacyEnabledKey, legacyMinutesKey, newEnabledKey, newMinutesKey,
+  ]);
+  if (items[legacyEnabledKey] === undefined && items[legacyMinutesKey] === undefined) return;
+  const migrated: Record<string, unknown> = {};
+  if (items[newEnabledKey] === undefined && items[legacyEnabledKey] !== undefined) {
+    migrated[newEnabledKey] = items[legacyEnabledKey] === true;
+  }
+  if (items[newMinutesKey] === undefined && items[legacyMinutesKey] !== undefined) {
+    migrated[newMinutesKey] = normalizeAutoScanMinutes(items[legacyMinutesKey]);
+  }
+  if (Object.keys(migrated).length > 0) await chrome.storage.local.set(migrated);
+  await chrome.storage.local.remove([legacyEnabledKey, legacyMinutesKey]);
+}
+
+async function syncAutoScanAlarms(): Promise<void> {
+  const descriptors = await readAutomationDescriptors();
+  const alarms = await chrome.alarms.getAll();
+  for (const alarm of alarms) {
+    if (automationIdOfAlarm(alarm.name) !== null) await chrome.alarms.clear(alarm.name);
+  }
+  for (const descriptor of descriptors) {
+    const automationId = descriptor.automation.id;
+    const settings = await chrome.storage.local.get([
+      autoScanEnabledKeyFor(automationId),
+      autoScanMinutesKeyFor(automationId),
+    ]);
+    if (settings[autoScanEnabledKeyFor(automationId)] !== true) continue;
+    const periodInMinutes = normalizeAutoScanMinutes(
+      settings[autoScanMinutesKeyFor(automationId)],
+      descriptor.automation.defaultPeriodMinutes ?? undefined,
+    );
+    chrome.alarms.create(autoScanAlarmFor(automationId), { periodInMinutes });
+  }
+}
+
+async function triggerAutomation(automationId: string): Promise<void> {
+  const descriptor = (await readAutomationDescriptors())
+    .find((candidate) => candidate.automation.id === automationId);
+  if (descriptor === undefined) return;
+  const enabledKey = autoScanEnabledKeyFor(automationId);
+  const settings = await chrome.storage.local.get(enabledKey);
+  if (settings[enabledKey] !== true) return;
   const tabs = await chrome.tabs.query({});
   for (const tab of tabs) {
     const groupId = tab.groupId;
     if (
       groupId === undefined ||
       groupId === TAB_GROUP_ID_NONE ||
-      !isXianyuAutoScanWorkPage(tab.url) ||
+      !isAutoScanWorkPage(descriptor, tab.url) ||
       !(await isGroupMapped(groupId))
     ) {
       continue;
@@ -1135,33 +1214,38 @@ async function triggerXianyuAutoScan(): Promise<void> {
     const bridge = groups.get(groupId);
     if (bridge === undefined) continue;
     if (tab.id !== undefined) {
-      const triggered = await bridge.triggerAutoScan(tab.id, tab.url!, tab.title ?? '');
+      const triggered = await bridge.triggerAutoScan(descriptor, tab.id, tab.url!, tab.title ?? '');
       if (triggered !== 'unavailable') return;
     }
   }
-  await chrome.storage.local.set({ [XIANYU_AUTO_SCAN_ENABLED_KEY]: false });
+  await chrome.storage.local.set({ [enabledKey]: false });
 }
 
-void syncXianyuAutoScanAlarm();
-chrome.runtime.onStartup.addListener(() => void syncXianyuAutoScanAlarm());
-chrome.runtime.onInstalled.addListener(() => void syncXianyuAutoScanAlarm());
+const autoScanBootstrap = async (): Promise<void> => {
+  await migrateLegacyAutoScanSettings();
+  await refreshAutomationDescriptors();
+  await syncAutoScanAlarms();
+};
+void autoScanBootstrap();
+chrome.runtime.onStartup.addListener(() => void autoScanBootstrap());
+chrome.runtime.onInstalled.addListener(() => void autoScanBootstrap());
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (
-    areaName === 'local' &&
-    (changes['za.token'] !== undefined || changes['za.serverBaseUrl'] !== undefined)
-  ) {
+  if (areaName !== 'local') return;
+  if (changes['za.token'] !== undefined || changes['za.serverBaseUrl'] !== undefined) {
     for (const bridge of groups.values()) bridge.configurationChanged();
+    void refreshAutomationDescriptors().then(() => syncAutoScanAlarms());
+    return;
   }
   if (
-    areaName === 'local' &&
-    (changes[XIANYU_AUTO_SCAN_ENABLED_KEY] !== undefined ||
-      changes[XIANYU_AUTO_SCAN_MINUTES_KEY] !== undefined)
+    changes[AUTOMATION_DESCRIPTORS_KEY] !== undefined ||
+    Object.keys(changes).some((key) => key.startsWith('za.autoScan.'))
   ) {
-    void syncXianyuAutoScanAlarm();
+    void syncAutoScanAlarms();
   }
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === XIANYU_AUTO_SCAN_ALARM) void triggerXianyuAutoScan();
+  const automationId = automationIdOfAlarm(alarm.name);
+  if (automationId !== null) void triggerAutomation(automationId);
 });
 
 // 拖 tab 入某 zen 会话组（groupId 变为已映射组）→ 通知该页激活并接入同一会话。

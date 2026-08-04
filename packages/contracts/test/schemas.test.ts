@@ -111,6 +111,37 @@ describe('C4 pack generic 兜底（与 site 互斥）', () => {
   it('generic:false 拒绝（const true）', () => {
     expect(validate({ ...genericPack, generic: false })).toBe(false);
   });
+
+  const sitePack = {
+    packId: 'shop',
+    version: '0.1.0',
+    site: { origin: 'https://shop.example' },
+    featureIdRules: [{ urlPattern: '.*', featureId: 'orders' }],
+  };
+  const automation = {
+    id: 'shop-auto-scan',
+    prompt: '执行自动履约扫描。',
+    workRoutes: ['#/orders'],
+    executionPreference: 'dom-only',
+    defaultPeriodMinutes: 5,
+  };
+
+  it('站点 pack 声明 automations 合法（adr-019）', () => {
+    expect(
+      validate({ ...sitePack, automations: [automation] }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+  });
+
+  it('generic pack 声明 automations 拒绝（无固定 origin 围栏）', () => {
+    expect(validate({ ...genericPack, automations: [automation] })).toBe(false);
+  });
+
+  it('automation 越 executionPreference 闭集拒绝', () => {
+    expect(
+      validate({ ...sitePack, automations: [{ ...automation, executionPreference: 'yolo' }] }),
+    ).toBe(false);
+  });
 });
 
 describe('C3 client-access-layer 消息帧', () => {

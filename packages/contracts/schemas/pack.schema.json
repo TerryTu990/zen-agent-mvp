@@ -61,6 +61,13 @@
       "type": "array",
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/featureId" }
+    },
+    "automations": {
+      "$comment": "adr-019 周期自动化声明（纯调度/提示词数据，不承载治理）：客户端按描述符调度周期唤醒，以 user-message(automationId+automationRunId) 发起自动回合；一单预算与 run 状态机全在服务端。id 跨 pack 唯一（载入期查重拒载）；generic pack 禁声明（无固定 origin 围栏，allOf 强制）。",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/automation" }
     }
   },
   "allOf": [
@@ -69,9 +76,50 @@
       "if": { "properties": { "generic": { "const": true } }, "required": ["generic"] },
       "then": { "properties": { "site": false } },
       "else": { "properties": { "site": true }, "required": ["site"] }
+    },
+    {
+      "$comment": "generic pack 禁声明 automations：周期唤醒的工作页判定依赖 pack 固定 origin。",
+      "if": { "properties": { "generic": { "const": true } }, "required": ["generic"] },
+      "then": { "properties": { "automations": false } }
     }
   ],
   "$defs": {
+    "automation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "prompt", "workRoutes", "executionPreference"],
+      "properties": {
+        "id": {
+          "$comment": "自动化标识（kebab，跨 pack 唯一）：alarm/单飞锁/完成帧 tool-card 的关联键。",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "prompt": {
+          "$comment": "自动回合的用户侧提示词（纯数据，随 pack 版本化与评测）。",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "workRoutes": {
+          "$comment": "工作页判定：激活页 URL 去 origin 后（path+hash）须以任一前缀开头；origin 恒取 pack.site.origin。",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        },
+        "executionPreference": {
+          "$comment": "自动回合执行偏好，与 C3 $defs/executionPreference 同闭集（跨契约对齐）。",
+          "type": "string",
+          "enum": ["auto", "dom-only", "prefer-client-api", "prefer-server-api"]
+        },
+        "defaultPeriodMinutes": {
+          "$comment": "缺省唤醒周期（分钟）；用户可在客户端覆盖，缺省 5。",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        }
+      }
+    },
     "featureId": {
       "$comment": "功能标识文法，与 config-snapshot / tool-definition 及 features/<id>/ 目录名一致（跨契约对齐）。",
       "type": "string",

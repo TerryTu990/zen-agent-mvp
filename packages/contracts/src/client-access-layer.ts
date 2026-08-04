@@ -48,6 +48,8 @@ export interface UserMessageFrame {
   executionPreference?: ExecutionPreference;
   /** 插件后台生成的自动扫描轮次标识；只收紧服务端单轮预算，不授予任何执行权限。 */
   automationRunId?: string;
+  /** 发起本自动回合的 pack 自动化声明 id（adr-019）：完成帧 tool-card 以此为 toolId 精确关联，不承载治理。 */
+  automationId?: string;
 }
 
 export interface HitlDecisionFrame {

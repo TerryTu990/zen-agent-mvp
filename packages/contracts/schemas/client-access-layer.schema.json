@@ -64,7 +64,8 @@
         "text": { "type": "string", "minLength": 1 },
         "messageId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,128}$" },
         "executionPreference": { "$ref": "#/$defs/executionPreference" },
-        "automationRunId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,128}$" }
+        "automationRunId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,128}$" },
+        "automationId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
       }
     },
     "hitlDecision": {

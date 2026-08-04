@@ -14,7 +14,7 @@ describe('Zen Commerce Agent 生产快照', () => {
       url: 'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage',
     });
     expect(resolved).toMatchObject({
-      snapshotVersion: '1.2.0',
+      snapshotVersion: '1.3.0',
       packId: 'xianyu-seller',
       featureId: 'xianyu-orders',
     });

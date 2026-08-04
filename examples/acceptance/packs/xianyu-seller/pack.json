@@ -1,6 +1,6 @@
 {
   "packId": "xianyu-seller",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "summary": "闲鱼卖家 PC 端：数据导航、订单识别与受控履约",
   "site": {
     "origin": "https://seller.goofish.com",
@@ -24,5 +24,14 @@
       "featureId": "xianyu-seller-data"
     }
   ],
-  "features": ["xianyu-seller-data", "xianyu-orders", "xianyu-fulfillment"]
+  "features": ["xianyu-seller-data", "xianyu-orders", "xianyu-fulfillment"],
+  "automations": [
+    {
+      "id": "xianyu-auto-scan",
+      "prompt": "执行闲鱼自动履约扫描。每轮最多处理一笔；任一页面、订单、库存或回执状态不确定时立即暂停，不得重试发送。",
+      "workRoutes": ["#/seller-trade/order-manage", "#/im"],
+      "executionPreference": "dom-only",
+      "defaultPeriodMinutes": 5
+    }
+  ]
 }

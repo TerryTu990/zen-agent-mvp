@@ -6,7 +6,7 @@ declare namespace chrome {
       newValue?: unknown;
     }
     interface StorageArea {
-      get(keys: string | string[]): Promise<Record<string, unknown>>;
+      get(keys: string | string[] | null): Promise<Record<string, unknown>>;
       set(items: Record<string, unknown>): Promise<void>;
       remove(keys: string | string[]): Promise<void>;
     }
@@ -106,6 +106,7 @@ declare namespace chrome {
     interface Alarm { name: string }
     function create(name: string, alarmInfo: { periodInMinutes: number }): void;
     function clear(name: string): Promise<boolean>;
+    function getAll(): Promise<Alarm[]>;
     const onAlarm: { addListener(callback: (alarm: Alarm) => void): void };
   }
 }

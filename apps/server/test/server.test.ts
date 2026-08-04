@@ -1131,7 +1131,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         sessionId,
         text: '执行闲鱼自动履约扫描。每轮最多处理一笔。',
         executionPreference: 'dom-only',
-        automationRunId: 'scan_run_auto_001',
+        automationRunId: 'scan_run_auto_001', automationId: 'xianyu-auto-scan',
       });
       await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
       await expect(getAutomationRun(token, sessionId, 'scan_run_auto_001')).resolves.toMatchObject({
@@ -1139,7 +1139,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       });
       const duplicateRun = await postFrame(token, sessionId, {
         type: 'user-message', sessionId, text: '重复投递同一自动轮次。',
-        automationRunId: 'scan_run_auto_001',
+        automationRunId: 'scan_run_auto_001', automationId: 'xianyu-auto-scan',
       });
       expect(duplicateRun.status).toBe(409);
       const before = framesByType(sse.frames, 'snapshot-request')[0]!;
@@ -1213,7 +1213,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         });
         await postFrame(token, deniedSessionId, {
           type: 'user-message', sessionId: deniedSessionId, text: '执行闲鱼自动履约扫描。',
-          automationRunId: 'scan_run_denied_001',
+          automationRunId: 'scan_run_denied_001', automationId: 'xianyu-auto-scan',
         });
         await deniedSse.waitFor(() => framesByType(deniedSse.frames, 'snapshot-request').length === 1);
         const deniedSnapshot = framesByType(deniedSse.frames, 'snapshot-request')[0]!;
@@ -1367,7 +1367,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         });
         await postFrame(token, wrongRouteSession, {
           type: 'user-message', sessionId: wrongRouteSession, text: '执行闲鱼自动履约扫描。',
-          automationRunId: 'scan_run_wrong_route_001',
+          automationRunId: 'scan_run_wrong_route_001', automationId: 'xianyu-auto-scan',
         });
         await wrongRouteSse.waitFor(() => lastCardStatus(wrongRouteSse.frames, 'xianyu-auto-scan') === 'succeeded');
         expect(framesByType(wrongRouteSse.frames, 'snapshot-request')).toHaveLength(0);
@@ -1386,7 +1386,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         });
         await postFrame(token, ambiguousSession, {
           type: 'user-message', sessionId: ambiguousSession, text: '执行闲鱼自动履约扫描。',
-          automationRunId: 'scan_run_ambiguous_001',
+          automationRunId: 'scan_run_ambiguous_001', automationId: 'xianyu-auto-scan',
         });
         await ambiguousSse.waitFor(() => framesByType(ambiguousSse.frames, 'snapshot-request').length === 1);
         const request = framesByType(ambiguousSse.frames, 'snapshot-request')[0]!;
@@ -1417,7 +1417,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         await postFrame(token, doubleSession, { type: 'context-report', sessionId: doubleSession, url: doubleUrl });
         await postFrame(token, doubleSession, {
           type: 'user-message', sessionId: doubleSession, text: '执行闲鱼自动履约扫描，进行双单预算边界测试。',
-          automationRunId: 'scan_run_double_001',
+          automationRunId: 'scan_run_double_001', automationId: 'xianyu-auto-scan',
         });
         await doubleSse.waitFor(() => framesByType(doubleSse.frames, 'snapshot-request').length === 1);
         const request = framesByType(doubleSse.frames, 'snapshot-request')[0]!;
@@ -1482,7 +1482,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       await postFrame(expiredToken, expiredSession, { type: 'context-report', sessionId: expiredSession, url });
       await postFrame(expiredToken, expiredSession, {
         type: 'user-message', sessionId: expiredSession, text: '执行闲鱼自动履约扫描。',
-        automationRunId: 'scan_run_expired_001',
+        automationRunId: 'scan_run_expired_001', automationId: 'xianyu-auto-scan',
       });
       await expiredSse.waitFor(() => framesByType(expiredSse.frames, 'snapshot-request').length === 1);
       const request = framesByType(expiredSse.frames, 'snapshot-request')[0]!;
@@ -1551,7 +1551,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       await postFrame(token, sessionId, {
         type: 'user-message', sessionId,
         text: `执行履约意图 ${intentId}，旧意图再新单。`,
-        automationRunId: 'scan_run_old_then_new_001',
+        automationRunId: 'scan_run_old_then_new_001', automationId: 'xianyu-auto-scan',
       });
       await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
       const initial = framesByType(sse.frames, 'snapshot-request')[0]!;
@@ -2440,5 +2440,44 @@ describe('ADR-013 渐进披露：站点索引 + site_navigate 注入（≥2 site
     const { system, toolNames } = await driveOnce(demoServer, ORDER_LIST_URL);
     expect(system).not.toContain(INDEX_BODY_MARKER);
     expect(toolNames).not.toContain('site_navigate');
+  });
+});
+
+describe('adr-019 自动化描述符端点（pack 声明下发）', () => {
+  it('GET /v1/automation-descriptors 输出生产快照的 pack 自动化声明', async () => {
+    const srv = await startServer(serverOptions({ snapshotRoot: productionRoot }));
+    try {
+      const token = await signToken();
+      const response = await fetch(`http://127.0.0.1:${srv.port}/v1/automation-descriptors`, {
+        headers: authHeaders(token),
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { descriptors: Array<Record<string, unknown>> };
+      expect(body.descriptors).toEqual([
+        {
+          packId: 'xianyu-seller',
+          origin: 'https://seller.goofish.com',
+          automation: {
+            id: 'xianyu-auto-scan',
+            prompt: '执行闲鱼自动履约扫描。每轮最多处理一笔；任一页面、订单、库存或回执状态不确定时立即暂停，不得重试发送。',
+            workRoutes: ['#/seller-trade/order-manage', '#/im'],
+            executionPreference: 'dom-only',
+            defaultPeriodMinutes: 5,
+          },
+        },
+      ]);
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('未鉴权请求被拒', async () => {
+    const srv = await startServer(serverOptions({ snapshotRoot: productionRoot }));
+    try {
+      const response = await fetch(`http://127.0.0.1:${srv.port}/v1/automation-descriptors`);
+      expect(response.status).toBe(401);
+    } finally {
+      await srv.close();
+    }
   });
 });

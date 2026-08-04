@@ -61,6 +61,7 @@ export type {
   ConfigSnapshotManifest,
   SiteFence,
   PackManifest,
+  PackAutomation,
   RegistryManifest,
 } from './config-snapshot.js';
 export type {
@@ -88,6 +89,7 @@ export type {
   ReadPackDocResult,
   SiteDescriptor,
   ToolOwnership,
+  AutomationDescriptor,
   AssemblyPort,
   DomGateContext,
   PrepareFulfillmentIntentInput,
