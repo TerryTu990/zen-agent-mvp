@@ -113,13 +113,22 @@ function createFrameValidator(): ValidateFunction {
   return ajv.compile(JSON.parse(readFileSync(schemaPath, 'utf8')) as object);
 }
 
-const UPSTREAM_TYPES: ReadonlySet<string> = new Set([
-  'context-report',
-  'user-message',
-  'hitl-decision',
-  'exec-result',
-  'snapshot-report',
-]);
+/**
+ * C3 上行帧受理表（联合类型穷举镜像：契约增/减帧型而此处漏更即编译期爆错）。
+ * false = 契约内但 handler 未启用（config-decision 归 P2.5-c 写入通道），fail-closed 拒收。
+ */
+const UPSTREAM_ACCEPTANCE: Record<UpstreamFrame['type'], boolean> = {
+  'context-report': true,
+  'user-message': true,
+  'hitl-decision': true,
+  'exec-result': true,
+  'snapshot-report': true,
+  'config-decision': false,
+};
+
+function isUpstreamType(type: string): type is UpstreamFrame['type'] {
+  return type in UPSTREAM_ACCEPTANCE;
+}
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -1471,8 +1480,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
       return;
     }
     const type = (frame as { type: string }).type;
-    if (!UPSTREAM_TYPES.has(type)) {
+    if (!isUpstreamType(type)) {
       sendJson(res, 400, { error: '仅接受上行帧' });
+      return;
+    }
+    if (!UPSTREAM_ACCEPTANCE[type]) {
+      sendJson(res, 400, { error: `上行帧 ${type} 尚未启用` });
       return;
     }
     const upstream = frame as UpstreamFrame;

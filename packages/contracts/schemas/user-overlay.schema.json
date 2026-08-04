@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zen-agent.dev/schema/user-overlay/v1.json",
+  "title": "zen-agent 用户配置层契约 C7（user-overlay，SSOT）",
+  "description": "L2 用户级配置覆盖层（adr-014）——subject=(tenant,hostUserId) 维度的运行期覆盖，经 UserConfigStore 端口读写、revision（内容 hash）可追溯，显式排除在 U4 快照同构/不可变约束之外。【只收紧（R1）】结构上不存在新增工具/改 adapter/改 execution/放宽 riskTier 或节流的表达能力；riskTier 合并语义恒 max(L1,L2)，全序 auto<hitl<forbidden；用户级能力扩展唯一通道=自建 pack（走 L1 载入校验）。【纯数据（R2）】全部为 JSON/文本，additionalProperties:false 全程；每条规则/事实带 origin 与作用域（R4）。【作用域】packs 键 \"*\"=全局作用域（跨站规则/偏好，结构上无 enabled/restrictions/packConfig——无对应工具面）；其余键=packId（pack 级作用域）。【组合校验器】跨字段语义——同一 toolId 同时出现在 riskTierRaise 与 disabledTools 拒绝、packConfig 按该 pack 声明的 configSchema（adr-020）校验——JSON Schema 表达不了，由 contracts 导出的 validateUserOverlay 承担；消费方 MUST 经该校验器，不得旁路只跑本 schema。写入通道见 C3 config-draft/config-decision 帧与 user-config-write 审计事件（U8：对话只产草稿，显式确认才入库）。对象 JSON 可序列化，跨端口传递满足 U1。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "subject", "packs"],
+  "properties": {
+    "schemaVersion": {
+      "$comment": "覆盖层结构版本；当前恒为 1，破坏性演进时递增并提供迁移。",
+      "const": 1
+    },
+    "subject": {
+      "$comment": "归属键，取自每次请求的 C2 claims（tenant + hostUserId）；文件内自带以支撑导出/审计快照自描述。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenant", "hostUserId"],
+      "properties": {
+        "tenant": { "type": "string", "minLength": 1 },
+        "hostUserId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "packs": {
+      "$comment": "作用域表：\"*\" 走独立子 schema（全局作用域），packId 键走 patternProperties（pack 级作用域）；两者之外的键一律拒绝。",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "*": { "$ref": "#/$defs/globalScope" }
+      },
+      "patternProperties": {
+        "^[a-z][a-z0-9-]*$": { "$ref": "#/$defs/packScope" }
+      }
+    }
+  },
+  "$defs": {
+    "featureId": {
+      "$comment": "功能标识文法，与 pack/config-snapshot 契约对齐。",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "toolId": {
+      "$comment": "工具标识文法，与 tool-definition.id 对齐；是否仍在 L1 工具集内属运行期越界判定（逐条失效+审计），不在本 schema。",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$"
+    },
+    "entry": {
+      "$comment": "个人规则/事实条目（R4：逐条带来源）：origin=manual 面板手工录入 / teach 对话草稿经 config-decision 确认写入（sourceSessionId 记产草稿会话）。featureId 缺省=整 pack 生效，compose 按当前 featureId 过滤。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text", "origin", "createdAt"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "featureId": { "$ref": "#/$defs/featureId" },
+        "origin": { "type": "string", "enum": ["manual", "teach"] },
+        "sourceSessionId": { "type": "string", "minLength": 1 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "entryList": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "restrictions": {
+      "$comment": "权限只收紧矩阵（R1）：riskTierRaise 值域闭集 {hitl,forbidden}（UI「禁用」列=forbidden，无 auto——无放宽表达力）；disabledTools 语义=从工具面移除不展示。同一 toolId 双重声明由组合校验器拒绝。读失败 fail-closed（存储故障不得导致治理放宽，U7）。",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "riskTierRaise": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$" },
+          "additionalProperties": { "type": "string", "enum": ["hitl", "forbidden"] }
+        },
+        "disabledTools": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/toolId" }
+        }
+      }
+    },
+    "automationPreference": {
+      "$comment": "pack 声明自动化的用户偏好：enabled=false 关停（只收紧）；minutes 写入期校验 ≥ pack 预设周期且 ≥ 平台下限（频率同属收紧维度，不可放宽节流）。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minutes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "verbosity": {
+      "type": "string",
+      "enum": ["concise", "standard", "detailed"]
+    },
+    "packPreferences": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verbosity": { "$ref": "#/$defs/verbosity" },
+        "automations": {
+          "$comment": "键 = 该 pack 声明的 automation id（adr-019）；越界引用属运行期逐条失效判定。",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+          "additionalProperties": { "$ref": "#/$defs/automationPreference" }
+        }
+      }
+    },
+    "globalScope": {
+      "$comment": "\"*\" 全局作用域：跨站规则/事实与偏好（零配置站点的个人定制载体，注入序在 L1 之后、pack 级 L2 之前）。结构上无 enabled/restrictions/packConfig（无对应工具面可收紧/取值）；偏好仅 verbosity（automations 锚定 pack 声明，无全局语义）。",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rules": { "$ref": "#/$defs/entryList" },
+        "facts": { "$ref": "#/$defs/entryList" },
+        "preferences": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "verbosity": { "$ref": "#/$defs/verbosity" }
+          }
+        }
+      }
+    },
+    "packScope": {
+      "$comment": "pack 级作用域：enabled 只允许 const false（pack 级关停；缺省=启用，R1 只收紧）；packConfig 键值按该 pack 声明的 configSchema 校验（组合校验器承担，schema 不存在或值越界即拒）。",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "const": false },
+        "rules": { "$ref": "#/$defs/entryList" },
+        "facts": { "$ref": "#/$defs/entryList" },
+        "restrictions": { "$ref": "#/$defs/restrictions" },
+        "packConfig": { "type": "object", "minProperties": 1 },
+        "preferences": { "$ref": "#/$defs/packPreferences" }
+      }
+    }
+  }
+}

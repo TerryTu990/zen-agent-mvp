@@ -94,12 +94,20 @@ export interface SnapshotReportFrame {
   evidence?: Record<string, SnapshotEvidence>;
 }
 
+export interface ConfigDecisionFrame {
+  type: 'config-decision';
+  sessionId: string;
+  draftId: string;
+  decision: 'accept' | 'reject';
+}
+
 export type UpstreamFrame =
   | ContextReportFrame
   | UserMessageFrame
   | HitlDecisionFrame
   | ExecResultFrame
-  | SnapshotReportFrame;
+  | SnapshotReportFrame
+  | ConfigDecisionFrame;
 
 export interface TextDeltaFrame {
   type: 'text-delta';
@@ -196,6 +204,19 @@ export interface SnapshotRequestFrame {
   evidenceRules?: SnapshotEvidenceRule[];
 }
 
+/** L2 配置草稿卡（adr-014 teach 流，U8）：服务端产草稿，用户经 config-decision 显式确认后才落盘。 */
+export interface ConfigDraftFrame {
+  type: 'config-draft';
+  sessionId: string;
+  draftId: string;
+  /** packId="*" 为全局作用域；featureId 缺省 = 整 pack 生效；title 为人读作用域标签（确认卡 chip）。 */
+  scope: { packId: string; featureId?: string; title?: string };
+  /** 拟写入的 overlay 片段（纯数据）；用户须看到真实将写入什么。 */
+  change: JsonObject;
+  /** 人读摘要（已脱敏），确认卡展示用。 */
+  summary: string;
+}
+
 export type DownstreamFrame =
   | TextDeltaFrame
   | TurnCompleteFrame
@@ -203,4 +224,5 @@ export type DownstreamFrame =
   | HitlRequestFrame
   | ExecInstructionFrame
   | GuideActionFrame
-  | SnapshotRequestFrame;
+  | SnapshotRequestFrame
+  | ConfigDraftFrame;

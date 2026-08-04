@@ -104,12 +104,23 @@ export interface SnapshotEvidence {
   latest: string;
 }
 
+export type ConfigDecisionValue = 'accept' | 'reject';
+
+/** 配置草稿裁决回传（adr-014 teach 流）：对应下行 config-draft 的 draftId；accept 后服务端才执行写入链路。 */
+export interface ConfigDecisionFrame {
+  type: 'config-decision';
+  sessionId: string;
+  draftId: string;
+  decision: ConfigDecisionValue;
+}
+
 export type UpstreamFrame =
   | ContextReportFrame
   | UserMessageFrame
   | HitlDecisionFrame
   | ExecResultFrame
-  | SnapshotReportFrame;
+  | SnapshotReportFrame
+  | ConfigDecisionFrame;
 
 // ---- 下行帧（网关 → 客户端，SSE）----
 
@@ -228,6 +239,23 @@ export interface SnapshotRequestFrame {
   evidenceRules?: SnapshotEvidenceRule[];
 }
 
+/**
+ * L2 配置草稿卡（adr-014 teach 流，U8）：对话内容永不直写配置——服务端产草稿下发本帧，
+ * 用户经上行 config-decision 显式确认后才走写入链路（落盘前仍过 user-overlay 组合校验与只收紧校验）。
+ * 只复用插件卡片 UI 呈现，不复用 hitl-request 帧语义与 toolgate 裁决链路。
+ */
+export interface ConfigDraftFrame {
+  type: 'config-draft';
+  sessionId: string;
+  draftId: string;
+  /** 拟写入作用域：packId="*" 为全局作用域；featureId 缺省 = 整 pack 生效；title 为人读作用域标签（服务端按 pack.name/feature 标题渲染）。 */
+  scope: { packId: string; featureId?: string; title?: string };
+  /** 拟写入的 overlay 片段（user-overlay 作用域子结构，纯数据）；用户须看到真实将写入什么。服务端 MUST 保证与 scope 一致（scope 是 change 的机械投影），accept 落库前校验。 */
+  change: JsonObject;
+  /** 人读摘要，确认卡展示用（已脱敏）。 */
+  summary: string;
+}
+
 export type DownstreamFrame =
   | TextDeltaFrame
   | TurnCompleteFrame
@@ -235,6 +263,7 @@ export type DownstreamFrame =
   | HitlRequestFrame
   | ExecInstructionFrame
   | GuideActionFrame
-  | SnapshotRequestFrame;
+  | SnapshotRequestFrame
+  | ConfigDraftFrame;
 
 export type ClientAccessFrame = UpstreamFrame | DownstreamFrame;

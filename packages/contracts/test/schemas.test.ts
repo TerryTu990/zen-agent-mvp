@@ -28,6 +28,7 @@ describe('C1-C5 schema 契约', () => {
       'pack.schema.json',
       'registry.schema.json',
       'tool-definition.schema.json',
+      'user-overlay.schema.json',
     ]);
   });
 
@@ -747,5 +748,193 @@ describe('C5 audit-event M3 门禁/裁决/执行事件', () => {
 
   it.each(Object.keys(invalidEvents))('非法事件被拒：%s', (label) => {
     expect(validate(invalidEvents[label])).toBe(false);
+  });
+});
+
+describe('C4 registry v2 登记项来源归属（adr-020 §3）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'registry.schema.json');
+
+  const entry = { packId: 'shop', version: '1.0.0' };
+
+  const validRegistries: Record<string, unknown> = {
+    'source 缺省依旧合法（U3 回归锚）': { version: '1.0.0', packs: [entry] },
+    'source official': { version: '1.0.0', packs: [{ ...entry, source: 'official' }] },
+    'source community': { version: '1.0.0', packs: [{ ...entry, source: 'community' }] },
+    'source local': { version: '1.0.0', packs: [{ ...entry, source: 'local' }] },
+    'hash 登记合法（装配端启用锚点 P3.5）': {
+      version: '1.0.0',
+      packs: [{ ...entry, source: 'official', hash: 'a'.repeat(64) }],
+    },
+  };
+
+  it.each(Object.keys(validRegistries))('合法 registry 通过校验：%s', (label) => {
+    expect(validate(validRegistries[label]), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  const invalidRegistries: Record<string, unknown> = {
+    'source 越 official|community|local 闭集被拒': {
+      version: '1.0.0',
+      packs: [{ ...entry, source: 'vendor' }],
+    },
+  };
+
+  it.each(Object.keys(invalidRegistries))('非法 registry 被拒：%s', (label) => {
+    expect(validate(invalidRegistries[label])).toBe(false);
+  });
+});
+
+describe('C5 audit L2 事件（adr-014：user-config-write + userConfigRevision）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'audit-event.schema.json');
+
+  const base = {
+    eventId: 'e-0002',
+    ts: '2026-08-04T03:16:25.000Z',
+    sessionId: 's-001',
+    userId: 'host-1001',
+    tenant: 'default',
+  };
+
+  const validEvents: Record<string, unknown> = {
+    'user-config-write 含写后完整脱敏快照与 revision': {
+      ...base,
+      type: 'user-config-write',
+      data: {
+        subject: { tenant: 'default', hostUserId: 'host-1001' },
+        origin: 'panel',
+        revision: 'rev-3f6a2c',
+        overlay: {
+          schemaVersion: 1,
+          subject: { tenant: 'default', hostUserId: 'host-1001' },
+          packs: {
+            'xianyu-seller': {
+              restrictions: { riskTierRaise: { 'reply-buyer.send-message': 'hitl' } },
+            },
+          },
+        },
+      },
+    },
+    'assembly 事件携带 userConfigRevision（注入/审计/判定三方互证）': {
+      ...base,
+      featureId: 'order-list',
+      type: 'assembly',
+      data: {
+        snapshotVersion: '0.2.0',
+        featureId: 'order-list',
+        toolIds: ['order-list.cancel-order'],
+        skillIds: [],
+        userConfigRevision: 'rev-3f6a2c',
+      },
+    },
+    'assembly 事件缺省 userConfigRevision 依旧合法（U3 回归锚）': {
+      ...base,
+      type: 'assembly',
+      data: { snapshotVersion: '0.2.0', featureId: null, toolIds: [], skillIds: [] },
+    },
+    'tool-decision 事件携带 userConfigRevision（与 assembly/user-config-write 同值互证）': {
+      ...base,
+      type: 'tool-decision',
+      data: {
+        toolCallId: 'tc-01',
+        toolId: 'order-list.cancel-order',
+        riskTier: 'hitl',
+        verdict: 'hitl',
+        userConfigRevision: 'rev-3f6a2c',
+      },
+    },
+  };
+
+  it.each(Object.keys(validEvents))('合法事件 %s 通过校验', (label) => {
+    expect(validate(validEvents[label]), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  const invalidEvents: Record<string, unknown> = {
+    '未知事件 type 仍被闭集拒绝': { ...base, type: 'user-config-read', data: {} },
+  };
+
+  it.each(Object.keys(invalidEvents))('非法事件被拒：%s', (label) => {
+    expect(validate(invalidEvents[label])).toBe(false);
+  });
+});
+
+describe('C3 config-draft / config-decision 帧（adr-014 §5 teach 写入通道）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'client-access-layer.schema.json');
+
+  const draftFrame = {
+    type: 'config-draft',
+    sessionId: 's-001',
+    draftId: 'd-01',
+    scope: { packId: 'xianyu-seller', featureId: 'reply-buyer' },
+    change: {
+      packs: {
+        'xianyu-seller': {
+          rules: [
+            {
+              id: 'r-1',
+              text: '报价一律引用运费模板。',
+              featureId: 'reply-buyer',
+              origin: 'teach',
+              sourceSessionId: 's-001',
+              createdAt: '2026-08-04T03:16:25.000Z',
+            },
+          ],
+        },
+      },
+    },
+    summary: '新增个人规则：报价一律引用运费模板',
+  };
+
+  const validFrames: Record<string, unknown> = {
+    'config-draft 全字段': draftFrame,
+    'config-draft scope 缺省 featureId（整 pack 生效）': {
+      ...draftFrame,
+      scope: { packId: 'xianyu-seller' },
+    },
+    'config-decision accept': {
+      type: 'config-decision',
+      sessionId: 's-001',
+      draftId: 'd-01',
+      decision: 'accept',
+    },
+    'config-decision reject': {
+      type: 'config-decision',
+      sessionId: 's-001',
+      draftId: 'd-01',
+      decision: 'reject',
+    },
+  };
+
+  it.each(Object.keys(validFrames))('合法 %s 帧通过校验', (label) => {
+    expect(validate(validFrames[label]), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  const invalidFrames: Record<string, unknown> = {
+    'config-decision decision 越 accept|reject 闭集': {
+      type: 'config-decision',
+      sessionId: 's-001',
+      draftId: 'd-01',
+      decision: 'maybe',
+    },
+    'config-decision 缺 required draftId': {
+      type: 'config-decision',
+      sessionId: 's-001',
+      decision: 'accept',
+    },
+    'config-draft 缺 required summary（人读摘要必含）': (() => {
+      const { summary: _summary, ...rest } = draftFrame;
+      return rest;
+    })(),
+    'config-draft 缺 required change': (() => {
+      const { change: _change, ...rest } = draftFrame;
+      return rest;
+    })(),
+    '未知帧 type 仍被闭集拒绝（config-teach）': {
+      type: 'config-teach',
+      sessionId: 's-001',
+      draftId: 'd-01',
+    },
+  };
+
+  it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {
+    expect(validate(invalidFrames[label])).toBe(false);
   });
 });

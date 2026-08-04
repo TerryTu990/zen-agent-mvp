@@ -23,6 +23,7 @@ export type {
 } from './tool-definition.js';
 export {
   isDomTool,
+  preparationWorkflows,
   SITE_NAVIGATE_TOOL_ID,
   SITE_NAVIGATE_PARAMS_SCHEMA,
   SITE_NAVIGATE_RESULT_SCHEMA,
@@ -31,12 +32,15 @@ export type { IdentityClaims } from './identity-claims.js';
 export type {
   ClientCapability,
   HitlDecisionValue,
+  ConfigDecisionValue,
   ToolCardStatus,
   GuideActionKind,
   ContextReportFrame,
   UserMessageFrame,
   ExecutionPreference,
   HitlDecisionFrame,
+  ConfigDecisionFrame,
+  ConfigDraftFrame,
   ExecResultFrame,
   SnapshotElement,
   SnapshotEvidence,
@@ -60,8 +64,14 @@ export type {
   FeatureIdRule,
   ConfigSnapshotManifest,
   SiteFence,
+  PackEngines,
+  PackAnchor,
+  PackCapabilities,
+  PackIntegrity,
   PackManifest,
   PackAutomation,
+  PackSource,
+  RegistryPackEntry,
   RegistryManifest,
 } from './config-snapshot.js';
 export type {
@@ -75,8 +85,28 @@ export type {
   ToolDecisionEvent,
   HitlVerdictEvent,
   ToolExecutionEvent,
+  UserConfigWriteEvent,
   AuditEvent,
 } from './audit-event.js';
+export type {
+  UserConfigSubject,
+  UserOverlayEntryOrigin,
+  UserOverlayEntry,
+  UserOverlayRiskTierRaise,
+  UserOverlayRestrictions,
+  UserOverlayVerbosity,
+  UserOverlayAutomationPreference,
+  UserOverlayPackPreferences,
+  UserOverlayGlobalScope,
+  UserOverlayPackScope,
+  UserOverlay,
+  UserOverlayValidationIssue,
+  ValidateUserOverlayOptions,
+  UserOverlayValidationResult,
+} from './user-overlay.js';
+export { validateUserOverlay, compileConfigSchema } from './user-overlay.js';
+export type { ContractCompatibility } from './contract-version.js';
+export { contractVersion, checkContractCompatibility } from './contract-version.js';
 export type {
   ResolveFeatureInput,
   ResolveFeatureResult,
@@ -84,6 +114,7 @@ export type {
   SkillAsset,
   ComposeResult,
   InjectionBlock,
+  InjectionToolDescriptor,
   InjectionDescription,
   ReadPackDocInput,
   ReadPackDocResult,
@@ -124,6 +155,9 @@ export type {
   SettleCardFulfillmentInput,
   SettleCardFulfillmentResult,
   FulfillmentCoordinatorPort,
+  UserConfigReadResult,
+  UserConfigWriteResult,
+  UserConfigStore,
   LlmMessage,
   LlmToolCall,
   LlmToolSpec,

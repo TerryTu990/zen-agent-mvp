@@ -19,7 +19,14 @@ import type {
   ToolDefinition,
   ToolOwnership,
 } from '@zen-agent/contracts';
-import { isDomTool } from '@zen-agent/contracts';
+import {
+  checkContractCompatibility,
+  compileConfigSchema,
+  contractVersion,
+  isDomTool,
+  preparationWorkflows,
+} from '@zen-agent/contracts';
+import type { PackSource } from '@zen-agent/contracts';
 
 export interface AssemblyOptions {
   /** 配置快照根目录：registry 形态含 manifest.json + packs/；legacy 形态含 manifest.json + features/ + skills/。 */
@@ -35,6 +42,8 @@ interface FeatureAssets {
   featureRules: string;
   facts: string;
   tools: ToolDefinition[];
+  /** 功能人读标题（feature.md frontmatter title）；未声明为 null，展示回退 featureId。 */
+  title: string | null;
 }
 
 interface CompiledRule {
@@ -51,6 +60,10 @@ interface LoadedPack {
   version: string;
   /** 一句话站点用途（渐进披露第一层）；缺省 null，站点索引回退用 packId。 */
   summary: string | null;
+  /** pack 人读名（pack.json name）；缺省 null，展示回退 packId。 */
+  name: string | null;
+  /** registry 登记来源（来源徽章数据源）；registry 缺省与 legacy 均为 official。 */
+  source: PackSource;
   /** null = 无 site 围栏（legacy 缺省 pack / generic 兜底 pack），不参与 origin 匹配与站点索引。 */
   origin: string | null;
   /** generic 兜底 pack：无站点 pack 命中时兜底激活（origin=null、locations=[]）。 */
@@ -59,6 +72,8 @@ interface LoadedPack {
   tenant: string | undefined;
   /** 路径前缀（已归一去尾斜杠，'/' 表整站）；legacy 为空数组。 */
   locations: string[];
+  /** 否定路径前缀（site.exclude，已归一）：命中任一即不匹配本 pack，优先于 locations；无声明为空数组。 */
+  exclude: string[];
   rules: CompiledRule[];
   features: Map<string, FeatureAssets>;
   skills: SkillAsset[];
@@ -127,7 +142,12 @@ function loadFeature(
   };
   const featureRules = readText('feature.md');
   const facts = readText('facts.md');
+  const title = parseFrontmatter(featureRules).title ?? null;
   const toolsPath = join(featureDir, 'tools.json');
+  // knowledge-only pack 合法（adr-020 §1）：tools.json 可缺省，工具面按空处理；存在则仍全量校验。
+  if (!existsSync(toolsPath)) {
+    return { featureRules, facts, tools: [], title };
+  }
   const toolsRaw = readJson(toolsPath);
   if (!Array.isArray(toolsRaw)) {
     throw new Error(`快照拒载：功能 ${featureId} 的 tools.json 须为数组`);
@@ -142,7 +162,7 @@ function loadFeature(
     assertPreparationIntegrity(featureId, index, tool);
     return tool;
   });
-  return { featureRules, facts, tools };
+  return { featureRules, facts, tools, title };
 }
 
 /** preparation 跨字段完整性（schema 表达不了的引用一致性）：不满足即拒载（fail-closed）。 */
@@ -215,14 +235,26 @@ function parseFrontmatter(raw: string): { title?: string; summary?: string } {
  * pack docs/ 渐进披露索引：仅注入每篇 frontmatter 标题+一句摘要（正文经 pack_doc 按需取）。
  * docs/ 缺失或无 .md → 返回 {index:null}（零注入，对验收非阻塞）。
  */
-function loadDocs(packRoot: string): { docsIndex: string | null; docsDir: string | null } {
+/** docs/ 递归列举 .md 相对路径（/ 分隔）：索引、capabilities.docs 闭单对账与 readPackDoc 围栏共用同一文件集。 */
+function listDocFiles(docsDir: string, prefix = ''): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(docsDir, { withFileTypes: true })) {
+    const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...listDocFiles(join(docsDir, entry.name), rel));
+    else if (entry.isFile() && entry.name.endsWith('.md')) out.push(rel);
+  }
+  return out.sort();
+}
+
+function loadDocs(packRoot: string): {
+  docsIndex: string | null;
+  docsDir: string | null;
+  docFiles: string[];
+} {
   const docsDir = join(packRoot, 'docs');
-  if (!existsSync(docsDir)) return { docsIndex: null, docsDir: null };
-  const files = readdirSync(docsDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
-    .map((entry) => entry.name)
-    .sort();
-  if (files.length === 0) return { docsIndex: null, docsDir: null };
+  if (!existsSync(docsDir)) return { docsIndex: null, docsDir: null, docFiles: [] };
+  const files = listDocFiles(docsDir);
+  if (files.length === 0) return { docsIndex: null, docsDir: null, docFiles: [] };
   const lines = [
     '# 站点操作文档索引',
     '需要详细操作步骤/参考资料时，用 pack_doc 工具按下方文件名（path）读取正文：',
@@ -233,7 +265,7 @@ function loadDocs(packRoot: string): { docsIndex: string | null; docsDir: string
     const title = fm.title ?? file;
     lines.push(`- \`${file}\`：${title}${fm.summary ? ` —— ${fm.summary}` : ''}`);
   }
-  return { docsIndex: lines.join('\n'), docsDir };
+  return { docsIndex: lines.join('\n'), docsDir, docFiles: files };
 }
 
 function compileRules(
@@ -290,9 +322,65 @@ function locationRank(loc: string): number {
   return loc === '/' ? 0 : loc.length;
 }
 
+/** 闭单对账（双向）：声明缺实体或实体越闭单均拒载（adr-020 §2 capabilities.skills/docs）。 */
+function assertClosedList(
+  packId: string,
+  label: string,
+  declared: string[] | undefined,
+  actual: string[],
+): void {
+  if (declared === undefined) return;
+  const declaredSet = new Set(declared);
+  const actualSet = new Set(actual);
+  for (const id of declared) {
+    if (!actualSet.has(id)) {
+      throw new Error(`快照拒载：pack ${packId} capabilities.${label} 声明 ${id} 在目录中缺失`);
+    }
+  }
+  for (const id of actual) {
+    if (!declaredSet.has(id)) {
+      throw new Error(`快照拒载：pack ${packId} ${label} 目录含闭单外条目 ${id}`);
+    }
+  }
+}
+
+/** pack v2 载入期语义（adr-020 §2）：engines 兼容 / 闭单对账 / workflows 子集 / configSchema 合法性，任一不过拒载。 */
+function assertPackV2Semantics(pack: PackManifest, skills: SkillAsset[], docFiles: string[]): void {
+  const contractRange = pack.engines?.contract;
+  if (contractRange !== undefined) {
+    const compat = checkContractCompatibility(contractRange);
+    if (!compat.compatible) {
+      const detail =
+        compat.reason === 'invalid-range'
+          ? `范围串非法：${contractRange}`
+          : `范围 ${contractRange} 不含平台契约版本 ${contractVersion}`;
+      throw new Error(`快照拒载：pack ${pack.packId} engines.contract ${detail}`);
+    }
+  }
+  assertClosedList(pack.packId, 'skills', pack.capabilities?.skills, skills.map((s) => s.id));
+  assertClosedList(pack.packId, 'docs', pack.capabilities?.docs, docFiles);
+  for (const workflow of pack.capabilities?.preparation?.workflows ?? []) {
+    if (!(preparationWorkflows as readonly string[]).includes(workflow)) {
+      throw new Error(
+        `快照拒载：pack ${pack.packId} capabilities.preparation.workflows 声明 ${workflow} 不在服务端已实现闭集 [${preparationWorkflows.join(', ')}] 内`,
+      );
+    }
+  }
+  if (pack.configSchema !== undefined) {
+    try {
+      compileConfigSchema(pack.configSchema);
+    } catch (cause) {
+      throw new Error(
+        `快照拒载：pack ${pack.packId} configSchema 不是合法 JSON Schema：${(cause as Error).message}`,
+        { cause },
+      );
+    }
+  }
+}
+
 function loadPack(
   packRoot: string,
-  entry: { packId: string; version: string },
+  entry: { packId: string; version: string; source?: PackSource },
   validatePack: ValidateFunction,
   validateTool: ValidateFunction,
 ): LoadedPack {
@@ -324,17 +412,22 @@ function loadPack(
   const features = loadFeaturesOf(packRoot, pack.features, validateTool);
   const rules = compileRules(pack.featureIdRules, features, `pack ${pack.packId}`);
   const docs = loadDocs(packRoot);
+  const skills = loadSkills(packRoot);
+  assertPackV2Semantics(pack, skills, docs.docFiles);
   return {
     packId: pack.packId,
     version: pack.version,
     summary: pack.summary ?? null,
+    name: pack.name ?? null,
+    source: entry.source ?? 'official',
     origin: site === undefined ? null : site.origin,
     generic,
     tenant: pack.tenant,
     locations: site === undefined ? [] : (site.locations ?? ['/']).map(normalizeLocation),
+    exclude: (site?.exclude ?? []).map(normalizeLocation),
     rules,
     features,
-    skills: loadSkills(packRoot),
+    skills,
     docsIndex: docs.docsIndex,
     docsDir: docs.docsDir,
     automations: pack.automations ?? [],
@@ -436,10 +529,13 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
     packId: 'default',
     version: manifest.version,
     summary: null,
+    name: null,
+    source: 'official',
     origin: null,
     generic: false,
     tenant: undefined,
     locations: [],
+    exclude: [],
     rules,
     features,
     skills: loadSkills(options.snapshotRoot),
@@ -474,6 +570,8 @@ function resolvePack(snapshot: LoadedSnapshot, url: string): LoadedPack | null {
   let bestRank = -1;
   for (const pack of snapshot.packs.values()) {
     if (pack.origin !== origin) continue;
+    // site.exclude 优先于 locations：命中任一否定前缀即整 pack 不匹配（adr-020 §2）。
+    if (pack.exclude.some((ex) => locationMatches(path, ex))) continue;
     for (const loc of pack.locations) {
       if (!locationMatches(path, loc)) continue;
       const rank = locationRank(loc);
@@ -597,6 +695,10 @@ function assembleInjection(
       featureId,
       blocks,
       toolIds: tools.map((tool) => tool.id),
+      packVersion: pack.version,
+      packSource: pack.source,
+      ...(pack.name !== null ? { packName: pack.name } : {}),
+      ...(feature?.title != null ? { featureTitle: feature.title } : {}),
     },
   };
 }

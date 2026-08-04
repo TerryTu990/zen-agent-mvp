@@ -1,0 +1,11 @@
+{
+  "packId": "wiki-notes",
+  "version": "1.0.0",
+  "summary": "wiki 站阅读讲解（纯知识型，无工具面）",
+  "site": {
+    "origin": "http://wiki.example",
+    "locations": ["/"]
+  },
+  "featureIdRules": [{ "urlPattern": ".*", "featureId": "reading" }],
+  "features": ["reading"]
+}

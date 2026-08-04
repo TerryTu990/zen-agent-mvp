@@ -14,9 +14,13 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
-  "devDependencies": {
+  "dependencies": {
     "ajv": "catalog:",
     "ajv-formats": "catalog:",
+    "semver": "catalog:"
+  },
+  "devDependencies": {
+    "@types/semver": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

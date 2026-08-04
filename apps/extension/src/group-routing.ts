@@ -13,6 +13,7 @@ export function routeForFrame(frame: DownstreamFrame): FrameRoute {
     case 'turn-complete':
     case 'tool-card':
     case 'hitl-request':
+    case 'config-draft':
       return 'panel';
     case 'exec-instruction':
     case 'guide-action':

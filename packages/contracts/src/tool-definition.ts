@@ -30,6 +30,17 @@ export interface BoundedFulfillmentAuthorization {
   preparation?: IntentPreparation;
 }
 
+/** workflow 联合类型的穷举镜像：联合增减成员或此处漏更均编译期爆错（双向同源保证）。 */
+const preparationWorkflowMirror: Record<BoundedFulfillmentAuthorization['workflow'], true> = {
+  delivery: true,
+  shipment: true,
+};
+
+/** 服务端已实现履约工作流的运行时闭集（capabilities.preparation.workflows 载入期交叉校验基准）。 */
+export const preparationWorkflows = Object.keys(
+  preparationWorkflowMirror,
+) as BoundedFulfillmentAuthorization['workflow'][];
+
 /** 从激活页 URL 的 hash query 段取参；取值 trim 后须非空且通过可选 pattern。 */
 export interface HashQueryParamSource {
   source: 'hash-query';

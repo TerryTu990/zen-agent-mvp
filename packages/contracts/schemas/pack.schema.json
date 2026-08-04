@@ -22,6 +22,11 @@
       "type": "string",
       "minLength": 1
     },
+    "name": {
+      "$comment": "pack 人读名（packs 页 / 注入透明视图 / 确认卡展示，如「闲鱼卖家」）；缺省=展示回退 packId。装配端经 describeInjection.packName 透出；配置中心 UI 消费落点=G4。",
+      "type": "string",
+      "minLength": 1
+    },
     "site": {
       "$comment": "激活围栏：origin 精确匹配（scheme://host[:port]，无路径无尾斜杠）+ locations 路径前缀。",
       "type": "object",
@@ -34,6 +39,12 @@
         },
         "locations": {
           "$comment": "路径前缀数组（各以 / 起）；省略时装配器按缺省 [\"/\"]（整站）处理。",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^/" }
+        },
+        "exclude": {
+          "$comment": "否定路径前缀（Tampermonkey @exclude 范式）：命中任一前缀即不匹配本 pack，优先于 locations 判定（resolvePack 排除判定）。",
           "type": "array",
           "minItems": 1,
           "items": { "type": "string", "pattern": "^/" }
@@ -68,6 +79,76 @@
       "minItems": 1,
       "maxItems": 5,
       "items": { "$ref": "#/$defs/automation" }
+    },
+    "engines": {
+      "$comment": "平台兼容声明（VS Code engines 范式）：contract 为对平台契约版本（contracts 导出 contractVersion）的 semver range；载入期以 checkContractCompatibility 比对，range 非法或不满足即拒载（fail-closed，不降级猜测）。pattern 只做语法面守卫（token 闭集 + 至少一个版本数字），range 语法权威在载入期 semver 判定。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract"],
+      "properties": {
+        "contract": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=.*[0-9xX*])[0-9A-Za-z.+*xX<>=^~\\s|-]+$"
+        }
+      }
+    },
+    "capabilities": {
+      "$comment": "结构化能力声明（MCP capabilities 范式）：全部可选，知识型 pack（仅 feature.md+facts.md）合法缺省。",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "anchors": {
+          "$comment": "引导锚点清单 featureId → 锚点数组，为锚点唯一登记处（facts.md 不承载锚点登记）；失配降级（R6），不作准入门槛。装配端消费锚点=D2（引导 capability 落地步）。",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/$defs/anchor" }
+          }
+        },
+        "skills": {
+          "$comment": "skills/<fn>/ 闭单：载入期与 skills/ 目录双向对账（声明有目录无 / 目录有声明无均拒载）。",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+        },
+        "docs": {
+          "$comment": "docs/ 内文档相对路径闭单（禁前导 . 与路径穿越）：载入期与目录扫描对账。",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.md$" }
+        },
+        "preparation": {
+          "$comment": "pack 声明其使用的准备 workflows ⊆ 服务端已实现闭集，载入期交叉校验（fail-closed）；服务端语义分支原样保留，真泛化锚点=第二个履约站点 pack 接入时。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["workflows"],
+          "properties": {
+            "workflows": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+            }
+          }
+        }
+      }
+    },
+    "configSchema": {
+      "$comment": "pack 声明的用户可配置点（adr-020）：JSON Schema 对象（含默认值，纯数据）——可变空间由 pack 作者定义，用户只在空间内取值；L2 packConfig 写入期按此校验（schema 不存在或值越界即拒），参数值以结构化数据注入、不改变工具 riskTier 与治理面。载入期校验其为可编译 JSON Schema。",
+      "type": "object"
+    },
+    "integrity": {
+      "$comment": "canonical 文件清单 sha256（U4 不可变的机械化验证）：键=pack 内相对路径，值=sha256 hex。装配端校验启用锚点=P3.5（打包分发时）。",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+      "additionalProperties": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
     }
   },
   "allOf": [
@@ -84,6 +165,18 @@
     }
   ],
   "$defs": {
+    "anchor": {
+      "$comment": "引导锚点：id 供规则/skill 引用；role/label 与快照元素词汇对齐；selectorHint 为 CSS 选择器提示（可选），失配时客户端静默降级为文字说明（R6）。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "label"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "role": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "selectorHint": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
     "automation": {
       "type": "object",
       "additionalProperties": false,

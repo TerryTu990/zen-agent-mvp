@@ -5,6 +5,7 @@
  */
 import type { RiskTier, ToolExecution } from './tool-definition.js';
 import type { HitlDecisionValue } from './client-access-layer.js';
+import type { UserConfigSubject, UserOverlay } from './user-overlay.js';
 
 export type AuditEventType =
   | 'session-start'
@@ -12,7 +13,8 @@ export type AuditEventType =
   | 'assembly'
   | 'tool-decision'
   | 'hitl-verdict'
-  | 'tool-execution';
+  | 'tool-execution'
+  | 'user-config-write';
 
 export type GateVerdict = 'allow' | 'hitl' | 'deny';
 
@@ -60,6 +62,8 @@ export interface AssemblyEvent extends AuditEventBase {
     toolIds: string[];
     skillIds: string[];
     rulesDigest?: string;
+    /** 本轮 compose 定格的 L2 overlay revision；与 user-config-write 事件互证（R4）。缺省 = 无 L2 参与。 */
+    userConfigRevision?: string;
   };
 }
 
@@ -72,6 +76,8 @@ export interface ToolDecisionEvent extends AuditEventBase {
     verdict: GateVerdict;
     /** 判定依据说明，不含实参值与敏感信息。 */
     reason?: string;
+    /** 本轮判定所依据的 L2 定格 revision：与 assembly / user-config-write 事件同值互证（R4）；缺省=无 L2 参与。 */
+    userConfigRevision?: string;
   };
 }
 
@@ -98,10 +104,25 @@ export interface ToolExecutionEvent extends AuditEventBase {
   };
 }
 
+/** L2 用户配置写入事件（adr-014 §5）：记录写后完整 overlay 快照（落 sink 前已按 SEC-01 脱敏）。 */
+export interface UserConfigWriteEvent extends AuditEventBase {
+  type: 'user-config-write';
+  data: {
+    subject: UserConfigSubject;
+    /** 写后 overlay 内容 hash；assembly/tool 决策事件的 userConfigRevision 与此互证（R4）。 */
+    revision: string;
+    /** 写后全量 overlay（脱敏后）。 */
+    overlay: UserOverlay;
+    /** teach = 对话草稿经 config-decision 确认写入；panel = 配置中心面板结构化编辑。 */
+    origin: 'teach' | 'panel';
+  };
+}
+
 export type AuditEvent =
   | SessionStartEvent
   | SessionEndEvent
   | AssemblyEvent
   | ToolDecisionEvent
   | HitlVerdictEvent
-  | ToolExecutionEvent;
+  | ToolExecutionEvent
+  | UserConfigWriteEvent;

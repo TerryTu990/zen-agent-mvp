@@ -5,7 +5,8 @@
  * LlmPort 的 AsyncIterable 是流式 RPC（SSE 等）的进程内投影，逐个产出的事件本体仍 JSON 可序列化。
  */
 import type { JsonObject, JsonValue } from './json.js';
-import type { ToolDefinition } from './tool-definition.js';
+import type { RiskTier, ToolDefinition } from './tool-definition.js';
+import type { UserConfigSubject, UserOverlay } from './user-overlay.js';
 import type { IdentityClaims } from './identity-claims.js';
 import type {
   ExecInstructionFrame,
@@ -14,7 +15,7 @@ import type {
   SnapshotEvidence,
 } from './client-access-layer.js';
 import type { AuditEvent, GateVerdict } from './audit-event.js';
-import type { PackAutomation } from './config-snapshot.js';
+import type { PackAutomation, PackSource } from './config-snapshot.js';
 
 // ---- AssemblyPort（②会话网关 ← ⑤配置中心：featureId 定位 + 注入组合）----
 
@@ -40,6 +41,11 @@ export interface ComposeInput {
   /** 激活 pack；null = 仅基座（skills/docs/工具面均为空）。取自 resolveFeature 判定，装配对 agent 透明。 */
   packId: string | null;
   featureId: string | null;
+  /**
+   * L2 归属键（adr-014）：提供时 compose 经 UserConfigStore 单次读取该 subject 的 overlay 并定格
+   * revision，合并个人规则/事实与工具面收紧；缺省 = 纯 L1 装配（无 L2 参与）。
+   */
+  subject?: UserConfigSubject;
 }
 
 export interface SkillAsset {
@@ -77,6 +83,21 @@ export interface InjectionBlock {
   kind: 'system-prompt' | 'sites-index' | 'feature-rules' | 'facts' | 'skill' | 'docs-index';
   id?: string;
   bytes: number;
+  /** 注入段来源层（R4 透明视图）：L0 基座 / L1 pack / L2 用户覆盖层；缺省 = 未标注（legacy 产出）。 */
+  origin?: 'L0' | 'L1' | 'L2';
+}
+
+/** 工具面条目自省（R4）：设计稿「自动执行 → 需确认 · 已收紧」箭头的数据源。 */
+export interface InjectionToolDescriptor {
+  toolId: string;
+  /** L1 声明的原始分级。 */
+  baseTier: RiskTier;
+  /** L2 收紧合并后的生效分级：max(L1, L2)，恒 ≥ baseTier。 */
+  effectiveTier: RiskTier;
+  /** 工具定义来源层：L0 内建 / L1 pack——L2 结构上无工具定义表达力（adr-014），故不在此闭集。 */
+  origin: 'L0' | 'L1';
+  /** effectiveTier 高于 baseTier 时的收紧来源（user-overlay 作用域键，即 packId）；未收紧省略。 */
+  tightenedBy?: string;
 }
 
 /** 注入自省：与 compose 同源产出，供审计 assembly 事件与调试查看。 */
@@ -87,6 +108,16 @@ export interface InjectionDescription {
   featureId: string | null;
   blocks: InjectionBlock[];
   toolIds: string[];
+  /** 工具面逐项描述（baseTier/effectiveTier/收紧来源）；与 toolIds 并存，缺省 = 未产出（legacy）。 */
+  tools?: InjectionToolDescriptor[];
+  /** 激活 pack 的 semver（注入视图版本徽章数据源）；无 pack 时省略。 */
+  packVersion?: string;
+  /** 激活 pack 的人读名（pack.json name）；未声明或无 pack 时省略，展示回退 packId。 */
+  packName?: string;
+  /** 激活 pack 的 registry 来源（来源徽章数据源）；无 pack 时省略。 */
+  packSource?: PackSource;
+  /** 激活功能的人读标题（feature.md frontmatter title）；未声明或无功能时省略，展示回退 featureId。 */
+  featureTitle?: string;
 }
 
 /** pack docs 正文按需读取（渐进披露的 pack_doc 内建工具后端）：只读当前激活 pack 的 docs/。 */
@@ -475,6 +506,29 @@ export interface FulfillmentCoordinatorPort {
   beginDelivery(intentId: string): Promise<SettleCardFulfillmentResult>;
   /** 站点回执闭环后回填库存终态；失败必须阻断后续自动处理。 */
   settle(input: SettleCardFulfillmentInput): Promise<SettleCardFulfillmentResult>;
+}
+
+// ---- UserConfigStore（L2 用户覆盖层存储端口，adr-014：事实源在服务端，换实现不换端口）----
+
+export interface UserConfigReadResult {
+  /** null = 该 subject 尚无 overlay。 */
+  overlay: UserOverlay | null;
+  /** overlay 内容 hash；空 overlay 亦有稳定 revision——compose 每回合定格该值，注入透明视图/审计/工具判定三方互证（R4）。 */
+  revision: string;
+}
+
+export interface UserConfigWriteResult {
+  revision: string;
+}
+
+/**
+ * L2 覆盖层读写端口（U1：出入参全 JSON 可序列化；U2：toolgate 不直接依赖本端口，
+ * 定格结果经端口入参传递封 TOCTOU）。restrictions/enabled 读失败语义 fail-closed（U7）由消费方承担。
+ */
+export interface UserConfigStore {
+  read(subject: UserConfigSubject): Promise<UserConfigReadResult>;
+  /** 前提：overlay 已过 validateUserOverlay 组合校验与只收紧校验（写入期拒绝低于 L1 的声明）。 */
+  write(subject: UserConfigSubject, overlay: UserOverlay): Promise<UserConfigWriteResult>;
 }
 
 // ---- LlmPort（④LLM 接入层：provider 白名单插拔，密钥托管在实现侧）----

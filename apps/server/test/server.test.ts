@@ -287,6 +287,19 @@ describe('上行帧校验（400/404/409 闭集）', () => {
     expect(res.status).toBe(400);
   });
 
+  it('契约内未启用上行帧（config-decision，P2.5-c 启用）→ 400 且文案如实', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const res = await postFrame(token, sessionId, {
+      type: 'config-decision',
+      sessionId,
+      draftId: 'd-01',
+      decision: 'accept',
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain('尚未启用');
+  });
+
   it('帧 sessionId 与路径不一致 → 400', async () => {
     const token = await signToken();
     const sessionId = await createSession(token);

@@ -24,6 +24,16 @@
           "version": {
             "type": "string",
             "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+          },
+          "source": {
+            "$comment": "pack 来源归属（adr-020）：official 平台维护 / community 第三方共享 / local 用户自建。仅展示归属（packs 页与注入视图来源徽章数据源），载入校验对三来源一律相同；签名/信任语义锚点=越出本仓分发时（adr-013:85）。缺省=official（本仓随部署 pack）。",
+            "type": "string",
+            "enum": ["official", "community", "local"]
+          },
+          "hash": {
+            "$comment": "pack 内容 sha256 指针（hex）：更新提示=hash 比对，回滚=改指针。装配端启用锚点=P3.5（打包分发时）。",
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
           }
         }
       }

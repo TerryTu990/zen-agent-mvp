@@ -13,9 +13,9 @@
       "minLength": 1
     },
     "type": {
-      "$comment": "事件类型闭集：session-start/session-end（会话）、assembly（装配）、tool-decision（门禁判定）、hitl-verdict（人审裁决）、tool-execution（执行结局）。",
+      "$comment": "事件类型闭集：session-start/session-end（会话）、assembly（装配）、tool-decision（门禁判定）、hitl-verdict（人审裁决）、tool-execution（执行结局）、user-config-write（L2 用户配置写入，adr-014）。",
       "type": "string",
-      "enum": ["session-start", "session-end", "assembly", "tool-decision", "hitl-verdict", "tool-execution"]
+      "enum": ["session-start", "session-end", "assembly", "tool-decision", "hitl-verdict", "tool-execution", "user-config-write"]
     },
     "ts": {
       "$comment": "事件时刻，ISO 8601 date-time。",
@@ -71,6 +71,10 @@
     {
       "if": { "properties": { "type": { "const": "tool-execution" } }, "required": ["type"] },
       "then": { "properties": { "data": { "$ref": "#/$defs/toolExecutionData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "user-config-write" } }, "required": ["type"] },
+      "then": { "properties": { "data": { "$ref": "#/$defs/userConfigWriteData" } } }
     }
   ],
   "$defs": {
@@ -116,6 +120,11 @@
         "rulesDigest": {
           "$comment": "注入规则块内容摘要（如 sha256 前缀），供不落全文地比对漂移。",
           "type": "string"
+        },
+        "userConfigRevision": {
+          "$comment": "本轮 compose 定格的 L2 overlay revision（内容 hash）：与 tool 决策事件及 user-config-write 事件同值互证（R4）；缺省=本轮无 subject（无 L2 参与）。",
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -132,6 +141,11 @@
         "reason": {
           "$comment": "deny/hitl 的判定依据说明（不含实参值与敏感信息）。",
           "type": "string"
+        },
+        "userConfigRevision": {
+          "$comment": "本轮判定所依据的 L2 定格 revision（内容 hash）：与 assembly 事件及 user-config-write 事件同值互证（R4）；缺省=本轮无 subject（无 L2 参与）。",
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -143,6 +157,33 @@
         "hitlId": { "type": "string", "minLength": 1 },
         "toolCallId": { "type": "string" },
         "decision": { "type": "string", "enum": ["approve", "reject"] }
+      }
+    },
+    "userConfigWriteData": {
+      "$comment": "L2 用户配置写入事件（adr-014 §5）：记录写后完整 overlay 快照（生产方按 SEC-01 脱敏后才落 sink）——任一 revision 内容可经审计流重建，满足事故回放。origin 闭集：teach=对话草稿经 config-decision 确认写入 / panel=配置中心面板结构化编辑。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "revision", "overlay", "origin"],
+      "properties": {
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tenant", "hostUserId"],
+          "properties": {
+            "tenant": { "type": "string", "minLength": 1 },
+            "hostUserId": { "type": "string", "minLength": 1 }
+          }
+        },
+        "revision": {
+          "$comment": "写后 overlay 内容 hash；后续 assembly/tool 决策事件的 userConfigRevision 与此互证（R4）。",
+          "type": "string",
+          "minLength": 1
+        },
+        "overlay": {
+          "$comment": "写后全量 overlay（user-overlay 契约结构，脱敏后）。结构权威在 user-overlay.schema.json（C7）：生产方落事件前 MUST 已过 validateUserOverlay——此处保持宽松 object 只为免跨文件 $ref，不构成第二套结构定义。",
+          "type": "object"
+        },
+        "origin": { "type": "string", "enum": ["teach", "panel"] }
       }
     },
     "toolExecutionData": {

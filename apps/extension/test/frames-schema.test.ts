@@ -54,6 +54,7 @@ const upstreamMirror: Record<UpstreamFrame['type'], true> = {
   'hitl-decision': true,
   'exec-result': true,
   'snapshot-report': true,
+  'config-decision': true,
 };
 
 const downstreamMirror: Record<DownstreamFrame['type'], true> = {
@@ -64,6 +65,7 @@ const downstreamMirror: Record<DownstreamFrame['type'], true> = {
   'exec-instruction': true,
   'guide-action': true,
   'snapshot-request': true,
+  'config-draft': true,
 };
 
 const capabilityMirror: Record<ClientCapability, true> = {
