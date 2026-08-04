@@ -1,0 +1,121 @@
+<!-- @dsCard name="讲解会话" subtitle="跨站点标签组会话 + 有据回答 + 拒答边界" group="侧边栏" viewport="380x780" -->
+<meta charset="utf-8">
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;
+  --brand-soft: #e6f2f1;
+  --auto: #16803c;  --auto-bg: #e8f5ec;
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;
+  --off:  #b91c1c;  --off-bg:  #fdeaea;
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.panel { width:380px; height:780px; background:var(--surface); display:flex; flex-direction:column; }
+
+.statusbar { display:flex; align-items:center; gap:6px; padding:10px 12px; border-bottom:1px solid var(--line); flex:none; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--brand); flex:none; }
+.brand-name { font-size:13px; font-weight:600; margin-right:2px; }
+.badge { font-size:11px; padding:2px 8px; border-radius:999px; line-height:1.4; white-space:nowrap; }
+.session-label { margin-left:auto; font-size:11px; color:var(--muted); white-space:nowrap; }
+.divider { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--muted); margin:2px 0; }
+.divider::before, .divider::after { content:""; flex:1; height:1px; background:var(--line); }
+.ctxbar {
+  flex:none; display:flex; align-items:center; gap:6px;
+  padding:6px 12px; border-top:1px solid var(--line);
+  background:var(--bg); font-size:11px; color:var(--ink-2); white-space:nowrap;
+}
+.ctxbar .badge-pack { background:var(--brand-soft); color:var(--brand); }
+.inject-link { margin-left:auto; font-size:11px; color:var(--muted); text-decoration:underline; text-underline-offset:2px; white-space:nowrap; }
+
+.chat { flex:1; overflow:hidden; padding:14px 12px; display:flex; flex-direction:column; gap:12px; background:var(--bg); }
+.msg { max-width:86%; padding:8px 12px; border-radius:var(--radius); font-size:13px; }
+.msg-user { align-self:flex-end; background:var(--brand); color:#fff; border-bottom-right-radius:4px; }
+.msg-agent { align-self:flex-start; background:var(--surface); border:1px solid var(--line); border-bottom-left-radius:4px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+.msg-agent ol { margin:4px 0 2px 18px; }
+.msg-agent li { margin-bottom:3px; }
+.msg-agent li b { font-weight:600; }
+.msg-agent li span { color:var(--ink-2); }
+.cite { margin-top:8px; padding:5px 8px; border-left:3px solid var(--brand); background:var(--brand-soft); border-radius:0 6px 6px 0; font-size:11px; color:var(--brand); line-height:1.5; }
+.msg-refuse { align-self:flex-start; background:var(--bg); border:1px dashed var(--line-strong); color:var(--ink-2); border-bottom-left-radius:4px; }
+.refuse-tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:999px; background:#eceef1; color:var(--muted); margin-bottom:4px; }
+.refuse-hint { font-size:11px; color:var(--muted); margin-top:4px; }
+.refuse-hint a { color:var(--brand); text-decoration:underline; text-underline-offset:2px; }
+
+.composer { flex:none; border-top:1px solid var(--line); padding:10px 12px 12px; background:var(--surface); }
+.chips { display:flex; gap:8px; margin-bottom:8px; }
+.chip { font-size:12px; padding:3px 12px; border-radius:999px; border:1px solid var(--line-strong); background:var(--surface); color:var(--ink-2); }
+.inputrow { display:flex; align-items:center; gap:8px; }
+.input { flex:1; border:1px solid var(--line-strong); border-radius:var(--radius-sm); padding:7px 12px; color:var(--muted); font-size:13px; background:var(--surface); }
+.send { width:32px; height:32px; border-radius:var(--radius-sm); background:var(--brand); color:#fff; display:flex; align-items:center; justify-content:center; font-size:14px; flex:none; }
+</style>
+<div class="panel">
+
+  <div class="statusbar">
+    <span class="dot"></span>
+    <span class="brand-name">Zen Agent</span>
+    <span class="session-label">标签组会话 · 3 个标签页 · 可跨站点</span>
+  </div>
+
+  <div class="chat">
+    <div class="msg msg-user">我的宝贝被下架了，会是什么原因？</div>
+
+    <div class="msg msg-agent">
+      根据闲鱼的违规下架规则，最常见的三类原因：
+      <ol>
+        <li><b>疑似全新转售</b><span>——描述含「全新未拆」且同款多件，会被判定为非闲置经营行为；</span></li>
+        <li><b>标题或描述含违禁词</b><span>——如「代购」「原单」「专柜小票齐全」等敏感词触发风控；</span></li>
+        <li><b>重复铺货</b><span>——同一商品多链接发布，系统会保留一条、下架其余。</span></li>
+      </ol>
+      <div class="cite">依据：闲鱼卖家 pack · 违规下架规则（12 条事实）</div>
+    </div>
+
+    <div class="msg msg-user">帮我看下我抖店的数据</div>
+
+    <div class="msg msg-refuse">
+      <span class="refuse-tag">超出知识范围</span><br>
+      当前站点包只覆盖闲鱼卖家功能，抖店不在我的知识范围内，我不猜测。
+      <div class="refuse-hint">你可以在<a>配置中心</a>安装对应站点包后再问我。</div>
+    </div>
+
+    <div class="divider">页面切换 · notion.so — 装配换出：pack Notion 助手</div>
+
+    <div class="msg msg-user">这个数据库怎么按状态分组？</div>
+
+    <div class="msg msg-agent">
+      表格右上角「⋯」→「分组」→ 选择「状态」属性即可，同一属性只能建一个分组。
+      <div class="cite">依据：Notion 助手 pack · 数据库操作</div>
+    </div>
+  </div>
+
+  <div class="ctxbar">
+    当前页面：Notion · 工作区
+    <span class="badge badge-pack">pack: Notion 助手</span>
+    <span class="inject-link">注入构成</span>
+  </div>
+
+  <div class="composer">
+    <div class="chips">
+      <span class="chip">讲解这个页面</span>
+      <span class="chip">在哪里操作</span>
+    </div>
+    <div class="inputrow">
+      <div class="input">继续提问…</div>
+      <div class="send">↑</div>
+    </div>
+  </div>
+
+</div>

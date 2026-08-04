@@ -1,0 +1,162 @@
+<!-- @dsCard name="配置中心 · 站点包" subtitle="pack 安装/来源/能力面/导入导出" group="配置中心" viewport="960x620" -->
+<meta charset="utf-8">
+<title>配置中心 · 站点包</title>
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;        /* 主色：禅青 */
+  --brand-soft: #e6f2f1;   /* 主色浅底 */
+  --auto: #16803c;  --auto-bg: #e8f5ec;    /* 风险档 auto */
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;    /* 风险档 hitl */
+  --off:  #b91c1c;  --off-bg:  #fdeaea;    /* forbidden / 已关闭 */
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* —— 配置中心通用布局（四张卡一致） —— */
+.app { display:flex; width:960px; height:620px; overflow:hidden; }
+.nav {
+  width:200px; flex-shrink:0; background:var(--surface);
+  border-right:1px solid var(--line); padding:20px 12px;
+}
+.nav .logo { font-size:16px; font-weight:700; color:var(--brand); padding:0 10px; }
+.nav .logo-sub { font-size:11px; color:var(--muted); padding:2px 10px 16px; }
+.nav-item {
+  padding:8px 10px; margin-bottom:4px; border-radius:var(--radius-sm);
+  color:var(--ink-2); font-size:13px;
+}
+.nav-item.active { background:var(--brand-soft); color:var(--brand); font-weight:600; }
+.main { flex:1; padding:20px 24px; overflow:auto; }
+.page-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.page-head h1 { font-size:15px; font-weight:600; }
+.head-actions { display:flex; gap:8px; }
+.btn {
+  display:inline-block; padding:6px 14px; border-radius:8px; font-size:13px;
+  background:var(--surface); color:var(--ink-2); border:1px solid var(--line-strong);
+}
+.btn-primary { background:var(--brand); color:#fff; border:1px solid var(--brand); }
+.notice {
+  background:var(--info-bg); color:var(--info); border-radius:var(--radius-sm);
+  padding:8px 12px; font-size:12px; margin-bottom:14px;
+}
+.badge {
+  display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px;
+  line-height:1.5; vertical-align:middle;
+}
+
+/* —— 本页：pack 列表 —— */
+.pack {
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:0 1px 2px rgba(0,0,0,.04); padding:14px 16px; margin-bottom:12px;
+}
+.pack-row { display:flex; align-items:center; gap:10px; }
+.pack-name { font-size:13px; font-weight:600; }
+.pack-ver { font-size:12px; color:var(--muted); }
+.badge-official { background:var(--brand-soft); color:var(--brand); }
+.badge-community { background:var(--info-bg); color:var(--info); }
+.badge-self { background:var(--bg); color:var(--ink-2); border:1px solid var(--line-strong); }
+.badge-verified { background:var(--auto-bg); color:var(--auto); }
+.pack-domain { font-size:12px; color:var(--ink-2); }
+.pack-domain::before { content:"域 "; color:var(--muted); }
+.caps { display:flex; gap:4px; margin-left:auto; }
+.cap { font-size:11px; padding:2px 8px; border-radius:999px; background:var(--bg); color:var(--ink-2); border:1px solid var(--line); }
+.update-hint { font-size:12px; color:var(--info); margin-left:2px; }
+.switch { width:34px; height:19px; border-radius:999px; background:var(--brand); position:relative; flex-shrink:0; }
+.switch::after { content:""; position:absolute; top:2px; right:2px; width:15px; height:15px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.15); }
+.switch.off { background:var(--line-strong); }
+.switch.off::after { left:2px; right:auto; }
+.pack-sub { display:flex; align-items:center; margin-top:6px; }
+.pack-desc { font-size:12px; color:var(--muted); }
+.pack-ops { margin-left:auto; display:flex; gap:12px; font-size:12px; }
+.pack-ops span { color:var(--ink-2); }
+.pack-ops .danger { color:var(--off); }
+</style>
+
+<div class="app">
+  <div class="nav">
+    <div class="logo">Zen Agent</div>
+    <div class="logo-sub">配置中心</div>
+    <div class="nav-item active">站点包</div>
+    <div class="nav-item">个人定制</div>
+    <div class="nav-item">自动化</div>
+    <div class="nav-item">全局设置</div>
+  </div>
+
+  <div class="main">
+    <div class="page-head">
+      <h1>站点包</h1>
+      <div class="head-actions">
+        <span class="btn">从文件导入</span>
+        <span class="btn btn-primary">浏览社区包</span>
+      </div>
+    </div>
+
+    <div class="notice">pack 是纯数据（prompt/markdown/JSON），不含可执行代码，可审计、可导出。</div>
+
+    <div class="pack">
+      <div class="pack-row">
+        <span class="pack-name">闲鱼卖家</span>
+        <span class="pack-ver">v1.4.2</span>
+        <span class="badge badge-official">官方</span>
+        <span class="pack-domain">goofish.com</span>
+        <span class="update-hint">有更新 v1.5.0</span>
+        <div class="caps">
+          <span class="cap">讲解</span><span class="cap">引导</span><span class="cap">代执行</span><span class="cap">自动化</span>
+        </div>
+        <span class="switch"></span>
+      </div>
+      <div class="pack-sub">
+        <span class="pack-desc">面向闲鱼卖家：解读订单状态、引导发货流程，可代查订单与填写发货单号。</span>
+        <div class="pack-ops"><span>详情</span><span>导出</span><span class="danger">卸载</span></div>
+      </div>
+    </div>
+
+    <div class="pack">
+      <div class="pack-row">
+        <span class="pack-name">Notion 助手</span>
+        <span class="pack-ver">v0.9.1</span>
+        <span class="badge badge-community">社区</span>
+        <span class="badge badge-verified">纯数据已校验</span>
+        <span class="pack-domain">notion.so</span>
+        <div class="caps">
+          <span class="cap">讲解</span><span class="cap">引导</span>
+        </div>
+        <span class="switch"></span>
+      </div>
+      <div class="pack-sub">
+        <span class="pack-desc">讲解 Notion 数据库/公式等概念，指位引导常用操作，不代替你动手。</span>
+        <div class="pack-ops"><span>详情</span><span>导出</span><span class="danger">卸载</span></div>
+      </div>
+    </div>
+
+    <div class="pack">
+      <div class="pack-row">
+        <span class="pack-name">公司 CRM</span>
+        <span class="pack-ver">v0.2</span>
+        <span class="badge badge-self">自建</span>
+        <span class="pack-domain">crm.internal.example</span>
+        <div class="caps">
+          <span class="cap">讲解</span>
+        </div>
+        <span class="switch off"></span>
+      </div>
+      <div class="pack-sub">
+        <span class="pack-desc">内部 CRM 字段与流程讲解，团队自建维护中，暂未开放引导与代执行。</span>
+        <div class="pack-ops"><span>详情</span><span>导出</span><span class="danger">卸载</span></div>
+      </div>
+    </div>
+  </div>
+</div>

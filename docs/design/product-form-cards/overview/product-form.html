@@ -1,0 +1,172 @@
+<!-- @dsCard name="产品形态总览" subtitle="信任阶梯 × 配置四层 × 差异化三件套" group="概览" viewport="960x620" -->
+<meta charset="utf-8">
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;
+  --brand-soft: #e6f2f1;
+  --auto: #16803c;  --auto-bg: #e8f5ec;
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;
+  --off:  #b91c1c;  --off-bg:  #fdeaea;
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.page { width:960px; height:620px; padding:20px 24px; display:flex; flex-direction:column; gap:14px; }
+.hero { display:flex; align-items:center; gap:12px; }
+.logo { width:30px; height:30px; border-radius:9px; background:var(--brand); color:#fff; font-size:15px; font-weight:600; display:flex; align-items:center; justify-content:center; flex:none; }
+.hero h1 { font-size:17px; font-weight:600; letter-spacing:.2px; }
+.hero .tagline { font-size:13px; color:var(--ink-2); }
+.hero .tagline b { color:var(--brand); font-weight:600; }
+
+.main { flex:1; display:flex; gap:14px; min-height:0; }
+.col { flex:1; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:0 1px 2px rgba(0,0,0,.04); padding:14px 16px; display:flex; flex-direction:column; }
+.col-title { font-size:13px; font-weight:600; display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.col-title .sub { font-weight:400; font-size:12px; color:var(--muted); }
+
+/* 左：信任阶梯 */
+.ladder { flex:1; display:flex; flex-direction:column; justify-content:space-between; padding-top:6px; }
+.step { display:flex; gap:10px; position:relative; padding-bottom:12px; }
+.step:not(:last-child)::before { content:""; position:absolute; left:12px; top:26px; bottom:-2px; width:2px; background:var(--line); }
+.step-dot { width:25px; height:25px; border-radius:50%; background:var(--brand-soft); color:var(--brand); font-size:11px; font-weight:600; display:flex; align-items:center; justify-content:center; flex:none; border:1px solid var(--brand); position:relative; z-index:1; }
+.step:nth-child(1) .step-dot { background:var(--brand); color:#fff; }
+.step-body { flex:1; }
+.step-head { display:flex; align-items:center; gap:8px; }
+.step-name { font-size:13px; font-weight:600; }
+.chip { font-size:11px; padding:1px 8px; border-radius:999px; line-height:1.5; }
+.chip-look { background:var(--brand-soft); color:var(--brand); }
+.chip-auto { background:var(--auto-bg); color:var(--auto); }
+.chip-hitl { background:var(--hitl-bg); color:var(--hitl); }
+.chip-info { background:var(--info-bg); color:var(--info); }
+.step-cap { font-size:12px; color:var(--ink-2); margin-top:2px; }
+.step-gov { font-size:12px; color:var(--muted); margin-top:1px; display:flex; gap:5px; }
+.step-gov .g { color:var(--hitl); flex:none; }
+
+/* 右：配置四层 */
+.stack { flex:1; display:flex; flex-direction:column-reverse; gap:8px; padding-top:6px; }
+.layer { flex:1; border:1px solid var(--line); border-radius:var(--radius-sm); padding:8px 12px; background:var(--surface); display:flex; flex-direction:column; justify-content:center; }
+.layer-head { display:flex; align-items:center; gap:8px; }
+.layer-tag { font-size:11px; font-weight:600; padding:1px 7px; border-radius:5px; background:var(--brand-soft); color:var(--brand); flex:none; }
+.layer-name { font-size:13px; font-weight:600; }
+.layer-note { font-size:11px; color:var(--muted); margin-left:auto; }
+.layer-items { display:flex; flex-wrap:wrap; gap:6px; margin-top:5px; }
+.item { font-size:11px; padding:1px 8px; border-radius:999px; background:var(--bg); border:1px solid var(--line); color:var(--ink-2); }
+.layer-l0 { background:var(--bg); border-color:var(--line-strong); }
+.layer-l0 .layer-tag { background:#e5e7eb; color:var(--ink-2); }
+.layer-l0 .layer-note { color:var(--ink-2); font-weight:600; }
+.layer-l2 .layer-note { color:var(--hitl); }
+
+/* 底部三件套 */
+.diff { display:flex; gap:14px; }
+.diff-card { flex:1; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:0 1px 2px rgba(0,0,0,.04); padding:10px 14px; display:flex; gap:10px; align-items:flex-start; }
+.diff-ico { width:26px; height:26px; border-radius:8px; background:var(--brand-soft); color:var(--brand); display:flex; align-items:center; justify-content:center; font-size:13px; flex:none; margin-top:2px; }
+.diff-t { font-size:13px; font-weight:600; }
+.diff-d { font-size:11px; color:var(--muted); line-height:1.5; margin-top:1px; }
+</style>
+<div class="page">
+
+  <div class="hero">
+    <div class="logo">禅</div>
+    <h1>Zen Agent</h1>
+    <div class="tagline">可被你塑形的浏览器 agent —— <b>站点级知识</b> · <b>可托付的代执行</b> · <b>配置归你所有</b></div>
+  </div>
+
+  <div class="main">
+    <div class="col">
+      <div class="col-title">信任阶梯 <span class="sub">能力逐档开放，治理逐档收严</span></div>
+      <div class="ladder">
+        <div class="step">
+          <div class="step-dot">看</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-name">讲解</span><span class="chip chip-look">默认开启</span></div>
+            <div class="step-cap">基于站点包知识，讲清「这个页面 / 规则是什么、为什么」。</div>
+            <div class="step-gov"><span class="g">治</span>只答 pack 覆盖范围，答案带依据引用；超范围直接拒答、不猜测。</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-dot">指</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-name">引导</span><span class="chip chip-look">默认开启</span></div>
+            <div class="step-cap">在当前页面高亮定位目标元素，一步步指给你看。</div>
+            <div class="step-gov"><span class="g">治</span>锚点失配时如实降级为文字指引，绝不假装定位成功。</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-dot">做</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-name">代执行</span><span class="chip chip-hitl">需确认</span></div>
+            <div class="step-cap">代你调用站点 API 完成改价、回复、发货等操作。</div>
+            <div class="step-gov"><span class="g">治</span>每次执行先经确认卡片；指令一次性签名、服务端判定、留审计。</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-dot">托</div>
+          <div class="step-body">
+            <div class="step-head"><span class="step-name">自动化</span><span class="chip chip-info">按任务授权</span></div>
+            <div class="step-cap">按你定义的触发条件托管运行例行任务（如每日订单汇总）。</div>
+            <div class="step-gov"><span class="g">治</span>禁自动执行不可撤销写操作；每次运行留痕、随时可停。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="col-title">配置四层 <span class="sub">自下而上：基座之上，一切归你</span></div>
+      <div class="stack">
+        <div class="layer layer-l0">
+          <div class="layer-head"><span class="layer-tag">L0</span><span class="layer-name">平台基座</span><span class="layer-note">🔒 不可改</span></div>
+          <div class="layer-items"><span class="item">一次性签名指令</span><span class="item">服务端风险判定</span><span class="item">全程审计留痕</span></div>
+        </div>
+        <div class="layer">
+          <div class="layer-head"><span class="layer-tag">L1</span><span class="layer-name">站点包 pack</span><span class="layer-note">安装 / 导入 / 自建</span></div>
+          <div class="layer-items"><span class="item">闲鱼卖家 · 官方</span><span class="item">Notion · 社区</span><span class="item">公司 CRM · 自建</span></div>
+        </div>
+        <div class="layer layer-l2">
+          <div class="layer-head"><span class="layer-tag">L2</span><span class="layer-name">个人定制</span><span class="layer-note">只能收紧，不能放宽</span></div>
+          <div class="layer-items"><span class="item">批量改价：auto → 需确认</span><span class="item">站点授权仅 goofish.com</span></div>
+        </div>
+        <div class="layer">
+          <div class="layer-head"><span class="layer-tag">L3</span><span class="layer-name">自动化</span><span class="layer-note">你定义的托管任务</span></div>
+          <div class="layer-items"><span class="item">每晚 21:00 汇总待发货订单</span><span class="item">新差评即时提醒</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="diff">
+    <div class="diff-card">
+      <div class="diff-ico">识</div>
+      <div>
+        <div class="diff-t">站点级知识 harness</div>
+        <div class="diff-d">pack 装入站点规则与事实，答案有据可查，超范围即拒答。</div>
+      </div>
+    </div>
+    <div class="diff-card">
+      <div class="diff-ico">托</div>
+      <div>
+        <div class="diff-t">可托付的执行治理</div>
+        <div class="diff-d">确认卡片 + 一次性签名 + 服务端判定，做事前先过你这一关。</div>
+      </div>
+    </div>
+    <div class="diff-card">
+      <div class="diff-ico">权</div>
+      <div>
+        <div class="diff-t">中立与所有权</div>
+        <div class="diff-d">BYOK 自带密钥，配置可导出带走——agent 归你，不归平台。</div>
+      </div>
+    </div>
+  </div>
+
+</div>

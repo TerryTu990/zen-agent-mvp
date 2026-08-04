@@ -1,0 +1,160 @@
+<!-- @dsCard name="对话沉淀规则（teach）" subtitle="对话→规则草稿→显式确认入库" group="侧边栏" viewport="380x620" -->
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;        /* 主色：禅青 */
+  --brand-soft: #e6f2f1;   /* 主色浅底 */
+  --auto: #16803c;  --auto-bg: #e8f5ec;    /* 风险档 auto */
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;    /* 风险档 hitl */
+  --off:  #b91c1c;  --off-bg:  #fdeaea;    /* forbidden / 已关闭 */
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  width:380px;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.topbar {
+  display:flex; align-items:center; gap:8px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .logo {
+  width:22px; height:22px; border-radius:6px;
+  background: var(--brand); color:#fff;
+  font-size:12px; font-weight:600;
+  display:flex; align-items:center; justify-content:center;
+}
+.topbar .title { font-size:15px; font-weight:600; }
+.topbar .site { margin-left:auto; font-size:12px; color:var(--muted); }
+
+.stream { padding: 12px 14px 16px; display:flex; flex-direction:column; gap:12px; }
+
+.msg-user {
+  align-self:flex-end; max-width: 84%;
+  background: var(--brand-soft);
+  border-radius: var(--radius); border-top-right-radius: 4px;
+  padding: 8px 12px;
+}
+.msg-agent {
+  align-self:flex-start; max-width: 88%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius); border-top-left-radius: 4px;
+  padding: 8px 12px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+}
+
+.draft-card {
+  background: var(--surface);
+  border: 1px solid var(--brand);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  overflow:hidden;
+}
+.draft-head {
+  display:flex; align-items:center; gap:8px;
+  padding: 10px 14px;
+  background: var(--brand-soft);
+  border-bottom: 1px solid var(--line);
+}
+.draft-head .h { font-size:13px; font-weight:600; }
+.badge {
+  font-size:11px; padding:2px 8px; border-radius:999px; white-space:nowrap;
+}
+.badge-draft { color: var(--brand); background:#fff; border:1px solid var(--brand); }
+.draft-body { padding: 12px 14px; }
+
+.rule-preview {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.rule-preview .scope {
+  display:flex; align-items:center; gap:6px;
+  font-size:12px; color: var(--muted);
+  margin-bottom: 6px;
+}
+.rule-preview .scope b { color: var(--ink-2); font-weight:600; }
+.rule-preview .text { font-size:13px; }
+
+.loc-row {
+  display:flex; align-items:center; gap:6px;
+  font-size:12px; color: var(--ink-2);
+  margin-bottom: 12px;
+}
+.loc-row .crumb { color: var(--muted); }
+.loc-row .crumb b { color: var(--ink-2); font-weight:600; }
+
+.draft-actions { display:flex; gap:8px; margin-bottom: 10px; }
+.btn {
+  font-size:13px; border-radius:8px; padding:6px 14px;
+  cursor:pointer; border:1px solid transparent; font-family:inherit;
+}
+.btn-primary { background: var(--brand); color:#fff; }
+.btn-secondary { background:#fff; color: var(--ink); border:1px solid var(--line-strong); }
+
+.gov-note {
+  font-size:11px; color: var(--muted);
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.msg-agent .ok { color: var(--auto); font-weight:600; }
+.time { font-size:11px; color: var(--muted); align-self:center; }
+</style>
+
+<div class="topbar">
+  <div class="logo">禅</div>
+  <div class="title">Zen Agent</div>
+  <div class="site">标签组会话 · 可跨站点</div>
+</div>
+
+<div class="stream">
+  <div class="time">今天 15:02</div>
+
+  <div class="msg-user">以后买家问能不能刀，统一回复：满 50 包邮，不讲价</div>
+
+  <div class="msg-agent">明白。要把它保存为你的个人规则吗？保存后每次会话自动生效。</div>
+
+  <div class="draft-card">
+    <div class="draft-head">
+      <span class="h">保存为个人规则？</span>
+      <span class="badge badge-draft">规则草稿</span>
+    </div>
+    <div class="draft-body">
+      <div class="rule-preview">
+        <div class="scope">适用&nbsp;<b>闲鱼 · 回复买家</b></div>
+        <div class="text">买家议价时统一回复：满 50 包邮，不讲价</div>
+      </div>
+
+      <div class="loc-row">
+        <span>📁</span>
+        <span class="crumb">配置中心 → 个人定制 → <b>我的规则</b></span>
+      </div>
+
+      <div class="draft-actions">
+        <button class="btn btn-primary">保存规则</button>
+        <button class="btn btn-secondary">仅本次会话生效</button>
+      </div>
+
+      <div class="gov-note">对话不会直接修改你的配置——所有沉淀都需要你在这里确认。</div>
+    </div>
+  </div>
+
+  <div class="msg-agent">已保存 <span class="ok">✓</span> 你可以随时在配置中心修改或删除。</div>
+</div>

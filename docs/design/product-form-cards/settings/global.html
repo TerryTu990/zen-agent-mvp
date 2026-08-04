@@ -1,0 +1,193 @@
+<!-- @dsCard name="配置中心 · 全局设置" subtitle="站点授权 / 模型与密钥 BYOK / 数据披露 / 平台底线" group="配置中心" viewport="960x620" -->
+<meta charset="utf-8">
+<title>配置中心 · 全局设置</title>
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;        /* 主色：禅青 */
+  --brand-soft: #e6f2f1;   /* 主色浅底 */
+  --auto: #16803c;  --auto-bg: #e8f5ec;    /* 风险档 auto */
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;    /* 风险档 hitl */
+  --off:  #b91c1c;  --off-bg:  #fdeaea;    /* forbidden / 已关闭 */
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* —— 配置中心通用布局（四张卡一致） —— */
+.app { display:flex; width:960px; height:620px; overflow:hidden; }
+.nav {
+  width:200px; flex-shrink:0; background:var(--surface);
+  border-right:1px solid var(--line); padding:20px 12px;
+}
+.nav .logo { font-size:16px; font-weight:700; color:var(--brand); padding:0 10px; }
+.nav .logo-sub { font-size:11px; color:var(--muted); padding:2px 10px 16px; }
+.nav-item {
+  padding:8px 10px; margin-bottom:4px; border-radius:var(--radius-sm);
+  color:var(--ink-2); font-size:13px;
+}
+.nav-item.active { background:var(--brand-soft); color:var(--brand); font-weight:600; }
+.main { flex:1; padding:20px 24px; overflow:auto; }
+.page-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.page-head h1 { font-size:15px; font-weight:600; }
+.badge {
+  display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px;
+  line-height:1.5; vertical-align:middle;
+}
+
+/* —— 本页：四分区 —— */
+.section {
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:0 1px 2px rgba(0,0,0,.04); padding:12px 16px; margin-bottom:12px;
+}
+.section h2 { font-size:13px; font-weight:600; margin-bottom:6px; }
+
+.site-row { display:flex; align-items:center; gap:10px; padding:7px 0; border-top:1px solid var(--line); }
+.site-row:first-of-type { border-top:none; }
+.site-domain { font-weight:500; width:180px; }
+.badge-full { background:var(--brand-soft); color:var(--brand); }
+.badge-partial { background:var(--info-bg); color:var(--info); }
+.site-row.dim { color:var(--muted); }
+.site-row.dim .site-domain { font-weight:400; color:var(--muted); width:auto; }
+.site-link { margin-left:auto; font-size:12px; color:var(--brand); }
+
+.model-cards { display:flex; gap:10px; }
+.model-card {
+  flex:1; border:1px solid var(--line-strong); border-radius:var(--radius-sm);
+  padding:10px 12px; display:flex; gap:8px; align-items:flex-start;
+}
+.model-card.on { border-color:var(--brand); background:var(--brand-soft); }
+.radio {
+  display:inline-block; width:15px; height:15px; border-radius:50%;
+  border:1.5px solid var(--line-strong); background:var(--surface); flex-shrink:0; margin-top:3px;
+}
+.radio.on { border:4.5px solid var(--brand); }
+.model-title { font-weight:600; font-size:13px; }
+.model-desc { font-size:12px; color:var(--ink-2); }
+.byok-form { display:flex; gap:8px; margin-top:6px; }
+.select {
+  display:inline-flex; align-items:center; gap:16px; padding:3px 10px; font-size:12px;
+  border:1px solid var(--line-strong); border-radius:var(--radius-sm); background:var(--surface); color:var(--ink);
+}
+.select::after { content:"▾"; color:var(--muted); font-size:10px; }
+.key-input {
+  flex:1; padding:3px 10px; font-size:12px; letter-spacing:2px;
+  border:1px solid var(--line-strong); border-radius:var(--radius-sm); background:var(--surface); color:var(--ink-2);
+}
+.model-note { font-size:11px; color:var(--muted); margin-top:5px; }
+
+.data-row { display:flex; align-items:center; gap:10px; padding:7px 0; border-top:1px solid var(--line); }
+.data-row:first-of-type { border-top:none; }
+.data-label { color:var(--ink-2); }
+.data-set { margin-left:auto; display:flex; align-items:center; gap:8px; }
+
+.section.locked { background:var(--bg); }
+.lock-row { display:flex; align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--line); color:var(--muted); }
+.lock-row:first-of-type { border-top:none; }
+.lock-icon { font-size:12px; }
+.lock-name { color:var(--ink-2); }
+.lock-tag { margin-left:auto; font-size:11px; color:var(--muted); }
+.lock-note { font-size:11px; color:var(--muted); margin-top:6px; }
+</style>
+
+<div class="app">
+  <div class="nav">
+    <div class="logo">Zen Agent</div>
+    <div class="logo-sub">配置中心</div>
+    <div class="nav-item">站点包</div>
+    <div class="nav-item">个人定制</div>
+    <div class="nav-item">自动化</div>
+    <div class="nav-item active">全局设置</div>
+  </div>
+
+  <div class="main">
+    <div class="page-head">
+      <h1>全局设置</h1>
+    </div>
+
+    <div class="section">
+      <h2>站点授权</h2>
+      <div class="site-row">
+        <span class="site-domain">goofish.com</span>
+        <span class="badge badge-full">完整能力</span>
+        <span class="site-link">管理</span>
+      </div>
+      <div class="site-row">
+        <span class="site-domain">notion.so</span>
+        <span class="badge badge-partial">仅讲解 + 引导</span>
+        <span class="site-link">管理</span>
+      </div>
+      <div class="site-row dim">
+        <span class="site-domain">其他站点：默认不注入，可手动开启</span>
+        <span class="site-link">添加站点</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>模型与密钥</h2>
+      <div class="model-cards">
+        <div class="model-card on">
+          <span class="radio on"></span>
+          <div>
+            <div class="model-title">托管模式（默认）</div>
+            <div class="model-desc">开箱即用 · 按用量计费</div>
+          </div>
+        </div>
+        <div class="model-card">
+          <span class="radio"></span>
+          <div style="flex:1">
+            <div class="model-title">自带密钥 BYOK</div>
+            <div class="byok-form">
+              <span class="select">Anthropic</span>
+              <span class="key-input">••••••••</span>
+            </div>
+            <div class="model-note">可选 Anthropic / OpenAI / 自定义端点 · 密钥仅保存在本机，不上传</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>数据披露</h2>
+      <div class="data-row">
+        <span class="data-label">会话内容与页面上下文将发送至所选模型服务商</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">审计日志本地保留</span>
+        <div class="data-set"><span class="select">30 天</span></div>
+      </div>
+    </div>
+
+    <div class="section locked">
+      <h2>平台底线</h2>
+      <div class="lock-row">
+        <span class="lock-icon">🔒</span>
+        <span class="lock-name">服务端安全判定</span>
+        <span class="lock-tag">始终开启</span>
+      </div>
+      <div class="lock-row">
+        <span class="lock-icon">🔒</span>
+        <span class="lock-name">代执行一次性签名</span>
+        <span class="lock-tag">始终开启</span>
+      </div>
+      <div class="lock-row">
+        <span class="lock-icon">🔒</span>
+        <span class="lock-name">审计留痕</span>
+        <span class="lock-tag">始终开启</span>
+      </div>
+      <div class="lock-note">Zen Agent 的底线能力，任何配置不可关闭。</div>
+    </div>
+  </div>
+</div>

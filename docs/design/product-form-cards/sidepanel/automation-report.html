@@ -1,0 +1,166 @@
+<!-- @dsCard name="自动化任务报告" subtitle="托管任务运行 + 需确认项收口到人" group="侧边栏" viewport="380x620" -->
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;        /* 主色：禅青 */
+  --brand-soft: #e6f2f1;   /* 主色浅底 */
+  --auto: #16803c;  --auto-bg: #e8f5ec;    /* 风险档 auto */
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;    /* 风险档 hitl */
+  --off:  #b91c1c;  --off-bg:  #fdeaea;    /* forbidden / 已关闭 */
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  width:380px;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  display:flex; flex-direction:column; min-height:620px;
+}
+
+.topbar {
+  display:flex; align-items:center; gap:8px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .logo {
+  width:22px; height:22px; border-radius:6px;
+  background: var(--brand); color:#fff;
+  font-size:12px; font-weight:600;
+  display:flex; align-items:center; justify-content:center;
+}
+.topbar .title { font-size:15px; font-weight:600; }
+.topbar .site { margin-left:auto; font-size:12px; color:var(--muted); }
+
+.content { padding: 12px 14px; display:flex; flex-direction:column; gap:12px; flex:1; }
+
+.task-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  padding: 12px 14px;
+}
+.task-head { display:flex; align-items:center; gap:8px; }
+.task-head .icon {
+  width:28px; height:28px; border-radius:8px; flex:none;
+  background: var(--brand-soft);
+  display:flex; align-items:center; justify-content:center;
+  font-size:14px;
+}
+.task-head .name { font-size:13px; font-weight:600; }
+.task-head .kind { font-size:12px; color: var(--muted); }
+.badge {
+  font-size:11px; padding:2px 8px; border-radius:999px; white-space:nowrap;
+}
+.badge-running { color: var(--auto); background: var(--auto-bg); }
+.task-meta {
+  display:flex; align-items:center; gap:6px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size:12px; color: var(--muted);
+}
+.task-meta a { margin-left:auto; color: var(--brand); text-decoration:none; }
+
+.time { font-size:11px; color: var(--muted); align-self:center; }
+
+.report-card {
+  align-self:flex-start; max-width: 94%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius); border-top-left-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  padding: 12px 14px;
+}
+.report-title { font-size:13px; font-weight:600; margin-bottom:6px; }
+.report-line { display:flex; align-items:flex-start; gap:7px; margin-bottom:4px; }
+.dot { width:8px; height:8px; border-radius:50%; margin-top:6px; flex:none; }
+.dot-ok { background: var(--auto); }
+.dot-attn { background: var(--hitl); }
+.report-line .sub { font-size:12px; color: var(--muted); }
+
+.attn-bar {
+  display:flex; align-items:center; gap:8px;
+  margin-top: 10px;
+  background: var(--hitl-bg);
+  border: 1px solid #f0dcbb;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.attn-bar .txt { font-size:12px; color: var(--hitl); font-weight:600; }
+.btn {
+  font-size:13px; border-radius:8px; padding:6px 14px;
+  cursor:pointer; border:1px solid transparent; font-family:inherit;
+}
+.btn-primary { background: var(--brand); color:#fff; margin-left:auto; }
+
+.floor-note {
+  margin-top:auto;
+  background: var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size:11px; color: var(--ink-2);
+  display:flex; align-items:flex-start; gap:6px;
+}
+</style>
+
+<div class="topbar">
+  <div class="logo">禅</div>
+  <div class="title">Zen Agent</div>
+  <div class="site">标签组会话 · 可跨站点</div>
+</div>
+
+<div class="content">
+  <div class="task-card">
+    <div class="task-head">
+      <div class="icon">⏱</div>
+      <div>
+        <div class="name">待发货扫描</div>
+        <div class="kind">周期任务 · 闲鱼（站点包预置）</div>
+      </div>
+      <span class="badge badge-running" style="margin-left:auto;">运行中</span>
+    </div>
+    <div class="task-meta">
+      <span>每 30 分钟 · 今日已运行 14 次</span>
+      <a href="#">暂停</a>
+    </div>
+  </div>
+
+  <div class="time">12:30</div>
+
+  <div class="report-card">
+    <div class="report-title">本次扫描发现 3 个新订单</div>
+    <div class="report-line">
+      <span class="dot dot-ok"></span>
+      <span>2 个符合自动处理规则，已完成<br>
+        <span class="sub">订单尾号 6621 · 已确认库存并标记待打包<br>订单尾号 7048 · 已确认库存并标记待打包</span>
+      </span>
+    </div>
+    <div class="report-line">
+      <span class="dot dot-attn"></span>
+      <span>1 个金额异常（¥1,280，高于常规区间），需人工确认<br>
+        <span class="sub">订单尾号 9155 · 未做任何处理</span>
+      </span>
+    </div>
+
+    <div class="attn-bar">
+      <span>🔔</span>
+      <span class="txt">1 件待你确认</span>
+      <button class="btn btn-primary">查看</button>
+    </div>
+  </div>
+
+  <div class="floor-note">
+    <span>🛡</span>
+    <span>无人值守任务不会自动执行不可撤销的写操作（平台底线）。</span>
+  </div>
+</div>

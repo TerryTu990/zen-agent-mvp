@@ -1,0 +1,193 @@
+<!-- @dsCard name="配置中心 · 自动化" subtitle="按站点分组的触发器 + 来源归属 + 通用监测兜底" group="配置中心" viewport="960x680" -->
+<meta charset="utf-8">
+<title>配置中心 · 自动化</title>
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;        /* 主色：禅青 */
+  --brand-soft: #e6f2f1;   /* 主色浅底 */
+  --auto: #16803c;  --auto-bg: #e8f5ec;    /* 风险档 auto */
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;    /* 风险档 hitl */
+  --off:  #b91c1c;  --off-bg:  #fdeaea;    /* forbidden / 已关闭 */
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* —— 配置中心通用布局（四张卡一致） —— */
+.app { display:flex; width:960px; height:680px; overflow:hidden; }
+.nav {
+  width:200px; flex-shrink:0; background:var(--surface);
+  border-right:1px solid var(--line); padding:20px 12px;
+}
+.nav .logo { font-size:16px; font-weight:700; color:var(--brand); padding:0 10px; }
+.nav .logo-sub { font-size:11px; color:var(--muted); padding:2px 10px 16px; }
+.nav-item {
+  padding:8px 10px; margin-bottom:4px; border-radius:var(--radius-sm);
+  color:var(--ink-2); font-size:13px;
+}
+.nav-item.active { background:var(--brand-soft); color:var(--brand); font-weight:600; }
+.main { flex:1; padding:20px 24px; overflow:auto; }
+.page-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.page-head h1 { font-size:15px; font-weight:600; }
+.btn {
+  display:inline-block; padding:6px 14px; border-radius:8px; font-size:13px;
+  background:var(--surface); color:var(--ink-2); border:1px solid var(--line-strong);
+}
+.btn-primary { background:var(--brand); color:#fff; border:1px solid var(--brand); }
+.badge {
+  display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px;
+  line-height:1.5; vertical-align:middle;
+}
+
+/* —— 本页：治理条 + 触发器卡 + 运行历史 —— */
+.notice-warn {
+  background:var(--hitl-bg); color:var(--hitl); border-radius:var(--radius-sm);
+  padding:8px 12px; font-size:12px; margin-bottom:8px;
+}
+.notice-info {
+  background:var(--info-bg); color:var(--info); border-radius:var(--radius-sm);
+  padding:8px 12px; font-size:12px; margin-bottom:14px;
+}
+.site-group {
+  display:flex; align-items:center; gap:8px;
+  font-size:12px; font-weight:600; color:var(--muted);
+  margin:12px 0 8px;
+}
+.site-group .sep { flex:1; height:1px; background:var(--line); }
+.badge-source { background:var(--bg); color:var(--muted); border:1px solid var(--line); }
+.badge-read { background:var(--auto-bg); color:var(--auto); }
+.trigger {
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:0 1px 2px rgba(0,0,0,.04); padding:14px 16px; margin-bottom:12px;
+}
+.trigger-row { display:flex; align-items:center; gap:10px; }
+.trigger-name { font-size:13px; font-weight:600; }
+.meta { font-size:12px; color:var(--ink-2); }
+.meta b { font-weight:500; color:var(--muted); }
+.badge-kind { background:var(--brand-soft); color:var(--brand); }
+.badge-throttle { background:var(--bg); color:var(--ink-2); border:1px solid var(--line); }
+.badge-hitl { background:var(--hitl-bg); color:var(--hitl); }
+.status { display:flex; align-items:center; gap:5px; font-size:12px; margin-left:auto; }
+.dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+.status.run { color:var(--auto); }  .status.run .dot { background:var(--auto); }
+.status.pause { color:var(--muted); } .status.pause .dot { background:var(--line-strong); }
+.switch { width:34px; height:19px; border-radius:999px; background:var(--brand); position:relative; flex-shrink:0; }
+.switch::after { content:""; position:absolute; top:2px; right:2px; width:15px; height:15px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.15); }
+.switch.off { background:var(--line-strong); }
+.switch.off::after { left:2px; right:auto; }
+.trigger-sub { display:flex; align-items:center; margin-top:6px; }
+.run-note { font-size:12px; color:var(--muted); }
+.trigger-ops { margin-left:auto; display:flex; gap:12px; font-size:12px; }
+.trigger-ops span { color:var(--ink-2); }
+
+.history {
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:0 1px 2px rgba(0,0,0,.04); padding:14px 16px; margin-top:4px;
+}
+.history h2 { font-size:13px; font-weight:600; margin-bottom:6px; }
+table { width:100%; border-collapse:collapse; }
+th { font-size:12px; color:var(--muted); font-weight:500; text-align:left; padding:5px 8px; border-bottom:1px solid var(--line); }
+td { padding:6px 8px; border-bottom:1px solid var(--line); font-size:12px; color:var(--ink-2); }
+tr:last-child td { border-bottom:none; }
+td.time { color:var(--muted); width:80px; }
+td.task { width:160px; color:var(--ink); }
+.result-hitl { color:var(--hitl); }
+</style>
+
+<div class="app">
+  <div class="nav">
+    <div class="logo">Zen Agent</div>
+    <div class="logo-sub">配置中心</div>
+    <div class="nav-item">站点包</div>
+    <div class="nav-item">个人定制</div>
+    <div class="nav-item active">自动化</div>
+    <div class="nav-item">全局设置</div>
+  </div>
+
+  <div class="main">
+    <div class="page-head">
+      <h1>自动化</h1>
+      <div style="display:flex; gap:8px;">
+        <span class="btn">从通用模板创建</span>
+        <span class="btn btn-primary">新建触发器</span>
+      </div>
+    </div>
+
+    <div class="notice-warn">无人值守任务不允许自动执行不可撤销的写操作——平台底线，不可配置。</div>
+    <div class="notice-info">自动化机制全站点通用：读类监测在任意站点零配置可用；写类自动化需该站点具备工具面（来自站点包或自建）。</div>
+
+    <div class="site-group">闲鱼 · goofish.com<span class="badge badge-source">工具面：站点包「闲鱼卖家」</span><span class="sep"></span></div>
+
+    <div class="trigger">
+      <div class="trigger-row">
+        <span class="trigger-name">待发货扫描</span>
+        <span class="badge badge-source">站点包预置</span>
+        <span class="badge badge-kind">周期触发 · 每 30 分钟</span>
+        <span class="meta"><b>目标</b> 卖家中心</span>
+        <span class="badge badge-throttle">节流 每日 ≤ 48 次</span>
+        <span class="status run"><span class="dot"></span>运行中</span>
+        <span class="switch"></span>
+      </div>
+      <div class="trigger-sub">
+        <span class="run-note">上次运行 12:30 · 本周处理 86 单</span>
+        <div class="trigger-ops"><span>编辑</span><span>查看审计</span></div>
+      </div>
+    </div>
+
+    <div class="trigger">
+      <div class="trigger-row">
+        <span class="trigger-name">新消息草拟回复</span>
+        <span class="badge badge-source">站点包预置</span>
+        <span class="badge badge-kind">事件触发 · 收到买家新消息</span>
+        <span class="badge badge-hitl">草拟后需确认发送</span>
+        <span class="status pause"><span class="dot"></span>已暂停</span>
+        <span class="switch off"></span>
+      </div>
+      <div class="trigger-sub">
+        <span class="run-note">暂停期间不监听事件，不产生任何草稿</span>
+        <div class="trigger-ops"><span>编辑</span><span>查看审计</span></div>
+      </div>
+    </div>
+
+    <div class="site-group">任意站点 · 无需站点包<span class="badge badge-source">平台通用模板</span><span class="sep"></span></div>
+
+    <div class="trigger">
+      <div class="trigger-row">
+        <span class="trigger-name">页面变化监测</span>
+        <span class="badge badge-source">用户自建</span>
+        <span class="badge badge-kind">周期触发 · 每小时</span>
+        <span class="meta"><b>目标</b> 竞品商品页（任意 URL）</span>
+        <span class="badge badge-read">只读</span>
+        <span class="status run"><span class="dot"></span>运行中</span>
+        <span class="switch"></span>
+      </div>
+      <div class="trigger-sub">
+        <span class="run-note">内容变化时在侧边栏汇报 · 上次运行 12:00 · 今日 12 次</span>
+        <div class="trigger-ops"><span>编辑</span><span>查看审计</span></div>
+      </div>
+    </div>
+
+    <div class="history">
+      <h2>运行历史</h2>
+      <table>
+        <tr><th>时间</th><th>站点</th><th>任务</th><th>结果</th></tr>
+        <tr><td class="time">12:30</td><td class="task">闲鱼</td><td class="task">待发货扫描</td><td>2 自动完成 · <span class="result-hitl">1 待确认</span></td></tr>
+        <tr><td class="time">12:00</td><td class="task">任意站点</td><td class="task">页面变化监测</td><td>无变化</td></tr>
+        <tr><td class="time">11:30</td><td class="task">闲鱼</td><td class="task">待发货扫描</td><td>1 自动完成</td></tr>
+      </table>
+    </div>
+  </div>
+</div>

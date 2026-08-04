@@ -1,0 +1,198 @@
+<!-- @dsCard name="配置中心 · 个人定制" subtitle="我的规则 + 权限只收紧矩阵 + 偏好" group="配置中心" viewport="960x620" -->
+<meta charset="utf-8">
+<title>配置中心 · 个人定制</title>
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;        /* 主色：禅青 */
+  --brand-soft: #e6f2f1;   /* 主色浅底 */
+  --auto: #16803c;  --auto-bg: #e8f5ec;    /* 风险档 auto */
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;    /* 风险档 hitl */
+  --off:  #b91c1c;  --off-bg:  #fdeaea;    /* forbidden / 已关闭 */
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* —— 配置中心通用布局（四张卡一致） —— */
+.app { display:flex; width:960px; height:620px; overflow:hidden; }
+.nav {
+  width:200px; flex-shrink:0; background:var(--surface);
+  border-right:1px solid var(--line); padding:20px 12px;
+}
+.nav .logo { font-size:16px; font-weight:700; color:var(--brand); padding:0 10px; }
+.nav .logo-sub { font-size:11px; color:var(--muted); padding:2px 10px 16px; }
+.nav-item {
+  padding:8px 10px; margin-bottom:4px; border-radius:var(--radius-sm);
+  color:var(--ink-2); font-size:13px;
+}
+.nav-item.active { background:var(--brand-soft); color:var(--brand); font-weight:600; }
+.main { flex:1; padding:20px 24px; overflow:auto; }
+.page-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.page-head h1 { font-size:15px; font-weight:600; }
+.btn {
+  display:inline-block; padding:6px 14px; border-radius:8px; font-size:13px;
+  background:var(--surface); color:var(--ink-2); border:1px solid var(--line-strong);
+}
+.btn-primary { background:var(--brand); color:#fff; border:1px solid var(--brand); }
+.badge {
+  display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px;
+  line-height:1.5; vertical-align:middle;
+}
+
+/* —— 本页：站点 chip + 三分区 —— */
+.chips { display:flex; gap:8px; margin-bottom:14px; }
+.chip {
+  padding:4px 14px; border-radius:999px; font-size:12px;
+  background:var(--surface); color:var(--ink-2); border:1px solid var(--line-strong);
+}
+.chip.on { background:var(--brand-soft); color:var(--brand); border-color:var(--brand); font-weight:600; }
+
+.section {
+  background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:0 1px 2px rgba(0,0,0,.04); padding:14px 16px; margin-bottom:12px;
+}
+.section-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.section-head h2 { font-size:13px; font-weight:600; }
+.btn-sm { padding:3px 10px; font-size:12px; }
+
+.rule { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line); }
+.rule:first-of-type { border-top:none; }
+.rule-text { font-size:13px; }
+.badge-source { background:var(--bg); color:var(--muted); border:1px solid var(--line); flex-shrink:0; }
+.rule-ops { margin-left:auto; display:flex; gap:12px; font-size:12px; flex-shrink:0; }
+.rule-ops span { color:var(--ink-2); }
+.rule-ops .danger { color:var(--off); }
+
+.notice-warn {
+  background:var(--hitl-bg); color:var(--hitl); border-radius:var(--radius-sm);
+  padding:8px 12px; font-size:12px; margin-bottom:10px;
+}
+table { width:100%; border-collapse:collapse; }
+th { font-size:12px; color:var(--muted); font-weight:500; text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+th.c, td.c { text-align:center; width:110px; }
+td { padding:8px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:middle; }
+tr:last-child td { border-bottom:none; }
+.radio {
+  display:inline-block; width:15px; height:15px; border-radius:50%;
+  border:1.5px solid var(--line-strong); background:var(--surface); vertical-align:middle;
+}
+.radio.on { border:4.5px solid var(--brand); }
+.radio.ghost { border:4.5px solid var(--line-strong); }
+.hint { display:block; font-size:11px; color:var(--muted); line-height:1.4; margin-top:2px; }
+.badge-tight { background:var(--hitl-bg); color:var(--hitl); margin-left:6px; }
+.tool-name { font-weight:500; }
+
+.pref-row { display:flex; align-items:center; gap:16px; padding:8px 0; border-top:1px solid var(--line); }
+.pref-row:first-of-type { border-top:none; }
+.pref-label { width:88px; color:var(--ink-2); flex-shrink:0; }
+.seg { display:inline-flex; border:1px solid var(--line-strong); border-radius:8px; overflow:hidden; }
+.seg span { padding:4px 16px; font-size:12px; color:var(--ink-2); background:var(--surface); border-left:1px solid var(--line-strong); }
+.seg span:first-child { border-left:none; }
+.seg span.on { background:var(--brand-soft); color:var(--brand); font-weight:600; }
+.select {
+  display:inline-flex; align-items:center; gap:24px; padding:4px 12px; font-size:12px;
+  border:1px solid var(--line-strong); border-radius:8px; background:var(--surface); color:var(--ink);
+}
+.select::after { content:"▾"; color:var(--muted); font-size:10px; }
+</style>
+
+<div class="app">
+  <div class="nav">
+    <div class="logo">Zen Agent</div>
+    <div class="logo-sub">配置中心</div>
+    <div class="nav-item">站点包</div>
+    <div class="nav-item active">个人定制</div>
+    <div class="nav-item">自动化</div>
+    <div class="nav-item">全局设置</div>
+  </div>
+
+  <div class="main">
+    <div class="page-head">
+      <h1>个人定制</h1>
+    </div>
+
+    <div class="chips">
+      <span class="chip on">闲鱼</span>
+      <span class="chip">Notion</span>
+      <span class="chip">全部站点</span>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>我的规则</h2>
+        <span class="btn btn-sm">添加规则</span>
+      </div>
+      <div class="rule">
+        <span class="rule-text">买家议价时统一回复：满 50 包邮，不讲价</span>
+        <span class="badge badge-source">对话沉淀 · 08-02</span>
+        <div class="rule-ops"><span>编辑</span><span class="danger">删除</span></div>
+      </div>
+      <div class="rule">
+        <span class="rule-text">所有回复使用敬语，结尾不加表情</span>
+        <span class="badge badge-source">手动添加</span>
+        <div class="rule-ops"><span>编辑</span><span class="danger">删除</span></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>工具权限</h2>
+      </div>
+      <div class="notice-warn">个人设置只能收紧站点包的权限，不能放宽；放宽需更换站点包。</div>
+      <table>
+        <tr><th>工具</th><th class="c">自动执行</th><th class="c">需确认</th><th class="c">禁用</th></tr>
+        <tr>
+          <td><span class="tool-name">查询订单</span><span class="hint">pack 默认</span></td>
+          <td class="c"><span class="radio on"></span></td>
+          <td class="c"><span class="radio"></span></td>
+          <td class="c"><span class="radio"></span></td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">填写发货单号</span><span class="hint">pack 默认</span></td>
+          <td class="c"><span class="radio"></span></td>
+          <td class="c"><span class="radio on"></span></td>
+          <td class="c"><span class="radio"></span></td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">修改价格</span><span class="badge badge-tight">已收紧</span></td>
+          <td class="c"><span class="radio ghost"></span><span class="hint">pack 默认为自动执行</span></td>
+          <td class="c"><span class="radio on"></span></td>
+          <td class="c"><span class="radio"></span></td>
+        </tr>
+        <tr>
+          <td><span class="tool-name">删除商品</span><span class="badge badge-tight">已收紧</span></td>
+          <td class="c"><span class="radio"></span></td>
+          <td class="c"><span class="radio"></span></td>
+          <td class="c"><span class="radio on"></span></td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <h2>偏好</h2>
+      </div>
+      <div class="pref-row">
+        <span class="pref-label">回答详略</span>
+        <span class="seg"><span>简洁</span><span class="on">标准</span><span>详细</span></span>
+      </div>
+      <div class="pref-row">
+        <span class="pref-label">界面语言</span>
+        <span class="select">中文</span>
+      </div>
+    </div>
+  </div>
+</div>

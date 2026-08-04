@@ -3,7 +3,9 @@
 > 状态：规划。前置事实：`codex/zen-commerce-agent` 已 fast-forward 合回 `main`（`d9d51ed`，extension 0.3.4，生产在跑）。
 > 本文确立产品形态决策——**单一通用插件 + 站点包（site pack）**，并接手
 > `2026-07-22-zen-commerce-agent.md` §1 推迟的命名/定位决策与本次合并遗留的去硬编码 deferral。
-> 架构事实权威仍是 `reference/00-design-brief.md` 与 `reference/01-architecture.md`；本文只管产品形态与分期。
+> 架构事实权威仍是 `reference/00-design-brief.md` 与 `reference/01-architecture.md`；本文只管产品定位与分期。
+> 产品形态（定位口径、概念模型、形态规则 R1-R9、产品表面与配置面）见 `2026-08-04-product-form-definition.md`，
+> 其 §6 对本文 P 线提出 P2.5/P3.5 插入建议。
 
 ## 1. 产品定位决策
 

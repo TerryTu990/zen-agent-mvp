@@ -1,0 +1,202 @@
+<!-- @dsCard name="代执行确认（HITL）" subtitle="需确认卡片 + 一次性签名 + 结果如实回报" group="侧边栏" viewport="380x660" -->
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;        /* 主色：禅青 */
+  --brand-soft: #e6f2f1;   /* 主色浅底 */
+  --auto: #16803c;  --auto-bg: #e8f5ec;    /* 风险档 auto */
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;    /* 风险档 hitl */
+  --off:  #b91c1c;  --off-bg:  #fdeaea;    /* forbidden / 已关闭 */
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  width:380px;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.topbar {
+  display:flex; align-items:center; gap:8px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .logo {
+  width:22px; height:22px; border-radius:6px;
+  background: var(--brand); color:#fff;
+  font-size:12px; font-weight:600;
+  display:flex; align-items:center; justify-content:center;
+}
+.topbar .title { font-size:15px; font-weight:600; }
+.topbar .site { margin-left:auto; font-size:12px; color:var(--muted); }
+
+.stream { padding: 12px 14px 16px; display:flex; flex-direction:column; gap:12px; }
+
+.msg-user {
+  align-self:flex-end; max-width: 82%;
+  background: var(--brand-soft);
+  border-radius: var(--radius); border-top-right-radius: 4px;
+  padding: 8px 12px;
+}
+.msg-agent {
+  align-self:flex-start; max-width: 88%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius); border-top-left-radius: 4px;
+  padding: 8px 12px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+}
+
+.hitl-card {
+  background: var(--surface);
+  border: 1px solid var(--hitl);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  overflow: hidden;
+}
+.hitl-head {
+  display:flex; align-items:center; gap:8px;
+  padding: 10px 14px;
+  background: var(--hitl-bg);
+  border-bottom: 1px solid var(--line);
+}
+.hitl-head .h { font-size:13px; font-weight:600; color: var(--ink); }
+.badge {
+  font-size:11px; padding:2px 8px; border-radius:999px; white-space:nowrap;
+}
+.badge-hitl { color: var(--hitl); background: #fff; border: 1px solid var(--hitl); }
+.hitl-body { padding: 12px 14px; }
+
+.tool-row { display:flex; align-items:baseline; gap:6px; margin-bottom:10px; }
+.tool-row .label { font-size:12px; color: var(--muted); }
+.tool-row .name { font-size:13px; font-weight:600; }
+.tool-row code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size:11px; color: var(--ink-2);
+  background: var(--bg); border:1px solid var(--line);
+  border-radius:4px; padding:1px 5px;
+}
+
+table.params { width:100%; border-collapse:collapse; margin-bottom:10px; }
+table.params th, table.params td {
+  text-align:left; padding: 6px 8px; font-weight:400;
+  border-bottom: 1px solid var(--line); font-size:12px;
+}
+table.params th { color: var(--muted); font-size:11px; border-bottom:1px solid var(--line-strong); }
+table.params td.v {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size:12px; color: var(--ink-2);
+}
+table.params tr:last-child td { border-bottom:none; }
+
+.risk-row {
+  display:flex; align-items:flex-start; gap:6px;
+  background: var(--off-bg); color: var(--off);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px; font-size:12px;
+  margin-bottom: 8px;
+}
+.gov-note {
+  font-size:11px; color: var(--muted);
+  display:flex; align-items:center; gap:5px;
+  margin-bottom: 12px;
+}
+.hitl-actions { display:flex; gap:8px; }
+.btn {
+  font-size:13px; border-radius:8px; padding:6px 14px;
+  cursor:pointer; border:1px solid transparent; font-family:inherit;
+}
+.btn-primary { background: var(--brand); color:#fff; }
+.btn-secondary { background:#fff; color: var(--ink); border:1px solid var(--line-strong); }
+
+.result-card {
+  align-self:flex-start; max-width: 92%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius); border-top-left-radius: 4px;
+  padding: 10px 12px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+}
+.result-line { display:flex; align-items:flex-start; gap:7px; margin-bottom:4px; }
+.result-line:last-child { margin-bottom:0; }
+.dot { width:8px; height:8px; border-radius:50%; margin-top:6px; flex:none; }
+.dot-ok { background: var(--auto); }
+.dot-fail { background: var(--off); }
+.result-line .sub { font-size:12px; color: var(--muted); }
+.time { font-size:11px; color: var(--muted); align-self:center; }
+</style>
+
+<div class="topbar">
+  <div class="logo">禅</div>
+  <div class="title">Zen Agent</div>
+  <div class="site">标签组会话 · 可跨站点</div>
+</div>
+
+<div class="stream">
+  <div class="time">今天 11:47</div>
+
+  <div class="msg-user">给这三个待发货订单填一下单号</div>
+
+  <div class="msg-agent">查到 3 个待发货订单，需要你确认后执行。</div>
+
+  <div class="hitl-card">
+    <div class="hitl-head">
+      <span class="h">需要你确认</span>
+      <span class="badge badge-hitl">需确认</span>
+    </div>
+    <div class="hitl-body">
+      <div class="tool-row">
+        <span class="label">工具</span>
+        <span class="name">填写发货单号</span>
+        <code>fill_shipping_no</code>
+      </div>
+      <div class="tool-row">
+        <span class="label">站点</span>
+        <span class="name">闲鱼 · goofish.com（站点包「闲鱼卖家」）</span>
+      </div>
+
+      <table class="params">
+        <tr><th>订单</th><th>运单号</th></tr>
+        <tr><td>订单尾号 2043</td><td class="v">SF1298&hellip;</td></tr>
+        <tr><td>订单尾号 5117</td><td class="v">SF1301&hellip;</td></tr>
+        <tr><td>订单尾号 8830</td><td class="v">SF1305&hellip;</td></tr>
+      </table>
+
+      <div class="risk-row">
+        <span>⚠</span>
+        <span>将修改订单发货状态 · 提交后不可撤销</span>
+      </div>
+
+      <div class="gov-note">
+        <span>🔏</span>
+        <span>一次性签名指令 · 60 秒内有效 · 全程审计留痕</span>
+      </div>
+
+      <div class="hitl-actions">
+        <button class="btn btn-primary">确认执行</button>
+        <button class="btn btn-secondary">拒绝</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="result-card">
+    <div class="result-line">
+      <span class="dot dot-ok"></span>
+      <span>已完成 2 笔：订单尾号 2043、5117 发货单号已提交。</span>
+    </div>
+    <div class="result-line">
+      <span class="dot dot-fail"></span>
+      <span>订单尾号 8830 失败（运单号校验不通过），未重试。<br><span class="sub">原始报错已记录到审计日志。</span></span>
+    </div>
+  </div>
+</div>

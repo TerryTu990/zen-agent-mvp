@@ -1,0 +1,139 @@
+<!-- @dsCard name="UI 引导" subtitle="页面高亮定位 + 锚点失配如实降级" group="侧边栏" viewport="900x560" -->
+<meta charset="utf-8">
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;
+  --brand-soft: #e6f2f1;
+  --auto: #16803c;  --auto-bg: #e8f5ec;
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;
+  --off:  #b91c1c;  --off-bg:  #fdeaea;
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.stage { width:900px; height:560px; padding:14px; display:flex; gap:12px; }
+
+/* ── 左：闲鱼发布页 mock ── */
+.site { width:480px; flex:none; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:0 1px 2px rgba(0,0,0,.04); display:flex; flex-direction:column; overflow:hidden; }
+.site-top { display:flex; align-items:center; gap:8px; padding:9px 14px; border-bottom:1px solid var(--line); background:#fafbfc; }
+.site-logo { font-size:13px; font-weight:600; color:#f5a623; }
+.site-crumb { font-size:12px; color:var(--muted); }
+.form { flex:1; padding:14px 18px; display:flex; flex-direction:column; gap:11px; }
+.f-row { display:flex; align-items:center; gap:12px; }
+.f-label { width:66px; flex:none; font-size:12px; color:var(--ink-2); text-align:right; }
+.f-input { flex:1; border:1px solid var(--line-strong); border-radius:6px; padding:5px 10px; font-size:12px; color:var(--ink); background:var(--surface); }
+.f-input .ph { color:var(--muted); }
+.f-opts { flex:1; display:flex; gap:8px; }
+.f-opt { font-size:12px; padding:3px 12px; border-radius:6px; border:1px solid var(--line-strong); color:var(--ink-2); }
+.f-opt.on { border-color:#f5a623; color:#b26a00; background:#fdf6e8; }
+
+.f-row.hl { position:relative; }
+.hl-ring { flex:1; display:flex; align-items:center; gap:8px; border:2px solid var(--brand); border-radius:8px; padding:4px 8px; background:var(--brand-soft); box-shadow:0 0 0 4px rgba(15,118,110,.12); }
+.hl-select { flex:1; display:flex; align-items:center; justify-content:space-between; border:1px solid var(--line-strong); border-radius:6px; padding:4px 10px; font-size:12px; background:var(--surface); }
+.hl-select .arrow { color:var(--muted); font-size:10px; }
+.hl-flag { position:absolute; right:6px; top:-25px; background:var(--brand); color:#fff; font-size:11px; padding:3px 10px; border-radius:999px; box-shadow:0 1px 2px rgba(0,0,0,.15); white-space:nowrap; }
+.hl-flag::after { content:""; position:absolute; left:18px; bottom:-4px; width:8px; height:8px; background:var(--brand); transform:rotate(45deg); }
+
+.site-foot { padding:10px 18px 14px; display:flex; justify-content:flex-end; gap:10px; border-top:1px solid var(--line); }
+.btn-pub { background:#f5a623; color:#fff; font-size:12px; padding:5px 22px; border-radius:999px; }
+.btn-draft { font-size:12px; padding:5px 16px; border-radius:999px; border:1px solid var(--line-strong); color:var(--ink-2); }
+
+/* ── 右：侧边栏 ── */
+.panel { width:380px; flex:none; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:0 1px 2px rgba(0,0,0,.04); display:flex; flex-direction:column; overflow:hidden; }
+.statusbar { display:flex; align-items:center; gap:6px; padding:9px 12px; border-bottom:1px solid var(--line); flex:none; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--brand); flex:none; }
+.brand-name { font-size:13px; font-weight:600; }
+.badge { font-size:11px; padding:2px 8px; border-radius:999px; background:var(--brand-soft); color:var(--brand); margin-left:auto; }
+.chat { flex:1; padding:12px; display:flex; flex-direction:column; gap:10px; background:var(--bg); overflow:hidden; }
+.msg { max-width:88%; padding:7px 11px; border-radius:var(--radius); font-size:13px; }
+.msg-user { align-self:flex-end; background:var(--brand); color:#fff; border-bottom-right-radius:4px; }
+.msg-agent { align-self:flex-start; background:var(--surface); border:1px solid var(--line); border-bottom-left-radius:4px; }
+
+.card { align-self:stretch; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:10px 12px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+.card-head { display:flex; align-items:center; gap:7px; font-size:13px; font-weight:600; }
+.card-ico { width:20px; height:20px; border-radius:6px; background:var(--brand-soft); color:var(--brand); font-size:11px; display:flex; align-items:center; justify-content:center; flex:none; }
+.card-desc { font-size:12px; color:var(--ink-2); margin:4px 0 8px; }
+.btn-sec { display:inline-block; font-size:12px; padding:4px 14px; border-radius:8px; border:1px solid var(--line-strong); background:var(--surface); color:var(--ink-2); }
+
+.card-degrade { background:var(--bg); border:1px dashed var(--line-strong); }
+.card-degrade .card-head { color:var(--ink-2); font-weight:600; }
+.dg-ico { width:20px; height:20px; border-radius:6px; background:var(--hitl-bg); color:var(--hitl); font-size:12px; display:flex; align-items:center; justify-content:center; flex:none; }
+.dg-title { font-size:12px; }
+.dg-reason { font-size:11px; color:var(--muted); margin:3px 0 6px; }
+.dg-path { font-size:12px; color:var(--ink-2); background:var(--surface); border:1px solid var(--line); border-radius:6px; padding:5px 9px; line-height:1.5; }
+.dg-path b { color:var(--ink); font-weight:600; }
+.dg-note { font-size:11px; color:var(--muted); margin-top:5px; }
+</style>
+<div class="stage">
+
+  <div class="site">
+    <div class="site-top">
+      <span class="site-logo">闲鱼</span>
+      <span class="site-crumb">卖家中心 / 发布宝贝</span>
+    </div>
+    <div class="form">
+      <div class="f-row"><span class="f-label">标题</span><span class="f-input">99 新 iPad Air 5 蓝色 64G 国行在保</span></div>
+      <div class="f-row"><span class="f-label">价格</span><span class="f-input">¥ 2,650</span></div>
+      <div class="f-row"><span class="f-label">成色</span>
+        <span class="f-opts"><span class="f-opt">全新</span><span class="f-opt on">99 新</span><span class="f-opt">95 新</span><span class="f-opt">9 成新</span></span>
+      </div>
+      <div class="f-row"><span class="f-label">发货方式</span>
+        <span class="f-opts"><span class="f-opt on">快递发货</span><span class="f-opt">同城面交</span></span>
+      </div>
+      <div class="f-row hl">
+        <span class="f-label">运费模板</span>
+        <span class="hl-ring">
+          <span class="hl-select"><span>默认模板 · 全国包邮</span><span class="arrow">▼</span></span>
+        </span>
+        <span class="hl-flag">在这里设置运费 ①</span>
+      </div>
+      <div class="f-row"><span class="f-label">发货时间</span>
+        <span class="f-opts"><span class="f-opt on">24 小时内</span><span class="f-opt">48 小时内</span></span>
+      </div>
+      <div class="f-row"><span class="f-label">宝贝描述</span><span class="f-input"><span class="ph">描述一下宝贝的入手渠道、使用感受…</span></span></div>
+    </div>
+    <div class="site-foot">
+      <span class="btn-draft">存草稿</span>
+      <span class="btn-pub">发布</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="statusbar">
+      <span class="dot"></span>
+      <span class="brand-name">Zen Agent</span>
+      <span class="badge">当前页面：闲鱼</span>
+    </div>
+    <div class="chat">
+      <div class="msg msg-user">运费模板在哪改？</div>
+      <div class="msg msg-agent">运费模板就在当前发布页的「发货方式」下方，我已经在页面上标出来了——点开下拉即可切换或新建模板。</div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-ico">◎</span>已在页面高亮：运费模板设置</div>
+        <div class="card-desc">目标元素已定位并圈出（浮标 ①）。若页面滚动后标记偏移，可重新定位。</div>
+        <span class="btn-sec">重新定位</span>
+      </div>
+
+      <div class="card card-degrade">
+        <div class="card-head"><span class="dg-ico">⚠</span><span class="dg-title">未找到目标元素</span></div>
+        <div class="dg-reason">页面可能已改版，定位锚点失配。我不假装定位成功，按文字指引操作：</div>
+        <div class="dg-path">发布页 → <b>发货方式</b> → <b>运费模板</b></div>
+        <div class="dg-note">如页面结构已更新，可反馈给 pack 维护者修正锚点。</div>
+      </div>
+    </div>
+  </div>
+
+</div>

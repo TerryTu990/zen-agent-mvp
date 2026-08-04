@@ -1,0 +1,147 @@
+<!-- @dsCard name="首次上手" subtitle="三步：选包 → 授权 → 开聊" group="上手流程" viewport="960x600" -->
+<meta charset="utf-8">
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;
+  --brand-soft: #e6f2f1;
+  --auto: #16803c;  --auto-bg: #e8f5ec;
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;
+  --off:  #b91c1c;  --off-bg:  #fdeaea;
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.page { width:960px; height:600px; padding:22px 26px; display:flex; flex-direction:column; }
+
+.head { text-align:center; }
+.logo { width:34px; height:34px; border-radius:10px; background:var(--brand); color:#fff; font-size:16px; font-weight:600; display:inline-flex; align-items:center; justify-content:center; }
+.head h1 { font-size:17px; font-weight:600; margin-top:6px; }
+.head p { font-size:12px; color:var(--muted); }
+
+.progress { display:flex; align-items:center; justify-content:center; gap:0; margin:14px 0 16px; }
+.p-step { display:flex; align-items:center; gap:7px; }
+.p-dot { width:22px; height:22px; border-radius:50%; font-size:11px; font-weight:600; display:flex; align-items:center; justify-content:center; }
+.p-dot.on { background:var(--brand); color:#fff; }
+.p-dot.todo { background:var(--surface); border:1px solid var(--line-strong); color:var(--muted); }
+.p-label { font-size:12px; color:var(--ink-2); }
+.p-label.on { color:var(--brand); font-weight:600; }
+.p-line { width:70px; height:2px; background:var(--line-strong); margin:0 12px; }
+
+.steps { flex:1; display:flex; gap:14px; min-height:0; }
+.step { flex:1; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:0 1px 2px rgba(0,0,0,.04); padding:14px 16px; display:flex; flex-direction:column; }
+.step.current { border-color:var(--brand); box-shadow:0 0 0 3px rgba(15,118,110,.10); }
+.s-head { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.s-num { width:20px; height:20px; border-radius:50%; background:var(--brand-soft); color:var(--brand); font-size:11px; font-weight:600; display:flex; align-items:center; justify-content:center; flex:none; }
+.s-title { font-size:13px; font-weight:600; }
+.s-sub { font-size:12px; color:var(--ink-2); margin-bottom:10px; }
+
+.pack-card { border:1px solid var(--line); border-radius:var(--radius-sm); padding:10px 12px; background:var(--bg); }
+.pack-head { display:flex; align-items:center; gap:7px; }
+.pack-name { font-size:13px; font-weight:600; }
+.badge { font-size:11px; padding:1px 8px; border-radius:999px; }
+.badge-official { background:var(--brand-soft); color:var(--brand); }
+.caps { display:flex; gap:5px; margin:7px 0 10px; flex-wrap:wrap; }
+.cap { font-size:11px; padding:1px 8px; border-radius:999px; }
+.cap-look { background:var(--auto-bg); color:var(--auto); }
+.cap-hitl { background:var(--hitl-bg); color:var(--hitl); }
+.cap-info { background:var(--info-bg); color:var(--info); }
+.btn { display:inline-block; font-size:12px; padding:5px 16px; border-radius:8px; }
+.btn-primary { background:var(--brand); color:#fff; }
+.btn-full { display:block; text-align:center; }
+.s-foot { font-size:11px; color:var(--muted); margin-top:auto; padding-top:10px; }
+
+.sec-label { font-size:12px; font-weight:600; color:var(--ink-2); margin:2px 0 6px; }
+.scope-chip { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 12px; border-radius:999px; background:var(--auto-bg); color:var(--auto); border:1px solid #cde8d6; }
+.radio-card { display:flex; align-items:flex-start; gap:8px; border:1px solid var(--line); border-radius:var(--radius-sm); padding:8px 10px; margin-bottom:7px; }
+.radio-card.on { border-color:var(--brand); background:var(--brand-soft); }
+.rb { width:14px; height:14px; border-radius:50%; border:1.5px solid var(--line-strong); flex:none; margin-top:3px; background:var(--surface); }
+.radio-card.on .rb { border-color:var(--brand); box-shadow:inset 0 0 0 3.5px var(--brand); }
+.r-name { font-size:12px; font-weight:600; }
+.r-desc { font-size:11px; color:var(--muted); line-height:1.5; }
+
+.q-chips { display:flex; flex-direction:column; gap:7px; margin-bottom:12px; }
+.q-chip { font-size:12px; padding:6px 12px; border-radius:999px; border:1px solid var(--line-strong); background:var(--surface); color:var(--ink-2); display:flex; align-items:center; gap:7px; }
+.q-chip .q { color:var(--brand); font-weight:600; flex:none; }
+.trust { border-left:3px solid var(--brand); background:var(--brand-soft); border-radius:0 8px 8px 0; padding:8px 10px; font-size:12px; color:var(--ink-2); line-height:1.55; }
+.trust b { color:var(--brand); font-weight:600; }
+</style>
+<div class="page">
+
+  <div class="head">
+    <span class="logo">禅</span>
+    <h1>欢迎使用 Zen Agent</h1>
+    <p>三步完成设置——agent 能做什么、被允许做什么，从一开始就由你决定。</p>
+  </div>
+
+  <div class="progress">
+    <span class="p-step"><span class="p-dot on">1</span><span class="p-label on">选择站点包</span></span>
+    <span class="p-line"></span>
+    <span class="p-step"><span class="p-dot todo">2</span><span class="p-label">授权范围</span></span>
+    <span class="p-line"></span>
+    <span class="p-step"><span class="p-dot todo">3</span><span class="p-label">开始使用</span></span>
+  </div>
+
+  <div class="steps">
+
+    <div class="step current">
+      <div class="s-head"><span class="s-num">1</span><span class="s-title">选择站点包</span></div>
+      <div class="s-sub">检测到你正在使用<b>闲鱼</b>，为你推荐：</div>
+      <div class="pack-card">
+        <div class="pack-head">
+          <span class="pack-name">闲鱼卖家</span>
+          <span class="badge badge-official">官方 pack</span>
+        </div>
+        <div class="caps">
+          <span class="cap cap-look">讲解</span>
+          <span class="cap cap-look">引导</span>
+          <span class="cap cap-hitl">代执行</span>
+          <span class="cap cap-info">自动化</span>
+        </div>
+        <span class="btn btn-primary btn-full">安装此站点包</span>
+      </div>
+      <div class="s-foot">也可以稍后从社区导入其他 pack，或自建（如「公司 CRM」）。</div>
+    </div>
+
+    <div class="step">
+      <div class="s-head"><span class="s-num">2</span><span class="s-title">授权范围</span></div>
+      <div class="s-sub">agent 只在你授权的边界内工作。</div>
+      <div class="sec-label">站点授权</div>
+      <span class="scope-chip">✓ 仅 goofish.com</span>
+      <div class="sec-label" style="margin-top:12px;">模型选择</div>
+      <div class="radio-card on">
+        <span class="rb"></span>
+        <span><span class="r-name">默认托管模型</span><br><span class="r-desc">开箱即用，无需配置</span></span>
+      </div>
+      <div class="radio-card">
+        <span class="rb"></span>
+        <span><span class="r-name">自带密钥 BYOK</span><br><span class="r-desc">使用你自己的模型服务与密钥</span></span>
+      </div>
+      <div class="s-foot">会话内容将发送至所选模型服务商。</div>
+    </div>
+
+    <div class="step">
+      <div class="s-head"><span class="s-num">3</span><span class="s-title">开始使用</span></div>
+      <div class="s-sub">试试直接问它：</div>
+      <div class="q-chips">
+        <span class="q-chip"><span class="q">问</span>这个页面是干嘛的</span>
+        <span class="q-chip"><span class="q">问</span>帮我看看待发货订单</span>
+      </div>
+      <div class="trust">默认只<b>讲解</b>和<b>引导</b>；所有<b>代执行</b>都会先经你确认，你可随时收紧权限。</div>
+    </div>
+
+  </div>
+
+</div>

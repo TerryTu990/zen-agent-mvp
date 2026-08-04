@@ -1,0 +1,193 @@
+<!-- @dsCard name="注入构成视图" subtitle="这次回答用了什么：四层装配透明可见" group="透明性" viewport="380x720" -->
+<style>
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --ink: #1a1d21;
+  --ink-2: #4b5563;
+  --muted: #8a919c;
+  --line: #e5e7eb;
+  --line-strong: #d1d5db;
+  --brand: #0f766e;        /* 主色：禅青 */
+  --brand-soft: #e6f2f1;   /* 主色浅底 */
+  --auto: #16803c;  --auto-bg: #e8f5ec;    /* 风险档 auto */
+  --hitl: #b45309;  --hitl-bg: #fdf3e3;    /* 风险档 hitl */
+  --off:  #b91c1c;  --off-bg:  #fdeaea;    /* forbidden / 已关闭 */
+  --info-bg: #eef4fd; --info: #1d4ed8;
+  --radius: 12px; --radius-sm: 8px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  width:380px;
+  background: var(--bg); color: var(--ink);
+  font-size: 13px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  display:flex; flex-direction:column; min-height:720px;
+}
+
+.header { padding: 14px 14px 10px; }
+.header h1 { font-size:15px; font-weight:600; }
+.header .sub { font-size:12px; color: var(--muted); }
+
+.layers { padding: 0 14px; display:flex; flex-direction:column; gap:8px; }
+
+.layer {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  overflow:hidden;
+}
+.layer-head {
+  display:flex; align-items:center; gap:8px;
+  padding: 10px 12px;
+}
+.layer-tag {
+  font-size:11px; font-weight:600;
+  width:26px; height:20px; border-radius:5px; flex:none;
+  display:flex; align-items:center; justify-content:center;
+  background: var(--brand-soft); color: var(--brand);
+}
+.layer-head .name { font-size:13px; font-weight:600; }
+.layer-head .chev { margin-left:auto; color: var(--muted); font-size:11px; }
+.badge {
+  font-size:11px; padding:2px 8px; border-radius:999px; white-space:nowrap;
+}
+.badge-lock { color: var(--muted); background: var(--bg); border:1px solid var(--line); }
+.badge-auto { color: var(--auto); background: var(--auto-bg); }
+.badge-hitl { color: var(--hitl); background: var(--hitl-bg); }
+.badge-tight { color: var(--hitl); background: var(--hitl-bg); }
+.badge-run { color: var(--auto); background: var(--auto-bg); }
+.badge-ver { color: var(--ink-2); background: var(--bg); border:1px solid var(--line); }
+
+.layer.locked { background: var(--bg); }
+.layer.locked .layer-tag { background: var(--line); color: var(--muted); }
+.layer.locked .name { color: var(--ink-2); }
+.layer.locked .summary { font-size:12px; color: var(--muted); }
+
+.layer.open { border-color: var(--brand); }
+.layer.open .layer-head { border-bottom: 1px solid var(--line); background: var(--brand-soft); }
+
+.layer-body { padding: 10px 12px; display:flex; flex-direction:column; gap:10px; }
+.sect .sect-title { font-size:12px; font-weight:600; color: var(--ink-2); margin-bottom:4px; }
+.sect .sect-title .count { font-weight:400; color: var(--muted); }
+.item {
+  display:flex; align-items:center; gap:6px;
+  font-size:12px; color: var(--ink-2);
+  padding: 3px 0 3px 8px;
+  border-left: 2px solid var(--line);
+  margin-bottom:2px;
+}
+.item:last-child { margin-bottom:0; }
+.tool-badges { display:flex; flex-wrap:wrap; gap:6px; padding-left:8px; }
+.tool {
+  display:inline-flex; align-items:center; gap:5px;
+  font-size:12px; color: var(--ink);
+  background: var(--bg);
+  border:1px solid var(--line);
+  border-radius:999px; padding: 2px 4px 2px 10px;
+}
+.more { font-size:11px; color: var(--muted); padding-left:8px; }
+
+.layer-sub { padding: 0 12px 10px; }
+.subline {
+  display:flex; align-items:center; gap:6px;
+  font-size:12px; color: var(--ink-2);
+  padding: 3px 0 3px 8px;
+  border-left: 2px solid var(--line);
+  margin-bottom:2px;
+}
+
+.footer {
+  margin-top:auto;
+  padding: 10px 14px 14px;
+}
+.floor-note {
+  background: var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size:11px; color: var(--ink-2);
+  display:flex; align-items:flex-start; gap:6px;
+}
+</style>
+
+<div class="header">
+  <h1>本次回答用了什么</h1>
+  <div class="sub">当前页面：闲鱼 · 卖家中心（随浏览切换，会话可跨站点）</div>
+</div>
+
+<div class="layers">
+
+  <div class="layer locked">
+    <div class="layer-head">
+      <span class="layer-tag">L0</span>
+      <span class="name">平台基座 🔒</span>
+      <span class="badge badge-lock">不可修改</span>
+      <span class="chev">▸</span>
+    </div>
+    <div class="layer-sub">
+      <div class="summary" style="padding-left:34px;">安全基座 · 执行治理 · 审计</div>
+    </div>
+  </div>
+
+  <div class="layer open">
+    <div class="layer-head">
+      <span class="layer-tag">L1</span>
+      <span class="name">站点包「闲鱼卖家」</span>
+      <span class="badge badge-ver">v1.4.2 · 官方</span>
+      <span class="chev">▾</span>
+    </div>
+    <div class="layer-body">
+      <div class="sect">
+        <div class="sect-title">规则 <span class="count">· 发货协助 1 篇</span></div>
+        <div class="item">发货协助：确认收货地址后再填单，异常订单不自动处理</div>
+      </div>
+      <div class="sect">
+        <div class="sect-title">事实 <span class="count">· 12 条</span></div>
+        <div class="item">全新未拆封转售需资质</div>
+        <div class="item">运费模板入口在发布页</div>
+        <div class="more">还有 10 条…</div>
+      </div>
+      <div class="sect">
+        <div class="sect-title">工具面 <span class="count">· 5 个</span></div>
+        <div class="tool-badges">
+          <span class="tool">查询订单 <span class="badge badge-auto">auto</span></span>
+          <span class="tool">填写发货单号 <span class="badge badge-hitl">hitl</span></span>
+        </div>
+        <div class="more" style="margin-top:4px;">还有 3 个…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-head">
+      <span class="layer-tag">L2</span>
+      <span class="name">我的定制</span>
+      <span class="chev">▸</span>
+    </div>
+    <div class="layer-sub">
+      <div class="subline">2 条个人规则</div>
+      <div class="subline">1 项权限收紧：修改价格 · 自动执行 → 需确认&nbsp;<span class="badge badge-tight">已收紧</span></div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-head">
+      <span class="layer-tag">L3</span>
+      <span class="name">自动化</span>
+      <span class="chev">▸</span>
+    </div>
+    <div class="layer-sub">
+      <div class="subline">1 个任务运行中：待发货扫描（站点包「闲鱼卖家」预置）&nbsp;<span class="badge badge-run">运行中</span></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="footer">
+  <div class="floor-note">
+    <span>🛡</span>
+    <span>装配由服务端决定；对话内容不能改变以上任何治理配置。</span>
+  </div>
+</div>
