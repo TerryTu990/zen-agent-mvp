@@ -10,6 +10,12 @@
 > - 配置从单 manifest 演进为 **registry/pack 两级站点包**（adr-013）；`assets/` 布局同构性不变（U4 守住）。
 > - 决策记录已扩展至 D13（→ §6 增补）。当前架构与扩展点的权威描述见 `01-architecture.md`、
 >   配置面见 `03-configuration.md`、部署见 `04-deployment.md`。
+> - **定位泛化（2026-08-04，Terry 裁决）**：产品定位从「ToB 宿主系统的嵌入式功能辅助」泛化为
+>   「可被用户塑形的浏览器 agent harness」（"浏览器 agent 的 Claude Code / AI 时代的 Tampermonkey"）——
+>   任意站点、任意用户，各自可有自己的规则、知识、工具面与自动化钩子；站点维度载体 = site pack（adr-013），
+>   用户维度载体挂 P5（plans/2026-08-04-generic-extension-productization.md）。§1 的宗旨基准句相应更新为：
+>   **「如何让 agent 更准确地辅助用户使用当前站点，或让用户在治理边界内更自由地塑形这种辅助」**——
+>   两问皆答不上的复杂度不引入。边界铁律（§3）与 U1-U7（§4）不随定位泛化松动。
 
 ## 1. 项目定位与宗旨
 

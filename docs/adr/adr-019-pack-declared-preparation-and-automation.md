@@ -84,7 +84,7 @@ prepare 工具与 bounded-fulfillment 工具是 1:1 配套（prepare 产 opaque 
 
 ## 被否方案
 
-- **通用表达式 DSL**（JSONPath/脚本片段进 pack）：表达力开放导致治理面不可审计,且触碰 CWS 远程代码红线;宗旨基准答不上。
+- **通用表达式 DSL**（JSONPath/脚本片段进 pack）：表达力开放导致治理面不可审计,且触碰 CWS 远程代码红线。此否决限**可分发层**（平台/市场分发的 pack）；用户自写 local pack 的高表达力属信任分层议题,走「后果」锚点,不在本 ADR 范围。
 - **服务端连接器注册表**（pack 只声明 connector 名,derive 代码留 server）：新站点仍需改核心发版,P1 验收直接失败——只是把硬编码换个挂法。
 - **prepare 建模为 `execution:'server'` 工具进 tools.json**：serverAdapter 语义是宿主 HTTP API 直调（U3 双通道）,intent 准备是治理动作、无 URL 语义;塞入会污染通道闭集,且 riskTier/adapter 字段全不适用。
 
@@ -93,4 +93,4 @@ prepare 工具与 bounded-fulfillment 工具是 1:1 配套（prepare 产 opaque 
 - 正：`apps/` 与 `packages/` 源码 grep 无 xianyu（测试 fixture 除外）；闲鱼能力全由 pack 0.8.0 承载；E2E（run-xianyu.mjs）验收口径不变。
 - 负：`preparation` 是新契约面,新站点画像超出闭集时需契约 minor 迭代（刻意成本,换审计性）；新增一个只读描述符 endpoint,`reference/02-contracts.md` 需补记。
 - 实施分批（每批独立可验证）：**①** 执行流分支去字面量（纯重构 + 现测试回归）；**②** C1 `preparation` + 通用引擎 + 删两个 xianyu 模块 + pack 0.8.0 迁移 + eval 回归；**③** pack `automations` + 描述符 endpoint + extension 通用化；**④** host-demo 改造为第二消费方作零改动验收 + 随③清理 auto-scan 相关文案（其余品牌文案属 P2）。
-- 锚点：原语闭集不满足新站点时 → 契约 minor 扩集,不开表达式后门；pack 越出本仓分发时 → 签名与来源信任（承 adr-013 既有锚点）。
+- 锚点：原语闭集不满足新站点时 → **可分发层**走契约 minor 扩集,该层不开表达式后门；**用户自有（local）pack 信任分层**——用户为自己的浏览器自写高表达力 pack,显式开关启用、受益与风险同主体、副作用仍全量过服务端 toolgate（U7 不随信任层松动）——P4 用户体系就位时设计（对应产品规划 P5）；pack 越出本仓分发时 → 签名与来源信任（承 adr-013 既有锚点）。

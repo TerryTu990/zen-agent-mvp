@@ -2,6 +2,8 @@
 
 > 人读层计划文档。事实权威：`reference/00-design-brief.md`（SSOT）；架构与升级不变量见 `reference/01-architecture.md`；决策依据见 `adr/`。
 > 每期遵循 ZA 红线与 eval 纪律（adr-008）；分期边界可随真实进展调整，但升级不变量 U1-U7 不随分期妥协。
+> **产品形态分期（P 线：P1 内核归一 → P2 品牌发行 → P3 商店合规 → P4 服务端产品化 → P5 用户维度）**
+> 与本文 M/S 线正交，见 `plans/2026-08-04-generic-extension-productization.md`；定位泛化勘误见 SSOT 头部。
 
 ## 总览
 

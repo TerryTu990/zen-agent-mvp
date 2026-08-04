@@ -1,8 +1,9 @@
 # zen-agent-mvp
 
-嵌入式**功能辅助智能体**平台（MVP）：在 ToB 宿主系统上叠加 agent，按用户当前所在功能（`featureId`）
-动态装配规则/skills/工具集，提供 **功能讲解 + UI 引导 + API 调用协助**。一切复杂度须能自证：
-**如何让 agent 更准确地辅助用户使用宿主系统**——答不上来不引入。
+可被用户塑形的**浏览器 agent harness**（「浏览器 agent 的 Claude Code / AI 时代的 Tampermonkey」）：
+在任意站点上叠加 agent，按用户所在站点/功能（`packId`/`featureId`）动态装配规则/skills/工具面/自动化，
+提供 **功能讲解 + UI 引导 + 受控代执行**。一切复杂度须能自证：**如何让 agent 更准确地辅助用户使用当前站点，
+或让用户在治理边界内更自由地塑形这种辅助**——两问皆答不上不引入。
 
 > 本文件是开发期速查入口。奠基期事实权威：`docs/reference/00-design-brief.md`（设计基准 SSOT）；
 > 架构解释见 `docs/reference/01-architecture.md`，契约细节以各 `.schema.json` 为准。
