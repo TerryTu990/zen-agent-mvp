@@ -33,8 +33,13 @@ C2 契约零改动（hostUserId 语义泛化为「签发方名下的稳定用户
 
 - **渐进绑定**：匿名身份起步、零注册摩擦；用户需要跨设备同步/托管配额/付费任一时升级绑定账号，
   绑定时做一次性 subject 迁移（匿名 overlay 归并入账号 subject）；匿名态的 overlay 导出文件即离线迁移载体。
-- **注册机制**：P2.5-P3.5 不建；P4 托管时建最小账号——OAuth-only（Google/GitHub）+ 可选 email magic
-  link，不做密码体系（零特权原则延续：不存密码哈希）。提供方选择挂 P4/D4。
+- **注册机制**：P2.5-P3.5 不建；P4 托管时建最小账号，**首发提供方裁决为 Google 登录**，不做密码体系
+  （零特权原则延续：不存密码哈希）。绑定链路：插件发起 Google OAuth（OIDC）→ 服务端验 `id_token`
+  → 以 Google `sub` 绑定/创建平台账号（映射表 `googleSub → hostUserId`，只存 sub 与 email，不存
+  Google access/refresh token）→ 服务端签发自有短期 JWT（C2 claims 同构，`iss` = 平台身份服务、
+  `hostUserId` = 平台账号 ID）——**验签面零改动**（auth.ts 同一路径，iss 白名单加一项）。首次 Google
+  登录即触发 §1 渐进绑定的 subject 迁移（匿名 overlay 归并入账号 subject）。其他提供方
+  （GitHub/email magic link）挂锚点：Google 登录上线后按需求评估。
 - **红线**：平台账号 ≠ 宿主站点账号，永不绑定、不互推；宿主身份仍只经用户页面会话（SEC-02）。
 
 ### 2. L2 契约：`user-overlay.schema.json`
@@ -152,4 +157,5 @@ UserConfigStore 端口的配置源」。
   缓存」实现复杂度。
 - 实施映射：P2.5-a（本 schema + C3 帧型 + C5 事件/字段 + C6 InjectionBlock 三字段）→ P2.5-b
   （端口/合并/定格）→ P2.5-c（写入通道）；验收基准见技术方案 §5。
-- deferral：subject 迁移接口的具体形态（P4 账号绑定实施时）；L2 导出（P3.5）；OAuth 提供方（P4/D4）。
+- deferral：subject 迁移接口的具体形态（P4 账号绑定实施时）；L2 导出（P3.5）；Google 之外的登录
+  提供方（Google 登录上线后按需求评估）。
