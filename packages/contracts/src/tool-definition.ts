@@ -26,6 +26,62 @@ export interface BoundedFulfillmentAuthorization {
   workflow: 'shipment' | 'delivery';
   /** 模型只传服务端一次性意图 id；商品/订单/数量/消息步骤由可信连接器登记，不采信模型自报。 */
   intentIdParam: string;
+  /** adr-019：有此声明才注入配套零参数 prepare 工具（prepare.<toolId>），服务端引擎按声明派生业务输入。 */
+  preparation?: IntentPreparation;
+}
+
+/** 从激活页 URL 的 hash query 段取参；取值 trim 后须非空且通过可选 pattern。 */
+export interface HashQueryParamSource {
+  source: 'hash-query';
+  name: string;
+  pattern?: string;
+}
+
+/** 从快照元素 href 取参：精确匹配 origin+path、恰含 queryParam 一个查询参数、无 hash 无凭证、命中元素唯一。 */
+export interface ElementHrefParamSource {
+  source: 'element-href';
+  urlOrigin: string;
+  urlPath: string;
+  queryParam: string;
+  pattern?: string;
+}
+
+export type PreparationParamSource = HashQueryParamSource | ElementHrefParamSource;
+
+/** DOM ref 绑定：按 role[+label] 在快照内唯一命中，不唯一即拒绝准备。 */
+export interface PreparationElementBinding {
+  role: string;
+  label?: string;
+  requireEnabled?: true;
+}
+
+/** 参数值必须在指定 role 元素的 label 中唯一回显（去空白后 = 值 或 = 前缀[+可选冒号]+值）。 */
+export interface PreparationParamEvidence {
+  param: string;
+  roles: string[];
+  labelPrefixes?: string[];
+}
+
+/** 证据绑定：rule 引用同工具 adapter.snapshotEvidence 的 id；shipment 另需 before/after 状态跃迁。 */
+export interface PreparationEvidence {
+  rule: string;
+  before?: string;
+  after?: string;
+}
+
+/**
+ * adr-019 声明式 intent 准备（原语闭集 v1）：站点知识全量入 pack 声明，服务端引擎解释；
+ * 任何字段缺失/证据不唯一/不匹配即拒绝（fail-closed），声明外形态不解释。
+ */
+export interface IntentPreparation {
+  description: string;
+  routes: string[];
+  params: Record<string, PreparationParamSource>;
+  productParam: string;
+  elements: Record<string, PreparationElementBinding>;
+  paramEvidence?: PreparationParamEvidence;
+  evidence: PreparationEvidence;
+  intentTtlMs: number;
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';

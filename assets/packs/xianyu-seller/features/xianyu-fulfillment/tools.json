@@ -120,7 +120,26 @@
     "execution": "client",
     "riskTier": "hitl",
     "hitlMode": "every-call",
-    "authorization": { "kind": "bounded-fulfillment", "workflow": "delivery", "intentIdParam": "intentId" },
+    "authorization": {
+      "kind": "bounded-fulfillment",
+      "workflow": "delivery",
+      "intentIdParam": "intentId",
+      "preparation": {
+        "description": "在闲鱼买家聊天页依据当前 URL、最近页面快照和服务端商品映射准备真实卡密履约。无业务参数；成功只返回 opaque intentId，随后只能把该 intentId 传给 xianyu-fulfillment.execute-intent。页面、商品、回执或控件证据不唯一时会拒绝。",
+        "routes": ["/im"],
+        "params": {
+          "productId": { "source": "hash-query", "name": "itemId" },
+          "orderId": { "source": "hash-query", "name": "orderId" }
+        },
+        "productParam": "productId",
+        "elements": {
+          "messageRef": { "role": "textarea" },
+          "sendRef": { "role": "button", "label": "发送" }
+        },
+        "evidence": { "rule": "message-receipts" },
+        "intentTtlMs": 45000
+      }
+    },
     "adapter": {
       "kind": "dom",
       "pathPrefixes": ["/"],

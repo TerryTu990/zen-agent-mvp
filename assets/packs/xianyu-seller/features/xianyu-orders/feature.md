@@ -16,7 +16,7 @@
 
 ## ZA-FEAT-04 发货必须走受控意图
 
-只有订单详情页路由 `orderId`、同页订单编号、唯一商品链接、平台状态“待发货”和唯一可用“发货”按钮全部精确匹配时，才可调用零参数 `prepare_xianyu_shipping`，随后原样执行 `xianyu-shipping.execute-intent`。不得用 `page-operate` 点击发货，也不得自造订单、商品或 DOM 步骤。
+只有订单详情页路由 `orderId`、同页订单编号、唯一商品链接、平台状态“待发货”和唯一可用“发货”按钮全部精确匹配时，才可调用零参数 `prepare.xianyu-shipping.execute-intent`，随后原样执行 `xianyu-shipping.execute-intent`。不得用 `page-operate` 点击发货，也不得自造订单、商品或 DOM 步骤。
 
 ## ZA-FEAT-05 先确认已发货，再发送卡密
 

@@ -88,7 +88,7 @@ export interface ServerOptions {
   cardInventoryPort?: CardInventoryPort;
   /** cardInventoryPort 模式下的固定使用说明 URL。 */
   cardInventoryGuideUrl?: string;
-  /** 闲鱼 itemId → 飞书 product_key；仅服务端配置，用于零参数可信准备工具。 */
+  /** 站点商品 id → 库存 productKey 闭集映射；仅服务端配置，供声明式零参数 prepare 工具引擎使用。 */
   fulfillmentProductKeys?: Record<string, string>;
 }
 

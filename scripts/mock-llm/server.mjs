@@ -28,9 +28,9 @@ const TOOL_BROWSE = 'browse.page-operate';
 const TOOL_XIANYU_ORDERS = 'xianyu-orders.page-operate';
 const TOOL_XIANYU_SEND = 'xianyu-fulfillment.send-test-message';
 const TOOL_XIANYU_INTENT = 'xianyu-fulfillment.execute-intent';
-const TOOL_XIANYU_PREPARE = 'prepare_xianyu_fulfillment';
+const TOOL_XIANYU_PREPARE = 'prepare.xianyu-fulfillment.execute-intent';
 const TOOL_XIANYU_SHIPPING = 'xianyu-shipping.execute-intent';
-const TOOL_XIANYU_SHIPPING_PREPARE = 'prepare_xianyu_shipping';
+const TOOL_XIANYU_SHIPPING_PREPARE = 'prepare.xianyu-shipping.execute-intent';
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {

@@ -41,7 +41,36 @@
     "execution": "client",
     "riskTier": "hitl",
     "hitlMode": "every-call",
-    "authorization": { "kind": "bounded-fulfillment", "workflow": "shipment", "intentIdParam": "intentId" },
+    "authorization": {
+      "kind": "bounded-fulfillment",
+      "workflow": "shipment",
+      "intentIdParam": "intentId",
+      "preparation": {
+        "description": "在闲鱼待发货订单详情页，依据当前 URL、页面快照和服务端商品映射准备一次受控发货。无业务参数；成功只返回 opaque intentId，随后只能传给 xianyu-shipping.execute-intent。订单、商品、状态或“发货”按钮证据不唯一时会拒绝。",
+        "routes": ["/seller-trade/order-manage/order-detail"],
+        "params": {
+          "orderId": { "source": "hash-query", "name": "orderId", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+          "productId": {
+            "source": "element-href",
+            "urlOrigin": "https://www.goofish.com",
+            "urlPath": "/item",
+            "queryParam": "id",
+            "pattern": "^[A-Za-z0-9_-]{1,128}$"
+          }
+        },
+        "productParam": "productId",
+        "elements": {
+          "actionRef": { "role": "button", "label": "发货", "requireEnabled": true }
+        },
+        "paramEvidence": {
+          "param": "orderId",
+          "roles": ["cell", "td", "dt", "dd", "span"],
+          "labelPrefixes": ["订单编号"]
+        },
+        "evidence": { "rule": "order-shipment-status", "before": "待发货", "after": "已发货" },
+        "intentTtlMs": 45000
+      }
+    },
     "adapter": {
       "kind": "dom",
       "pathPrefixes": ["/"],

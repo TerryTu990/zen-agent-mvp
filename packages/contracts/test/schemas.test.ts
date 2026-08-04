@@ -499,6 +499,72 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
       adapter: { kind: 'dom', pathPrefixes: ['/'] },
       resultSchema: { type: 'object' },
     },
+    'delivery 授权带声明式 preparation（adr-019）': {
+      id: 'chat.send-delivery-prepared',
+      featureIds: ['chat'],
+      description: '发送确定性履约通知',
+      params: { type: 'object', properties: {}, additionalProperties: false },
+      execution: 'client',
+      riskTier: 'hitl',
+      hitlMode: 'every-call',
+      authorization: {
+        kind: 'bounded-fulfillment',
+        workflow: 'delivery',
+        intentIdParam: 'intentId',
+        preparation: {
+          description: '在聊天页准备一次履约',
+          routes: ['/im'],
+          params: {
+            orderId: { source: 'hash-query', name: 'orderId', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+            productId: { source: 'hash-query', name: 'itemId' },
+          },
+          productParam: 'productId',
+          elements: {
+            messageRef: { role: 'textarea' },
+            sendRef: { role: 'button', label: '发送' },
+          },
+          evidence: { rule: 'message-receipts' },
+          intentTtlMs: 45000,
+        },
+      },
+      adapter: { kind: 'dom', pathPrefixes: ['/'] },
+      resultSchema: { type: 'object' },
+    },
+    'shipment 授权带 element-href 参数源与状态跃迁证据': {
+      id: 'orders.ship-prepared',
+      featureIds: ['orders'],
+      description: '受控发货',
+      params: { type: 'object', properties: {}, additionalProperties: false },
+      execution: 'client',
+      riskTier: 'hitl',
+      hitlMode: 'every-call',
+      authorization: {
+        kind: 'bounded-fulfillment',
+        workflow: 'shipment',
+        intentIdParam: 'intentId',
+        preparation: {
+          description: '在订单详情页准备一次发货',
+          routes: ['/seller-trade/order-manage/order-detail'],
+          params: {
+            orderId: { source: 'hash-query', name: 'orderId', pattern: '^[A-Za-z0-9_-]{1,128}$' },
+            productId: {
+              source: 'element-href',
+              urlOrigin: 'https://www.example.com',
+              urlPath: '/item',
+              queryParam: 'id',
+              pattern: '^[A-Za-z0-9_-]{1,128}$',
+            },
+          },
+          productParam: 'productId',
+          elements: { actionRef: { role: 'button', label: '发货', requireEnabled: true } },
+          paramEvidence: { param: 'orderId', roles: ['cell', 'td'], labelPrefixes: ['订单编号'] },
+          evidence: { rule: 'order-shipment-status', before: '待发货', after: '已发货' },
+          intentTtlMs: 45000,
+        },
+      },
+      adapter: { kind: 'dom', pathPrefixes: ['/'] },
+      resultSchema: { type: 'object' },
+    },
   };
 
   it.each(Object.keys(validTools))('合法工具 %s 通过校验', (label) => {
@@ -523,6 +589,57 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
     '有界授权映射缺工作流类型被拒': {
       ...baseTool,
       authorization: { kind: 'bounded-fulfillment', intentIdParam: 'intentId' },
+    },
+    'delivery preparation 缺 messageRef/sendRef 元素绑定被拒': {
+      ...baseTool,
+      authorization: {
+        kind: 'bounded-fulfillment',
+        workflow: 'delivery',
+        intentIdParam: 'intentId',
+        preparation: {
+          description: 'x',
+          routes: ['/im'],
+          params: { productId: { source: 'hash-query', name: 'itemId' } },
+          productParam: 'productId',
+          elements: { sendRef: { role: 'button' } },
+          evidence: { rule: 'message-receipts' },
+          intentTtlMs: 45000,
+        },
+      },
+    },
+    'shipment preparation 证据缺 before/after 被拒': {
+      ...baseTool,
+      authorization: {
+        kind: 'bounded-fulfillment',
+        workflow: 'shipment',
+        intentIdParam: 'intentId',
+        preparation: {
+          description: 'x',
+          routes: ['/detail'],
+          params: { productId: { source: 'hash-query', name: 'itemId' } },
+          productParam: 'productId',
+          elements: { actionRef: { role: 'button' } },
+          evidence: { rule: 'order-shipment-status' },
+          intentTtlMs: 45000,
+        },
+      },
+    },
+    'preparation 参数源越 hash-query|element-href 闭集被拒': {
+      ...baseTool,
+      authorization: {
+        kind: 'bounded-fulfillment',
+        workflow: 'delivery',
+        intentIdParam: 'intentId',
+        preparation: {
+          description: 'x',
+          routes: ['/im'],
+          params: { productId: { source: 'script', expr: '1+1' } },
+          productParam: 'productId',
+          elements: { messageRef: { role: 'textarea' }, sendRef: { role: 'button' } },
+          evidence: { rule: 'message-receipts' },
+          intentTtlMs: 45000,
+        },
+      },
     },
   };
 

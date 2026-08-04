@@ -17,6 +17,7 @@ import type {
   ToolDefinition,
   ToolOwnership,
 } from '@zen-agent/contracts';
+import { isDomTool } from '@zen-agent/contracts';
 
 export interface AssemblyOptions {
   /** 配置快照根目录：registry 形态含 manifest.json + packs/；legacy 形态含 manifest.json + features/ + skills/。 */
@@ -133,9 +134,42 @@ function loadFeature(
         `快照拒载：功能 ${featureId} 的 tools.json[${index}] 不过 tool-definition 契约：${errorsText(validateTool)}`,
       );
     }
-    return element as ToolDefinition;
+    const tool = element as ToolDefinition;
+    assertPreparationIntegrity(featureId, index, tool);
+    return tool;
   });
   return { featureRules, facts, tools };
+}
+
+/** preparation 跨字段完整性（schema 表达不了的引用一致性）：不满足即拒载（fail-closed）。 */
+function assertPreparationIntegrity(featureId: string, index: number, tool: ToolDefinition): void {
+  const preparation = tool.authorization?.preparation;
+  if (preparation === undefined) return;
+  const reject = (reason: string): never => {
+    throw new Error(`快照拒载：功能 ${featureId} 的 tools.json[${index}] preparation ${reason}`);
+  };
+  if (!(preparation.productParam in preparation.params)) {
+    reject(`productParam "${preparation.productParam}" 不是 params 的键`);
+  }
+  if (!('orderId' in preparation.params)) {
+    reject('params 缺 orderId（两类履约工作流的端口输入均要求订单号派生源）');
+  }
+  if (preparation.paramEvidence !== undefined && !(preparation.paramEvidence.param in preparation.params)) {
+    reject(`paramEvidence.param "${preparation.paramEvidence.param}" 不是 params 的键`);
+  }
+  if (!isDomTool(tool)) reject('仅支持 dom 工具（证据配方在 adapter.snapshotEvidence）');
+  else {
+    const rule = (tool.adapter.snapshotEvidence ?? []).find((r) => r.id === preparation.evidence.rule);
+    if (rule === undefined) {
+      reject(`evidence.rule "${preparation.evidence.rule}" 不在 adapter.snapshotEvidence 中`);
+    } else {
+      for (const status of [preparation.evidence.before, preparation.evidence.after]) {
+        if (status !== undefined && !rule.statuses.includes(status)) {
+          reject(`evidence 状态 "${status}" 不在规则 "${rule.id}" 的 statuses 闭集中`);
+        }
+      }
+    }
+  }
 }
 
 function loadSkills(packRoot: string): SkillAsset[] {

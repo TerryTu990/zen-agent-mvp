@@ -79,7 +79,171 @@
       "properties": {
         "kind": { "const": "bounded-fulfillment" },
         "workflow": { "enum": ["shipment", "delivery"] },
-        "intentIdParam": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" }
+        "intentIdParam": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+        "preparation": { "$ref": "#/$defs/intentPreparation" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "workflow": { "const": "delivery" }, "preparation": true },
+            "required": ["workflow", "preparation"]
+          },
+          "then": {
+            "properties": {
+              "preparation": {
+                "type": "object",
+                "properties": {
+                  "elements": {
+                    "type": "object",
+                    "properties": { "messageRef": true, "sendRef": true },
+                    "required": ["messageRef", "sendRef"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "workflow": { "const": "shipment" }, "preparation": true },
+            "required": ["workflow", "preparation"]
+          },
+          "then": {
+            "properties": {
+              "preparation": {
+                "type": "object",
+                "properties": {
+                  "elements": {
+                    "type": "object",
+                    "properties": { "actionRef": true },
+                    "required": ["actionRef"]
+                  },
+                  "evidence": {
+                    "type": "object",
+                    "properties": { "rule": true, "before": true, "after": true },
+                    "required": ["rule", "before", "after"]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "intentPreparation": {
+      "$comment": "adr-019 声明式 intent 准备（原语闭集 v1）：有此声明的 bounded-fulfillment 工具由网关注入零参数配套 prepare 工具（名=prepare.<toolId>），服务端引擎按声明从可信 URL/快照派生业务输入，模型零参数（adr-016 不可扩张面）。任何字段缺失/证据不唯一/不匹配即拒绝准备（fail-closed）；声明外形态一律拒绝，本闭集扩展走契约版本。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "routes", "params", "productParam", "elements", "evidence", "intentTtlMs"],
+      "properties": {
+        "description": {
+          "$comment": "配套 prepare 工具面向 LLM 的说明（站点语义文案随 pack 走，不进核心代码）。",
+          "type": "string",
+          "minLength": 1
+        },
+        "routes": {
+          "$comment": "激活页 hash 路由白名单（origin 恒取 pack.site.origin，不在此声明）。",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^/" }
+        },
+        "params": {
+          "$comment": "业务参数派生源：只取可信 URL/快照，禁模型注入。",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+          "additionalProperties": {
+            "oneOf": [
+              { "$ref": "#/$defs/hashQueryParamSource" },
+              { "$ref": "#/$defs/elementHrefParamSource" }
+            ]
+          }
+        },
+        "productParam": {
+          "$comment": "经服务端 productKeys 闭集映射为库存 productKey 的参数名；必须是 params 的键（载入期校验）。",
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+        },
+        "elements": {
+          "$comment": "DOM ref 绑定：按 role[+label] 在快照内唯一命中，不唯一即拒绝。键名按 workflow 约束（delivery: messageRef+sendRef；shipment: actionRef）。",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role"],
+            "properties": {
+              "role": { "type": "string", "minLength": 1, "maxLength": 32 },
+              "label": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "requireEnabled": { "const": true }
+            }
+          }
+        },
+        "paramEvidence": {
+          "$comment": "参数-页面一致性证据：指定参数值必须在指定 role 的元素 label 中唯一回显（label 去空白后 = 值，或 = 前缀[+可选冒号分隔]+值）。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["param", "roles"],
+          "properties": {
+            "param": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+            "roles": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 10,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 32 }
+            },
+            "labelPrefixes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 5,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 32 }
+            }
+          }
+        },
+        "evidence": {
+          "$comment": "结构化证据绑定：rule 必须引用同工具 adapter.snapshotEvidence 的 id（载入期校验）。delivery 只填 rule（基线计数语义）；shipment 另需 before/after（状态跃迁语义，均须 ∈ rule.statuses）。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rule"],
+          "properties": {
+            "rule": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+            "before": { "type": "string", "minLength": 1, "maxLength": 32 },
+            "after": { "type": "string", "minLength": 1, "maxLength": 32 }
+          }
+        },
+        "intentTtlMs": {
+          "$comment": "intent 绝对有效期（准备时刻起算毫秒）。",
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 300000
+        }
+      }
+    },
+    "hashQueryParamSource": {
+      "$comment": "从激活页 URL 的 hash query 段取参：#/route?name=value。取值 trim 后须非空且通过可选 pattern。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "name"],
+      "properties": {
+        "source": { "const": "hash-query" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "pattern": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "elementHrefParamSource": {
+      "$comment": "从快照元素 href 取参：href 须精确匹配 urlOrigin+urlPath、恰含 queryParam 一个查询参数、无 hash 无凭证；命中元素须唯一。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "urlOrigin", "urlPath", "queryParam"],
+      "properties": {
+        "source": { "const": "element-href" },
+        "urlOrigin": { "type": "string", "pattern": "^https?://[^/]+$" },
+        "urlPath": { "type": "string", "pattern": "^/" },
+        "queryParam": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "pattern": { "type": "string", "minLength": 1, "maxLength": 200 }
       }
     },
     "featureId": {

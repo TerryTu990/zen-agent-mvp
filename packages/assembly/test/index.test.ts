@@ -469,6 +469,98 @@ describe('非法快照 fail-closed 拒载', () => {
     await expect(port.resolveFeature({ url: 'http://host/x' })).rejects.toThrow(/urlPattern/);
   });
 
+  const preparedToolWith = (overrides: Record<string, unknown>): unknown => ({
+    id: 'f.execute-intent',
+    featureIds: ['f'],
+    description: 'x',
+    params: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['intentId'],
+      properties: { intentId: { type: 'string', minLength: 1 } },
+    },
+    execution: 'client',
+    riskTier: 'hitl',
+    hitlMode: 'every-call',
+    authorization: {
+      kind: 'bounded-fulfillment',
+      workflow: 'delivery',
+      intentIdParam: 'intentId',
+      preparation: {
+        description: 'x',
+        routes: ['/im'],
+        params: {
+          productId: { source: 'hash-query', name: 'itemId' },
+          orderId: { source: 'hash-query', name: 'orderId' },
+        },
+        productParam: 'productId',
+        elements: { messageRef: { role: 'textarea' }, sendRef: { role: 'button' } },
+        evidence: { rule: 'message-receipts' },
+        intentTtlMs: 45000,
+        ...overrides,
+      },
+    },
+    adapter: {
+      kind: 'dom',
+      pathPrefixes: ['/'],
+      snapshotEvidence: [
+        {
+          id: 'message-receipts',
+          itemSelector: '.m',
+          statusSelector: '.s',
+          statuses: ['未读', '已读'],
+        },
+      ],
+    },
+    resultSchema: { type: 'object' },
+  });
+
+  const preparedSnapshot = (tool: unknown): string => {
+    const tmp = mkdtempSync(join(tmpdir(), 'za-prep-'));
+    tmpDirs.push(tmp);
+    const packRoot = join(tmp, 'packs', 'p');
+    mkdirSync(join(packRoot, 'features', 'f'), { recursive: true });
+    writeFileSync(
+      join(tmp, 'manifest.json'),
+      JSON.stringify({ version: '1.0.0', packs: [{ packId: 'p', version: '1.0.0' }] }),
+    );
+    writeFileSync(
+      join(packRoot, 'pack.json'),
+      JSON.stringify({
+        packId: 'p',
+        version: '1.0.0',
+        site: { origin: 'http://p.example', locations: ['/'] },
+        featureIdRules: [{ urlPattern: '.*', featureId: 'f' }],
+        features: ['f'],
+      }),
+    );
+    writeFileSync(join(packRoot, 'features', 'f', 'feature.md'), 'F\n');
+    writeFileSync(join(packRoot, 'features', 'f', 'facts.md'), 'F\n');
+    writeFileSync(join(packRoot, 'features', 'f', 'tools.json'), JSON.stringify([tool]));
+    return tmp;
+  };
+
+  it('preparation.evidence.rule 不在 snapshotEvidence → 拒载（adr-019 完整性）', async () => {
+    const tmp = preparedSnapshot(preparedToolWith({ evidence: { rule: 'no-such-rule' } }));
+    const port = createAssemblyPort({ snapshotRoot: tmp, systemPromptPath: fixturePromptPath });
+    await expect(port.resolveFeature({ url: 'http://p.example/x' })).rejects.toThrow(/no-such-rule/);
+  });
+
+  it('preparation.productParam 不是 params 键 → 拒载（adr-019 完整性）', async () => {
+    const tmp = preparedSnapshot(preparedToolWith({ productParam: 'ghostParam' }));
+    const port = createAssemblyPort({ snapshotRoot: tmp, systemPromptPath: fixturePromptPath });
+    await expect(port.resolveFeature({ url: 'http://p.example/x' })).rejects.toThrow(/ghostParam/);
+  });
+
+  it('preparation 完整声明通过载入（adr-019）', async () => {
+    const tmp = preparedSnapshot(preparedToolWith({}));
+    const port = createAssemblyPort({ snapshotRoot: tmp, systemPromptPath: fixturePromptPath });
+    await expect(port.resolveFeature({ url: 'http://p.example/x' })).resolves.toMatchObject({
+      packId: 'p',
+      featureId: 'f',
+    });
+  });
+
   it('systemPromptPath 不存在 → 拒载', async () => {
     const port = createAssemblyPort({
       snapshotRoot: join(fixturesDir, 'valid'),

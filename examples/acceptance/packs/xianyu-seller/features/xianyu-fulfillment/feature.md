@@ -28,4 +28,4 @@
 
 ## ZA-FEAT-07 真实履约只能走零参数准备器
 
-当工具面出现 `prepare_xianyu_fulfillment` 时，真实卡密流程必须先 `page_snapshot`，再调用该零参数工具。订单、商品、控件、回执基线和库存键均由服务端从当前可信上下文机械派生；不得把页面文字改写成工具参数。准备成功后只把返回的 `intentId` 原样交给 `xianyu-fulfillment.execute-intent`。准备失败、工具缺失或返回非 `intentId` 时立即暂停，不得改走测试发送工具。
+当工具面出现 `prepare.xianyu-fulfillment.execute-intent` 时，真实卡密流程必须先 `page_snapshot`，再调用该零参数工具。订单、商品、控件、回执基线和库存键均由服务端从当前可信上下文机械派生；不得把页面文字改写成工具参数。准备成功后只把返回的 `intentId` 原样交给 `xianyu-fulfillment.execute-intent`。准备失败、工具缺失或返回非 `intentId` 时立即暂停，不得改走测试发送工具。

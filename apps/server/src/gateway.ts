@@ -60,23 +60,14 @@ import {
   executionPreferenceInstruction,
   selectToolsForPreference,
 } from './execution-preference.js';
-import {
-  deriveXianyuFulfillmentInput,
-  PREPARE_XIANYU_FULFILLMENT_TOOL_NAME,
-  PREPARE_XIANYU_FULFILLMENT_TOOL_SPEC,
-} from './xianyu-fulfillment.js';
-import {
-  deriveXianyuShipmentInput,
-  PREPARE_XIANYU_SHIPPING_TOOL_NAME,
-  PREPARE_XIANYU_SHIPPING_TOOL_SPEC,
-} from './xianyu-shipping.js';
+import { derivePreparedIntent, prepareToolSpecFor } from './prepare-intent.js';
 
 export interface GatewayDeps {
   assembly: AssemblyPort;
   llm: LlmPort;
   toolgate: ToolGatePort;
   fulfillment?: FulfillmentCoordinatorPort;
-  /** 闲鱼 itemId → 库存 productKey 的服务端闭集映射；客户端/模型不得覆盖。 */
+  /** 站点商品 id → 库存 productKey 的服务端闭集映射；客户端/模型不得覆盖。 */
   fulfillmentProductKeys: Record<string, string>;
   audit: AuditPort;
   verifier: TokenVerifier;
@@ -924,15 +915,20 @@ export function createGateway(deps: GatewayDeps): Gateway {
         composed.packId !== null
           ? [RECORD_APPLICATION_TOOL_SPEC, LIST_APPLICATIONS_TOOL_SPEC]
           : [];
-      const fulfillmentPrepareTools: LlmToolSpec[] =
-        deps.fulfillment !== undefined && Object.keys(deps.fulfillmentProductKeys).length > 0 &&
-        selectedHostTools.some((tool) => tool.authorization?.kind === 'bounded-fulfillment')
-          ? featureId === 'xianyu-fulfillment'
-            ? [PREPARE_XIANYU_FULFILLMENT_TOOL_SPEC]
-            : featureId === 'xianyu-orders'
-              ? [PREPARE_XIANYU_SHIPPING_TOOL_SPEC]
-              : []
-          : [];
+      // adr-019：prepare 工具面由 pack 声明驱动（authorization.preparation），与 featureId 解耦；
+      // 履约依赖未组装（无协调器/无商品映射）时不注入，模型面不出现无法兑现的工具。
+      const prepareTargets = new Map<string, ToolDefinition>();
+      const fulfillmentPrepareTools: LlmToolSpec[] = [];
+      if (deps.fulfillment !== undefined && Object.keys(deps.fulfillmentProductKeys).length > 0) {
+        for (const tool of selectedHostTools) {
+          const spec = prepareToolSpecFor(tool);
+          if (spec === null) continue;
+          fulfillmentPrepareTools.push(spec);
+          prepareTargets.set(spec.name, tool);
+        }
+      }
+      const siteOrigin =
+        (await getSites()).find((site) => site.packId === pack.packId)?.origin ?? null;
       const tools: LlmToolSpec[] = [
         ...guideTools,
         ...snapshotTools,
@@ -942,7 +938,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...fulfillmentPrepareTools,
         ...selectedHostTools.map(toLlmToolSpec),
       ];
-      return { pack, featureId, composed, hostToolsById, tools, evidenceRules };
+      return { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin };
     };
     // 站点边界标记（ADR-013）：激活 pack 或 generic 绑定 origin 变更时向历史注入一行标记，
     // 防跨站历史误导（generic pack 多 origin 间切换 packId 恒定，须并比 genericOrigin）；
@@ -963,7 +959,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
       return { role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` };
     };
 
-    let { pack, featureId, composed, hostToolsById, tools, evidenceRules } = await assembleFor(session.currentUrl ?? '');
+    let { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin } =
+      await assembleFor(session.currentUrl ?? '');
     const prevPackId = session.lastPackId;
     const prevGenericOrigin = session.lastGenericOrigin;
     const boundary = await boundaryFor(pack, prevPackId, prevGenericOrigin);
@@ -1123,20 +1120,19 @@ export function createGateway(deps: GatewayDeps): Gateway {
         continue;
       }
 
-      if (call.name === PREPARE_XIANYU_FULFILLMENT_TOOL_NAME) {
+      const prepareTarget = prepareTargets.get(call.name);
+      if (prepareTarget !== undefined) {
         broadcast(sessionId, {
           type: 'tool-card',
           sessionId,
           toolCallId: call.toolCallId,
-          toolId: PREPARE_XIANYU_FULFILLMENT_TOOL_NAME,
+          toolId: call.name,
           status: 'running',
-          summary: PREPARE_XIANYU_FULFILLMENT_TOOL_NAME,
+          summary: call.name,
           mode: 'server',
         });
+        const isShipmentPrepare = prepareTarget.authorization?.workflow === 'shipment';
         const context = runtimeOf(sessionId).domContext;
-        const boundedTools = [...hostToolsById.values()].filter(
-          (tool) => tool.authorization?.kind === 'bounded-fulfillment',
-        );
         let prepared: Awaited<ReturnType<NonNullable<typeof deps.fulfillment>['prepare']>> | null = null;
         let prepareError: string | null = null;
         let preparationStopped = false;
@@ -1147,16 +1143,22 @@ export function createGateway(deps: GatewayDeps): Gateway {
         }
         if (prepareError === null && deps.fulfillment !== undefined) {
           try {
-            const derived = deriveXianyuFulfillmentInput({
+            const derived = derivePreparedIntent({
               claims,
               context,
-              boundedTools,
+              tool: prepareTarget,
+              siteOrigin,
               evidenceRules,
               productKeys: deps.fulfillmentProductKeys,
               params: call.params,
               now: Date.now(),
             });
-            if (derived !== null) prepared = await deps.fulfillment.prepare(derived);
+            if (derived !== null) {
+              prepared =
+                derived.workflow === 'shipment'
+                  ? await deps.fulfillment.prepareShipment(derived.input)
+                  : await deps.fulfillment.prepare(derived.input);
+            }
           } catch {
             prepared = null;
           }
@@ -1170,7 +1172,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         if (preparationStopped) {
           broadcast(sessionId, {
             type: 'tool-card', sessionId, toolCallId: call.toolCallId,
-            toolId: PREPARE_XIANYU_FULFILLMENT_TOOL_NAME, status: 'failed', mode: 'server',
+            toolId: call.name, status: 'failed', mode: 'server',
           });
           automationFailed = true;
           settled = true;
@@ -1189,79 +1191,21 @@ export function createGateway(deps: GatewayDeps): Gateway {
           content: JSON.stringify(
             prepared?.ok === true
               ? { intentId: prepared.intentId }
-              : { error: prepareError ?? prepared?.error ?? 'fulfillment-prepare-denied' },
+              : {
+                  error:
+                    prepareError ??
+                    prepared?.error ??
+                    (isShipmentPrepare ? 'shipping-prepare-denied' : 'fulfillment-prepare-denied'),
+                },
           ),
         };
         broadcast(sessionId, {
           type: 'tool-card',
           sessionId,
           toolCallId: call.toolCallId,
-          toolId: PREPARE_XIANYU_FULFILLMENT_TOOL_NAME,
+          toolId: call.name,
           status: prepared?.ok === true ? 'succeeded' : 'failed',
           mode: 'server',
-        });
-        messages.push(prepareEcho, prepareObs);
-        turnMessages.push(prepareEcho, prepareObs);
-        continue;
-      }
-
-      if (call.name === PREPARE_XIANYU_SHIPPING_TOOL_NAME) {
-        broadcast(sessionId, {
-          type: 'tool-card', sessionId, toolCallId: call.toolCallId,
-          toolId: PREPARE_XIANYU_SHIPPING_TOOL_NAME, status: 'running',
-          summary: PREPARE_XIANYU_SHIPPING_TOOL_NAME, mode: 'server',
-        });
-        const context = runtimeOf(sessionId).domContext;
-        const boundedTools = [...hostToolsById.values()].filter(
-          (tool) => tool.authorization?.kind === 'bounded-fulfillment',
-        );
-        let prepared: Awaited<ReturnType<NonNullable<typeof deps.fulfillment>['prepareShipment']>> | null = null;
-        let prepareError: string | null = null;
-        let preparationStopped = false;
-        if (fulfillmentBudget.attempted) prepareError = 'automation-order-limit';
-        else fulfillmentBudget = { attempted: true };
-        if (prepareError === null && deps.fulfillment !== undefined) {
-          try {
-            const derived = deriveXianyuShipmentInput({
-              claims, context, boundedTools, evidenceRules,
-              productKeys: deps.fulfillmentProductKeys, params: call.params, now: Date.now(),
-            });
-            if (derived !== null) prepared = await deps.fulfillment.prepareShipment(derived);
-          } catch {
-            prepared = null;
-          }
-        }
-        if (cancelled()) {
-          preparationStopped = true;
-          if (!(await settleCancelledPreparation(prepared))) {
-            notifySafety(sessionId, '停止后的库存回填失败，自动履约已暂停，请人工核对。');
-          }
-        }
-        if (preparationStopped) {
-          broadcast(sessionId, {
-            type: 'tool-card', sessionId, toolCallId: call.toolCallId,
-            toolId: PREPARE_XIANYU_SHIPPING_TOOL_NAME, status: 'failed', mode: 'server',
-          });
-          automationFailed = true;
-          settled = true;
-          break;
-        }
-        if (prepared?.ok === true) fulfillmentBudget = { attempted: true, intentId: prepared.intentId };
-        else automationFailed = true;
-        const prepareEcho: LlmMessage = {
-          role: 'assistant', content: roundText,
-          toolCalls: [{ id: call.toolCallId, name: call.name, params: {} }],
-        };
-        const prepareObs: LlmMessage = {
-          role: 'tool', toolCallId: call.toolCallId,
-          content: JSON.stringify(prepared?.ok === true
-            ? { intentId: prepared.intentId }
-            : { error: prepareError ?? prepared?.error ?? 'shipping-prepare-denied' }),
-        };
-        broadcast(sessionId, {
-          type: 'tool-card', sessionId, toolCallId: call.toolCallId,
-          toolId: PREPARE_XIANYU_SHIPPING_TOOL_NAME,
-          status: prepared?.ok === true ? 'succeeded' : 'failed', mode: 'server',
         });
         messages.push(prepareEcho, prepareObs);
         turnMessages.push(prepareEcho, prepareObs);
@@ -1393,7 +1337,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
             deps.store.setContext(sessionId, landedUrl);
             const previousPackId = pack.packId;
             const previousGenericOrigin = pack.genericOrigin ?? null;
-            ({ pack, featureId, composed, hostToolsById, tools, evidenceRules } = await assembleFor(landedUrl));
+            ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin } =
+              await assembleFor(landedUrl));
             messages[0] = {
               role: 'system',
               content: withPreference(systemContentFor(composed, pack, landedUrl)),

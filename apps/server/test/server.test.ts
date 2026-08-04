@@ -1403,7 +1403,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
           ],
           evidence: { 'message-receipts': { count: 1, latest: '已读' } },
         });
-        await ambiguousSse.waitFor(() => lastCardStatus(ambiguousSse.frames, 'prepare_xianyu_fulfillment') === 'failed');
+        await ambiguousSse.waitFor(() => lastCardStatus(ambiguousSse.frames, 'prepare.xianyu-fulfillment.execute-intent') === 'failed');
         expect(reserve).not.toHaveBeenCalled();
         expect(framesByType(ambiguousSse.frames, 'exec-instruction')).toHaveLength(0);
       } finally {
@@ -1435,7 +1435,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         });
         await doubleSse.waitFor(() =>
           framesByType(doubleSse.frames, 'tool-card').filter(
-            (frame) => frame['toolId'] === 'prepare_xianyu_fulfillment',
+            (frame) => frame['toolId'] === 'prepare.xianyu-fulfillment.execute-intent',
           ).length >= 4,
         );
         expect(reserve).toHaveBeenCalledTimes(1);
@@ -1495,7 +1495,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         ],
         evidence: { 'message-receipts': { count: 1, latest: '已读' } },
       });
-      await expiredSse.waitFor(() => lastCardStatus(expiredSse.frames, 'prepare_xianyu_fulfillment') === 'failed');
+      await expiredSse.waitFor(() => lastCardStatus(expiredSse.frames, 'prepare.xianyu-fulfillment.execute-intent') === 'failed');
       expect(expiredReserve).not.toHaveBeenCalled();
       expect(framesByType(expiredSse.frames, 'exec-instruction')).toHaveLength(0);
     } finally {
@@ -1588,7 +1588,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
         ],
         evidence: { 'message-receipts': { count: 0, latest: '已读' } },
       });
-      await sse.waitFor(() => lastCardStatus(sse.frames, 'prepare_xianyu_fulfillment') === 'failed');
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'prepare.xianyu-fulfillment.execute-intent') === 'failed');
       await sse.waitFor(() => lastCardStatus(sse.frames, 'xianyu-auto-scan') === 'failed');
       expect(reserve).toHaveBeenCalledTimes(1);
       expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(1);
