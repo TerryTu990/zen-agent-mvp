@@ -5,10 +5,10 @@ paths:
   - "assets/**"
 ---
 
-# ZA-WHERE — 架构不变量：平滑升级 U1-U7（开发期）
+# ZA-WHERE — 架构不变量：平滑升级 U1-U8（开发期）
 
 > 本文件按 paths 加载：操作 `packages/**` / `apps/**` / `assets/**` 时进上下文。
-> 编号 `ZA-C-WHERE-<NN><级>` 与设计基准（docs/reference/00-design-brief.md）§4 的 U1-U7 一一对应；强制级语义见 `ZA-COMMON-META.md` 头。
+> 编号 `ZA-C-WHERE-<NN><级>` 与设计基准（docs/reference/00-design-brief.md）§4 的 U1-U8 一一对应；强制级语义见 `ZA-COMMON-META.md` 头。
 > 这些不变量是 MVP（模块化单体）→ 标准版（七系统独立部署）平滑升级的前提——违反任何一条都会把未来拆分变成重写。
 
 ---
@@ -80,3 +80,13 @@ paths:
 
 > 反例：插件侧"先判 riskTier 是 auto 就本地直接执行" → 不可信端做治理判定 → 违反 WHERE-07；
 > 正解：一切判定走 toolgate，插件只收签名指令。
+
+---
+
+## ZA-C-WHERE-08*（U8）装配与治理对对话免疫
+**装配注入与各层治理配置（L0 基座 / L1 pack / L2 收紧）MUST NOT 被对话内容或模型输出直接改变；对话→配置的唯一通路是显式确认写入通道（草稿 → 用户确认 → schema+收紧校验 → 入库，adr-014）；治理注入每轮全量重建，结构上不参与历史压缩与记忆。**
+- teach/记忆类功能只允许产出草稿，写入必须经用户显式确认帧（config-decision）；服务端对写入做 schema 与只收紧校验后才落盘。
+- 判定：任何代码路径让对话内容/模型输出未经确认通道写入装配来源（system-prompt / pack 文件 / user-overlay）或影响治理判定配置 → 触发，改走确认写入通道。
+
+> 反例：teach 流为省交互把用户消息直接写进 user-overlay 不弹确认卡 → 对话可改变后续治理注入（记忆投毒面）→ 违反 WHERE-08；
+> 正解：生成 config-draft 卡，用户确认后经 PUT + 校验入库。

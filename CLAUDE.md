@@ -18,7 +18,7 @@
 
 ## 治理分层（这是"agent 造 agent"项目，两层治理别混）
 
-- **开发期**（约束 Claude/Terry 开发 zen-agent-mvp 本身）：红线 `.claude/rules/ZA-*.md`，**开发会话**自动加载。通用按类型 `ZA-COMMON-{META,WHEN,HOW,HOW-PROJECT,SEC}.md`；专属按系统边界 `ZA-WHERE`(架构不变量 U1-U7)/`ZA-AGENT`(运行期治理边界)/`ZA-EVAL`(功能配置评测)。编号 `ZA-C-<区>-NN`。
+- **开发期**（约束 Claude/Terry 开发 zen-agent-mvp 本身）：红线 `.claude/rules/ZA-*.md`，**开发会话**自动加载。通用按类型 `ZA-COMMON-{META,WHEN,HOW,HOW-PROJECT,SEC}.md`；专属按系统边界 `ZA-WHERE`(架构不变量 U1-U8)/`ZA-AGENT`(运行期治理边界)/`ZA-EVAL`(功能配置评测)。编号 `ZA-C-<区>-NN`。
 - **运行期**（约束产品内嵌 agent 辅助用户）：治理在 `assets/`——`system-prompt.md`(跨站点稳定基座) + `manifest.json`(registry) + `packs/<packId>/`(站点包：`pack.json` + `features/<id>/{feature.md, facts.md, tools.json}` + `skills/<fn>/SKILL.md`)，由**装配引擎运行时**按 `packId`/`featureId` 加载注入。编号 `ZA-SYS-*`(基座)/`ZA-FEAT-*`(功能)只约束本仓官方制品（社区/自建 pack 不受编号约定管，载入校验一律相同）；规则(守)与 skill(用)分立。
 - **别混（铁律）**：运行期治理 **MUST NOT 进开发会话**；开发红线**不内联**运行期内容、只指位置；`docs/` 按需读、非常驻。加载边界与编号的权威见 `ZA-C-AGENT-01/02`。
 
@@ -31,7 +31,7 @@
 | `ZA-COMMON-HOW.md` | 通用·HOW | 编码通用元准则（先思考/简洁/外科/目标驱动/不伪造/卡住即停/如实/注释纪律） | 常驻 |
 | `ZA-COMMON-HOW-PROJECT.md` | 通用·HOW(TS) | 全 ESM/严格基线/catalog/测试串行/风格匹配 | 按需(*.ts) |
 | `ZA-COMMON-SEC.md` | 通用·SEC | secret 不入仓、凭证注入不写值、凭证读禁区、错误不泄敏 | 常驻 |
-| `ZA-WHERE.md` | 架构不变量 | U1-U7 平滑升级红线：端口 JSON / 禁横向 import / 通道闭集 / 快照不可变同构 / 五能力契约 / 审计 schema 独立 / 决策服务端+一次性签名 | 按需(packages/apps/assets) |
+| `ZA-WHERE.md` | 架构不变量 | U1-U8 平滑升级红线：端口 JSON / 禁横向 import / 通道闭集 / 快照不可变同构 / 五能力契约 / 审计 schema 独立 / 决策服务端+一次性签名 / 装配治理对对话免疫 | 按需(packages/apps/assets) |
 | `ZA-AGENT.md` | 运行期治理边界 | `assets/` 装配制品 MUST NOT 进开发会话、`ZA-SYS`/`ZA-FEAT` 编号约定、pack 纯数据、L2 契约只收紧 | 按需(assets/assembly/contracts) |
 | `ZA-EVAL.md` | 功能配置评测 | 改 assets/ 必跑评测（讲解/引导/工具/HITL/拒答/自动化六维度）、≥3 跑判回归、示例与评测互斥、素材同仓 | 按需(assets) |
 
