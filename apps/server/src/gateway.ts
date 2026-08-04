@@ -69,7 +69,6 @@ import {
   deriveXianyuShipmentInput,
   PREPARE_XIANYU_SHIPPING_TOOL_NAME,
   PREPARE_XIANYU_SHIPPING_TOOL_SPEC,
-  XIANYU_SHIPPING_EXECUTE_TOOL_ID,
 } from './xianyu-shipping.js';
 
 export interface GatewayDeps {
@@ -602,7 +601,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       tool.authorization?.kind === 'bounded-fulfillment' && typeof params['intentId'] === 'string'
         ? params['intentId']
         : null;
-    const isShipment = tool.id === XIANYU_SHIPPING_EXECUTE_TOOL_ID;
+    const isShipment = tool.authorization?.workflow === 'shipment';
     let inventoryBegun = false;
     const settleInventory = async (
       outcome: 'sent' | 'manual',
