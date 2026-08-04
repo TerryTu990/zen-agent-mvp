@@ -18,8 +18,9 @@
 ---
 
 ## ZA-C-SEC-02*  凭证一律运行时注入不写值  【hook 强制：za-secret-guard】
-**配置（`assets/features/<id>/tools.json` adapter 模板等）/用例/mock 内凭证 MUST NOT 写真值，一律运行时注入：LLM 密钥经环境变量由 llm-port 托管；宿主身份只经短期 JWT（C2 claims）与用户页面会话透传——平台零特权、不存用户凭证。**
-- 判定：配置/用例/mock 出现凭证明文值 → 触发，改为运行时注入。
+**配置（`assets/packs/<id>/features/<id>/tools.json` adapter 模板等）/用例/mock 内凭证 MUST NOT 写真值，一律运行时注入：LLM 密钥经环境变量由 llm-port 托管；宿主身份只经短期 JWT（C2 claims）与用户页面会话透传——平台零特权、不存用户凭证。**
+- 平台账号绑定（adr-014 Google 登录）同守零特权：只存 provider sub/email 映射，MUST NOT 存 provider access/refresh token 与任何密码哈希。
+- 判定：配置/用例/mock 出现凭证明文值，或账号实现存储 provider token/密码 → 触发，改为运行时注入/最小映射。
 
 > 反例：tools.json 的 adapter 请求模板写死 `Authorization: Bearer eyJ...` 真值 → 凭证明文入制品 → 违反 SEC-02；
 > 正解：身份由插件在页面环境以用户会话携带，平台制品不出现凭证值。

@@ -12,8 +12,8 @@ paths:
 ---
 
 ## ZA-C-EVAL-01*  改 assets/ 必跑功能配置评测
-**改 `assets/`（system-prompt 基座 / feature.md / facts.md / tools.json / skills）后 MUST 跑功能配置评测集，全绿才算改对；评测维度闭集：讲解正确 / 引导命中 / 工具触发 / HITL 触发 / 拒答边界。**
-- 评测集建立锚点：首个功能配置进入验证时；建成前的 assets/ 改动 MUST 人工走查上述五维度并如实记录结果，不得以"评测集未建"为由跳过验证（见 ZA-C-WHEN-02）。
+**改 `assets/`（system-prompt 基座 / pack.json / feature.md / facts.md / tools.json / skills）后 MUST 跑功能配置评测集，全绿才算改对；评测维度闭集：讲解正确 / 引导命中 / 工具触发 / HITL 触发 / 拒答边界 / 自动化触发。**
+- 评测集建立锚点：首个功能配置进入验证时；自动化维度的评测场景建立锚点：首个自动化评测用例随 adr-019 泛化机制验证时补齐。建成前的 assets/ 改动 MUST 人工走查上述维度并如实记录结果，不得以"评测集未建"为由跳过验证（见 ZA-C-WHEN-02）。
 - 判定：改了 assets/ 却未跑评测集（或未走查）就标完成 → 触发，先验证。
 
 > 反例：调了某 feature.md 的讲解措辞直接提交 → 无回归保障 → 违反 EVAL-01；
@@ -22,7 +22,7 @@ paths:
 ---
 
 ## ZA-C-EVAL-02~  ≥3 跑判回归 + 触发分层
-**基线与回归判定以 ≥3 次重复的通过率比较（单跑方差大不可信）；触发分层：改单个 feature 只跑该 featureId 命中的子集，基座 system-prompt / 装配引擎改动跑全量。**
+**基线与回归判定以 ≥3 次重复的通过率比较（单跑方差大不可信）；触发分层：改单个 pack/feature 只跑该 packId/featureId 命中的子集，基座 system-prompt / registry / 装配引擎改动跑全量。**
 - 每场景 token 成本沉淀进度量。
 - 偏离（单跑下结论 / 该全量却只跑子集）须说明理由。
 
