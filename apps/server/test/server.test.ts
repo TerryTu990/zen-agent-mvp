@@ -2456,6 +2456,82 @@ describe('ADR-013 渐进披露：站点索引 + site_navigate 注入（≥2 site
   });
 });
 
+describe('adr-014 L2 注入贯通：个人规则进入实际 system 注入且与透明视图一致（R4）', () => {
+  let capturing: CapturingMock;
+  let l2Server: RunningServer;
+  let prevBaseUrl: string | undefined;
+  const userConfigDir = mkdtempSync(join(tmpdir(), 'za-l2-inject-'));
+
+  beforeAll(async () => {
+    // claims 固定 tenant=demo-tenant / hostUserId=host-u1（signToken 缺省）；预置该 subject 的 overlay。
+    mkdirSync(join(userConfigDir, 'demo-tenant'), { recursive: true });
+    writeFileSync(
+      join(userConfigDir, 'demo-tenant', 'host-u1.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        subject: { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+        packs: {
+          '*': {
+            rules: [
+              {
+                id: 'r-l2-e2e-1',
+                text: '所有回复末尾附加敬语标记。',
+                origin: 'manual',
+                createdAt: '2026-08-05T00:00:00.000Z',
+              },
+            ],
+          },
+        },
+      }),
+    );
+    capturing = await startCapturingMock();
+    prevBaseUrl = process.env['ZA_LLM_BASE_URL'];
+    process.env['ZA_LLM_BASE_URL'] = `http://127.0.0.1:${capturing.port}/v1`;
+    l2Server = await startServer(serverOptions({ userConfigDir }));
+  });
+
+  afterAll(async () => {
+    await l2Server?.close();
+    await capturing?.close();
+    if (prevBaseUrl !== undefined) process.env['ZA_LLM_BASE_URL'] = prevBaseUrl;
+  });
+
+  it('system 注入含 L2 规则文本与条目 id；/injection 视图 user-rules 块同 id（三方互证的注入侧）', async () => {
+    capturing.requests.length = 0;
+    const token = await signToken();
+    const base = `http://127.0.0.1:${l2Server.port}`;
+    const created = await fetch(`${base}/v1/sessions`, { method: 'POST', headers: authHeaders(token) });
+    const { sessionId } = (await created.json()) as { sessionId: string };
+    const post = (frame: Record<string, unknown>): Promise<Response> =>
+      fetch(`${base}/v1/sessions/${sessionId}/frames`, {
+        method: 'POST',
+        headers: authHeaders(token, { 'content-type': 'application/json' }),
+        body: JSON.stringify(frame),
+      });
+    await post({ type: 'context-report', sessionId, url: ORDER_LIST_URL });
+    await post({ type: 'user-message', sessionId, text: '你好' });
+    const deadline = Date.now() + 8000;
+    while (capturing.requests.length === 0) {
+      if (Date.now() > deadline) throw new Error('等待 LLM 调用捕获超时');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const req = capturing.requests[capturing.requests.length - 1]!;
+    const messages = (req['messages'] ?? []) as Array<{ role: string; content: string }>;
+    const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+    expect(system).toContain('用户个人规则');
+    expect(system).toContain('所有回复末尾附加敬语标记。');
+    expect(system).toContain('r-l2-e2e-1');
+
+    const injection = await fetch(`${base}/v1/sessions/${sessionId}/injection`, {
+      headers: authHeaders(token),
+    });
+    expect(injection.status).toBe(200);
+    const view = (await injection.json()) as { blocks?: Array<{ kind: string; id?: string }> };
+    const userRuleBlocks = (view.blocks ?? []).filter((block) => block.kind === 'user-rules');
+    expect(userRuleBlocks.map((block) => block.id)).toContain('r-l2-e2e-1');
+  });
+});
+
 describe('adr-019 自动化描述符端点（pack 声明下发）', () => {
   it('GET /v1/automation-descriptors 输出生产快照的 pack 自动化声明', async () => {
     const srv = await startServer(serverOptions({ snapshotRoot: productionRoot }));

@@ -43,14 +43,14 @@ paths:
 
 ---
 
-## ZA-C-WHERE-04*（U4）配置=版本化不可变快照，布局同构
-**C4 快照一经产出 MUST 不可变（改配置=发新版本）；`assets/features/<id>/{feature.md, facts.md, tools.json}` + `assets/skills/<fn>/SKILL.md` + `manifest.json` 布局 MUST 与标准版配置中心发布产出物结构同构。**
+## ZA-C-WHERE-04*（U4）配置双源：L1 不可变快照同构 + L2 UserConfigStore 端口
+**L1（C4 快照）一经产出 MUST 不可变（改配置=发新版本）；`assets/packs/<packId>/{pack.json, features/<id>/{feature.md, facts.md, tools.json}, skills/<fn>/SKILL.md}` + `manifest.json` 布局 MUST 与标准版配置中心发布产出物结构同构。L2 用户覆盖层 MUST 只经 UserConfigStore 端口读写、以 revision（内容 hash）可追溯，显式排除在同构与不可变约束之外；此两源之外 MUST NOT 存在配置源。**
 - 升级=换生产端（git 文件 → 配置中心），消费端（assembly 装配引擎）零改动；灰度/回滚=切快照版本号。
-- 判定：运行时就地改写快照文件 / 装配引擎读取快照布局之外的旁门配置源 → 触发。
+- L2 自带三约束：只收紧（riskTier 合并恒 max(L1,L2)）、可审计（revision 入 C5 事件）、可追溯（逐条来源标注）。
+- 判定：运行时就地改写快照文件 / 装配引擎读取「快照布局之外且非 UserConfigStore 端口」的配置源 → 触发。
 
-> 反例：为"热修"让 server 运行中直接改 feature.md 且不升 manifest 版本 → 快照可变、回滚失效 → 违反 WHERE-04。
-
-- 修订已裁决待落地（adr-014 双源模型：L2 用户覆盖层经 UserConfigStore 端口读取、revision 可追溯，排除在本条快照约束外）：P2.5-b 实施时与代码同一变更修订本条与设计基准 §4；在此之前本条按现文执行。
+> 反例：为"热修"让 server 运行中直接改 feature.md 且不升 manifest 版本 → 快照可变、回滚失效 → 违反 WHERE-04；
+> 为省端口让 compose 直接 fs 读 `.za/user-config/` → 旁路 UserConfigStore、revision 不可追溯 → 同违反。
 
 ---
 

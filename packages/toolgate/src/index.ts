@@ -15,6 +15,8 @@ import type {
   ExecRequest,
   GateDecision,
   GateDecisionInput,
+  GateUserConfigInput,
+  RiskTier,
   HitlGrantInput,
   IdentityClaims,
   IssueExecInstructionInput,
@@ -173,6 +175,20 @@ class InMemoryNonceStore implements NonceStore {
 }
 
 const KNOWN_RISK_TIERS = new Set(['auto', 'hitl', 'forbidden']);
+
+const RISK_TIER_RANK: Record<RiskTier, number> = { auto: 0, hitl: 1, forbidden: 2 };
+
+/**
+ * L2 定格收紧合并（adr-014 封 TOCTOU）：riskTier = max(静态定义值, effectiveTiers[toolId] ?? 静态值)——
+ * 端口入参只能收紧不能放宽（U7 防御纵深）；越出闭集的声明按 forbidden 处理（fail-closed）。
+ * toolgate 不依赖 UserConfigStore（U2）：唯一 L2 输入就是 compose 冻结后经端口入参传入的本值。
+ */
+function effectiveRiskTier(tool: ToolDefinition, userConfig: GateUserConfigInput | undefined): RiskTier {
+  const declared = userConfig?.effectiveTiers[tool.id];
+  if (declared === undefined) return tool.riskTier;
+  if (!KNOWN_RISK_TIERS.has(declared)) return 'forbidden';
+  return RISK_TIER_RANK[declared] > RISK_TIER_RANK[tool.riskTier] ? declared : tool.riskTier;
+}
 
 /** 已实现的 dom 动作（navigate 于 ADR-013 批次④启用，单步专走）；waitFor 契约保留、命中即拒。 */
 const IMPLEMENTED_DOM_ACTIONS = new Set(['click', 'fill', 'select', 'read', 'scroll', 'highlight']);
@@ -917,6 +933,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       const tool = toolsById.get(input.toolId);
       if (!tool) return deny('unknown-tool');
       if (!KNOWN_RISK_TIERS.has(tool.riskTier)) return deny('unknown-risk-tier');
+      const riskTier = effectiveRiskTier(tool, input.userConfig);
       // 通道闸 fail-closed：闭集两值都已实现（client 代执行 / server 直调）；显式列举，未来枚举扩张时新通道默认被拒而非静默降级（U3/U7）。
       if (tool.execution !== 'client' && tool.execution !== 'server')
         return deny('channel-not-implemented');
@@ -925,7 +942,14 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       // 身份口径按 adapter 形态分派（ADR-013）：dom 只要求平台 JWT，http/server 要求宿主 claims（site pack 按 per-origin）。
       const identityDenial = checkIdentity(tool, input);
       if (identityDenial !== null) return deny(identityDenial);
-      if (tool.riskTier === 'forbidden') return deny('forbidden');
+      // degraded 降级轮的 forbidden 与用户/pack 配置的 forbidden 可区分（R6）：前者因配置存储故障临时禁用。
+      if (riskTier === 'forbidden') {
+        return deny(
+          input.userConfig?.degraded === true && tool.riskTier !== 'forbidden'
+            ? 'user-config-unavailable'
+            : 'forbidden',
+        );
+      }
       if (isDomTool(tool) && tool.authorization?.kind !== 'bounded-fulfillment') {
         const validated = validateDomSteps(tool, input.params, input.domContext, input.packOrigin, urlInFence);
         if ('reason' in validated) return deny(validated.reason);
@@ -935,7 +959,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       // every-call 工具跳过复用查询（对外不可撤回动作次次单独确认，不复用授权）。
       const grantTask = input.params['task'];
       if (
-        tool.riskTier === 'hitl' &&
+        riskTier === 'hitl' &&
         tool.hitlMode !== 'every-call' &&
         typeof grantTask === 'string' &&
         consumeGrant(input.sessionId, grantTask)
@@ -944,12 +968,12 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       }
       // ADR-016：every-call 对自由文本仍次次确认；只有声明了 bounded-fulfillment 且本次调用
       // 完整命中服务端预批准策略时才自动放行。decide 同步完成订单预占，日限额并发下不超卖。
-      if (tool.riskTier === 'hitl' && tool.authorization?.kind === 'bounded-fulfillment') {
+      if (riskTier === 'hitl' && tool.authorization?.kind === 'bounded-fulfillment') {
         const bounded = reserveBoundedFulfillment(tool, input);
         if (bounded.allowed) return { verdict: 'allow' };
         return deny(bounded.reason ?? 'bounded-authorization-denied');
       }
-      return { verdict: tool.riskTier === 'hitl' ? 'hitl' : 'allow' };
+      return { verdict: riskTier === 'hitl' ? 'hitl' : 'allow' };
     },
 
     async grantHitl(input: HitlGrantInput): Promise<void> {
@@ -968,6 +992,10 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       }
       const tool = toolsById.get(input.toolId);
       if (!tool) throw new Error(`issueExecInstruction 前提破坏：未知 toolId`);
+      // 签发是治理终点：以与 decide 同一冻结的 L2 定格面独立重校验（U7，封 TOCTOU）。
+      if (effectiveRiskTier(tool, input.userConfig) === 'forbidden') {
+        throw new Error('签发拒绝：工具在 L2 定格面为 forbidden');
+      }
       const keyForCall = callKey(input.sessionId, input.toolCallId);
       if (
         tool.authorization?.kind === 'bounded-fulfillment' &&
@@ -1104,6 +1132,10 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       const tool = toolsById.get(input.toolId);
       if (!tool) throw new Error('executeServer 前提破坏：未知 toolId');
       if (tool.execution !== 'server') throw new Error('executeServer 前提破坏：非 server 通道');
+      // 与 issueExecInstruction 同一独立重校验（U7）：L2 定格 forbidden 的工具不执行。
+      if (effectiveRiskTier(tool, input.userConfig) === 'forbidden') {
+        return { toolCallId: input.toolCallId, ok: false, content: null, error: 'forbidden' };
+      }
       const adapter = tool.adapter;
       // 渲染上下文＝实参 + 已验签身份（身份后置覆盖防冒充）+ 解析出的凭证；凭证真值仅参与本次请求构造，不落任何返回/日志。
       // site pack 用 per-origin 身份，legacy 用平台 claims。

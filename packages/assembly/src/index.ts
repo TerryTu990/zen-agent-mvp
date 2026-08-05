@@ -10,14 +10,23 @@ import type {
   ConfigSnapshotManifest,
   InjectionBlock,
   InjectionDescription,
+  InjectionToolDescriptor,
   PackAutomation,
   PackManifest,
   ReadPackDocResult,
   RegistryManifest,
+  RiskTier,
   SiteDescriptor,
   SkillAsset,
   ToolDefinition,
   ToolOwnership,
+  UserConfigStore,
+  UserConfigSubject,
+  UserInjectionEntry,
+  UserOverlay,
+  UserOverlayEntry,
+  UserOverlayPackScope,
+  UserOverlayRestrictions,
 } from '@zen-agent/contracts';
 import {
   checkContractCompatibility,
@@ -33,6 +42,11 @@ export interface AssemblyOptions {
   snapshotRoot: string;
   /** 跨功能稳定基座（system prompt）文件路径，随快照一次载入。 */
   systemPromptPath: string;
+  /**
+   * L2 用户覆盖层存储端口（adr-014，组装点注入）：注入且 compose 提供 subject 时启用 L2 合并；
+   * 缺省 = 纯 L1 装配。每回合单次 read 定格、不进快照缓存（快照仍不可变，U4）。
+   */
+  userConfigStore?: UserConfigStore;
 }
 
 /** 单次读取 pack 文档正文的字节上限（渐进披露：正文按需取，防单次回喂过量）。 */
@@ -617,88 +631,254 @@ interface AssembledInjection {
 }
 
 /**
+ * 本回合定格的 L2 读取结果（adr-014）：compose/describeInjection 每次调用单次 read、
+ * 不进快照缓存（快照仍不可变，U4）。degraded=true 表示 read 抛错且无缓存——
+ * rules/facts fail-open、工具面全 forbidden 的拆分降级（U7 存储故障不得放宽治理）。
+ */
+interface L2Context {
+  degraded: boolean;
+  overlay: UserOverlay | null;
+  revision?: string;
+  stale?: true;
+}
+
+async function readL2(
+  store: UserConfigStore | undefined,
+  subject: UserConfigSubject | undefined,
+): Promise<L2Context | undefined> {
+  if (store === undefined || subject === undefined) return undefined;
+  try {
+    const result = await store.read(subject);
+    return {
+      degraded: false,
+      overlay: result.overlay,
+      revision: result.revision,
+      ...(result.stale === true ? { stale: true as const } : {}),
+    };
+  } catch {
+    return { degraded: true, overlay: null };
+  }
+}
+
+const RISK_TIER_RANK: Record<RiskTier, number> = { auto: 0, hitl: 1, forbidden: 2 };
+
+function maxTier(a: RiskTier, b: RiskTier): RiskTier {
+  return RISK_TIER_RANK[b] > RISK_TIER_RANK[a] ? b : a;
+}
+
+const USER_ENTRY_ORIGIN_LABELS: Record<UserOverlayEntry['origin'], string> = {
+  manual: '手动添加',
+  teach: '对话确认',
+};
+
+/** L2 条目渲染（R4 逐条来源标注）：文本内嵌条目 id 与来源，供透明视图与审计定位。 */
+function renderUserEntry(entry: UserOverlayEntry): UserInjectionEntry {
+  return {
+    id: entry.id,
+    text: `[${entry.id}] ${entry.text}（来源：${USER_ENTRY_ORIGIN_LABELS[entry.origin]}）`,
+  };
+}
+
+/** featureId 过滤：条目缺省 featureId = 整 pack 生效；有值须 === 当前 featureId 才注入。 */
+function filterUserEntries(
+  entries: UserOverlayEntry[] | undefined,
+  featureId: string | null,
+): UserOverlayEntry[] {
+  return (entries ?? []).filter(
+    (entry) => entry.featureId === undefined || entry.featureId === featureId,
+  );
+}
+
+/**
+ * L1 工具面与 L2 restrictions 的收紧合并（adr-014 §3）：riskTier 恒 max(L1, L2)；
+ * disabledTools 从可见面移除但 descriptors 保留为 forbidden（幻觉调用仍被拒的数据源）；
+ * 越界引用逐条失效不阻断其余，收入 invalidRefs 供网关落审计——判定基线是 packToolIds
+ * （激活 pack 全量工具闭集，与写入期 validateOverlayAgainstL1 同口径）：引用同 pack
+ * 其他 feature 工具的合法收紧不算越界，feature 过滤只决定本轮是否参与合并。
+ */
+function mergeToolFace(
+  tools: ToolDefinition[],
+  restrictions: UserOverlayRestrictions | undefined,
+  scopeKey: string,
+  packToolIds: Set<string>,
+): { visible: ToolDefinition[]; descriptors: InjectionToolDescriptor[]; invalidRefs: string[] } {
+  const raise = restrictions?.riskTierRaise ?? {};
+  const disabled = new Set(restrictions?.disabledTools ?? []);
+  const invalidRefs = [
+    ...Object.keys(raise).filter((id) => !packToolIds.has(id)),
+    ...[...disabled].filter((id) => !packToolIds.has(id)),
+  ];
+  const descriptors = tools.map((tool): InjectionToolDescriptor => {
+    const declared = raise[tool.id];
+    const merged = disabled.has(tool.id)
+      ? 'forbidden'
+      : declared !== undefined
+        ? maxTier(tool.riskTier, declared)
+        : tool.riskTier;
+    return {
+      toolId: tool.id,
+      baseTier: tool.riskTier,
+      effectiveTier: merged,
+      origin: 'L1',
+      ...(merged !== tool.riskTier ? { tightenedBy: scopeKey } : {}),
+    };
+  });
+  return { visible: tools.filter((tool) => !disabled.has(tool.id)), descriptors, invalidRefs };
+}
+
+/**
  * compose 与 describeInjection 的同源装配（单一产出函数投影两视图），
  * 保证「查看到的注入构成」与「实际注入内容」一致。返回值为缓存的深拷贝，
  * 调用方变更不回写快照（U4）。packId=null → 仅基座（skills/docs/工具面均空）。
+ * l2 提供时按 adr-014 合并：注入序 L0 → sitesIndex → L1 feature/facts →
+ * L2 "*" 全局 → L2 pack 级 → skills → docsIndex；blocks 的 origin 标注仅在
+ * L2 参与时产出（缺省 = legacy 未标注，兼容既有消费方）。
  */
 function assembleInjection(
   snapshot: LoadedSnapshot,
   packId: string | null,
   featureId: string | null,
+  l2?: L2Context,
 ): AssembledInjection {
   const bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
+  const l2Active = l2 !== undefined;
+  // enabled:false（L2 pack 级关停）：该 pack 按未激活装配（回落仅基座），pack 作用域条目与工具面一并回落。
+  const requestedScope =
+    l2Active && !l2.degraded && packId !== null && l2.overlay !== null
+      ? l2.overlay.packs[packId]
+      : undefined;
+  const packDisabled = (requestedScope as UserOverlayPackScope | undefined)?.enabled === false;
+  const activePackId = packDisabled ? null : packId;
+
   // 站点索引跨功能稳定（不随 featureId 变），全局计算、只按当前激活 pack 标注（当前）；<2 site → null。
-  const sitesIndex = buildSitesIndex(snapshot, packId);
-  const blocks: InjectionBlock[] = [{ kind: 'system-prompt', bytes: bytes(snapshot.systemPrompt) }];
-  if (sitesIndex !== null) blocks.push({ kind: 'sites-index', bytes: bytes(sitesIndex) });
+  const sitesIndex = buildSitesIndex(snapshot, activePackId);
+  const origin = (layer: 'L0' | 'L1'): { origin?: 'L0' | 'L1' } => (l2Active ? { origin: layer } : {});
+  const blocks: InjectionBlock[] = [
+    { kind: 'system-prompt', bytes: bytes(snapshot.systemPrompt), ...origin('L0') },
+  ];
+  if (sitesIndex !== null) blocks.push({ kind: 'sites-index', bytes: bytes(sitesIndex), ...origin('L0') });
 
-  if (packId === null) {
-    return {
-      compose: {
-        snapshotVersion: snapshot.version,
-        packId: null,
-        packVersion: null,
-        systemPrompt: snapshot.systemPrompt,
-        featureRules: null,
-        facts: null,
-        skills: [],
-        tools: [],
-        docsIndex: null,
-        sitesIndex,
-      },
-      description: { snapshotVersion: snapshot.version, packId: null, featureId, blocks, toolIds: [] },
-    };
-  }
-
-  const pack = snapshot.packs.get(packId);
-  if (pack === undefined) {
-    throw new Error(`装配拒绝：packId ${packId} 不在当前快照内`);
-  }
+  let pack: LoadedPack | null = null;
   let feature: FeatureAssets | null = null;
-  if (featureId !== null) {
-    const found = pack.features.get(featureId);
+  if (activePackId !== null) {
+    const found = snapshot.packs.get(activePackId);
     if (found === undefined) {
-      throw new Error(`装配拒绝：featureId ${featureId} 不在 pack ${packId} 内`);
+      throw new Error(`装配拒绝：packId ${activePackId} 不在当前快照内`);
     }
-    feature = found;
+    pack = found;
+    if (featureId !== null) {
+      const featureFound = pack.features.get(featureId);
+      if (featureFound === undefined) {
+        throw new Error(`装配拒绝：featureId ${featureId} 不在 pack ${activePackId} 内`);
+      }
+      feature = featureFound;
+    }
   }
-  const tools =
+  const l1Tools =
     feature === null ? [] : feature.tools.filter((tool) => tool.featureIds.includes(featureId!));
   if (feature !== null) {
     blocks.push(
-      { kind: 'feature-rules', bytes: bytes(feature.featureRules) },
-      { kind: 'facts', bytes: bytes(feature.facts) },
+      { kind: 'feature-rules', bytes: bytes(feature.featureRules), ...origin('L1') },
+      { kind: 'facts', bytes: bytes(feature.facts), ...origin('L1') },
     );
   }
-  for (const skill of pack.skills) {
-    blocks.push({ kind: 'skill', id: skill.id, bytes: bytes(skill.content) });
+
+  const userRules: UserInjectionEntry[] = [];
+  const userFacts: UserInjectionEntry[] = [];
+  if (l2Active && !l2.degraded && l2.overlay !== null) {
+    const scopeIds = activePackId !== null ? ['*', activePackId] : ['*'];
+    for (const scopeId of scopeIds) {
+      const scope = l2.overlay.packs[scopeId];
+      if (scope === undefined) continue;
+      for (const entry of filterUserEntries(scope.rules, featureId).map(renderUserEntry)) {
+        blocks.push({ kind: 'user-rules', id: entry.id, bytes: bytes(entry.text), origin: 'L2' });
+        userRules.push(entry);
+      }
+      for (const entry of filterUserEntries(scope.facts, featureId).map(renderUserEntry)) {
+        blocks.push({ kind: 'user-facts', id: entry.id, bytes: bytes(entry.text), origin: 'L2' });
+        userFacts.push(entry);
+      }
+    }
   }
-  if (pack.docsIndex !== null) {
-    blocks.push({ kind: 'docs-index', bytes: bytes(pack.docsIndex) });
+
+  if (pack !== null) {
+    for (const skill of pack.skills) {
+      blocks.push({ kind: 'skill', id: skill.id, bytes: bytes(skill.content), ...origin('L1') });
+    }
+    if (pack.docsIndex !== null) {
+      blocks.push({ kind: 'docs-index', bytes: bytes(pack.docsIndex), ...origin('L1') });
+    }
   }
+
+  let visibleTools = l1Tools;
+  let effectiveTools: InjectionToolDescriptor[] | undefined;
+  let invalidRefs: string[] = [];
+  if (l2Active) {
+    if (l2.degraded) {
+      // 读失败且无缓存的拆分降级：规则/事实 fail-open 纯 L1，治理面 fail-closed——全部工具置
+      // forbidden 且可见面清空（含用户已 disabled 的工具不复现、agent 不在注定失败的调用上空转）；
+      // descriptors 保留全量 forbidden 作幻觉调用拒绝的数据源（U7）。
+      visibleTools = [];
+      effectiveTools = l1Tools.map(
+        (tool): InjectionToolDescriptor => ({
+          toolId: tool.id,
+          baseTier: tool.riskTier,
+          effectiveTier: 'forbidden',
+          origin: 'L1',
+          tightenedBy: 'storage-failure',
+        }),
+      );
+    } else {
+      const restrictions = packDisabled
+        ? undefined
+        : (requestedScope as UserOverlayPackScope | undefined)?.restrictions;
+      const packToolIds = new Set(
+        pack === null
+          ? []
+          : [...pack.features.values()].flatMap((assets) => assets.tools.map((tool) => tool.id)),
+      );
+      const merged = mergeToolFace(l1Tools, restrictions, packId ?? '*', packToolIds);
+      visibleTools = merged.visible;
+      effectiveTools = merged.descriptors;
+      invalidRefs = merged.invalidRefs;
+    }
+  }
+  const l2Extras: Partial<ComposeResult> = l2Active
+    ? {
+        ...(l2.revision !== undefined ? { userConfigRevision: l2.revision } : {}),
+        ...(l2.degraded ? { userConfigDegraded: 'fail-open-closed' as const } : { userRules, userFacts }),
+        ...(effectiveTools !== undefined ? { effectiveTools } : {}),
+        ...(invalidRefs.length > 0 ? { invalidRefs } : {}),
+        ...(l2.stale === true ? { userConfigStale: true as const } : {}),
+        ...(packDisabled ? { packDisabled: true as const } : {}),
+      }
+    : {};
+
   return {
     compose: {
       snapshotVersion: snapshot.version,
-      packId: pack.packId,
-      packVersion: pack.version,
+      packId: pack === null ? null : pack.packId,
+      packVersion: pack === null ? null : pack.version,
       systemPrompt: snapshot.systemPrompt,
       featureRules: feature === null ? null : feature.featureRules,
       facts: feature === null ? null : feature.facts,
-      skills: structuredClone(pack.skills),
-      tools: structuredClone(tools),
-      docsIndex: pack.docsIndex,
+      skills: pack === null ? [] : structuredClone(pack.skills),
+      tools: structuredClone(visibleTools),
+      docsIndex: pack === null ? null : pack.docsIndex,
       sitesIndex,
+      ...l2Extras,
     },
     description: {
       snapshotVersion: snapshot.version,
-      packId: pack.packId,
+      packId: pack === null ? null : pack.packId,
       featureId,
       blocks,
-      toolIds: tools.map((tool) => tool.id),
-      packVersion: pack.version,
-      packSource: pack.source,
-      ...(pack.name !== null ? { packName: pack.name } : {}),
+      toolIds: visibleTools.map((tool) => tool.id),
+      ...(pack !== null ? { packVersion: pack.version, packSource: pack.source } : {}),
+      ...(pack !== null && pack.name !== null ? { packName: pack.name } : {}),
       ...(feature?.title != null ? { featureTitle: feature.title } : {}),
+      ...(effectiveTools !== undefined ? { tools: structuredClone(effectiveTools) } : {}),
+      ...(l2Active && l2.revision !== undefined ? { userConfigRevision: l2.revision } : {}),
     },
   };
 }
@@ -722,11 +902,13 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
         ...(pack.generic ? { generic: true } : {}),
       };
     },
-    async compose({ packId, featureId }) {
-      return assembleInjection(getSnapshot(), packId, featureId).compose;
+    async compose({ packId, featureId, subject }) {
+      const l2 = await readL2(options.userConfigStore, subject);
+      return assembleInjection(getSnapshot(), packId, featureId, l2).compose;
     },
-    async describeInjection({ packId, featureId }) {
-      return assembleInjection(getSnapshot(), packId, featureId).description;
+    async describeInjection({ packId, featureId, subject }) {
+      const l2 = await readL2(options.userConfigStore, subject);
+      return assembleInjection(getSnapshot(), packId, featureId, l2).description;
     },
     async readPackDoc({ packId, docPath }): Promise<ReadPackDocResult> {
       if (packId === null) return { ok: false, error: '无激活 pack，无可读文档' };

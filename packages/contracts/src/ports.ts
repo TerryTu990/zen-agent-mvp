@@ -53,6 +53,14 @@ export interface SkillAsset {
   content: string;
 }
 
+/** L2 个人规则/事实的渲染条目（R4）：text 已含来源标注，id 与 InjectionBlock.id、overlay 条目 id 三方对齐。 */
+export interface UserInjectionEntry {
+  /** overlay 条目 id。 */
+  id: string;
+  /** 渲染好的注入文本（含来源标注）。 */
+  text: string;
+}
+
 /**
  * 每轮换出的装配产物：稳定基座 + 功能块 + pack 作用域 skills + 工具白名单 + docs 索引（装配对 agent 透明）。
  * skills/docsIndex 收敛到激活 pack；packId=null 时均为空/null。
@@ -77,10 +85,45 @@ export interface ComposeResult {
    * 当前激活 pack 标注（当前）。仅 ≥2 个带 site 的 pack 时非 null（单 site/legacy 无跨站意义 → null）。
    */
   sitesIndex: string | null;
+  /**
+   * 本轮定格的 L2 overlay revision（内容 hash）：注入透明视图/审计/工具判定三方互证（R4）。
+   * 缺省 = 纯 L1 装配（无 L2 参与）或 degraded（读失败无缓存，以 userConfigDegraded 标注替代）。
+   */
+  userConfigRevision?: string;
+  /** L2 个人规则渲染块（按当前 featureId 过滤，注入序在 L1 之后、"*" 先于 pack 级）；缺省 = 无 L2 参与或读失败 fail-open。 */
+  userRules?: UserInjectionEntry[];
+  /** L2 个人事实渲染块；语义同 userRules。 */
+  userFacts?: UserInjectionEntry[];
+  /** true = 本轮激活 pack 被用户 enabled:false 关停而回落仅基座（packId 已为 null）；审计与网关据此区分「无 pack」与「已关停」。 */
+  packDisabled?: true;
+  /**
+   * 工具面逐项生效分级（与 describeInjection 的 tools 同源同值）：disabledTools 条目从 agent 可见
+   * tools 移除但在此保留并置 effectiveTier:'forbidden'（幻觉调用仍被拒）；缺省 = 无 L2 参与。
+   */
+  effectiveTools?: InjectionToolDescriptor[];
+  /** L2 越界引用（toolId 已不在 L1 工具面）清单：逐条失效不阻断其余条目，网关据此落审计；缺省 = 无。 */
+  invalidRefs?: string[];
+  /** true = 本轮 overlay 取自最近一次成功读取的缓存（读失败降级），网关须落审计标注 stale；缺省 = 新鲜读取。 */
+  userConfigStale?: true;
+  /**
+   * 'fail-open-closed' = L2 读失败且无缓存的拆分降级：rules/facts fail-open 纯 L1 注入，
+   * effectiveTools 全部置 effectiveTier:'forbidden'（tightenedBy:'storage-failure'）——
+   * 存储故障不得放宽治理（U7）；缺省 = 无降级。
+   */
+  userConfigDegraded?: 'fail-open-closed';
 }
 
 export interface InjectionBlock {
-  kind: 'system-prompt' | 'sites-index' | 'feature-rules' | 'facts' | 'skill' | 'docs-index';
+  /** 'user-rules'/'user-facts' = L2 个人条目（每条一个 block，id=条目 id，origin:'L2'）。 */
+  kind:
+    | 'system-prompt'
+    | 'sites-index'
+    | 'feature-rules'
+    | 'facts'
+    | 'user-rules'
+    | 'user-facts'
+    | 'skill'
+    | 'docs-index';
   id?: string;
   bytes: number;
   /** 注入段来源层（R4 透明视图）：L0 基座 / L1 pack / L2 用户覆盖层；缺省 = 未标注（legacy 产出）。 */
@@ -96,7 +139,10 @@ export interface InjectionToolDescriptor {
   effectiveTier: RiskTier;
   /** 工具定义来源层：L0 内建 / L1 pack——L2 结构上无工具定义表达力（adr-014），故不在此闭集。 */
   origin: 'L0' | 'L1';
-  /** effectiveTier 高于 baseTier 时的收紧来源（user-overlay 作用域键，即 packId）；未收紧省略。 */
+  /**
+   * effectiveTier 高于 baseTier 时的收紧来源：user-overlay 作用域键（packId），或哨兵值
+   * 'storage-failure'（L2 读失败无缓存的治理降级，U7 存储故障不得放宽治理）；未收紧省略。
+   */
   tightenedBy?: string;
 }
 
@@ -118,6 +164,8 @@ export interface InjectionDescription {
   packSource?: PackSource;
   /** 激活功能的人读标题（feature.md frontmatter title）；未声明或无功能时省略，展示回退 featureId。 */
   featureTitle?: string;
+  /** 本轮定格的 L2 overlay revision：与 ComposeResult.userConfigRevision 同源同值（R4 三方互证）；缺省 = 无 L2 参与或读失败降级。 */
+  userConfigRevision?: string;
 }
 
 /** pack docs 正文按需读取（渐进披露的 pack_doc 内建工具后端）：只读当前激活 pack 的 docs/。 */
@@ -285,6 +333,19 @@ interface PackScopeInput {
   claimsForOrigin?: IdentityClaims;
 }
 
+/**
+ * compose 定格的 L2 生效面（封 TOCTOU）：toolgate MUST NOT 依赖 UserConfigStore（U2），只消费本入参；
+ * 判定 riskTier = max(静态定义值, effectiveTiers[toolId] ?? 静态值)——端口入参只能收紧不能放宽（U7 防御纵深）。
+ */
+export interface GateUserConfigInput {
+  /** compose 本轮定格的 overlay revision（内容 hash）；与 assembly/tool-decision 审计事件同值互证（R4）。degraded 时缺省。 */
+  revision?: string;
+  /** true = L2 读失败且无缓存的拆分降级轮（工具面已全 forbidden，U7）；此时 revision 缺省，审计以 userConfigDegraded 标注互证。 */
+  degraded?: true;
+  /** toolId → L2 合并后的生效分级（含 disabledTools 置 forbidden 的条目）；未列出的 toolId 用静态定义值。 */
+  effectiveTiers: Record<string, RiskTier>;
+}
+
 export interface GateDecisionInput extends PackScopeInput {
   sessionId: string;
   toolCallId: string;
@@ -293,6 +354,8 @@ export interface GateDecisionInput extends PackScopeInput {
   claims: IdentityClaims;
   /** dom 工具必需（缺失即 deny：未观察不操作）；http/server 工具忽略。 */
   domContext?: DomGateContext;
+  /** 本轮定格的 L2 生效面；缺省 = 无 L2 参与（纯静态分级判定）。 */
+  userConfig?: GateUserConfigInput;
 }
 
 /** 判定结果：分级矩阵 + 身份/实参校验，任一不过即 deny（fail-closed，U7）。 */
@@ -310,6 +373,8 @@ export interface IssueExecInstructionInput extends PackScopeInput {
   claims: IdentityClaims;
   /** dom 工具必需：签发是治理终点，签名前独立重校验（不依赖 decide 已通过的假设，U7）。 */
   domContext?: DomGateContext;
+  /** 本轮定格的 L2 生效面（与 decide 同一冻结值）；缺省 = 无 L2 参与。 */
+  userConfig?: GateUserConfigInput;
 }
 
 export interface AcceptExecResultInput {
@@ -515,6 +580,8 @@ export interface UserConfigReadResult {
   overlay: UserOverlay | null;
   /** overlay 内容 hash；空 overlay 亦有稳定 revision——compose 每回合定格该值，注入透明视图/审计/工具判定三方互证（R4）。 */
   revision: string;
+  /** true = 本次读取失败、返回的是最近一次成功读取的结果（lastGood）——消费方须落审计标注；缺省 = 新鲜读取。 */
+  stale?: true;
 }
 
 export interface UserConfigWriteResult {

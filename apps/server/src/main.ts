@@ -112,6 +112,7 @@ startServer({
   auditSinkPath: process.env['ZA_AUDIT_SINK'] ?? '.za/events.jsonl',
   sessionDir: process.env['ZA_SESSION_DIR'] ?? '.za/sessions',
   applicationsDir: process.env['ZA_APPLICATIONS_DIR'] ?? '.za/applications',
+  userConfigDir: process.env['ZA_USER_CONFIG_DIR'] ?? '.za/user-config',
   genericAllowlist,
   fulfillmentPolicies,
   fulfillmentProductKeys,

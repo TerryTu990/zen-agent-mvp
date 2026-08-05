@@ -64,6 +64,14 @@ export interface AssemblyEvent extends AuditEventBase {
     rulesDigest?: string;
     /** 本轮 compose 定格的 L2 overlay revision；与 user-config-write 事件互证（R4）。缺省 = 无 L2 参与。 */
     userConfigRevision?: string;
+    /** true = 本轮 overlay 取自最近一次成功读取的缓存（读失败降级）；缺省 = 新鲜读取。 */
+    userConfigStale?: true;
+    /** L2 读失败且无缓存的拆分降级标注（rules/facts fail-open + 工具面全 forbidden，U7）；缺省 = 无降级。 */
+    userConfigDegraded?: 'fail-open-closed';
+    /** L2 越界引用（toolId 已不在激活 pack 工具闭集）逐条失效清单；缺省 = 无。 */
+    invalidRefs?: string[];
+    /** true = 激活 pack 被用户 enabled:false 关停而回落仅基座；缺省 = 非关停回落。 */
+    packDisabled?: true;
   };
 }
 
@@ -76,8 +84,12 @@ export interface ToolDecisionEvent extends AuditEventBase {
     verdict: GateVerdict;
     /** 判定依据说明，不含实参值与敏感信息。 */
     reason?: string;
-    /** 本轮判定所依据的 L2 定格 revision：与 assembly / user-config-write 事件同值互证（R4）；缺省=无 L2 参与。 */
+    /** 本轮判定所依据的 L2 定格 revision：与 assembly / user-config-write 事件同值互证（R4）；缺省=无 L2 参与或 degraded。 */
     userConfigRevision?: string;
+    /** L2 读失败且无缓存的降级轮标注：与 assembly 事件同值互证；缺省=无降级。 */
+    userConfigDegraded?: 'fail-open-closed';
+    /** L2 收紧后的本轮生效分级（riskTier 为静态定义值）；缺省=无 L2 收紧、生效值即静态值。 */
+    effectiveTier?: RiskTier;
   };
 }
 

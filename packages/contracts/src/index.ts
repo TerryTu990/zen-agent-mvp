@@ -103,8 +103,11 @@ export type {
   UserOverlayValidationIssue,
   ValidateUserOverlayOptions,
   UserOverlayValidationResult,
+  UserOverlayL1ToolBaseline,
+  UserOverlayL1AutomationBaseline,
+  UserOverlayL1Baseline,
 } from './user-overlay.js';
-export { validateUserOverlay, compileConfigSchema } from './user-overlay.js';
+export { validateUserOverlay, validateOverlayAgainstL1, compileConfigSchema } from './user-overlay.js';
 export type { ContractCompatibility } from './contract-version.js';
 export { contractVersion, checkContractCompatibility } from './contract-version.js';
 export type {
@@ -112,6 +115,7 @@ export type {
   ResolveFeatureResult,
   ComposeInput,
   SkillAsset,
+  UserInjectionEntry,
   ComposeResult,
   InjectionBlock,
   InjectionToolDescriptor,
@@ -132,6 +136,7 @@ export type {
   ConfirmFulfillmentReceiptResult,
   ConfirmShipmentStatusInput,
   ConfirmShipmentStatusResult,
+  GateUserConfigInput,
   GateDecisionInput,
   GateDecision,
   HitlGrantInput,

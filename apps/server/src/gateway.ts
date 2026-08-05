@@ -25,6 +25,7 @@ import type {
   DownstreamFrame,
   ExecutionPreference,
   ExecResultFrame,
+  GateUserConfigInput,
   GuideActionKind,
   GuideActionFrame,
   HitlDecisionValue,
@@ -36,6 +37,7 @@ import type {
   LlmToolSpec,
   Observation,
   ResolveFeatureResult,
+  RiskTier,
   SiteDescriptor,
   SnapshotReportFrame,
   SnapshotEvidenceRule,
@@ -43,6 +45,7 @@ import type {
   ToolDefinition,
   ToolGatePort,
   UpstreamFrame,
+  UserConfigSubject,
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
 import { signDemoToken, type DemoTokenSigner } from './demo-token.js';
@@ -335,6 +338,13 @@ function buildSystemContent(composed: ComposeResult): string {
   if (composed.sitesIndex !== null) parts.push(composed.sitesIndex);
   if (composed.featureRules !== null) parts.push(composed.featureRules);
   if (composed.facts !== null) parts.push(composed.facts);
+  // L2 个人规则/事实居 L1 功能块之后、skills 之前（adr-014 注入序）；条目已由 compose 渲染并带来源标注。
+  if (composed.userRules !== undefined && composed.userRules.length > 0) {
+    parts.push(['# 用户个人规则', ...composed.userRules.map((entry) => entry.text)].join('\n'));
+  }
+  if (composed.userFacts !== undefined && composed.userFacts.length > 0) {
+    parts.push(['# 用户个人事实', ...composed.userFacts.map((entry) => entry.text)].join('\n'));
+  }
   for (const skill of composed.skills) parts.push(skill.content);
   if (composed.docsIndex !== null) parts.push(composed.docsIndex);
   return parts.join('\n\n');
@@ -350,6 +360,23 @@ function systemContentFor(composed: ComposeResult, pack: PackRef, activeUrl: str
   const origin = originOf(activeUrl);
   const where = origin === '' ? '当前站点' : `当前活跃页位于 ${origin}，该站点`;
   return `${base}\n\n${where}无专属功能配置（仅基座）：没有本站点的专属知识与页面代操作工具；不得臆断当前站点的身份或归属，需要站点身份而未知时如实说明。`;
+}
+
+/** L2 归属键（adr-014）：每回合以已验签 claims 构造，compose 据此单次读取并定格 overlay。 */
+function subjectOf(claims: IdentityClaims): UserConfigSubject {
+  return { tenant: claims.tenant, hostUserId: claims.hostUserId };
+}
+
+const RISK_TIER_RANK: Record<RiskTier, number> = { auto: 0, hitl: 1, forbidden: 2 };
+
+/** 审计用生效分级（与 toolgate 同一 max 钳制口径）：事件自解释「静态值 + 生效值」，不回查 overlay。 */
+function effectiveTierOf(
+  tool: { id: string; riskTier: RiskTier },
+  userConfig: GateUserConfigInput | undefined,
+): RiskTier {
+  const declared = userConfig?.effectiveTiers[tool.id];
+  if (declared === undefined) return tool.riskTier;
+  return RISK_TIER_RANK[declared] > RISK_TIER_RANK[tool.riskTier] ? declared : tool.riskTier;
 }
 
 /** 激活 pack 定位（审计与 docs 读取用）；packId=null 表仅基座。 */
@@ -576,6 +603,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     tool: ToolDefinition,
     call: { toolCallId: string; params: JsonObject },
     evidenceRules: SnapshotEvidenceRule[],
+    userConfig: GateUserConfigInput | undefined,
     cancelled: () => boolean,
   ): Promise<Observation> {
     const { sessionId } = session;
@@ -643,6 +671,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       claims,
       ...scope,
       ...(domContext !== undefined ? { domContext } : {}),
+      ...(userConfig !== undefined ? { userConfig } : {}),
     });
     if (cancelled()) return stopped();
     recordEvent(sessionId, claims, featureId, {
@@ -653,6 +682,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
         riskTier: tool.riskTier,
         verdict: decision.verdict,
         ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+        ...(userConfig?.revision !== undefined ? { userConfigRevision: userConfig.revision } : {}),
+        ...(userConfig?.degraded === true
+          ? { userConfigDegraded: 'fail-open-closed' as const }
+          : {}),
+        ...(effectiveTierOf(tool, userConfig) !== tool.riskTier
+          ? { effectiveTier: effectiveTierOf(tool, userConfig) }
+          : {}),
       },
     }, pack);
     if (decision.verdict === 'deny') {
@@ -745,6 +781,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         params,
         claims,
         ...scope,
+        ...(userConfig !== undefined ? { userConfig } : {}),
       });
       if (cancelled()) return stopped();
     } else {
@@ -756,6 +793,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         claims,
         ...scope,
         ...(domContext !== undefined ? { domContext } : {}),
+        ...(userConfig !== undefined ? { userConfig } : {}),
       });
       if (cancelled()) return stopped();
       nonce = instruction.nonce;
@@ -881,23 +919,50 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const assembleFor = async (url: string) => {
       const resolved = await deps.assembly.resolveFeature({ url });
       const { packId, packVersion, featureId, genericOrigin } = gateGeneric(resolved, url);
-      const pack: PackRef = {
-        packId,
-        packVersion,
-        ...(genericOrigin !== undefined ? { genericOrigin } : {}),
-      };
-      const composed = await deps.assembly.compose({ sessionId, packId, featureId });
-      // 注入自省与 compose 同源：审计 assembly 事件记录本轮 agent 看到了什么（只记 id 与版本，不落全文）。
-      const injection = await deps.assembly.describeInjection({ sessionId, packId, featureId });
+      const subject = subjectOf(claims);
+      // 每回合对 L2 单次读取定格（adr-014 §4）：本轮全部视图/判定/审计只用这一次 compose 的产出，
+      // 不另调 describeInjection（其独立读取会破坏单次定格）。
+      const composed = await deps.assembly.compose({ sessionId, packId, featureId, subject });
+      // enabled:false（用户关停 pack）时 compose 已回落仅基座：回合归属/附注/审计一律按 composed.packId，
+      // 不用 resolve 结果——审计以 packDisabled 区分「无 pack」与「已关停」。
+      const pack: PackRef =
+        composed.packId === null
+          ? { packId: null, packVersion: null }
+          : { packId, packVersion, ...(genericOrigin !== undefined ? { genericOrigin } : {}) };
       recordEvent(sessionId, claims, featureId, {
         type: 'assembly',
         data: {
-          snapshotVersion: injection.snapshotVersion,
+          snapshotVersion: composed.snapshotVersion,
           featureId,
-          toolIds: injection.toolIds,
+          toolIds: composed.tools.map((tool) => tool.id),
           skillIds: composed.skills.map((skill) => skill.id),
+          ...(composed.userConfigRevision !== undefined
+            ? { userConfigRevision: composed.userConfigRevision }
+            : {}),
+          ...(composed.userConfigStale === true ? { userConfigStale: true as const } : {}),
+          ...(composed.userConfigDegraded !== undefined
+            ? { userConfigDegraded: composed.userConfigDegraded }
+            : {}),
+          ...(composed.invalidRefs !== undefined && composed.invalidRefs.length > 0
+            ? { invalidRefs: composed.invalidRefs }
+            : {}),
+          ...(composed.packDisabled === true ? { packDisabled: true as const } : {}),
         },
       }, pack);
+      // L2 定格面（封 TOCTOU）：本轮 compose 冻结的生效面贯穿全部判定与签发；
+      // 降级（读失败无缓存）无 revision，以 degraded 标志表示——此时工具面已全 forbidden（U7）。
+      const userConfig: GateUserConfigInput | undefined =
+        composed.effectiveTools === undefined
+          ? undefined
+          : {
+              ...(composed.userConfigRevision !== undefined
+                ? { revision: composed.userConfigRevision }
+                : {}),
+              ...(composed.userConfigDegraded !== undefined ? { degraded: true as const } : {}),
+              effectiveTiers: Object.fromEntries(
+                composed.effectiveTools.map((tool) => [tool.toolId, tool.effectiveTier]),
+              ),
+            };
       const selectedHostTools = selectToolsForPreference(composed.tools, executionPreference);
       const hostToolsById = new Map(selectedHostTools.map((tool) => [tool.id, tool]));
       const evidenceById = new Map<string, SnapshotEvidenceRule>();
@@ -947,7 +1012,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...fulfillmentPrepareTools,
         ...selectedHostTools.map(toLlmToolSpec),
       ];
-      return { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin };
+      return { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig };
     };
     // 站点边界标记（ADR-013）：激活 pack 或 generic 绑定 origin 变更时向历史注入一行标记，
     // 防跨站历史误导（generic pack 多 origin 间切换 packId 恒定，须并比 genericOrigin）；
@@ -968,7 +1033,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       return { role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` };
     };
 
-    let { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin } =
+    let { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig } =
       await assembleFor(session.currentUrl ?? '');
     const prevPackId = session.lastPackId;
     const prevGenericOrigin = session.lastGenericOrigin;
@@ -1324,6 +1389,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           SITE_NAVIGATE_TOOL_DEF,
           call,
           evidenceRules,
+          userConfig,
           cancelled,
         );
         const navEcho: LlmMessage = {
@@ -1346,7 +1412,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             deps.store.setContext(sessionId, landedUrl);
             const previousPackId = pack.packId;
             const previousGenericOrigin = pack.genericOrigin ?? null;
-            ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin } =
+            ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig } =
               await assembleFor(landedUrl));
             messages[0] = {
               role: 'system',
@@ -1410,6 +1476,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           tool,
           call,
           evidenceRules,
+          userConfig,
           cancelled,
         );
       }
@@ -1724,7 +1791,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
     res.on('close', cleanup);
   }
 
-  async function handleInjection(res: ServerResponse, session: SessionState): Promise<void> {
+  async function handleInjection(
+    res: ServerResponse,
+    session: SessionState,
+    claims: IdentityClaims,
+  ): Promise<void> {
     const url = session.currentUrl ?? '';
     const resolved = await deps.assembly.resolveFeature({ url });
     const { packId, featureId } = gateGeneric(resolved, url);
@@ -1732,6 +1803,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       sessionId: session.sessionId,
       packId,
       featureId,
+      subject: subjectOf(claims),
     });
     sendJson(res, 200, description);
   }
@@ -1845,7 +1917,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (match[2] === 'frames' && req.method === 'POST') return handleFrames(req, res, session, claims);
       if (match[2] === 'stop' && req.method === 'POST') return handleStop(req, res, session);
       if (match[2] === 'events' && req.method === 'GET') return await handleEvents(res, session);
-      if (match[2] === 'injection' && req.method === 'GET') return handleInjection(res, session);
+      if (match[2] === 'injection' && req.method === 'GET') return handleInjection(res, session, claims);
       if (match[2] === 'turn-state' && req.method === 'GET') return handleTurnState(res, session);
     }
     sendJson(res, 404, { error: '未知路由' });

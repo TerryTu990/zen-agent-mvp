@@ -841,6 +841,43 @@ describe('C5 audit L2 事件（adr-014：user-config-write + userConfigRevision�
         userConfigRevision: 'rev-3f6a2c',
       },
     },
+    'tool-decision 事件自解释 L2 收紧（riskTier 静态值 + effectiveTier 生效值）': {
+      ...base,
+      type: 'tool-decision',
+      data: {
+        toolCallId: 'tc-02',
+        toolId: 'order-list.refresh-orders',
+        riskTier: 'auto',
+        effectiveTier: 'hitl',
+        verdict: 'hitl',
+        userConfigRevision: 'rev-3f6a2c',
+      },
+    },
+    'degraded 轮 tool-decision 与 assembly 事件同以 userConfigDegraded 标注（无伪 hash）': {
+      ...base,
+      type: 'tool-decision',
+      data: {
+        toolCallId: 'tc-03',
+        toolId: 'order-list.refresh-orders',
+        riskTier: 'auto',
+        effectiveTier: 'forbidden',
+        verdict: 'deny',
+        reason: 'user-config-unavailable',
+        userConfigDegraded: 'fail-open-closed',
+      },
+    },
+    'assembly 事件标注用户关停 pack（packDisabled 区分「无 pack」与「已关停」）': {
+      ...base,
+      type: 'assembly',
+      data: {
+        snapshotVersion: '0.2.0',
+        featureId: null,
+        toolIds: [],
+        skillIds: [],
+        userConfigRevision: 'rev-3f6a2c',
+        packDisabled: true,
+      },
+    },
   };
 
   it.each(Object.keys(validEvents))('合法事件 %s 通过校验', (label) => {

@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import type { JsonObject } from './json.js';
+import type { RiskTier } from './tool-definition.js';
 
 /** L2 归属键，取自每次请求的 C2 claims（adr-014 §1）。 */
 export interface UserConfigSubject {
@@ -187,6 +188,79 @@ export function validateUserOverlay(
     }
     if (packScope.packConfig !== undefined && options?.configSchemas !== undefined) {
       validatePackConfig(packId, packScope.packConfig, options.configSchemas[packId], issues);
+    }
+  }
+  return issues.length > 0 ? { ok: false, issues } : { ok: true, overlay };
+}
+
+export interface UserOverlayL1ToolBaseline {
+  id: string;
+  riskTier: RiskTier;
+}
+
+export interface UserOverlayL1AutomationBaseline {
+  id: string;
+  /** pack 声明的预设唤醒周期（分钟）；缺省 = 仅平台下限约束。 */
+  defaultPeriodMinutes?: number;
+}
+
+/**
+ * 写入期只收紧校验的 L1 基线（U1：JSON 可序列化，写入通道自 assembly 端口取得后传入）：
+ * tools/automations 的 id 均为跨 pack 去重后的全局闭集（载入期命名空间纪律保证）。
+ */
+export interface UserOverlayL1Baseline {
+  tools: UserOverlayL1ToolBaseline[];
+  automations: UserOverlayL1AutomationBaseline[];
+}
+
+const riskTierOrder: Record<RiskTier, number> = { auto: 0, hitl: 1, forbidden: 2 };
+
+/** 平台唤醒周期下限（分钟）：任何 L2 minutes 声明不得低于此值。 */
+const PLATFORM_MIN_AUTOMATION_MINUTES = 1;
+
+/**
+ * 写入期只收紧校验（R1，adr-014 §3）：L2 riskTierRaise 低于 L1 声明值拒绝；automation minutes
+ * 低于 max(pack 预设周期, 平台下限) 拒绝。前提：overlay 已过 validateUserOverlay。
+ * 引用不在基线内的 toolId/automation id 不在此拒——越界引用归合并期逐条失效语义（不构成放宽面）。
+ */
+export function validateOverlayAgainstL1(
+  overlay: UserOverlay,
+  l1Baseline: UserOverlayL1Baseline,
+): UserOverlayValidationResult {
+  const issues: UserOverlayValidationIssue[] = [];
+  const baseTiers = new Map(l1Baseline.tools.map((tool) => [tool.id, tool.riskTier]));
+  const automationBaselines = new Map(
+    l1Baseline.automations.map((automation) => [automation.id, automation]),
+  );
+  for (const [packId, scope] of Object.entries(overlay.packs)) {
+    if (packId === '*') continue;
+    const packScope = scope as UserOverlayPackScope;
+    for (const [toolId, declared] of Object.entries(packScope.restrictions?.riskTierRaise ?? {})) {
+      const baseTier = baseTiers.get(toolId);
+      if (baseTier === undefined) continue;
+      if (riskTierOrder[declared] < riskTierOrder[baseTier]) {
+        issues.push({
+          path: `/packs/${packId}/restrictions/riskTierRaise/${toolId}`,
+          message: `声明分级 "${declared}" 低于 L1 基线 "${baseTier}"，只收紧不放宽，写入期拒绝`,
+        });
+      }
+    }
+    for (const [automationId, preference] of Object.entries(
+      packScope.preferences?.automations ?? {},
+    )) {
+      if (preference.minutes === undefined) continue;
+      const baseline = automationBaselines.get(automationId);
+      if (baseline === undefined) continue;
+      const floor = Math.max(
+        baseline.defaultPeriodMinutes ?? PLATFORM_MIN_AUTOMATION_MINUTES,
+        PLATFORM_MIN_AUTOMATION_MINUTES,
+      );
+      if (preference.minutes < floor) {
+        issues.push({
+          path: `/packs/${packId}/preferences/automations/${automationId}/minutes`,
+          message: `唤醒周期 ${preference.minutes} 分钟低于下限 ${floor}（max(pack 预设, 平台下限)），频率只收紧，写入期拒绝`,
+        });
+      }
     }
   }
   return issues.length > 0 ? { ok: false, issues } : { ok: true, overlay };

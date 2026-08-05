@@ -25,6 +25,7 @@ import {
   type SessionStore,
 } from './sessions.js';
 import { createGateway } from './gateway.js';
+import { createFsUserConfigStore } from './user-config-store.js';
 
 export interface ServerOptions {
   /** 0 = 随机可用端口（测试用）。 */
@@ -72,6 +73,11 @@ export interface ServerOptions {
   sessionTtlMs?: number;
   /** 投递记录（求职 agent 业务日志）落盘目录；缺省 `.za/applications`。record-only 旁路、写失败 fail-open。 */
   applicationsDir?: string;
+  /**
+   * L2 用户覆盖层落盘根目录（adr-014）：设置即组装 fs UserConfigStore 注入 assembly，
+   * compose 按 subject 合并 L2；缺省 = 不组装（纯 L1 装配）。布局 `<dir>/<tenant>/<hostUserId>.json`。
+   */
+  userConfigDir?: string;
   /** generic 兜底 pack 的服务端准入名单（origin 精确值闭集）；缺省/空 = generic 永不激活（fail-closed，U7）。 */
   genericAllowlist?: string[];
   /** ADR-016：运营者预批准的服务端有界履约策略；不从客户端或模型上下文接受。 */
@@ -141,6 +147,9 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
   const assembly = createAssemblyPort({
     snapshotRoot: options.snapshotRoot,
     systemPromptPath: options.systemPromptPath,
+    ...(options.userConfigDir !== undefined
+      ? { userConfigStore: createFsUserConfigStore({ dir: options.userConfigDir }) }
+      : {}),
   });
   // 触发快照惰性载入：坏快照 fail-fast（快照拒载错误），先于读全 pack 工具并集。
   await assembly.resolveFeature({ url: '' });
