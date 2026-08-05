@@ -33,29 +33,29 @@ export function resolveWatchRun(overlay: UserOverlay | null, automationId: strin
 }
 
 /**
- * 工作页归属（origin + 路径精确相等）：客户端上报的快照 URL 不在实例范围内时，
- * 本轮报告的就不是被监测的页面——fail-closed 判否。查询串与 hash 不参与判定。
+ * 工作页归属：上报页与被监测页的归一标识须相等。客户端上报的快照 URL 不在实例范围内时，
+ * 本轮看的就不是被监测的页面——fail-closed 判否（不采信客户端上报，U7）。
  */
 export function isWatchWorkPage(watchUrl: string, reportedUrl: string): boolean {
   const target = watchPageKey(watchUrl);
   const reported = watchPageKey(reportedUrl);
-  // watch 指定的是一个页面而非路由族：路径精确相等。
-  // 前缀语义会让同 origin 的其他页面被当作被监测页并产生虚假变化。
+  // watch 指定的是一个页面而非路由族：前缀语义会让同 origin 的其他页面被当作被监测页，产生虚假变化。
   return target !== null && target === reported;
 }
 
 /**
  * 纯跟踪参数：只标注来路、不改变页面内容，故不参与「是哪一个页面」的判定。
- * 闭集只收公认的广告/来源参数；站点自有的筛选参数（page/q/status…）一律保留——
+ * 闭集只收公认的广告点击标识；站点自有参数（page/q/status/ref…）一律保留——
  * 把它们一并丢弃会让搜索页、分页、筛选视图被当成同一页，产出虚假的「新增/消失」。
  */
-const TRACKING_PARAMS = new Set(['gclid', 'fbclid', 'msclkid', 'yclid', 'ref', 'spm']);
+const TRACKING_PARAMS = new Set(['gclid', 'fbclid', 'msclkid', 'yclid']);
 
 /**
  * 被监测页的归一标识：origin + 去尾斜杠路径 + 排序去跟踪参数后的查询串 + hash。
  * 工作页判定与比对基线共用它，两者口径必须一致——
  *  - 判定比归并粗（如判定忽略查询串而归并不忽略），同一页的变体各自建基线，每轮都落「首轮建基线」而永不报告；
  *  - 判定比归并细，则不同页共用一条基线，每轮互相 diff 出整页虚假变化。
+ * 参数名/值重新编码后拼接：直接拼解码值会让 `?b=%26c%3Dd`（单参）与 `?b=&c=d`（两参）产出同一标识。
  * URL 不可解析时返回 null（fail-closed：不可解析的两端不相等）。
  */
 export function watchPageKey(url: string): string | null {
@@ -68,9 +68,14 @@ export function watchPageKey(url: string): string | null {
   const path = parsed.pathname;
   const normalizedPath = path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path;
   const params = [...parsed.searchParams.entries()]
-    .filter(([name]) => !name.startsWith('utm_') && !TRACKING_PARAMS.has(name.toLowerCase()))
+    .filter(([name]) => {
+      const lower = name.toLowerCase();
+      return !lower.startsWith('utm_') && !TRACKING_PARAMS.has(lower);
+    })
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const query = params.map(([name, value]) => `${name}=${value}`).join('&');
+  const query = params
+    .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+    .join('&');
   return parsed.origin + normalizedPath + (query === '' ? '' : `?${query}`) + parsed.hash;
 }
 

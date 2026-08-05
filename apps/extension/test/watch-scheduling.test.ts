@@ -89,7 +89,7 @@ describe('watch 实例派生周期自动化描述符', () => {
   });
 });
 
-describe('watch 工作页判定（origin + 路径精确相等，与服务端同判定）', () => {
+describe('watch 工作页判定（归一标识精确相等，与服务端同判定）', () => {
   const descriptor = watchAutomationDescriptor({ ...watch, url: 'https://example.test/news/tech' });
 
   it('同 origin 且归一标识精确相等才算工作页；尾斜杠与跟踪参数不改变判定', () => {
@@ -108,7 +108,7 @@ describe('watch 工作页判定（origin + 路径精确相等，与服务端同�
     expect(isAutoScanWorkPage(hashed, 'https://example.test/app#/settings')).toBe(false);
   });
 
-  it('子路径页不算工作页：选中它会被服务端判否，回失败帧后触发器整条被暂停', () => {
+  it('子路径页不算工作页：选中它会被服务端判否，本轮报告整条丢失', () => {
     expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech/2026')).toBe(false);
   });
 

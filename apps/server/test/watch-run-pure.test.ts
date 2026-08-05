@@ -3,6 +3,7 @@
  * 与「比对基线怎么归并」——边界（尾斜杠、查询串、hash、大小写、端口）在集成用例里
  * 恒以同一个精确 URL 触达，无法被证伪，故就地锁定。
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   diffWatchSnapshots,
@@ -106,5 +107,31 @@ describe('快照比对', () => {
     ];
     const after = watchSnapshotOf('https://shop.test/a', 'T', renumbered, []);
     expect(hasWatchChange(diffWatchSnapshots(before, after))).toBe(false);
+  });
+});
+
+/**
+ * 两端手抄镜像的防漂移守卫：插件不依赖 @zen-agent/*（U5），归一算法在 apps/extension 手抄一份。
+ * 改单边时两边各自的用例都会继续绿，而线上判定分歧的代价是本轮报告整条丢失——故直接对拍源文本。
+ */
+describe('归一算法两端同源', () => {
+  const extensionSource = readFileSync(
+    new URL('../../extension/src/auto-scan.ts', import.meta.url),
+    'utf8',
+  );
+  const serverSource = readFileSync(new URL('../src/watch-run.ts', import.meta.url), 'utf8');
+  const bodyOf = (source: string): string => {
+    const start = source.indexOf('export function watchPageKey');
+    const end = source.indexOf('\n}', start);
+    return source.slice(start, end);
+  };
+  const trackingOf = (source: string): string => {
+    const start = source.indexOf('const TRACKING_PARAMS');
+    return source.slice(start, source.indexOf('\n', start));
+  };
+
+  it('watchPageKey 函数体与跟踪参数闭集逐字相同', () => {
+    expect(bodyOf(extensionSource)).toBe(bodyOf(serverSource));
+    expect(trackingOf(extensionSource)).toBe(trackingOf(serverSource));
   });
 });

@@ -17,8 +17,9 @@
  *   ZA_E2E_RUNS             重复跑次数，默认 3（通过门要求 ≥3 次全通过）
  *   ZA_E2E_EVIDENCE_DIR     证据归档目录，默认 <测试根>/e2e-evidence/e2e-e
  *
- * 单行运行命令（操作者在仓库根执行；<测试根> = /Users/terrytu/Workspace2025/Working/tmp/zen-agent）：
- *   node --env-file=/Users/terrytu/Workspace2025/Working/tmp/zen-agent/.env scripts/e2e/run-g6-real-site.mjs --runs=3
+ * 单行运行命令（操作者在仓库根执行，<测试根> 换成自己存放 .env 的目录）：
+ *   node --env-file=<测试根>/.env scripts/e2e/run-g6-real-site.mjs --runs=3
+ * 证据默认落 <repo>/.za/e2e/e2e-evidence/e2e-e；要落到别处用 ZA_E2E_TEST_ROOT 或 --evidence-dir=。
  *
  * 判定口径（四段式，全部满足才算该次通过；连续 3 次全通过才满足 §6 通过门）：
  *   前置：profile 已登录 goofish 与飞书；目标表格存在且首行为表头；LLM 凭证可用。
@@ -26,7 +27,7 @@
  *         每行首列写本次运行标记 ZA-E2E-<runId>。
  *   断言：① 表格中出现且恰好出现 N 处本次运行标记（新增行数 == 提取数）；
  *         ② 每一次写入批次都先出现 HITL 确认卡、且卡片出现时表格标记数仍为 0（确认先于写入）；
- *         ③ 审计含全链路：assembly → tool-decision(verdict=approve, riskTier=hitl) → tool-execution(outcome=ok)，
+ *         ③ 审计含全链路：assembly → hitl-verdict(decision=approve) 与任务级复用的 tool-decision(verdict=allow, riskTier=hitl) → tool-execution(outcome=ok)，
  *            且逐条授权先于其代执行；
  *         ④ 面板提取清单条目数 == N（模型没有少提或编造）。
  *   证据：每次运行归档 面板截图 + 表格截图 + 脱敏审计片段 + result-<run>.json 到证据目录。

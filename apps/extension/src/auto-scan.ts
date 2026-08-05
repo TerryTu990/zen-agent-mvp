@@ -125,6 +125,18 @@ export function autoScanUpstreamFrame(
   };
 }
 
+export type AutoScanDeliveryOutcome = 'pause' | 'retry-next-cycle';
+
+/**
+ * 自动回合上行被拒后的处置。**只有 403 才停用触发器**——它是服务端认定该实例不该运行
+ * （未知实例 / 未启用 / 模板不可用 / 未启用用户配置存储）。其余一律留到下周期重试：
+ * 网络不可达没有状态码，401/404/409/503 都能自愈，把它们当成停用理由等于让一次断网
+ * 永久关掉用户的监测。
+ */
+export function decideAutoScanDelivery(httpStatus: number | undefined): AutoScanDeliveryOutcome {
+  return httpStatus === 403 ? 'pause' : 'retry-next-cycle';
+}
+
 /** SW 重启恢复时只按服务端权威状态处置本地锁；网络不明时保持锁，优先防重复。 */
 export function decideAutoScanRecovery(status: AutoScanRecoveryStatus): AutoScanRecoveryDecision {
   if (status === 'running' || status === 'unavailable') return 'keep-busy';
@@ -149,8 +161,8 @@ export function normalizeAutoScanMinutes(value: unknown, fallback = DEFAULT_AUTO
  *
  * 两种路由语义按来源分叉，且必须与服务端同判定：
  *  - pack 自动化：workRoute 以 '#' 开头按 hash 路由（? 前段）精确匹配，否则按路径段前缀匹配（工作流覆盖一族页面）；
- *  - 用户自建 watch：路径精确相等——watch 指定的是一个页面。若此处仍用前缀语义，
- *    子路径页会被选中并发起回合，而服务端判否后回失败帧，客户端据此把触发器整条暂停。
+ *  - 用户自建 watch：归一标识精确相等——watch 指定的是一个页面。此处若比服务端宽，
+ *    被选中的页到服务端会判否，本轮报告整条丢失且用户无从知晓。
  */
 export function isAutoScanWorkPage(descriptor: AutomationDescriptor, url: string | undefined): boolean {
   if (url === undefined) return false;
@@ -173,11 +185,11 @@ export function isAutoScanWorkPage(descriptor: AutomationDescriptor, url: string
 }
 
 /** 纯跟踪参数闭集：与服务端 watch-run.ts 同源手抄（U5：插件不依赖 @zen-agent/*）。 */
-const TRACKING_PARAMS = new Set(['gclid', 'fbclid', 'msclkid', 'yclid', 'ref', 'spm']);
+const TRACKING_PARAMS = new Set(['gclid', 'fbclid', 'msclkid', 'yclid']);
 
 /**
  * 被监测页的归一标识。SSOT = apps/server/src/watch-run.ts 的同名函数——
- * 两端口径必须逐字段一致：客户端选中而服务端判否的页会以失败帧收尾，本轮报告丢失。
+ * 两端口径必须逐字段一致：客户端选中而服务端判否的页，本轮报告会整条丢失。
  */
 export function watchPageKey(url: string): string | null {
   let parsed: URL;
@@ -189,9 +201,14 @@ export function watchPageKey(url: string): string | null {
   const path = parsed.pathname;
   const normalizedPath = path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path;
   const params = [...parsed.searchParams.entries()]
-    .filter(([name]) => !name.startsWith('utm_') && !TRACKING_PARAMS.has(name.toLowerCase()))
+    .filter(([name]) => {
+      const lower = name.toLowerCase();
+      return !lower.startsWith('utm_') && !TRACKING_PARAMS.has(lower);
+    })
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const query = params.map(([name, value]) => `${name}=${value}`).join('&');
+  const query = params
+    .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+    .join('&');
   return parsed.origin + normalizedPath + (query === '' ? '' : `?${query}`) + parsed.hash;
 }
 

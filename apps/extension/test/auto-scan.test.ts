@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_AUTO_SCAN_MINUTES,
   decideAutoScanRecovery,
+  decideAutoScanDelivery,
   autoScanDispatch,
   autoScanUpstreamFrame,
   autoScanAlarmFor,
@@ -110,6 +111,14 @@ describe('声明驱动周期扫描纯决策', () => {
       automationRunId: 'scan_run_002',
       automationId: 'xianyu-auto-scan',
     });
+  });
+
+  it('上行被拒的处置：只有 403 停用触发器，其余留到下周期重试', () => {
+    expect(decideAutoScanDelivery(403)).toBe('pause');
+    // 网络不可达没有状态码；401/404/409/503 都能自愈——把它们当停用理由，一次断网就永久关掉用户的监测。
+    for (const status of [undefined, 401, 404, 409, 500, 503]) {
+      expect(decideAutoScanDelivery(status)).toBe('retry-next-cycle');
+    }
   });
 
   it('alarm 名与 automation id 互相派生', () => {

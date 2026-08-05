@@ -1952,7 +1952,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
     if (report === null) return settle('timeout');
     if (cancelled()) return settle('error');
     // 客户端上报的页不在实例范围内＝本轮看的不是被监测页：不更新基线、不产报告（不可采信客户端上报，U7）。
-    if (!isWatchWorkPage(watch.url, report.url)) return settle('error');
+    // 但这不是故障——用户在派发与取快照之间切了页/站点回写了参数都会走到这里，
+    // 记成失败会让客户端把触发器整条停用，一次页内点击就毁掉用户的监测。
+    if (!isWatchWorkPage(watch.url, report.url)) return settle('ok');
     const snapshot = watchSnapshotOf(
       report.url,
       report.title ?? '',
