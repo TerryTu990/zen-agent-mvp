@@ -11,6 +11,11 @@ import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import type { JsonObject } from './json.js';
 import type { RiskTier } from './tool-definition.js';
+import {
+  findAutomationTemplate,
+  type AutomationTemplateId,
+  type PlatformAutomationTemplate,
+} from './automation-template.js';
 
 /** L2 归属键，取自每次请求的 C2 claims（adr-014 §1）。 */
 export interface UserConfigSubject {
@@ -81,11 +86,31 @@ export interface UserOverlayPackScope {
   preferences?: UserOverlayPackPreferences;
 }
 
+/**
+ * 用户自建周期触发器实例（adr-021）：只承载「平台模板 id + 参数」，结构上无工具定义/execution/adapter，
+ * 也无任何 riskTier 或节流的放宽表达力——故不构成能力扩张（AGENT-04）。
+ * id 与 C3 user-message.automationId 同文法：自动回合以本 id 发起，服务端据此定位模板并强制其只读语义。
+ */
+export interface UserOverlayWatch {
+  id: string;
+  /** 平台内建模板闭集成员；闭集外值写入期拒收。 */
+  templateId: AutomationTemplateId;
+  /** 监测目标绝对 URL（协议闭集 http/https）。 */
+  url: string;
+  /** 唤醒周期（分钟）；写入期校验 ≥ 模板声明的平台下限。 */
+  minutes: number;
+  enabled: boolean;
+  /** 关注点提示（纯文本）：进自动回合提示词，不改变工具面与任何判定。 */
+  focus?: string;
+}
+
 export interface UserOverlay {
   schemaVersion: 1;
   subject: UserConfigSubject;
   /** 键 "*" = 全局作用域（UserOverlayGlobalScope 形状，schema properties."*" 强制）；其余键 = packId。上限 100 键（schema maxProperties）。 */
   packs: Record<string, UserOverlayGlobalScope | UserOverlayPackScope>;
+  /** 用户自建触发器（adr-021）：跨站点、不锚定 pack，故居顶层；上限 5 条（schema maxItems）。 */
+  watches?: UserOverlayWatch[];
 }
 
 export interface UserOverlayValidationIssue {
@@ -165,6 +190,66 @@ function validatePackConfig(
   }
 }
 
+const WATCH_URL_PROTOCOLS = new Set(['http:', 'https:']);
+
+const watchParamsValidators = new Map<AutomationTemplateId, ValidateFunction>();
+
+/** 模板参数校验器缓存；paramsSchema 是平台常量，不可编译即平台缺陷，任其抛出（fail fast）。 */
+function getWatchParamsValidator(template: PlatformAutomationTemplate): ValidateFunction {
+  const cached = watchParamsValidators.get(template.id);
+  if (cached !== undefined) return cached;
+  const validate = compileConfigSchema(template.paramsSchema);
+  watchParamsValidators.set(template.id, validate);
+  return validate;
+}
+
+/**
+ * watch 专项语义（JSON Schema 表达不了的部分）：id 全表唯一、templateId 落在平台模板闭集内、
+ * url 可解析且协议 ∈ {http,https}、参数投影过模板 paramsSchema（minutes 平台下限即在其中）。
+ */
+function validateWatches(watches: UserOverlayWatch[], issues: UserOverlayValidationIssue[]): void {
+  const seenIds = new Set<string>();
+  watches.forEach((watch, index) => {
+    const path = `/watches/${index}`;
+    if (seenIds.has(watch.id)) {
+      issues.push({ path: `${path}/id`, message: `watch id "${watch.id}" 重复，同一 id 只允许一条` });
+    }
+    seenIds.add(watch.id);
+    const template = findAutomationTemplate(watch.templateId);
+    if (template === undefined) {
+      issues.push({
+        path: `${path}/templateId`,
+        message: `templateId "${watch.templateId}" 不在平台内建自动化模板闭集内，拒收`,
+      });
+      return;
+    }
+    let target: URL;
+    try {
+      target = new URL(watch.url);
+    } catch {
+      issues.push({ path: `${path}/url`, message: '不是可解析的绝对 URL，拒收' });
+      return;
+    }
+    if (!WATCH_URL_PROTOCOLS.has(target.protocol)) {
+      issues.push({ path: `${path}/url`, message: `协议 "${target.protocol}" 不在 http/https 闭集内，拒收` });
+    }
+    const params: JsonObject = {
+      url: watch.url,
+      minutes: watch.minutes,
+      ...(watch.focus !== undefined ? { focus: watch.focus } : {}),
+    };
+    const validateParams = getWatchParamsValidator(template);
+    if (!validateParams(params)) {
+      for (const error of validateParams.errors ?? []) {
+        issues.push({
+          path: `${path}${error.instancePath}`,
+          message: error.message ?? `越出模板 "${template.id}" 声明的参数空间`,
+        });
+      }
+    }
+  });
+}
+
 /**
  * user-overlay 组合校验（消费方唯一入口）：schema（ajv strict + additionalProperties:false 全程）
  * 通过后追加跨字段语义检查。不含「L2 低于 L1 的 riskTier 声明写入期拒绝」——该判定需 L1 工具面，
@@ -203,6 +288,9 @@ export function validateUserOverlay(
       validatePackConfig(packId, packScope.packConfig, options.configSchemas[packId], issues);
     }
   }
+  if (overlay.watches !== undefined) {
+    validateWatches(overlay.watches, issues);
+  }
   return issues.length > 0 ? { ok: false, issues } : { ok: true, overlay };
 }
 
@@ -236,7 +324,9 @@ const PLATFORM_MIN_AUTOMATION_MINUTES = 1;
 
 /**
  * 写入期只收紧校验（R1，adr-014 §3）：L2 riskTierRaise 低于 L1 声明值拒绝；automation minutes
- * 低于 max(pack 预设周期, 平台下限) 拒绝。前提：overlay 已过 validateUserOverlay。
+ * 低于 max(pack 预设周期, 平台下限) 拒绝；watch id 与 L1 automation id 撞名拒绝（adr-021——
+ * 两者共用 C3 automationId 命名空间，撞名会使自动回合归属不可判定，进而使只读强制可被绕过）。
+ * 前提：overlay 已过 validateUserOverlay。
  * 引用不在基线内的 toolId/automation id 不在此拒——越界引用归合并期逐条失效语义（不构成放宽面）。
  */
 export function validateOverlayAgainstL1(
@@ -279,5 +369,13 @@ export function validateOverlayAgainstL1(
       }
     }
   }
+  (overlay.watches ?? []).forEach((watch, index) => {
+    if (automationBaselines.has(watch.id)) {
+      issues.push({
+        path: `/watches/${index}/id`,
+        message: `watch id "${watch.id}" 与 pack 声明的自动化 id 撞名，自动回合归属不可判定，写入期拒绝`,
+      });
+    }
+  });
   return issues.length > 0 ? { ok: false, issues } : { ok: true, overlay };
 }

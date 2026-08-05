@@ -474,6 +474,111 @@ describe('自动化页（周期偏好写 L2）', () => {
   });
 });
 
+describe('自动化页 · 用户自建触发器（adr-021）', () => {
+  const WATCH: NonNullable<UserOverlayView['watches']>[number] = {
+    id: 'watch-1',
+    templateId: 'page-watch',
+    url: 'https://example.test/news',
+    minutes: 15,
+    enabled: true,
+    focus: '关注版本号',
+  };
+
+  function watchRows(harness: Harness): HTMLElement[] {
+    return [...panel(harness.root, 'automation').querySelectorAll<HTMLElement>('.za-cc-watch')];
+  }
+
+  function createButton(harness: Harness): HTMLButtonElement {
+    return panel(harness.root, 'automation').querySelector<HTMLButtonElement>('.za-cc-watch-create')!;
+  }
+
+  it('新建触发器落为 watches 一条，并镜像进本机调度存储', async () => {
+    const mirrored: Record<string, { enabled: boolean; minutes: number }>[] = [];
+    const harness = createHarness({ saveAutomations: async (prefs) => void mirrored.push(prefs) });
+    const handle = await mounted(harness);
+    createButton(harness).click();
+
+    const row = watchRows(harness)[0]!;
+    setValue(row.querySelector<HTMLInputElement>('.za-cc-watch-url')!, 'https://example.test/news');
+    setValue(row.querySelector<HTMLInputElement>('.za-cc-watch-minutes')!, '30');
+    setValue(row.querySelector<HTMLInputElement>('.za-cc-watch-focus')!, '关注版本号');
+    await handle.save();
+
+    expect(lastPutOverlay(harness).watches).toEqual([
+      {
+        id: 'watch-1',
+        templateId: 'page-watch',
+        url: 'https://example.test/news',
+        minutes: 30,
+        enabled: true,
+        focus: '关注版本号',
+      },
+    ]);
+    expect(mirrored[0]?.['watch-1']).toEqual({ enabled: true, minutes: 30 });
+  });
+
+  it('监测地址非 http/https 时禁止提交并给出可定位提示', async () => {
+    const harness = createHarness();
+    const handle = await mounted(harness);
+    createButton(harness).click();
+    setValue(watchRows(harness)[0]!.querySelector<HTMLInputElement>('.za-cc-watch-url')!, 'ftp://x/y');
+    await handle.save();
+
+    expect(putCalls(harness)).toHaveLength(0);
+    expect(harness.root.querySelector('.za-cc-status')?.textContent ?? '').toContain('watch-1');
+  });
+
+  it('周期低于平台下限时禁止提交并提示下限', async () => {
+    const harness = createHarness();
+    const handle = await mounted(harness);
+    createButton(harness).click();
+    const row = watchRows(harness)[0]!;
+    setValue(row.querySelector<HTMLInputElement>('.za-cc-watch-url')!, 'https://example.test/news');
+    setValue(row.querySelector<HTMLInputElement>('.za-cc-watch-minutes')!, '3');
+    await handle.save();
+
+    expect(putCalls(harness)).toHaveLength(0);
+    const status = harness.root.querySelector('.za-cc-status')?.textContent ?? '';
+    expect(status).toContain('5');
+    expect(status).toContain('下限');
+  });
+
+  it('已有实例回显参数；删空最后一条时省略 watches 键（空数组写入期会被拒）', async () => {
+    const harness = createHarness();
+    harness.stored.overlay!.watches = [{ ...WATCH }];
+    const handle = await mounted(harness);
+    const row = watchRows(harness)[0]!;
+    expect(row.querySelector<HTMLInputElement>('.za-cc-watch-url')!.value).toBe(WATCH.url);
+    expect(row.querySelector<HTMLInputElement>('.za-cc-watch-minutes')!.value).toBe('15');
+    expect(row.querySelector<HTMLInputElement>('.za-cc-watch-focus')!.value).toBe('关注版本号');
+
+    row.querySelector<HTMLButtonElement>('.za-cc-watch-remove')!.click();
+    await handle.save();
+    expect(Object.hasOwn(lastPutOverlay(harness), 'watches')).toBe(false);
+  });
+
+  it('模板闭集外的实例原样回传，不因面板不识别而静默删除', async () => {
+    const harness = createHarness();
+    const foreign = { ...WATCH, id: 'watch-future', templateId: 'page-diff-v2' };
+    harness.stored.overlay!.watches = [foreign];
+    const handle = await mounted(harness);
+    expect(watchRows(harness)[0]!.querySelector('.za-cc-watch-url')).toBeNull();
+
+    await handle.save();
+    expect(lastPutOverlay(harness).watches).toEqual([foreign]);
+  });
+
+  it('达到条数上限后新建入口禁用（不做假跳转）', async () => {
+    const harness = createHarness();
+    harness.stored.overlay!.watches = [1, 2, 3, 4, 5].map((index) => ({
+      ...WATCH,
+      id: `watch-${index}`,
+    }));
+    await mounted(harness);
+    expect(createButton(harness).disabled).toBe(true);
+  });
+});
+
 describe('全局设置页（令牌不回显 + verbosity 偏好）', () => {
   it('令牌已配置时只显示状态，输入框与整页 DOM 均不含令牌明文（SEC-04）', async () => {
     const harness = createHarness();

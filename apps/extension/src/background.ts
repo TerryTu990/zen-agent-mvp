@@ -37,15 +37,19 @@ import {
   type AutoScanRecoveryStatus,
   type AutoScanRun,
   type AutomationDescriptor,
+  type WatchInstance,
   normalizeAutoScanMinutes,
   parseAutoScanRun,
   parseAutomationDescriptors,
+  mergeAutomationDescriptors,
+  watchesFromUserConfig,
   shouldPauseAutoScan,
   autoScanAlarmFor,
   automationIdOfAlarm,
   autoScanEnabledKeyFor,
   autoScanMinutesKeyFor,
   AUTOMATION_DESCRIPTORS_KEY,
+  WATCH_DESCRIPTOR_PACK_ID,
 } from './auto-scan.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
@@ -245,7 +249,17 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       void chrome.storage.session.remove(autoScanRunKey);
       if (failed) {
         void chrome.storage.local.set({ [autoScanEnabledKeyFor(finishedId)]: false });
-        postStatus(`自动化「${finishedId}」回合异常结束，已暂停。`);
+        // 失败轮若已带摘要，说明变化已被确证：先把事实透出再报暂停，不因下游失败丢掉已知结论（R6）。
+        const detected = frame.type === 'tool-card' ? (frame.summary ?? '') : '';
+        postStatus(
+          detected === ''
+            ? `自动化「${finishedId}」回合异常结束，已暂停。`
+            : `自动化「${finishedId}」检出变化但报告生成失败：${detected}；已暂停。`,
+        );
+      } else if (frame.type === 'tool-card' && (frame.summary ?? '') !== '') {
+        // 带摘要的完成帧是自动回合面向用户的报告（R6）：照常进面板与历史；
+        // 无摘要的完成帧只是单飞锁信号（如「无变化」轮次），不打扰面板。
+        emitUi({ kind: 'frame', frame });
       }
       return;
     }
@@ -1187,20 +1201,38 @@ async function disableAllAutomations(): Promise<void> {
   if (Object.keys(entries).length > 0) await chrome.storage.local.set(entries);
 }
 
-/** 描述符来自服务端 pack 声明（纯数据）；拉取失败保持现缓存，绝不凭空启用（fail-closed 不扫描）。 */
+/** 用户自建触发器（overlay.watches）：任一环节失败即回空——宁可不调度，绝不按不确定的实例发起无人值守回合。 */
+async function fetchWatchInstances(baseUrl: string, token: string): Promise<WatchInstance[]> {
+  try {
+    const response = await fetch(`${baseUrl}/v1/user-config`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return response.ok ? watchesFromUserConfig(await response.json()) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 描述符 = 服务端 pack 声明 ∪ 用户自建触发器派生（纯数据）；
+ * pack 侧拉取失败保持现缓存，绝不凭空启用（fail-closed 不扫描）。
+ */
 async function refreshAutomationDescriptors(): Promise<void> {
   try {
     const items = await chrome.storage.local.get('za.token');
     const token = items['za.token'];
     if (typeof token !== 'string' || token === '') return;
     const baseUrl = await readServerBaseUrl();
-    const response = await fetch(`${baseUrl}/v1/automation-descriptors`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
+    const [response, watches] = await Promise.all([
+      fetch(`${baseUrl}/v1/automation-descriptors`, { headers: { authorization: `Bearer ${token}` } }),
+      fetchWatchInstances(baseUrl, token),
+    ]);
     if (!response.ok) return;
     const body = await response.json() as { descriptors?: unknown };
     const descriptors = parseAutomationDescriptors(body.descriptors);
-    await chrome.storage.local.set({ [AUTOMATION_DESCRIPTORS_KEY]: descriptors });
+    await chrome.storage.local.set({
+      [AUTOMATION_DESCRIPTORS_KEY]: mergeAutomationDescriptors(descriptors, watches),
+    });
   } catch {
     // 网络/配置异常不影响既有缓存与会话主链路。
   }
@@ -1273,7 +1305,11 @@ async function triggerAutomation(automationId: string): Promise<void> {
       if (triggered !== 'unavailable') return;
     }
   }
-  await chrome.storage.local.set({ [enabledKey]: false });
+  // 找不到可用工作页：pack 自动化按「用户已离开该工作流」自我关停；watch 的目标页本就可能没开着，
+  // 关停会让新建触发器在首个周期自杀——只跳过本轮，等下次周期再试。
+  if (descriptor.packId !== WATCH_DESCRIPTOR_PACK_ID) {
+    await chrome.storage.local.set({ [enabledKey]: false });
+  }
 }
 
 const autoScanBootstrap = async (): Promise<void> => {
@@ -1291,11 +1327,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     void refreshAutomationDescriptors().then(() => syncAutoScanAlarms());
     return;
   }
-  if (
-    changes[AUTOMATION_DESCRIPTORS_KEY] !== undefined ||
-    Object.keys(changes).some((key) => key.startsWith('za.autoScan.'))
-  ) {
+  if (changes[AUTOMATION_DESCRIPTORS_KEY] !== undefined) {
     void syncAutoScanAlarms();
+    return;
+  }
+  if (Object.keys(changes).some((key) => key.startsWith('za.autoScan.'))) {
+    // 配置中心保存后本机调度镜像先落盘：顺带重取描述符，新建的用户触发器无需重启即可排程。
+    void refreshAutomationDescriptors().then(() => syncAutoScanAlarms());
   }
 });
 chrome.alarms.onAlarm.addListener((alarm) => {

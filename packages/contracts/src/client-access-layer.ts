@@ -48,7 +48,11 @@ export interface UserMessageFrame {
   executionPreference?: ExecutionPreference;
   /** 插件后台生成的自动扫描轮次标识；只收紧服务端单轮预算，不授予任何执行权限。 */
   automationRunId?: string;
-  /** 发起本自动回合的 pack 自动化声明 id（adr-019）：完成帧 tool-card 以此为 toolId 精确关联，不承载治理。 */
+  /**
+   * 发起本自动回合的自动化标识：pack 自动化声明 id（adr-019）或用户自建 watch id（adr-021）；
+   * 完成帧 tool-card 以此为 toolId 精确关联。本字段只收紧不授权——服务端解析到只读模板的 watch 即
+   * 强制该轮只读工具面，解析不到则按普通回合处理（工具面来源与判定链路与人工回合完全相同，不构成放宽面）。
+   */
   automationId?: string;
 }
 

@@ -91,6 +91,13 @@ export type {
   UserConfigWriteEvent,
   AuditEvent,
 } from './audit-event.js';
+export type { AutomationTemplateId, PlatformAutomationTemplate } from './automation-template.js';
+export {
+  PLATFORM_AUTOMATION_TEMPLATES,
+  PLATFORM_MIN_WATCH_MINUTES,
+  WATCH_FOCUS_MAX_LENGTH,
+  findAutomationTemplate,
+} from './automation-template.js';
 export type {
   UserConfigSubject,
   UserOverlayEntryOrigin,
@@ -102,6 +109,7 @@ export type {
   UserOverlayPackPreferences,
   UserOverlayGlobalScope,
   UserOverlayPackScope,
+  UserOverlayWatch,
   UserOverlay,
   UserOverlayValidationIssue,
   ValidateUserOverlayOptions,

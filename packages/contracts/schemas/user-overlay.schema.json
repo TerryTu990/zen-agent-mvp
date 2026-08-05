@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zen-agent.dev/schema/user-overlay/v1.json",
   "title": "zen-agent 用户配置层契约 C7（user-overlay，SSOT）",
-  "description": "L2 用户级配置覆盖层（adr-014）——subject=(tenant,hostUserId) 维度的运行期覆盖，经 UserConfigStore 端口读写、revision（内容 hash）可追溯，显式排除在 U4 快照同构/不可变约束之外。【只收紧（R1）】结构上不存在新增工具/改 adapter/改 execution/放宽 riskTier 或节流的表达能力；riskTier 合并语义恒 max(L1,L2)，全序 auto<hitl<forbidden；用户级能力扩展唯一通道=自建 pack（走 L1 载入校验）。【纯数据（R2）】全部为 JSON/文本，additionalProperties:false 全程；每条规则/事实带 origin 与作用域（R4）。【作用域】packs 键 \"*\"=全局作用域（跨站规则/偏好，结构上无 enabled/restrictions/packConfig——无对应工具面）；其余键=packId（pack 级作用域）。【组合校验器】跨字段语义——同一 toolId 同时出现在 riskTierRaise 与 disabledTools 拒绝、packConfig 按该 pack 声明的 configSchema（adr-020）校验——JSON Schema 表达不了，由 contracts 导出的 validateUserOverlay 承担；消费方 MUST 经该校验器，不得旁路只跑本 schema。写入通道见 C3 config-draft/config-decision 帧与 user-config-write 审计事件（U8：对话只产草稿，显式确认才入库）。对象 JSON 可序列化，跨端口传递满足 U1。",
+  "description": "L2 用户级配置覆盖层（adr-014）——subject=(tenant,hostUserId) 维度的运行期覆盖，经 UserConfigStore 端口读写、revision（内容 hash）可追溯，显式排除在 U4 快照同构/不可变约束之外。【只收紧（R1）】结构上不存在新增工具/改 adapter/改 execution/放宽 riskTier 或节流的表达能力；riskTier 合并语义恒 max(L1,L2)，全序 auto<hitl<forbidden；用户级能力扩展唯一通道=自建 pack（走 L1 载入校验）。【纯数据（R2）】全部为 JSON/文本，additionalProperties:false 全程；每条规则/事实带 origin 与作用域（R4）。【作用域】packs 键 \"*\"=全局作用域（跨站规则/偏好，结构上无 enabled/restrictions/packConfig——无对应工具面）；其余键=packId（pack 级作用域）。【用户自建触发器（adr-021）】顶层 watches = 平台内建自动化模板（contracts PLATFORM_AUTOMATION_TEMPLATES，L0 代码闭集，用户不可定义模板）的参数实例；跨站点、不锚定 pack，故居顶层。只读模板发起的自动回合由服务端强制只读工具面（R7 无人值守底线，结构强制），watches 因此不构成能力扩张、不放宽任何 riskTier 与节流。【组合校验器】跨字段语义——同一 toolId 同时出现在 riskTierRaise 与 disabledTools 拒绝、packConfig 按该 pack 声明的 configSchema（adr-020）校验、watch 的 templateId 闭集/URL 形态/参数按模板 paramsSchema 校验——JSON Schema 表达不了，由 contracts 导出的 validateUserOverlay 承担；消费方 MUST 经该校验器，不得旁路只跑本 schema。写入通道见 C3 config-draft/config-decision 帧与 user-config-write 审计事件（U8：对话只产草稿，显式确认才入库）。对象 JSON 可序列化，跨端口传递满足 U1。",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "subject", "packs"],
@@ -32,7 +32,8 @@
       "patternProperties": {
         "^[a-z][a-z0-9-]*$": { "$ref": "#/$defs/packScope" }
       }
-    }
+    },
+    "watches": { "$ref": "#/$defs/watchList" }
   },
   "$defs": {
     "featureId": {
@@ -94,6 +95,27 @@
         "enabled": { "type": "boolean" },
         "minutes": { "type": "integer", "minimum": 1 }
       }
+    },
+    "watch": {
+      "$comment": "用户自建周期触发器实例（adr-021）：只有「平台内建模板 id + 参数」两成分——无工具定义/execution/adapter，无 riskTier 与节流的放宽表达力，故不构成能力扩张（AGENT-04）。templateId 闭集成员判定、url 可解析性与协议闭集、minutes 平台下限均属语义判定，由组合校验器 validateUserOverlay 按模板声明的 paramsSchema 承担（本 schema 只判类型与长度上界）。id 文法与 C3 user-message.automationId 一致：自动回合以本 id 发起，服务端据此定位模板并强制只读工具面（R7）。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "templateId", "url", "minutes", "enabled"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "templateId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "url": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "minutes": { "type": "integer", "minimum": 1 },
+        "enabled": { "type": "boolean" },
+        "focus": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "watchList": {
+      "$comment": "单用户自建触发器上限 5：周期唤醒是持续占用客户端与服务端预算的资源，条数上界写进契约，超限即拒收。",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/watch" }
     },
     "verbosity": {
       "type": "string",

@@ -67,7 +67,11 @@
         "messageId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,128}$" },
         "executionPreference": { "$ref": "#/$defs/executionPreference" },
         "automationRunId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{8,128}$" },
-        "automationId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+        "automationId": {
+          "$comment": "发起本自动回合的自动化标识：pack 自动化声明 id（adr-019）或用户自建 watch id（adr-021，user-overlay watches[].id 同文法）。只收紧不授权——服务端解析到只读模板的 watch 即强制该轮只读工具面（R7），解析不到按普通回合处理。",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        }
       }
     },
     "hitlDecision": {

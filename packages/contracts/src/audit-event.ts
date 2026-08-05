@@ -35,6 +35,10 @@ interface AuditEventBase {
   /** 激活 pack 的 semver；随 packId 一同记录。 */
   packVersion?: string;
   featureId?: string;
+  /** 本事件所属自动回合（C3 user-message.automationRunId）；人工回合缺省。 */
+  automationRunId?: string;
+  /** 发起该自动回合的自动化标识：pack 声明的 automation id（adr-019）或用户自建 watch id（adr-021）；人工回合缺省。 */
+  automationId?: string;
 }
 
 export interface SessionStartEvent extends AuditEventBase {
@@ -92,6 +96,11 @@ export interface ToolDecisionEvent extends AuditEventBase {
     userConfigDegraded?: 'fail-open-closed';
     /** L2 收紧后的本轮生效分级（riskTier 为静态定义值）；缺省=无 L2 收紧、生效值即静态值。 */
     effectiveTier?: RiskTier;
+    /**
+     * 本轮由只读自动化模板发起、工具面被平台强制收窄为只读（adr-021，R7 无人值守底线）的判定归因：
+     * 越界工具请求以 verdict=deny 落此标注，是「无人值守不执行写操作」的机械可检证据；缺省=非只读强制轮。
+     */
+    unattendedReadOnly?: true;
   };
 }
 

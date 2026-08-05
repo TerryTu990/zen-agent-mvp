@@ -510,6 +510,17 @@ function decide(sys, u, body) {
   const drill = driveDrill(u, body);
   if (drill !== null) return drill;
   const obs = lastToolObs(body);
+  // R7 无人值守只读底线剧本：'模拟越权写调用' 哨兵不看工具可见性即发起写工具调用（真实 LLM 幻觉
+  // 调用工具面外写工具的确定性替身），驱动服务端结构强制拒绝路径——不依赖模型自觉。
+  if (obs === null && u.includes('模拟越权写调用')) {
+    return {
+      toolCall: {
+        id: 'call_forced_write',
+        name: TOOL_CANCEL,
+        arguments: JSON.stringify({ orderId: 'ORD-1001' }),
+      },
+    };
+  }
   if (obs === null && u.includes('自动履约扫描') && hasTool(body, TOOL_XIANYU_PREPARE)) {
     return { toolCall: snapshotCall() };
   }

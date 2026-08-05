@@ -57,6 +57,7 @@ import type {
   UserOverlayL1Baseline,
   UserOverlayPackScope,
   UserOverlayRiskTierRaise,
+  UserOverlayWatch,
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
 import { signDemoToken, type DemoTokenSigner } from './demo-token.js';
@@ -75,6 +76,16 @@ import {
   selectToolsForPreference,
 } from './execution-preference.js';
 import { derivePreparedIntent, prepareToolSpecFor } from './prepare-intent.js';
+import {
+  changeSummary,
+  diffWatchSnapshots,
+  hasWatchChange,
+  isWatchWorkPage,
+  resolveWatchRun,
+  watchReportPrompt,
+  watchSnapshotOf,
+  type WatchSnapshot,
+} from './watch-run.js';
 
 export interface GatewayDeps {
   assembly: AssemblyPort;
@@ -324,6 +335,9 @@ interface PendingConfigDraft {
 }
 
 const CONFIG_DRAFT_TTL_MS = 600_000;
+
+/** watch 比对基线的进程内条目上界（LRU 逐出）：防长驻无界增长。 */
+const WATCH_BASELINE_MAX = 500;
 
 /** overlay 写入体积守卫：端点守总量（字节/条目），schema 守单作用域形状上界（maxItems/maxProperties）。 */
 const USER_OVERLAY_MAX_BYTES = 128 * 1024;
@@ -604,6 +618,20 @@ export function createGateway(deps: GatewayDeps): Gateway {
   let sitesPromise: Promise<SiteDescriptor[]> | undefined;
   const getSites = (): Promise<SiteDescriptor[]> => (sitesPromise ??= deps.assembly.listSites());
 
+  // 全 pack 工具的静态分级表（快照不可变，惰性一次）：只读自动回合拒绝越界工具时的 riskTier 归因依据。
+  let toolTiersPromise: Promise<Map<string, RiskTier>> | undefined;
+  const getToolTiers = (): Promise<Map<string, RiskTier>> =>
+    (toolTiersPromise ??= deps.assembly
+      .allTools()
+      .then((tools) => new Map(tools.map((tool) => [tool.id, tool.riskTier]))));
+
+  /**
+   * watch 实例的上轮快照基线（adr-021）：键含 subject，故跨会话复用同一实例基线——
+   * 插件重建会话不会误报"整页新增"。进程内态：重启后首轮重新建基线（该轮不报告）。
+   */
+  // 进程内比对基线（LRU 上界；重启后首轮重建基线不报告——见 adr-021 后果）。
+  const watchBaselines = new Map<string, WatchSnapshot>();
+
   /**
    * generic 兜底的服务端准入（U7 fail-closed）：活跃页 origin 不在名单内（含取不到 origin）即回落仅基座。
    */
@@ -701,6 +729,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
   /**
    * 记一条审计事件（record-only 旁路，U6/C5）：网关只传 schema 允许字段（不含实参/响应体/签名/secret），
    * 脱敏前置由此构造保证、audit sink 再兜一层。eventId/ts 就地生成；audit.record 契约不抛，无需 try/catch。
+   * run 存在＝本事件属某个无人值守自动回合（adr-021 归因键）；人工回合缺省。
    */
   const recordEvent = (
     sessionId: string,
@@ -708,6 +737,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     featureId: string | null,
     body: Pick<AuditEvent, 'type' | 'data'>,
     pack?: PackRef,
+    run?: { runId: string; automationId: string },
   ): void => {
     deps.audit.record({
       eventId: randomUUID(),
@@ -718,6 +748,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
       ...(pack?.packId != null ? { packId: pack.packId } : {}),
       ...(pack?.packVersion != null ? { packVersion: pack.packVersion } : {}),
       ...(featureId !== null ? { featureId } : {}),
+      ...(run !== undefined
+        ? { automationRunId: run.runId, automationId: run.automationId }
+        : {}),
       ...body,
     } as AuditEvent);
   };
@@ -1854,6 +1887,185 @@ export function createGateway(deps: GatewayDeps): Gateway {
     return !automationFailed;
   }
 
+  /**
+   * watch 自动回合（adr-021，R7 无人值守底线的结构强制）：服务端自取只读快照 → 与上轮基线比对 →
+   * 仅在有变化时驱动一次报告轮。报告轮的工具面为空——只读模板结构上取不到任何写能力（比 pack 工具面
+   * 再收窄一层），模型幻觉出的工具调用一律 deny 并落审计，不签发代执行指令、不挂 HITL（无人可确认，
+   * 挂起只会让 run 悬空）。变化结论由服务端比对给出，模型只负责渲染报告正文（R6）。
+   * 本回合不写会话历史：watch 目标页常与人工会话不同站，自动报告不应污染用户对话上下文。
+   */
+  async function runWatchTurn(
+    session: SessionState,
+    claims: IdentityClaims,
+    watch: UserOverlayWatch,
+    run: { runId: string; automationId: string },
+    text: string,
+    messageId: string | undefined,
+  ): Promise<{ ok: boolean; summary?: string }> {
+    const { sessionId } = session;
+    const runtime = runtimeOf(sessionId);
+    const cancelled = (): boolean =>
+      messageId !== undefined && runtime.cancelledMessageIds.has(messageId);
+    const startedAt = Date.now();
+    // 装配按 watch 的目标 URL（而非会话活跃页）解析：watch 跨站点，报告依据的是被监测页的配置面。
+    const resolved = await deps.assembly.resolveFeature({ url: watch.url });
+    const { packId, packVersion, featureId, genericOrigin } = gateGeneric(resolved, watch.url);
+    const composed = await deps.assembly.compose({
+      sessionId,
+      packId,
+      featureId,
+      subject: subjectOf(claims),
+    });
+    const pack: PackRef =
+      composed.packId === null
+        ? { packId: null, packVersion: null }
+        : { packId, packVersion, ...(genericOrigin !== undefined ? { genericOrigin } : {}) };
+    const settle = (
+      outcome: 'ok' | 'error' | 'timeout',
+      summary?: string,
+    ): { ok: boolean; summary?: string } => {
+      recordEvent(
+        sessionId,
+        claims,
+        featureId,
+        {
+          type: 'tool-execution',
+          data: {
+            toolCallId: run.runId,
+            toolId: run.automationId,
+            execution: 'server',
+            outcome,
+            durationMs: Date.now() - startedAt,
+          },
+        },
+        pack,
+        run,
+      );
+      return { ok: outcome === 'ok', ...(summary !== undefined ? { summary } : {}) };
+    };
+
+    const requestId = randomUUID();
+    const reported = waitForSnapshot(sessionId, requestId);
+    broadcast(sessionId, { type: 'snapshot-request', sessionId, requestId });
+    const report = await reported;
+    if (report === null) return settle('timeout');
+    if (cancelled()) return settle('error');
+    // 客户端上报的页不在实例范围内＝本轮看的不是被监测页：不更新基线、不产报告（不可采信客户端上报，U7）。
+    if (!isWatchWorkPage(watch.url, report.url)) return settle('error');
+    const snapshot = watchSnapshotOf(
+      report.url,
+      report.title ?? '',
+      redactSnapshotValues(report.elements),
+      report.notices ?? [],
+    );
+    // 基线按 (subject, watchId, 实际快照页) 归并：换页不与旧页比对，避免虚假「新增/消失」报告。
+    const baselineKey = JSON.stringify([claims.tenant, claims.hostUserId, watch.id, snapshot.url]);
+    const previous = watchBaselines.get(baselineKey);
+    // 基线推进（LRU 上界防无界增长）：首轮与无变化轮即刻推进；有变化轮推迟到报告成功之后——
+    // 否则报告失败会把已检出的变化连同基线一起吞掉，该变化永不再报（R6）。
+    const advanceBaseline = (): void => {
+      if (watchBaselines.size >= WATCH_BASELINE_MAX && !watchBaselines.has(baselineKey)) {
+        const oldest = watchBaselines.keys().next().value;
+        if (oldest !== undefined) watchBaselines.delete(oldest);
+      }
+      watchBaselines.delete(baselineKey);
+      watchBaselines.set(baselineKey, snapshot);
+    };
+    // 首轮只建基线（无可比对上轮）；无变化不打扰面板，只留审计——两者都不产报告。
+    if (previous === undefined) {
+      advanceBaseline();
+      return settle('ok');
+    }
+    const change = diffWatchSnapshots(previous, snapshot);
+    if (!hasWatchChange(change)) {
+      advanceBaseline();
+      return settle('ok');
+    }
+    const summary = changeSummary(change);
+
+    recordEvent(
+      sessionId,
+      claims,
+      featureId,
+      {
+        type: 'assembly',
+        data: {
+          snapshotVersion: composed.snapshotVersion,
+          featureId,
+          toolIds: [],
+          skillIds: composed.skills.map((skill) => skill.id),
+          ...(composed.userConfigRevision !== undefined
+            ? { userConfigRevision: composed.userConfigRevision }
+            : {}),
+          ...(composed.userConfigStale === true ? { userConfigStale: true as const } : {}),
+          ...(composed.userConfigDegraded !== undefined
+            ? { userConfigDegraded: composed.userConfigDegraded }
+            : {}),
+          ...(composed.packDisabled === true ? { packDisabled: true as const } : {}),
+          ...(composed.disabledPackId !== undefined ? { disabledPackId: composed.disabledPackId } : {}),
+        },
+      },
+      pack,
+      run,
+    );
+
+    const messages: LlmMessage[] = [
+      { role: 'system', content: systemContentFor(composed, pack, watch.url) },
+      { role: 'user', content: watchReportPrompt({ text, watch, snapshot, change, summary }) },
+    ];
+    const llmRequestId = messageId === undefined ? undefined : `${sessionId}:${messageId}`;
+    let narrated = false;
+    for (let round = 0; round < deps.maxTurnRounds; round += 1) {
+      if (cancelled()) break;
+      let call: { toolCallId: string; name: string } | null = null;
+      let failed = false;
+      for await (const event of deps.llm.chat({
+        messages,
+        ...(llmRequestId !== undefined ? { requestId: llmRequestId } : {}),
+      })) {
+        if (cancelled()) break;
+        if (event.kind === 'text-delta') {
+          broadcast(sessionId, { type: 'text-delta', sessionId, delta: event.delta });
+        } else if (event.kind === 'tool-call') {
+          call = { toolCallId: event.toolCallId, name: event.name };
+          break;
+        } else if (event.kind === 'done' && event.stopReason === 'error') {
+          failed = true;
+        }
+      }
+      if (call === null) {
+        narrated = !failed;
+        break;
+      }
+      // 只读强制的机械拒绝：本轮不存在放行分支，工具名是否在任何 pack 工具面内都不改变结论。
+      recordEvent(
+        sessionId,
+        claims,
+        featureId,
+        {
+          type: 'tool-decision',
+          data: {
+            toolCallId: call.toolCallId,
+            toolId: call.name,
+            riskTier: (await getToolTiers()).get(call.name) ?? 'forbidden',
+            verdict: 'deny',
+            reason: '无人值守只读自动回合：本轮工具面为空，任何工具调用一律拒绝且不执行',
+            unattendedReadOnly: true,
+          },
+        },
+        pack,
+        run,
+      );
+      messages.push({
+        role: 'user',
+        content: `（系统提示）本轮是无人值守的只读监测回合，工具 ${call.name} 的调用已被服务端拒绝，不会执行，也没有人可以确认它。请仅依据上文内容如实汇报本轮变化，不要再发起任何工具调用。`,
+      });
+    }
+    // 报告成功才推进基线：失败轮保留上轮基线，同一变化下轮仍会被检出并再报一次。
+    if (narrated) advanceBaseline();
+    return settle(narrated ? 'ok' : 'error', summary);
+  }
+
   async function handleFrames(
     req: IncomingMessage,
     res: ServerResponse,
@@ -1892,6 +2104,42 @@ export function createGateway(deps: GatewayDeps): Gateway {
         return;
       case 'user-message': {
         const runtime = runtimeOf(session.sessionId);
+        // watch 归属判定先于一切回合登记（adr-021）：不可运行的实例不占幂等位、不产任何帧。
+        // 存储读失败时不得回落普通回合——那会让 watch id 拿到完整工具面，只读强制被绕过（fail-closed）。
+        let watchRun: UserOverlayWatch | null = null;
+        if (upstream.automationId !== undefined && deps.userConfig !== undefined) {
+          let overlay: UserOverlay | null;
+          let stale = false;
+          try {
+            const read = await deps.userConfig.store.read(subjectOf(claims));
+            overlay = read.overlay;
+            stale = read.stale === true;
+          } catch {
+            sendJson(res, 503, { error: '用户配置暂不可用，未启动自动回合' });
+            return;
+          }
+          const resolution = resolveWatchRun(overlay, upstream.automationId);
+          // 未解析出 watch 时不得直接回落普通回合——无人值守轮次拿到完整工具面即 R7 失守。
+          // 只有命中 L1 pack automation 闭集（adr-019 既有语义）才按普通回合继续；其余一律拒绝。
+          if (resolution.kind === 'none') {
+            const declared = deps.userConfig.l1Baseline.automations.some(
+              (automation) => automation.id === upstream.automationId,
+            );
+            if (!declared) {
+              sendJson(res, stale ? 503 : 403, {
+                error: stale
+                  ? '用户配置为降级快照，无法确认自动化实例，未启动自动回合'
+                  : '未知自动化实例，未启动自动回合',
+              });
+              return;
+            }
+          }
+          if (resolution.kind === 'blocked') {
+            sendJson(res, 403, { error: `自动化实例不可运行：${resolution.reason}` });
+            return;
+          }
+          if (resolution.kind === 'ready') watchRun = resolution.watch;
+        }
         if (upstream.messageId !== undefined) {
           const reservation = deps.store.reserveMessageTurn(session.sessionId, upstream.messageId);
           if (reservation === 'storage-failed') {
@@ -1938,13 +2186,29 @@ export function createGateway(deps: GatewayDeps): Gateway {
           .then(async () => {
             runtime.runningMessageId = upstream.messageId ?? null;
             try {
-              const succeeded = await runTurn(
-                session,
-                upstream.text,
-                claims,
-                upstream.executionPreference ?? 'auto',
-                upstream.messageId,
-              );
+              // watch run 的变化摘要随完成帧呈现（R6）：无变化轮不带 summary，面板据此不打扰用户。
+              let summary: string | undefined;
+              let succeeded: boolean;
+              if (watchRun !== null) {
+                const result = await runWatchTurn(
+                  session,
+                  claims,
+                  watchRun,
+                  { runId: upstream.automationRunId ?? randomUUID(), automationId: watchRun.id },
+                  upstream.text,
+                  upstream.messageId,
+                );
+                succeeded = result.ok;
+                summary = result.summary;
+              } else {
+                succeeded = await runTurn(
+                  session,
+                  upstream.text,
+                  claims,
+                  upstream.executionPreference ?? 'auto',
+                  upstream.messageId,
+                );
+              }
               if (upstream.automationRunId !== undefined) {
                 runtime.automationRuns.set(upstream.automationRunId, {
                   status: succeeded ? 'succeeded' : 'failed',
@@ -1956,6 +2220,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   toolCallId: upstream.automationRunId,
                   toolId: upstream.automationId ?? 'automation',
                   status: succeeded ? 'succeeded' : 'failed',
+                  ...(summary !== undefined ? { summary } : {}),
                   mode: 'server',
                 });
               }
