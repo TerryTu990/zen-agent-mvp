@@ -129,6 +129,8 @@ const VERBOSITY_LABEL: Record<Verbosity, string> = {
 };
 const TIERS: RiskTier[] = ['auto', 'hitl', 'forbidden'];
 const PLATFORM_MIN_PERIOD_MINUTES = 1;
+/** 状态行呈现的服务端 issues 条数上限（超出以计数收尾）。 */
+const ISSUE_DISPLAY_LIMIT = 5;
 const GLOBAL_SCOPE = '*';
 const TABS: { id: string; label: string }[] = [
   { id: 'packs', label: '站点包' },
@@ -174,7 +176,14 @@ export function describeSaveFailure(status: number, body: unknown): string {
       .map((issue) =>
         typeof issue.path === 'string' ? `${issue.path} → ${String(issue.message)}` : String(issue.message),
       );
-    return [error === '' ? 'overlay 未通过写入期校验' : error, ...lines].join('；');
+    // allErrors 下 issues 可达数百条：只呈现前若干条，其余给出计数（状态行需可读）。
+    const shown = lines.slice(0, ISSUE_DISPLAY_LIMIT);
+    const rest = lines.length - shown.length;
+    return [
+      error === '' ? 'overlay 未通过写入期校验' : error,
+      ...shown,
+      ...(rest > 0 ? [`另有 ${rest} 项未列出`] : []),
+    ].join('；');
   }
   return error === '' ? `保存失败（HTTP ${status}）` : error;
 }
@@ -966,15 +975,20 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     const token = tokenInput?.value.trim() ?? '';
     if (token !== '') patch.token = token;
     const baseUrl = baseUrlInput?.value.trim() ?? '';
+    // 地址信任归一是采用该地址的前置条件：未归一地址一律不落盘、更不切换本页基址——
+    // 否则本页会立刻把令牌发往该地址（server-url 的 TLS/loopback 硬门不得被绕过）。
+    // 令牌与地址各自独立成败：地址不受信不拖累令牌保存（同一 blocker 的成因）。
+    let trustedBaseUrl: string | null = null;
+    let untrustedBaseUrl = false;
     if (baseUrl !== serverBaseUrl) {
-      // 地址信任归一是保存的前置条件：未归一地址一律不落盘、更不切换本页基址——
-      // 否则本页会立刻把令牌发往该地址（server-url 的 TLS/loopback 硬门不得被绕过）。
-      if (baseUrl !== '' && (deps.normalizeBaseUrl?.(baseUrl) ?? null) === null) {
-        throw new UntrustedBaseUrlError();
-      }
-      patch.serverBaseUrl = baseUrl;
+      trustedBaseUrl = baseUrl === '' ? '' : deps.normalizeBaseUrl?.(baseUrl) ?? null;
+      if (trustedBaseUrl === null) untrustedBaseUrl = true;
+      else patch.serverBaseUrl = baseUrl;
     }
-    if (Object.keys(patch).length === 0) return false;
+    if (Object.keys(patch).length === 0) {
+      if (untrustedBaseUrl) throw new UntrustedBaseUrlError();
+      return false;
+    }
     await deps.saveSettings(patch);
     if (patch.token !== undefined) {
       authToken = patch.token;
@@ -984,11 +998,11 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     }
     if (patch.serverBaseUrl !== undefined) {
       serverBaseUrl = patch.serverBaseUrl;
-      if (patch.serverBaseUrl !== '') {
-        const trusted = deps.normalizeBaseUrl?.(patch.serverBaseUrl) ?? patch.serverBaseUrl;
-        apiBaseUrl = trusted.replace(/\/+$/, '');
+      if (trustedBaseUrl !== null && trustedBaseUrl !== '') {
+        apiBaseUrl = trustedBaseUrl.replace(/\/+$/, '');
       }
     }
+    if (untrustedBaseUrl) throw new UntrustedBaseUrlError();
     return true;
   }
 
@@ -1017,7 +1031,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     } catch (error) {
       setStatus(
         error instanceof UntrustedBaseUrlError
-          ? '服务端地址不受信：生产地址必须使用 HTTPS（仅 127.0.0.1/localhost 可用 HTTP），未保存'
+          ? '服务端地址不受信：生产地址必须使用 HTTPS（仅 127.0.0.1/localhost 可用 HTTP），该地址未保存；其余本机设置已保存'
           : '本机设置保存失败',
         true,
       );

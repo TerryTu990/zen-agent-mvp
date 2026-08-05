@@ -510,8 +510,13 @@ describe('保存链路（乐观并发 + 服务端校验反馈）', () => {
 
   it('初次载入并行读取 /v1/packs 与 /v1/user-config，均带鉴权头', async () => {
     await mounted(harness);
-    expect(harness.calls.some((call) => call.url.includes('/v1/packs'))).toBe(true);
-    expect(harness.calls.some((call) => call.url.includes('/v1/user-config'))).toBe(true);
+    const packsCall = harness.calls.find((call) => call.url.includes('/v1/packs'));
+    const configCall = harness.calls.find((call) => call.url.includes('/v1/user-config'));
+    expect(packsCall).toBeDefined();
+    expect(configCall).toBeDefined();
+    // 只断言 Bearer 前缀，不断言令牌值（SEC-04）
+    expect(packsCall?.authorization?.startsWith('Bearer ')).toBe(true);
+    expect(configCall?.authorization?.startsWith('Bearer ')).toBe(true);
   });
 
   it('PUT 带 expectedRevision（定格自最近一次读取），body 为完整 overlay 且 subject 与服务端一致', async () => {
