@@ -159,17 +159,22 @@ describe('config-decision 上行与终态（U8：客户端只回传 draftId+deci
     expect(messages.querySelector('.za-config-card')?.textContent).toContain('所有站点');
   });
 
-  it('终态如实反馈（R6）：accept 显示已保存与配置中心指引，reject 显示未保存', () => {
+  it('终态如实反馈（R6）：accept 只宣告「已提交」不宣告成功，reject 宣告未保存且不承诺会话内行为', () => {
     const acceptMessages = messagesEl();
     renderConfigDraftCard(acceptMessages, draftFrame(), vi.fn<SendFn>());
     acceptMessages.querySelector<HTMLButtonElement>('.za-config-approve')?.click();
     const acceptText = acceptMessages.querySelector('.za-config-card')?.textContent ?? '';
-    expect(acceptText).toContain('已保存');
+    expect(acceptText).toContain('已提交保存');
     expect(acceptText).toContain('配置中心');
+    // 写入结果由服务端裁定：点击瞬间不得出现「已保存」等成功断言（失败时会与状态提示互斥）
+    expect(acceptText).not.toContain('已保存 ✓');
 
     const rejectMessages = messagesEl();
     renderConfigDraftCard(rejectMessages, draftFrame(), vi.fn<SendFn>());
     rejectMessages.querySelector<HTMLButtonElement>('.za-config-reject')?.click();
-    expect(rejectMessages.querySelector('.za-config-card')?.textContent).toContain('未保存');
+    const rejectText = rejectMessages.querySelector('.za-config-card')?.textContent ?? '';
+    expect(rejectText).toContain('未保存到配置');
+    // 裁决结果当前不回喂模型，故不承诺「本次会话按此执行」
+    expect(rejectText).not.toContain('本次会话按此执行');
   });
 });

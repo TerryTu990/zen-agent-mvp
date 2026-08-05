@@ -90,7 +90,7 @@ export function renderConfigDraftCard(
 
   const note = document.createElement('div');
   note.className = 'za-config-note';
-  note.textContent = '对话不会直接修改你的配置——只有此处确认后才会保存。草稿 10 分钟内有效。';
+  note.textContent = '对话不会直接修改你的配置——只有此处确认后才会保存。草稿有效期内可确认。';
   card.append(note);
 
   const actions = document.createElement('div');
@@ -100,7 +100,7 @@ export function renderConfigDraftCard(
   approve.textContent = '确认保存';
   const reject = document.createElement('button');
   reject.className = 'za-config-reject';
-  reject.textContent = '仅本次会话生效';
+  reject.textContent = '不保存';
   actions.append(approve, reject);
   card.append(actions);
 
@@ -113,10 +113,12 @@ export function renderConfigDraftCard(
     card.setAttribute('data-decided', decision);
     approve.disabled = true;
     reject.disabled = true;
+    // 点击时写入的是「已提交」而非「已保存」：写入结果由服务端裁定，失败时下方状态行给出说明
+    // （成功回执的下行帧待补，见 docs/reviews G3 §5 锚点）——不先于服务端宣告成功（R6）。
     outcome.textContent =
       decision === 'accept'
-        ? '已保存 ✓ 可在配置中心随时修改或删除。'
-        : '未保存——仅本次会话按此执行，不写入配置。';
+        ? '已提交保存，成功后可在配置中心查看与修改。'
+        : '未保存到配置。';
     send({ type: 'config-decision', sessionId: frame.sessionId, draftId: frame.draftId, decision });
   };
   approve.addEventListener('click', () => settle('accept'));

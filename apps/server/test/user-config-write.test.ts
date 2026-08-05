@@ -11,6 +11,7 @@ import { SignJWT } from 'jose';
 import type { UserOverlay, UserOverlayPackScope } from '@zen-agent/contracts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startServer, type RunningServer } from '../src/index.js';
+import { createFsUserConfigStore } from '../src/user-config-store.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/host-demo/config');
@@ -307,21 +308,36 @@ describe('PUT 并发控制 / 来源保真 / 体积守卫（G3 评审修复项）
     expect(scope.rules?.[0]).toMatchObject({ id: 'r-forged-1', origin: 'manual' });
     expect(scope.rules?.[0]?.sourceSessionId).toBeUndefined();
 
-    // 既有条目（同 id 再次 PUT）origin 原样保留——归一只作用于新增
+    // 既有 teach 条目原样保留：以 store 端口预置真实 teach 来源条目（模拟确认写入通道的产物），
+    // 再经面板 PUT 原样提交——归一只作用于新增，既有 teach 来源不被面板路径抹平。
+    const teachHostUserId = 'put-origin-keep';
+    const teachToken = await signToken(teachHostUserId);
+    const store = createFsUserConfigStore({ dir: userConfigDir });
+    const teachSubject = { tenant: TENANT, hostUserId: teachHostUserId };
+    const teachEntry = {
+      id: 'r-teach-kept',
+      text: '经确认写入的规则。',
+      origin: 'teach' as const,
+      sourceSessionId: 'session-teach-1',
+      createdAt: '2026-08-05T00:00:00.000Z',
+    };
+    await store.write(teachSubject, {
+      schemaVersion: 1,
+      subject: teachSubject,
+      packs: { 'host-demo': { rules: [teachEntry] } },
+    });
     const keep = await putOverlay(
-      token,
-      overlayFor(hostUserId, {
-        rules: [
-          {
-            id: 'r-forged-1',
-            text: '伪饰来源的规则。',
-            origin: 'manual',
-            createdAt: '2026-08-05T00:00:00.000Z',
-          },
-        ],
-      }),
+      teachToken,
+      overlayFor(teachHostUserId, { rules: [teachEntry] }),
     );
     expect(keep.status).toBe(200);
+    const kept = await getOverlay(teachToken);
+    const keptScope = kept.overlay?.packs['host-demo'] as UserOverlayPackScope;
+    expect(keptScope.rules?.[0]).toMatchObject({
+      id: 'r-teach-kept',
+      origin: 'teach',
+      sourceSessionId: 'session-teach-1',
+    });
   });
 
   it('体积守卫：条目总数超上限 → 400 不落盘', async () => {

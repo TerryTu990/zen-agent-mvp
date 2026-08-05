@@ -2,7 +2,7 @@
 
 > 批次：G3（L0-L3 实施方案 §1）。日期：2026-08-05。
 > 流程：契约/用例先行（workflow 双路并行）→ 实现（server ∥ extension 双路）→ 三视角独立只读评审 →
-> 修复回归 → **同视角复核受阻（见 §4，账号会话限额）** → 本记录 + commit。
+> 修复回归 → 同视角复核（首次受阻于账号会话限额、恢复后补做，见 §4）→ 本记录 + commit。
 > 验证基线：`pnpm -r build` 0 错；`pnpm -r --workspace-concurrency=1 test` 全绿
 > （server 157 / extension 140 / contracts 146 / assembly 113 / toolgate 93，全仓 704 用例）；`pnpm lint:deps` 通过。
 
@@ -26,9 +26,9 @@
 |---|---|---|---|
 | P1 | major | accept 先摘草稿后校验/落盘：存储瞬时故障或校验冲突时用户已确认的草稿永久失效，而 503 文案暗示可重试 | 摘除移到写入成功/reject 之后；`inFlight` 标记防并发双击；文案改「稍后可重试确认」；集成用例锁定「503 重试仍 503 而非 409」 |
 | P2 | major | extension 对 409 终态错误一律 history-replay，形成「点击→409→重现可操作卡」死循环 | 改用 `deliver` 取 httpStatus：accepted/409/400 为终态（出历史 + 状态说明「草稿已失效…请重新让助手生成」），仅网络/5xx 重放 |
-| P3 | minor | 卡片终态仅变暗，accept/reject 不可区分，缺设计稿的已保存态与信任 microcopy | 增 outcome 区（已保存 ✓ 可在配置中心修改或删除 / 未保存——仅本次会话按此执行）；reject 按钮改「仅本次会话生效」；增「对话不会直接修改你的配置」 |
+| P3 | minor | 卡片终态仅变暗，accept/reject 不可区分，缺设计稿的已保存态与信任 microcopy | 增 outcome 区（终态文案见 §4.1 修订后版本）；增信任 microcopy「对话不会直接修改你的配置」 |
 | P4 | minor | `"*"` 作用域显示为字面 `*`；模型可填不存在的 packId 产惰性条目 | `"*"` 渲染「所有站点」；packId/featureId 不在快照 → 草稿期拒（`config-draft-unknown-scope`） |
-| P5 | minor | 草稿 TTL 对用户不可见 | 卡片 microcopy 注明「草稿 10 分钟内有效」 |
+| P5 | minor | 草稿 TTL 对用户不可见 | 卡片 microcopy 注明有效期（§4.1 后不复述具体时长） |
 | P6 | minor | PUT 整份覆盖无乐观并发控制（面板旧态可静默冲掉 teach 写入） | 增可选 `?expectedRevision=`，不符 409 不落盘 |
 | P7 | minor | PUT 路径 origin/sourceSessionId 客户端自报，可伪饰 teach 来源 | 新增条目（id 不在当前 overlay）origin 归一为 manual + 剥离 sourceSessionId；既有条目原样 |
 | P8 | minor | 消歧后缀改布局无迁移，存量静默孤儿化 | 架构路以 git 证据核实无发布存量（0.3.4 早于 G1/G2）；补 store 初始化 legacy 文件检测警示一次，不做迁移 |
@@ -62,17 +62,40 @@
 `user-config-write.test.ts`：expectedRevision 三态（不符 409 不落盘 / 相符 200）、origin 归一（伪饰 teach → 落盘 manual 且无 sourceSessionId）、条目数超限 400 不落盘。
 `config-draft-card.test.ts`：`"*"` → 「所有站点」、accept/reject 终态文案区分。
 
-## 4. 流程偏差（如实记录，HOW-07）
+## 4. 复核裁定与流程偏差（如实记录，HOW-07）
 
-三视角**初评全部完成并返回**（产品 2 major + 6 minor、架构 1 major + 4 minor、规则 4 minor），修复全部落地并经全量回归验证；但**同视角复核（SendMessage 续会话）三路均因账号会话限额中断**（`session limit · resets 12:50pm Asia/Shanghai`），未取得复核裁定。
+三视角初评全部完成并返回（产品 2 major + 6 minor、架构 1 major + 4 minor、规则 4 minor），修复全部落地并经全量回归验证。
 
-处置：主进程对每项修复做了代码级自验（config-decision 时序、inFlight 复位路径、守卫分支、PUT 校验链顺序、extension 终态分支），并以 38 条新增/加固用例把修复语义锁进回归；**复核在限额恢复后补做，结论追加至本记录**。本批次因此标记为「修复完成、复核待补」，G3 commit 落地但任务保持在复核补做前不关闭。
+**流程偏差**：同视角复核（SendMessage 续会话）首次发起时三路均因账号会话限额中断（`session limit · resets 12:50pm Asia/Shanghai`）；主进程遂对每项修复做代码级自验并以新增用例锁定语义，G3 于该状态下 commit（5726d8b），记录标注「复核待补」。限额恢复后（13:02）三路复核重新发起。
+
+**复核结论**（在 commit 5726d8b 工作树上，各路均独立复跑 build/test 验证）：
+
+| 视角 | 裁定 | 备注 |
+|---|---|---|
+| 产品 | **8/8 RESOLVED** | 确认修复方向全在服务端 fail-closed 一侧、未引入放宽面；预览=落盘、来源归一、乐观并发三项超出最初要求 |
+| 架构 | **5/5 RESOLVED** | 另核实「草稿创建期新增 store.read 不破坏 compose 单次定格」：不进治理判定、经端口读取、不产第二 revision，方向恒为少写一个收紧键 |
+| 规则 | **4/4 RESOLVED** | 另特别核实两点属实：`m-ttl-1`→`m-ttl-0001` 是 C3 messageId `{8,128}` 下限的最小合规修正（非弱化）；§4 复核受阻记载如实。并修正其首轮判断——`session.ownerSub === claims.sub` 属主门真实存在 |
+
+**复核提出的残余项**：产品路 2 条（409 状态提示重复、跨面板并发双击的终态提示与实际写入可能不一致）与架构路 2 条（`config-draft-unknown-tool` 与字节上限分支无专用用例、`readBody` 无流式上限属既有属性）登记为 §5 锚点；架构路的「卡片 TTL 文案硬编码」与规则路增量扫描的 3 条 minor **当场修复**（见 §4.1）。
+
+### 4.1 复核期新发现（规则路增量扫描）与当场修复
+
+| 发现 | 处置 |
+|---|---|
+| 卡片点击瞬间即写「已保存 ✓」，而写入结果此时未知；accept 遇 400/409 时用户同时看到「已保存 ✓」与「未写入」两条互斥信息（R6） | outcome 改为「已提交保存，成功后可在配置中心查看与修改」——不先于服务端宣告成功；测试增反向断言（不得含「已保存 ✓」） |
+| reject 文案「仅本次会话生效 / 本次会话按此执行」承诺了无机制支撑的行为（裁决结果不回喂模型） | 按钮改「不保存」、outcome 改「未保存到配置。」；测试增反向断言（不得含「本次会话按此执行」） |
+| `user-config-write.test.ts` 用例名称「既有 teach 条目原样保留」但断言只有 status 200，结构上无法证明 | 改为经 store 端口预置真实 `origin=teach` 条目 → 面板 PUT 原样提交 → 回读断言 origin/sourceSessionId 仍保留 |
+| （架构路）卡片「10 分钟内有效」硬编码与可配 `configDraftTtlMs` 解耦，非缺省部署会文案失真 | 文案改为「草稿有效期内可确认」，不复述具体时长 |
+
+修复后回归：server 157 / extension 140 全绿。
 
 ## 5. 未了结 deferral（WHEN-01，全部带锚点）
 
 | 项 | 锚点 |
 |---|---|
-| 三视角同视角复核补做 | 会话限额恢复后（本批次唯一未闭合流程项） |
+| 409 状态提示重复（deliver 内通用 409 文案 + 草稿失效文案连出两条）；跨面板并发双击时终态提示与实际写入结果可能不一致 | G4 配置中心/面板打磨 |
+| `config-draft-unknown-tool` 分支与 PUT 字节上限分支补专用用例 | G6 E2E 门前的回归补齐 |
+| `readBody` 无流式上限（全量缓冲后才判 128KB；gateway 全部 POST 端点的既有属性） | 部署加固批次（与限流/反压一并处理） |
 | accept 成功的下行确认帧（当前静默，靠卡片终态反馈） | G4 配置中心/面板打磨时评估 |
 | reject 草稿弃置的审计留痕（当前无事件） | G6（U8/C5 复查时裁决是否新增事件类型） |
 | user-overlay schema 层 `maxItems`/`maxProperties` 契约演进（当前守卫在写入端点） | G4（面板编辑是同一端点消费方） |
@@ -85,4 +108,4 @@
 - ✅ E2E-B 走通（服务集成级）：草稿 → 确认 → 落盘 → 下轮 system 注入含规则 → `/injection` user-rules 同 id（origin=L2）→ 收紧后 auto 工具判 hitl 且零 exec-instruction → 审计三方 revision 互证。
 - ✅ U8 红线复查：三视角均确认对话内容无绕过确认通道的写入路径（change 服务端单持、客户端零写入判定、双校验禁旁路）。
 - ✅ 全量 build/test/lint:deps 绿；`assets/` 零改动，六维评测不触发。
-- ⚠️ 同视角复核待补（§4）。
+- ✅ 同视角复核三路全部 RESOLVED（§4）；复核期新发现 4 条 minor 当场修复（§4.1）。
