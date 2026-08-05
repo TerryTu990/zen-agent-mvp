@@ -18,6 +18,7 @@
  *   ZA_E2E_EVIDENCE_DIR     证据归档目录，默认 <测试根>/e2e-evidence/e2e-e
  *
  * 单行运行命令（操作者在仓库根执行，<测试根> 换成自己存放 .env 的目录）：
+ *   node scripts/e2e/run-g6-real-site.mjs --login          # 首次：在持久化 profile 里登录 goofish 与飞书
  *   node --env-file=<测试根>/.env scripts/e2e/run-g6-real-site.mjs --runs=3
  * 证据默认落 <repo>/.za/e2e/e2e-evidence/e2e-e；要落到别处用 ZA_E2E_TEST_ROOT 或 --evidence-dir=。
  *
@@ -127,6 +128,27 @@ function signTestJwt() {
   }));
   const signature = base64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
   return `${header}.${payload}.${signature}`;
+}
+
+/**
+ * 一次性登录引导（`--login`）：用同一 profile 目录开一个带扩展的 Chromium，操作者在其中登录
+ * goofish 与飞书后关闭窗口即可；登录态留在 profile 里供后续每次 E2E 复用。
+ * 平台零特权前提不变——凭证只存在于这个本机 profile，既不入仓也不经服务端（SEC-02）。
+ */
+async function bootstrapLogin() {
+  mkdirSync(PROFILE_DIR, { recursive: true });
+  const context = await chromium.launchPersistentContext(PROFILE_DIR, {
+    headless: false,
+    args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+  });
+  const goofish = context.pages()[0] ?? (await context.newPage());
+  await goofish.goto(GOOFISH_ORIGIN).catch(() => {});
+  const feishu = await context.newPage();
+  await feishu.goto(FEISHU_SHEET_URL === '' ? 'https://feishu.cn' : FEISHU_SHEET_URL).catch(() => {});
+  console.log(`profile 目录：${PROFILE_DIR}`);
+  console.log('在打开的窗口里分别登录 goofish 与飞书（飞书需能打开目标表格），完成后关闭整个浏览器窗口。');
+  await new Promise((settle) => context.once('close', settle));
+  console.log('登录态已写入 profile；接着跑：node --env-file=<测试根>/.env scripts/e2e/run-g6-real-site.mjs --runs=3');
 }
 
 function run(command, args) {
@@ -317,6 +339,10 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
 }
 
 async function main() {
+  if (process.argv.includes('--login')) {
+    await bootstrapLogin();
+    return;
+  }
   assert(FEISHU_SHEET_URL !== '', '缺 ZA_E2E_FEISHU_SHEET_URL：请指向 zen-agent-test 文件夹内的目标表格');
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   const stateRoot = join(TEST_ROOT, 'e2e-state', 'e2e-e');
