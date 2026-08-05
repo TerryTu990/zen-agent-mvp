@@ -186,11 +186,24 @@ async function panelText(panel) {
  * 发一条指令并等回合收敛：期间出现的每张 HITL 卡都先记录「卡片出现时的文档标记数」再批准——
  * 「确认先于写入」是本案例的核心断言，不能只看卡片出现过。
  */
-async function sendAndApprove(panel, text, observeMarkers) {
+async function sendAndApprove(panel, text, observeMarkers, label) {
   const approvals = [];
   await panel.locator('#za-input').fill(text);
   await panel.locator('[data-za-action][data-mode="send"]').click();
+  // 真实回合分钟级：无心跳时「模型在流式输出」与「回合彻底卡死」在日志上不可区分，
+  // 而浏览器一旦中途关闭现场就全丢——心跳是唯一能穿过进程边界留下的进度证据。
+  const startedAt = Date.now();
+  let beatAt = 0;
+  const heartbeat = async () => {
+    const now = Date.now();
+    if (now - beatAt < 20_000) return;
+    beatAt = now;
+    const chars = (await panelText(panel).catch(() => '')).length;
+    const cards = await panel.locator('[data-za-hitl]').count().catch(() => -1);
+    console.log(`    [${label} t+${Math.round((now - startedAt) / 1000)}s] 面板字数=${chars} HITL卡=${cards}`);
+  };
   const settled = async () => {
+    await heartbeat();
     const card = panel.locator('[data-za-hitl]').last();
     if (await card.count() > 0 && await card.locator('[data-za-hitl-approve]').count() > 0) {
       approvals.push({ at: new Date().toISOString(), markersBefore: await observeMarkers() });
@@ -199,7 +212,17 @@ async function sendAndApprove(panel, text, observeMarkers) {
     }
     return (await panel.locator('[data-za-action][data-mode="send"]:not([disabled])').count()) > 0;
   };
-  await waitFor(settled, `指令收敛：${text.slice(0, 24)}…`, TURN_TIMEOUT_MS);
+  try {
+    await waitFor(settled, `指令收敛：${text.slice(0, 24)}…`, TURN_TIMEOUT_MS);
+  } catch (error) {
+    // 不收敛时面板是唯一现场：回合停在哪一步只能从它读出来，进程退出后无法重建。
+    await panel.screenshot({ path: join(EVIDENCE_DIR, `failure-${label}.png`), fullPage: true }).catch(() => {});
+    const shot = await panelText(panel).catch(() => '(面板文本读取失败)');
+    writeFileSync(join(EVIDENCE_DIR, `failure-${label}.txt`), `${redact(shot)}\n`, 'utf8');
+    console.error(`失败现场已归档：${EVIDENCE_DIR}/failure-${label}.{png,txt}`);
+    console.error(`面板末尾：${shot.slice(-800)}`);
+    throw error;
+  }
   return approvals;
 }
 
@@ -263,6 +286,7 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
     panel,
     `在当前闲鱼搜索结果页提取前 ${ITEM_COUNT} 条商品的标题与价格，按编号列出；先不要写入任何地方。`,
     markersInDoc,
+    `extract-${runIndex + 1}`,
   );
   const extraction = await panelText(panel);
   // 条目数必须在提取轮结束时取——写入轮的回复会成为最后一条消息。
@@ -274,6 +298,7 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
     `把上面提取的 ${ITEM_COUNT} 条商品追加到当前飞书文档的正文末尾，每条占一行，` +
     `行格式为「${runTag} | 商品标题 | 价格」。只追加这 ${ITEM_COUNT} 行，不要修改任何已有内容。`,
     markersInDoc,
+    `write-${runIndex + 1}`,
   );
   await docPage.bringToFront();
   await docPage.screenshot({ path: join(EVIDENCE_DIR, `run-${runIndex + 1}-doc.png`), fullPage: false });
