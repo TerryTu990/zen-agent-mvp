@@ -1,3 +1,5 @@
+import type { UserMessageFrame } from './frames.js';
+
 /**
  * 周期自动化描述符（纯调度/提示词数据）：两个来源共用同一形状，调度侧对来源无感知——
  * pack 声明（服务端 GET /v1/automation-descriptors 下发）与用户自建触发器（overlay.watches 派生）。
@@ -102,6 +104,25 @@ export function autoScanDispatch(
       automationId: descriptor.automation.id,
     },
   ];
+}
+
+/**
+ * 自动回合的上行帧投影。automationRunId 关联完成帧与单飞锁；automationId 是服务端定位
+ * 只读模板的唯一依据——缺失则该轮回落普通回合，R7 只读强制整条不可达，故两者必须同时随帧上行。
+ */
+export function autoScanUpstreamFrame(
+  dispatch: ReturnType<typeof autoScanDispatch>[1],
+  sessionId: string,
+): UserMessageFrame {
+  return {
+    type: 'user-message',
+    sessionId,
+    text: dispatch.text,
+    messageId: dispatch.automationRunId,
+    executionPreference: dispatch.executionPreference,
+    automationRunId: dispatch.automationRunId,
+    automationId: dispatch.automationId,
+  };
 }
 
 /** SW 重启恢复时只按服务端权威状态处置本地锁；网络不明时保持锁，优先防重复。 */

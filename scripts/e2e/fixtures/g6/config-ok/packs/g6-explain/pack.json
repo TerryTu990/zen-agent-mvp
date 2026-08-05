@@ -1,0 +1,16 @@
+{
+  "packId": "g6-explain",
+  "version": "1.0.0",
+  "name": "G6 账单讲解站",
+  "summary": "G6 E2E 夹具站点甲：账单功能讲解与拒答（含 exclude 否定路径）",
+  "site": {
+    "origin": "http://127.0.0.1:4183",
+    "locations": ["/console"],
+    "exclude": ["/console/private"]
+  },
+  "engines": { "contract": "^1.0.0" },
+  "featureIdRules": [
+    { "urlPattern": "127\\.0\\.0\\.1:4183/console/billing", "featureId": "billing-guide" }
+  ],
+  "features": ["billing-guide"]
+}

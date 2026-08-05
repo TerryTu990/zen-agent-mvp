@@ -181,6 +181,40 @@ describe('工具面收紧展示（baseTier → effectiveTier）', () => {
     expect(row.querySelector('.za-injection-tightened-by')?.textContent).toContain('存储故障');
     expect(row.querySelector('.za-injection-tier-effective')?.textContent).toContain('forbidden');
   });
+
+  it('降级轮真实形态（可见面为空、逐项全禁）仍逐条列出工具并说明原因，不静默留白', () => {
+    const root = container();
+    renderInjectionView(
+      root,
+      description({
+        toolIds: [],
+        userConfigRevision: undefined,
+        tools: [
+          {
+            toolId: 'xianyu-orders.page-operate',
+            baseTier: 'auto',
+            effectiveTier: 'forbidden',
+            origin: 'L1',
+            tightenedBy: 'storage-failure',
+          },
+          {
+            toolId: 'xianyu-shipping.execute-intent',
+            baseTier: 'hitl',
+            effectiveTier: 'forbidden',
+            origin: 'L1',
+            tightenedBy: 'storage-failure',
+          },
+        ],
+      }),
+    );
+
+    expect(root.querySelectorAll('.za-injection-tool')).toHaveLength(2);
+    const row = toolRow(root, 'xianyu-orders.page-operate');
+    expect(row.dataset['zaToolUnavailable']).toBe('true');
+    expect(row.querySelector('.za-injection-tightened-by')?.textContent).toContain('存储故障');
+    expect(root.querySelector('.za-injection-degraded')?.textContent).toContain('个人定制读取失败');
+    expect(root.querySelector('.za-injection-layer[data-za-layer="L2"]')).not.toBeNull();
+  });
 });
 
 describe('边界与降级形态', () => {

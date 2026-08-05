@@ -3,6 +3,7 @@ import {
   DEFAULT_AUTO_SCAN_MINUTES,
   decideAutoScanRecovery,
   autoScanDispatch,
+  autoScanUpstreamFrame,
   autoScanAlarmFor,
   automationIdOfAlarm,
   isAutoScanWorkPage,
@@ -96,6 +97,19 @@ describe('声明驱动周期扫描纯决策', () => {
         automationId: 'xianyu-auto-scan',
       },
     ]);
+  });
+
+  it('自动回合上行帧携带 automationId：缺失则服务端无法定位只读模板，R7 只读强制不可达', () => {
+    const [, dispatch] = autoScanDispatch(descriptor, 'https://seller.goofish.com/#/im', '订单', 'scan_run_002');
+    expect(autoScanUpstreamFrame(dispatch, 'sess_1')).toEqual({
+      type: 'user-message',
+      sessionId: 'sess_1',
+      text: '执行闲鱼自动履约扫描。',
+      messageId: 'scan_run_002',
+      executionPreference: 'dom-only',
+      automationRunId: 'scan_run_002',
+      automationId: 'xianyu-auto-scan',
+    });
   });
 
   it('alarm 名与 automation id 互相派生', () => {

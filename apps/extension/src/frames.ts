@@ -41,6 +41,8 @@ export interface UserMessageFrame {
   messageId?: string;
   executionPreference?: ExecutionPreference;
   automationRunId?: string;
+  /** 发起本自动回合的自动化 id；服务端据此定位只读模板并强制该轮工具面（缺失则整条只读强制不可达）。 */
+  automationId?: string;
 }
 
 export interface HitlDecisionFrame {

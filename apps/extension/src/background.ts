@@ -44,6 +44,7 @@ import {
   mergeAutomationDescriptors,
   watchesFromUserConfig,
   shouldPauseAutoScan,
+  autoScanUpstreamFrame,
   autoScanAlarmFor,
   automationIdOfAlarm,
   autoScanEnabledKeyFor,
@@ -617,14 +618,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           executionPreference: message.executionPreference,
         };
       case 'auto-scan':
-        return {
-          type: 'user-message',
-          sessionId,
-          text: message.text,
-          messageId: message.automationRunId,
-          executionPreference: message.executionPreference,
-          automationRunId: message.automationRunId,
-        };
+        return autoScanUpstreamFrame(message, sessionId);
       case 'hitl-decision':
         return { type: 'hitl-decision', sessionId, hitlId: message.hitlId, decision: message.decision };
       case 'config-decision':

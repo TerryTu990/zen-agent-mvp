@@ -1,0 +1,15 @@
+{
+  "packId": "g6-explain",
+  "version": "1.0.0",
+  "name": "G6 账单讲解站（engines 不兼容变体）",
+  "summary": "G6 E2E 夹具：engines.contract 超出平台契约版本，载入期必须拒载",
+  "site": {
+    "origin": "http://127.0.0.1:4183",
+    "locations": ["/console"]
+  },
+  "engines": { "contract": ">=9.0.0" },
+  "featureIdRules": [
+    { "urlPattern": "127\\.0\\.0\\.1:4183/console/billing", "featureId": "billing-guide" }
+  ],
+  "features": ["billing-guide"]
+}

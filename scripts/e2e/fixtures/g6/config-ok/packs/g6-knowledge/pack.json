@@ -1,0 +1,15 @@
+{
+  "packId": "g6-knowledge",
+  "version": "1.0.0",
+  "name": "G6 退款政策知识站",
+  "summary": "G6 E2E 夹具站点乙：知识型 pack（无 tools.json，仅规则与事实）",
+  "site": {
+    "origin": "http://127.0.0.1:4184",
+    "locations": ["/"]
+  },
+  "engines": { "contract": ">=1.0.0" },
+  "featureIdRules": [
+    { "urlPattern": "127\\.0\\.0\\.1:4184/policy", "featureId": "policy-guide" }
+  ],
+  "features": ["policy-guide"]
+}

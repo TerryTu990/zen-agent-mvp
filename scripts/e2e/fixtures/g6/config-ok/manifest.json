@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "packs": [
+    { "packId": "g6-explain", "version": "1.0.0" },
+    { "packId": "g6-knowledge", "version": "1.0.0", "source": "community" }
+  ]
+}

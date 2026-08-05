@@ -137,6 +137,15 @@ function renderHeader(description: InjectionDescriptionView): HTMLElement {
       el('span', 'za-injection-revision', `个人定制版本 ${description.userConfigRevision}`),
     );
   }
+  if (isStorageDegraded(description)) {
+    header.append(
+      el(
+        'span',
+        'za-injection-degraded',
+        '个人定制读取失败：本轮工具面已整体收紧为禁止，讲解与引导仍可用；恢复后自动复原。',
+      ),
+    );
+  }
   return header;
 }
 
@@ -191,14 +200,32 @@ function renderTool(toolId: string, tool: InjectionToolView | undefined): HTMLEl
   return row;
 }
 
+/**
+ * 工具面渲染以「可见面 ∪ 逐项描述」为行集：收紧到禁止的工具已不在 toolIds 内，
+ * 若只按可见面渲染，被收紧掉的工具会连同其收紧来源一起从视图消失——用户看到的是
+ * 「agent 忽然什么都不做」而无从追溯（违 R4/R6）。故落面工具也成行，标注为本轮不可用。
+ */
 function renderTools(description: InjectionDescriptionView): HTMLElement {
   const section = el('section', 'za-injection-tools');
   section.append(el('h3', 'za-injection-section-title', '工具面'));
   const list = el('ul', 'za-injection-tool-list');
   const byId = new Map((description.tools ?? []).map((tool) => [tool.toolId, tool]));
+  const visible = new Set(description.toolIds);
   for (const toolId of description.toolIds) list.append(renderTool(toolId, byId.get(toolId)));
+  for (const tool of description.tools ?? []) {
+    if (visible.has(tool.toolId)) continue;
+    const row = renderTool(tool.toolId, tool);
+    row.dataset['zaToolUnavailable'] = 'true';
+    row.append(el('span', 'za-injection-tool-unavailable', '本轮不可用'));
+    list.append(row);
+  }
   section.append(list);
   return section;
+}
+
+/** L2 读失败的降级轮：工具面整体禁止而讲解仍可用，须就地说明，否则「做不了」无从解释（R6）。 */
+function isStorageDegraded(description: InjectionDescriptionView): boolean {
+  return (description.tools ?? []).some((tool) => tool.tightenedBy === 'storage-failure');
 }
 
 /**
@@ -233,7 +260,9 @@ export function renderInjectionView(root: HTMLElement, description: InjectionDes
     root.append(section);
   }
 
-  if (description.toolIds.length > 0) root.append(renderTools(description));
+  if (description.toolIds.length > 0 || (description.tools ?? []).length > 0) {
+    root.append(renderTools(description));
+  }
   root.append(
     el('p', 'za-injection-note', '装配由服务端决定；对话内容不能改变以上任何治理配置。'),
   );
