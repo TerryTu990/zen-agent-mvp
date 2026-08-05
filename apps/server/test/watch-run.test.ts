@@ -207,6 +207,8 @@ interface WatchRunOptions {
   automationId?: string;
   text?: string;
   labels: string[];
+  /** 客户端实际上报的页面 URL；缺省即被监测页本身。 */
+  reportUrl?: string;
 }
 
 /**
@@ -238,7 +240,7 @@ async function driveWatchRun(
     type: 'snapshot-report',
     sessionId,
     requestId: String(request['requestId']),
-    url: WATCH_URL,
+    url: options.reportUrl ?? WATCH_URL,
     title: '订单列表',
     elements: options.labels.map((label, index) => ({
       ref: `za-${index}`,
@@ -329,6 +331,46 @@ describe('watch 自动回合：变化检测与报告收口（R6）', () => {
           expect(eventData(event)['execution']).toBe('server');
           expect(eventData(event)['outcome']).toBe('ok');
         }
+      } finally {
+        sse.close();
+      }
+    },
+    30_000,
+  );
+
+  it(
+    '上报的不是被监测页：本轮跳过——不产报告、不推进基线，审计记 skipped 而非 ok（不可与「看过没变」同形）',
+    async () => {
+      const hostUserId = 'watch-offpage';
+      const token = await signToken(hostUserId);
+      expect((await putOverlay(token, watchOverlay(hostUserId, [watchEntry()]))).status).toBe(200);
+      const sessionId = await createSession(token);
+      const sse = await openSse(token, sessionId);
+      try {
+        await postFrame(token, sessionId, { type: 'context-report', sessionId, url: WATCH_URL });
+
+        await driveWatchRun(token, sessionId, sse, 'offpage_run_1', { labels: ['ORD-2001 待发货'] });
+        const textDeltasBefore = framesByType(sse.frames, 'text-delta').length;
+
+        // 用户在派发与取快照之间切到了同站另一页：本轮什么都没看到。
+        const skipped = await driveWatchRun(token, sessionId, sse, 'offpage_run_2', {
+          labels: ['完全不同的内容'],
+          reportUrl: `${WATCH_ORIGIN}/order-detail.html`,
+        });
+        expect(skipped['status']).toBe('succeeded');
+        expect(skipped['summary']).toBeUndefined();
+        expect(framesByType(sse.frames, 'text-delta').length).toBe(textDeltasBefore);
+
+        // 基线未被跳过轮污染：回到被监测页后，与首轮基线比对仍能检出真变化。
+        const resumed = await driveWatchRun(token, sessionId, sse, 'offpage_run_3', {
+          labels: ['ORD-2001 已发货'],
+        });
+        expect(String(resumed['summary'] ?? '')).not.toBe('');
+
+        const outcomes = auditEventsFor(sessionId)
+          .filter((event) => event['type'] === 'tool-execution' && eventData(event)['toolId'] === WATCH_ID)
+          .map((event) => eventData(event)['outcome']);
+        expect(outcomes).toEqual(['ok', 'skipped', 'ok']);
       } finally {
         sse.close();
       }

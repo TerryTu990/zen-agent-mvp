@@ -131,6 +131,9 @@ describe('归一算法两端同源', () => {
   };
 
   it('watchPageKey 函数体与跟踪参数闭集逐字相同', () => {
+    // 锚点文本若在两侧同时消失，两个空串会静默判等——守卫先自证抓到了东西。
+    expect(bodyOf(serverSource).length).toBeGreaterThan(200);
+    expect(trackingOf(serverSource)).toContain('gclid');
     expect(bodyOf(extensionSource)).toBe(bodyOf(serverSource));
     expect(trackingOf(extensionSource)).toBe(trackingOf(serverSource));
   });

@@ -1041,7 +1041,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         await chrome.storage.local.set({ [enabledKey]: false });
         postStatus(
           `自动化「${run.automationId}」被服务端判为不可运行，已暂停；` +
-            '触发器可能已被删除或禁用，也可能是服务端暂未启用个人配置存储。',
+            '触发器可能已被删除或禁用，也可能是服务端暂未启用个人配置存储；核对后可在设置页重新启用。',
         );
         return;
       }

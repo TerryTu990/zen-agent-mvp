@@ -45,10 +45,11 @@ export function isWatchWorkPage(watchUrl: string, reportedUrl: string): boolean 
 
 /**
  * 纯跟踪参数：只标注来路、不改变页面内容，故不参与「是哪一个页面」的判定。
- * 闭集只收公认的广告点击标识；站点自有参数（page/q/status/ref…）一律保留——
+ * 闭集只收公认的广告点击与位置埋点标识（`spm` 为阿里系逐次导航轮换的位置串，不承载内容）；
+ * 站点自有参数（page/q/status/ref…）一律保留——
  * 把它们一并丢弃会让搜索页、分页、筛选视图被当成同一页，产出虚假的「新增/消失」。
  */
-const TRACKING_PARAMS = new Set(['gclid', 'fbclid', 'msclkid', 'yclid']);
+const TRACKING_PARAMS = new Set(['gclid', 'fbclid', 'msclkid', 'yclid', 'spm']);
 
 /**
  * 被监测页的归一标识：origin + 去尾斜杠路径 + 排序去跟踪参数后的查询串 + hash。

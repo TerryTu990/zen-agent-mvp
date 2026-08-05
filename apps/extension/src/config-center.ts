@@ -754,7 +754,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       notice('无人值守任务不允许自动执行不可撤销的写操作——平台底线，不可配置。', 'lock'),
       notice(
         '周期自动化只唤醒已打开且已加入会话组的声明工作页，不会自动新建页面。' +
-          '你自建的触发器在目标页未打开时只跳过本轮；站点包自动化在离开工作流后会自动停止。',
+          '你自建的触发器在目标页未打开、或当前地址与监测地址不一致时只跳过本轮；站点包自动化在离开工作流后会自动停止。',
       ),
     );
     if (state.loadError !== null) {

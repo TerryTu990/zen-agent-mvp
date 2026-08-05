@@ -18,7 +18,7 @@ export type AuditEventType =
 
 export type GateVerdict = 'allow' | 'hitl' | 'deny';
 
-export type ExecutionOutcome = 'ok' | 'error' | 'timeout' | 'invalid-result';
+export type ExecutionOutcome = 'ok' | 'error' | 'timeout' | 'invalid-result' | 'skipped';
 
 export type ClientKind = 'extension' | 'sdk' | 'shell';
 

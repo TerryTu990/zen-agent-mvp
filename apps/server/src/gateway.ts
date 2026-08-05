@@ -1922,7 +1922,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ? { packId: null, packVersion: null }
         : { packId, packVersion, ...(genericOrigin !== undefined ? { genericOrigin } : {}) };
     const settle = (
-      outcome: 'ok' | 'error' | 'timeout',
+      outcome: 'ok' | 'error' | 'timeout' | 'skipped',
       summary?: string,
     ): { ok: boolean; summary?: string } => {
       recordEvent(
@@ -1942,7 +1942,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
         pack,
         run,
       );
-      return { ok: outcome === 'ok', ...(summary !== undefined ? { summary } : {}) };
+      // skipped 对客户端按成功收尾（释放单飞锁、不停用触发器），但在审计里与 ok 分开——
+      // 「本轮没看成」和「看过、没变」是两回事，运行历史不能把前者渲染成后者（R6）。
+      return { ok: outcome === 'ok' || outcome === 'skipped', ...(summary !== undefined ? { summary } : {}) };
     };
 
     const requestId = randomUUID();
@@ -1951,10 +1953,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const report = await reported;
     if (report === null) return settle('timeout');
     if (cancelled()) return settle('error');
-    // 客户端上报的页不在实例范围内＝本轮看的不是被监测页：不更新基线、不产报告（不可采信客户端上报，U7）。
-    // 但这不是故障——用户在派发与取快照之间切了页/站点回写了参数都会走到这里，
-    // 记成失败会让客户端把触发器整条停用，一次页内点击就毁掉用户的监测。
-    if (!isWatchWorkPage(watch.url, report.url)) return settle('ok');
+    // 上报 URL 不可解析＝客户端上报畸形，是真故障，不能与「切了页」混为一谈。
+    if (watchPageKey(report.url) === null) return settle('error');
+    // 上报的页不是被监测页：不更新基线、不产报告（不可采信客户端上报，U7）。
+    // 这不是故障——用户在派发与取快照之间切了页、站点回写了参数都会走到这里，
+    // 记成失败会让客户端把触发器整条停用，一次页内点击就毁掉用户的监测；
+    // 但也不是「无变化」，故单列 skipped，运行历史据此区分「没看成」与「看过没变」。
+    if (!isWatchWorkPage(watch.url, report.url)) return settle('skipped');
     const snapshot = watchSnapshotOf(
       report.url,
       report.title ?? '',

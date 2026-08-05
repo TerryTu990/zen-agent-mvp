@@ -185,7 +185,7 @@ export function isAutoScanWorkPage(descriptor: AutomationDescriptor, url: string
 }
 
 /** 纯跟踪参数闭集：与服务端 watch-run.ts 同源手抄（U5：插件不依赖 @zen-agent/*）。 */
-const TRACKING_PARAMS = new Set(['gclid', 'fbclid', 'msclkid', 'yclid']);
+const TRACKING_PARAMS = new Set(['gclid', 'fbclid', 'msclkid', 'yclid', 'spm']);
 
 /**
  * 被监测页的归一标识。SSOT = apps/server/src/watch-run.ts 的同名函数——

@@ -232,7 +232,7 @@
       }
     },
     "toolExecutionData": {
-      "$comment": "执行结局事件：outcome 闭集——ok 成功回喂 / error 宿主 API 报错 / timeout 指令 ttl 过期或结果未归 / invalid-result 结果未过 resultSchema 校验被拒回喂（U7）。不记请求与响应体本身。",
+      "$comment": "执行结局事件：outcome 闭集——ok 成功回喂 / error 宿主 API 报错 / timeout 指令 ttl 过期或结果未归 / invalid-result 结果未过 resultSchema 校验被拒回喂（U7）/ skipped 本轮未执行且非故障（如自动回合上报的不是被监测页）。skipped MUST NOT 与 ok 合并统计——运行历史据此区分「看过、没变」与「本轮没看成」。不记请求与响应体本身。",
       "type": "object",
       "additionalProperties": false,
       "required": ["toolCallId", "toolId", "execution", "outcome"],
@@ -244,7 +244,7 @@
           "$comment": "client 通道的指令 nonce，关联 exec-instruction/exec-result 帧。",
           "type": "string"
         },
-        "outcome": { "type": "string", "enum": ["ok", "error", "timeout", "invalid-result"] },
+        "outcome": { "type": "string", "enum": ["ok", "error", "timeout", "invalid-result", "skipped"] },
         "status": {
           "$comment": "宿主 API 响应状态码（有响应时记录）。",
           "type": "integer",
