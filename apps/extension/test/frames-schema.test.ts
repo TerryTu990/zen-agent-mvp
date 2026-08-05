@@ -51,6 +51,10 @@ function defOf(name: string) {
   return def;
 }
 
+function frameDefNamesOf(unionDef: 'upstreamFrame' | 'downstreamFrame'): string[] {
+  return (defOf(unionDef).oneOf ?? []).map(({ $ref }) => $ref.split('/').pop() ?? '');
+}
+
 function frameTypesOf(unionDef: 'upstreamFrame' | 'downstreamFrame'): string[] {
   const refs = defOf(unionDef).oneOf ?? [];
   return refs.map(({ $ref }) => {
@@ -252,11 +256,17 @@ describe('frames.ts 与 C3 schema 的闭集同构', () => {
   });
 
   /**
-   * type 闭集一致不足以拦住字段级漂移：镜像少抄一个字段时全部单测仍绿，
-   * 只有浏览器级 E2E 才会暴露（`automationId` 即此例）。逐帧对账属性集把两个方向都钉死——
-   * Record 键由 TS 侧编译期强制穷举，值与 schema 属性集运行期比对。
+   * type 闭集一致拦不住字段级漂移：镜像少抄一个字段时类型与 schema 各自自洽，全部单测仍绿。
+   * 逐帧对账属性集把两个方向都钉死——Record 键由 TS 侧编译期强制穷举（`tsc` 在 build 中跑，
+   * 覆盖 test 目录），值与 schema 属性集运行期比对。
    */
   it.each(FRAME_PROPERTY_MIRRORS)('$def 的属性集与 schema 一致（U5 手抄镜像防漂移）', ({ def, keys }) => {
     expect([...keys].sort()).toEqual(Object.keys(defOf(def).properties).sort());
+  });
+
+  it('属性集对账覆盖全部帧定义：新增帧漏加镜像行即失败', () => {
+    const covered = FRAME_PROPERTY_MIRRORS.map(({ def }) => def).sort();
+    const declared = [...frameDefNamesOf('upstreamFrame'), ...frameDefNamesOf('downstreamFrame')].sort();
+    expect(covered).toEqual(declared);
   });
 });

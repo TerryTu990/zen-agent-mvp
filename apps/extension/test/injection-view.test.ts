@@ -255,6 +255,7 @@ describe('工具面收紧展示（baseTier → effectiveTier）', () => {
 
     const alwaysForbidden = toolRow(root, 'xianyu-orders.purge-orders');
     expect(alwaysForbidden.querySelector('.za-injection-tightened-by')).toBeNull();
+    expect(alwaysForbidden.querySelector('.za-injection-tool-unavailable')?.textContent).toBe('一直不可用');
   });
 });
 

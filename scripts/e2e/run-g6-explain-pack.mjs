@@ -75,7 +75,7 @@ const PROFILE_DIR = join(WORK_DIR, 'profile');
 const EVIDENCE_ROOT = resolve(
   process.argv.find((arg) => arg.startsWith('--evidence-dir='))?.slice('--evidence-dir='.length) ??
     process.env.ZA_E2E_EVIDENCE_DIR ??
-    '/Users/terrytu/Workspace2025/Working/tmp/zen-agent/e2e-evidence',
+    join(REPO_ROOT, '.za', 'e2e', 'e2e-evidence'),
 );
 
 const [JWT_SECRET, SIGNING_SECRET] = ['jwt', 'signing'].map(

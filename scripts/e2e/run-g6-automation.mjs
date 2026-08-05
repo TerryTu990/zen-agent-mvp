@@ -27,7 +27,7 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = process.env.ZA_E2E_EXTENSION_DIR
   ? resolve(process.env.ZA_E2E_EXTENSION_DIR)
   : join(REPO_ROOT, 'apps', 'extension');
-const DEFAULT_EVIDENCE_DIR = '/Users/terrytu/Workspace2025/Working/tmp/zen-agent/e2e-evidence/e2e-f';
+const DEFAULT_EVIDENCE_DIR = join(REPO_ROOT, '.za', 'e2e', 'e2e-evidence', 'e2e-f');
 const EVIDENCE_DIR = resolve(
   process.argv.find((arg) => arg.startsWith('--evidence-dir='))?.slice('--evidence-dir='.length) ??
     process.env.ZA_E2E_EVIDENCE_DIR ??

@@ -45,9 +45,17 @@ export function isWatchWorkPage(watchUrl: string, reportedUrl: string): boolean 
 }
 
 /**
- * 被监测页的归一标识（origin + 去尾斜杠路径）：查询串与 hash 不入内，
- * 因为它们不改变「哪一个页面」。比对基线以此归并——用完整 URL 会让同一页的
- * 跟踪参数变体各自建基线，每轮都命中「首轮建基线」分支而永不报告变化。
+ * 纯跟踪参数：只标注来路、不改变页面内容，故不参与「是哪一个页面」的判定。
+ * 闭集只收公认的广告/来源参数；站点自有的筛选参数（page/q/status…）一律保留——
+ * 把它们一并丢弃会让搜索页、分页、筛选视图被当成同一页，产出虚假的「新增/消失」。
+ */
+const TRACKING_PARAMS = new Set(['gclid', 'fbclid', 'msclkid', 'yclid', 'ref', 'spm']);
+
+/**
+ * 被监测页的归一标识：origin + 去尾斜杠路径 + 排序去跟踪参数后的查询串 + hash。
+ * 工作页判定与比对基线共用它，两者口径必须一致——
+ *  - 判定比归并粗（如判定忽略查询串而归并不忽略），同一页的变体各自建基线，每轮都落「首轮建基线」而永不报告；
+ *  - 判定比归并细，则不同页共用一条基线，每轮互相 diff 出整页虚假变化。
  * URL 不可解析时返回 null（fail-closed：不可解析的两端不相等）。
  */
 export function watchPageKey(url: string): string | null {
@@ -58,7 +66,12 @@ export function watchPageKey(url: string): string | null {
     return null;
   }
   const path = parsed.pathname;
-  return parsed.origin + (path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path);
+  const normalizedPath = path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path;
+  const params = [...parsed.searchParams.entries()]
+    .filter(([name]) => !name.startsWith('utm_') && !TRACKING_PARAMS.has(name.toLowerCase()))
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const query = params.map(([name, value]) => `${name}=${value}`).join('&');
+  return parsed.origin + normalizedPath + (query === '' ? '' : `?${query}`) + parsed.hash;
 }
 
 /** 比对基线：只留可稳定复现的要素投影（ref 每次快照重新编号，不入基线）。 */

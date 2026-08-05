@@ -27,7 +27,7 @@
  *   断言：① 表格中出现且恰好出现 N 处本次运行标记（新增行数 == 提取数）；
  *         ② 每一次写入批次都先出现 HITL 确认卡、且卡片出现时表格标记数仍为 0（确认先于写入）；
  *         ③ 审计含全链路：assembly → tool-decision(verdict=approve, riskTier=hitl) → tool-execution(outcome=ok)，
- *            且无 verdict=deny 的意外拒绝；
+ *            且逐条授权先于其代执行；
  *         ④ 面板提取清单条目数 == N（模型没有少提或编造）。
  *   证据：每次运行归档 面板截图 + 表格截图 + 脱敏审计片段 + result-<run>.json 到证据目录。
  *
@@ -94,8 +94,18 @@ function redact(text) {
   return out.replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, '[redacted-jwt]');
 }
 
-/** 面板提取清单的条目数：提取指令要求「按编号列出」，故数行首编号。 */
-function countNumberedItems(text) {
+/**
+ * 面板最后一条回复里的清单条目数。
+ * 数的是渲染后的 DOM 列表项而非正文里的行首数字——面板 markdown 渲染器把「1. 」编号吃进 `<ol>`，
+ * 而 innerText 不含 `<ol>` 的序号 marker，按文本数编号会恒为 0。
+ * 模型不用列表语法时回退到按行首编号数正文行。
+ */
+async function countListItems(panel) {
+  const last = panel.locator('[data-za-messages] .za-msg').last();
+  if ((await last.count()) === 0) return 0;
+  const rendered = await last.locator('ol > li, ul > li').count();
+  if (rendered > 0) return rendered;
+  const text = await last.innerText();
   const seen = new Set();
   for (const line of text.split('\n')) {
     const match = /^\s*(\d{1,2})[.、)]/.exec(line);
@@ -231,6 +241,8 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
     markersInSheet,
   );
   const extraction = await panelText(panel);
+  // 条目数必须在提取轮结束时取——写入轮的回复会成为最后一条消息。
+  const extractedItems = await countListItems(panel);
   await panel.screenshot({ path: join(EVIDENCE_DIR, `run-${runIndex + 1}-extract.png`), fullPage: true });
 
   const writeApprovals = await sendAndApprove(
@@ -243,9 +255,8 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
   await sheetPage.screenshot({ path: join(EVIDENCE_DIR, `run-${runIndex + 1}-sheet.png`), fullPage: false });
   await panel.screenshot({ path: join(EVIDENCE_DIR, `run-${runIndex + 1}-panel.png`), fullPage: true });
 
-  // 提取数取自面板正文的编号行，而非常量——否则「模型少提或编造补足」这条产品承诺零覆盖：
+  // 提取数取自面板实际清单而非常量——否则「模型少提或编造补足」这条产品承诺零覆盖：
   // 拿 ITEM_COUNT 和 ITEM_COUNT 比恒真。
-  const extractedItems = countNumberedItems(extraction);
   assert(
     extractedItems === ITEM_COUNT,
     `面板提取清单为 ${extractedItems} 条，与要求的 ${ITEM_COUNT} 条不符（模型少提或多报）`,
@@ -259,24 +270,35 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
   const decisions = events.filter((event) => event.type === 'tool-decision');
   const executions = events.filter((event) => event.type === 'tool-execution');
   assert(events.some((event) => event.type === 'assembly'), '审计缺装配事件');
-  // 「确认先于写入」按审计流逐条配对：只断言「存在 approve」「存在 execution」无法区分
-  // 「一次确认放行一次写入」与「一次确认放行五次写入」——后者有四次写入无人确认。
-  const approvals = decisions.filter(
-    (event) => event.data.verdict === 'approve' && event.data.riskTier === 'hitl',
-  );
-  assert(approvals.length > 0, '审计缺 hitl 分级的放行判定');
   assert(
-    approvals.length >= executions.length,
-    `放行判定 ${approvals.length} 次少于代执行 ${executions.length} 次：存在未经确认的写入`,
+    decisions.some((event) => event.data.riskTier === 'hitl'),
+    '审计缺 hitl 分级的判定：本案例的写工具应为需确认档',
   );
-  for (const [index, execution] of executions.entries()) {
+  // 「确认先于写入」须按审计流逐条配对：只断言「存在人审放行」「存在代执行」无法区分
+  // 「逐次确认」与「一次确认放行五次写入」——后者有四次写入无人确认。
+  //
+  // 人审放行只出现在 hitl-verdict.decision（tool-decision.verdict 闭集是 allow|hitl|deny，无 approve）；
+  // 同一任务内的后续调用由 toolgate 以任务级授权复用放行，落 tool-decision.verdict='allow' 且 riskTier='hitl'，
+  // 二者合起来才是「本次运行被授权过的写入次数」。
+  const approvals = events.filter(
+    (event) =>
+      (event.type === 'hitl-verdict' && event.data.decision === 'approve') ||
+      (event.type === 'tool-decision' && event.data.verdict === 'allow' && event.data.riskTier === 'hitl'),
+  );
+  assert(approvals.length > 0, '审计缺人审放行事件：写入未经任何确认');
+  const okExecutions = executions.filter((event) => event.data.outcome === 'ok');
+  assert(okExecutions.length > 0, '审计缺成功的代执行事件');
+  assert(
+    approvals.length >= okExecutions.length,
+    `授权 ${approvals.length} 次少于成功代执行 ${okExecutions.length} 次：存在未经确认的写入`,
+  );
+  for (const [index, execution] of okExecutions.entries()) {
     const approval = approvals[index];
     assert(
       approval !== undefined && approval.ts <= execution.ts,
-      `第 ${index + 1} 次代执行没有先于它的放行判定`,
+      `第 ${index + 1} 次代执行没有先于它的授权`,
     );
   }
-  assert(executions.some((event) => event.data.outcome === 'ok'), '审计缺成功的代执行事件');
 
   const excerpt = events.map((event) => JSON.stringify(event)).join('\n');
   assert(!excerpt.includes(token), '审计片段泄漏了访问令牌');

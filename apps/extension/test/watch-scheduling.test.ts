@@ -83,19 +83,29 @@ describe('watch 实例派生周期自动化描述符', () => {
     expect(watchAutomationDescriptor(withoutFocus).automation.prompt.length).toBeGreaterThan(0);
   });
 
-  it('URL 的查询串与 hash 不进工作路由（工作页按 origin + 路径前缀判定）', () => {
+  it('查询串与 hash 进工作路由：它们区分的是不同页面（分页/筛选/hash 路由），丢掉会让它们共用一条比对基线', () => {
     const descriptor = watchAutomationDescriptor({ ...watch, url: 'https://example.test/docs/api?v=2#/top' });
-    expect(descriptor.automation.workRoutes).toEqual(['/docs/api']);
+    expect(descriptor.automation.workRoutes).toEqual(['/docs/api?v=2#/top']);
   });
 });
 
 describe('watch 工作页判定（origin + 路径精确相等，与服务端同判定）', () => {
   const descriptor = watchAutomationDescriptor({ ...watch, url: 'https://example.test/news/tech' });
 
-  it('同 origin 且路径精确相等才算工作页；查询串与尾斜杠不改变判定', () => {
+  it('同 origin 且归一标识精确相等才算工作页；尾斜杠与跟踪参数不改变判定', () => {
     expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech')).toBe(true);
-    expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech?page=2')).toBe(true);
     expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech/')).toBe(true);
+    expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech?utm_source=x&gclid=y')).toBe(true);
+  });
+
+  it('站点自有查询串与 hash 参与判定：分页/筛选/hash 路由是不同的页，不能共用一条比对基线', () => {
+    expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech?page=2')).toBe(false);
+    const paged = watchAutomationDescriptor({ ...watch, url: 'https://example.test/news/tech?page=2' });
+    expect(isAutoScanWorkPage(paged, 'https://example.test/news/tech?page=2')).toBe(true);
+    expect(isAutoScanWorkPage(paged, 'https://example.test/news/tech?page=3')).toBe(false);
+    const hashed = watchAutomationDescriptor({ ...watch, url: 'https://example.test/app#/orders' });
+    expect(isAutoScanWorkPage(hashed, 'https://example.test/app#/orders')).toBe(true);
+    expect(isAutoScanWorkPage(hashed, 'https://example.test/app#/settings')).toBe(false);
   });
 
   it('子路径页不算工作页：选中它会被服务端判否，回失败帧后触发器整条被暂停', () => {

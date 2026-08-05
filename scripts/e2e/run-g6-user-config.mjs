@@ -59,7 +59,7 @@ const EXPLAIN_REPLY = '订单列表页可查看订单、进入详情、取消未
 const L1_MARKER = 'ZA-FEAT-01 讲解以功能事实为准';
 const L2_ENTRY_MARKER = '（来源：对话确认）';
 
-const DEFAULT_EVIDENCE_ROOT = '/Users/terrytu/Workspace2025/Working/tmp/zen-agent/e2e-evidence';
+const DEFAULT_EVIDENCE_ROOT = join(REPO_ROOT, '.za', 'e2e', 'e2e-evidence');
 const AUDIT_TYPES = new Set(['assembly', 'tool-decision', 'hitl-verdict', 'tool-execution', 'user-config-write']);
 
 const MIME = {
@@ -631,7 +631,7 @@ async function main() {
       `工具行数：${toolRowsVisible}\n含「因存储故障降级收紧」：${degradedViewText.includes('因存储故障降级收紧')}\n---\n${degradedViewText}\n`,
     );
     // 降级轮的透明视图是「compose 真实输出 → 视图」这条接缝的唯一浏览器级守卫：
-    // 曾因视图只按可见面渲染而整段留白，单测夹具无法复现该形状。
+    // 单测夹具由手写 description 驱动，复现不了服务端降级时的真实形状。
     assert(toolRowsVisible > 0, 'C5：降级轮透明视图无任何工具行——用户看不到 agent 为何不动手');
     assert(degradedViewText.includes('因存储故障降级收紧'),
       'C5：降级轮工具行缺「因存储故障降级收紧」来源标注');

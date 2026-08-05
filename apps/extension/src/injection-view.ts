@@ -227,11 +227,13 @@ function renderTools(description: InjectionDescriptionView): HTMLElement {
     if (visible.has(tool.toolId)) continue;
     const row = renderTool(tool.toolId, tool);
     row.dataset['zaToolUnavailable'] = 'true';
+    // 基线本就禁止的工具不会「恢复可用」，说成本轮同样是误导；只有档位确实被降级抬高时才是本轮性的。
+    const transient = tool.tightenedBy === 'storage-failure' && tool.effectiveTier !== tool.baseTier;
     row.append(
       el(
         'span',
         'za-injection-tool-unavailable',
-        tool.tightenedBy === 'storage-failure' ? '本轮不可用' : '已被你的定制关闭',
+        transient ? '本轮不可用' : tool.tightenedBy === 'storage-failure' ? '一直不可用' : '已被你的定制关闭',
       ),
     );
     list.append(row);

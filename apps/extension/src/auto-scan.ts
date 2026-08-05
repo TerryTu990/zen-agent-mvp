@@ -157,22 +157,43 @@ export function isAutoScanWorkPage(descriptor: AutomationDescriptor, url: string
   try {
     const parsed = new URL(url);
     if (parsed.origin !== descriptor.origin) return false;
-    const exactPath = descriptor.packId === WATCH_DESCRIPTOR_PACK_ID;
+    if (descriptor.packId === WATCH_DESCRIPTOR_PACK_ID) {
+      const target = watchPageKey(descriptor.origin + (descriptor.automation.workRoutes[0] ?? '/'));
+      return target !== null && target === watchPageKey(url);
+    }
     const hashRoute = parsed.hash.split('?')[0];
-    return descriptor.automation.workRoutes.some((route) => {
-      if (route.startsWith('#')) return hashRoute === route;
-      if (exactPath) return trimTrailingSlash(parsed.pathname) === trimTrailingSlash(route);
-      return (
-        parsed.pathname === route || parsed.pathname.startsWith(route.endsWith('/') ? route : `${route}/`)
-      );
-    });
+    return descriptor.automation.workRoutes.some((route) =>
+      route.startsWith('#')
+        ? hashRoute === route
+        : parsed.pathname === route || parsed.pathname.startsWith(route.endsWith('/') ? route : `${route}/`),
+    );
   } catch {
     return false;
   }
 }
 
-const trimTrailingSlash = (path: string): string =>
-  path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path;
+/** 纯跟踪参数闭集：与服务端 watch-run.ts 同源手抄（U5：插件不依赖 @zen-agent/*）。 */
+const TRACKING_PARAMS = new Set(['gclid', 'fbclid', 'msclkid', 'yclid', 'ref', 'spm']);
+
+/**
+ * 被监测页的归一标识。SSOT = apps/server/src/watch-run.ts 的同名函数——
+ * 两端口径必须逐字段一致：客户端选中而服务端判否的页会以失败帧收尾，本轮报告丢失。
+ */
+export function watchPageKey(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const path = parsed.pathname;
+  const normalizedPath = path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path;
+  const params = [...parsed.searchParams.entries()]
+    .filter(([name]) => !name.startsWith('utm_') && !TRACKING_PARAMS.has(name.toLowerCase()))
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const query = params.map(([name, value]) => `${name}=${value}`).join('&');
+  return parsed.origin + normalizedPath + (query === '' ? '' : `?${query}`) + parsed.hash;
+}
 
 /**
  * 平台内建自动化模板闭集镜像（contracts PLATFORM_AUTOMATION_TEMPLATES / adr-021）：
@@ -252,7 +273,8 @@ export function watchesFromUserConfig(body: unknown): WatchInstance[] {
 }
 
 /**
- * watch 实例 → 周期自动化描述符：工作页围栏取实例 URL 的 origin + 路径前缀（查询串与 hash 不入围栏）。
+ * watch 实例 → 周期自动化描述符：工作页围栏是实例 URL 的归一标识（origin + 路径 + 查询串 + hash），
+ * 精确相等才算工作页——watch 指定的是一个页面，不是一族路由。
  * 前提：instance 已过 watchesFromUserConfig 解析（URL 可解析且协议为 http/https）。
  * focus 只进提示词，不改变工具面——只读强制在服务端，客户端不做任何治理判定（U7）。
  */
@@ -267,7 +289,7 @@ export function watchAutomationDescriptor(watch: WatchInstance): AutomationDescr
       prompt:
         `只读巡检当前页面（${watch.url}）：读取页面内容并与上一轮快照比对。${focus}` +
         '有变化则给出变化摘要与依据要素；无变化则不作汇报。',
-      workRoutes: [target.pathname],
+      workRoutes: [target.pathname + target.search + target.hash],
       executionPreference: 'dom-only',
       defaultPeriodMinutes: watch.minutes,
     },

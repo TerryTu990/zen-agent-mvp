@@ -44,11 +44,17 @@ describe('实例归属判定（fail-closed 三态）', () => {
 });
 
 describe('被监测页归一标识', () => {
-  it('查询串与 hash 不改变标识——否则同一页的跟踪参数变体各自建基线，变化永不报告', () => {
+  it('跟踪参数与参数顺序、尾斜杠不改变标识——否则同一页的来路变体各自建基线，变化永不报告', () => {
     const base = watchPageKey('https://shop.test/item/1');
-    expect(watchPageKey('https://shop.test/item/1?from=search')).toBe(base);
-    expect(watchPageKey('https://shop.test/item/1#reviews')).toBe(base);
+    expect(watchPageKey('https://shop.test/item/1?utm_source=weibo&gclid=abc')).toBe(base);
     expect(watchPageKey('https://shop.test/item/1/')).toBe(base);
+    expect(watchPageKey('https://shop.test/list?b=2&a=1')).toBe(watchPageKey('https://shop.test/list?a=1&b=2'));
+  });
+
+  it('站点自有查询串与 hash 参与标识——否则分页/筛选/hash 路由共用一条基线，每轮互相 diff 出虚假变化', () => {
+    expect(watchPageKey('https://shop.test/list?page=1')).not.toBe(watchPageKey('https://shop.test/list?page=2'));
+    expect(watchPageKey('https://shop.test/list')).not.toBe(watchPageKey('https://shop.test/list?page=2'));
+    expect(watchPageKey('https://shop.test/app#/orders')).not.toBe(watchPageKey('https://shop.test/app#/settings'));
   });
 
   it('origin 的任一成分参与标识；不可解析的 URL 为 null', () => {
@@ -61,10 +67,15 @@ describe('被监测页归一标识', () => {
 describe('工作页归属', () => {
   const url = 'https://shop.test/item/1';
 
-  it('路径精确相等才算工作页；查询串与尾斜杠不影响', () => {
+  it('归一标识相等才算工作页；跟踪参数与尾斜杠不影响', () => {
     expect(isWatchWorkPage(url, 'https://shop.test/item/1')).toBe(true);
-    expect(isWatchWorkPage(url, 'https://shop.test/item/1?utm=x')).toBe(true);
+    expect(isWatchWorkPage(url, 'https://shop.test/item/1?utm_source=x')).toBe(true);
     expect(isWatchWorkPage(url, 'https://shop.test/item/1/')).toBe(true);
+  });
+
+  it('站点自有查询串使其成为另一个页面：上报页与被监测页不同则判否，不拿去比对', () => {
+    expect(isWatchWorkPage(url, 'https://shop.test/item/1?page=2')).toBe(false);
+    expect(isWatchWorkPage('https://shop.test/list?page=2', 'https://shop.test/list?page=2')).toBe(true);
   });
 
   it('子路径、上级路径、前缀相邻、异 origin 与坏 URL 一律判否', () => {

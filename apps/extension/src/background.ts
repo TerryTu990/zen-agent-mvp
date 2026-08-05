@@ -1036,13 +1036,15 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         autoScanRun = null;
         await chrome.storage.session.remove(autoScanRunKey);
       }
-      // 503 = 服务端暂时无法确认实例（存储抖动 / 降级快照）：瞬时故障不动用户配置，下周期自然重试。
-      if (delivery.httpStatus === 503) {
-        postStatus(`自动化「${run.automationId}」本轮未启动（服务端暂不可用），下个周期重试。`);
+      // 只有「这个实例不该再跑」才动用户配置：403 = 服务端认定实例不存在或不可运行。
+      // 其余（503 存储抖动/降级快照、401 令牌过期、404 会话失效、409 冲突、网络不可达）都是
+      // 可自愈的瞬时故障，停用它们等于让一次断网永久关掉用户的监测。
+      if (delivery.httpStatus === 403) {
+        await chrome.storage.local.set({ [enabledKey]: false });
+        postStatus(`自动化「${run.automationId}」已被服务端判为不可运行，已暂停；请核对该触发器是否仍存在。`);
         return;
       }
-      await chrome.storage.local.set({ [enabledKey]: false });
-      postStatus(`自动化「${run.automationId}」未被服务端接受，已暂停；请核对该触发器是否仍存在。`);
+      postStatus(`自动化「${run.automationId}」本轮未启动（服务端暂不可用），下个周期重试。`);
     });
     return 'started';
   }
