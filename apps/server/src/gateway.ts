@@ -10,10 +10,14 @@ import { createRequire } from 'node:module';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import {
+  CONFIG_DRAFT_PARAMS_SCHEMA,
+  CONFIG_DRAFT_TOOL_ID,
   isDomTool,
   SITE_NAVIGATE_PARAMS_SCHEMA,
   SITE_NAVIGATE_RESULT_SCHEMA,
   SITE_NAVIGATE_TOOL_ID,
+  validateOverlayAgainstL1,
+  validateUserOverlay,
 } from '@zen-agent/contracts';
 import type {
   AssemblyPort,
@@ -32,6 +36,7 @@ import type {
   IdentityClaims,
   FulfillmentCoordinatorPort,
   JsonObject,
+  JsonValue,
   LlmMessage,
   LlmPort,
   LlmToolSpec,
@@ -45,7 +50,13 @@ import type {
   ToolDefinition,
   ToolGatePort,
   UpstreamFrame,
+  UserConfigStore,
   UserConfigSubject,
+  UserOverlay,
+  UserOverlayEntry,
+  UserOverlayL1Baseline,
+  UserOverlayPackScope,
+  UserOverlayRiskTierRaise,
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
 import { signDemoToken, type DemoTokenSigner } from './demo-token.js';
@@ -90,6 +101,21 @@ export interface GatewayDeps {
   applicationsDir: string;
   /** generic 兜底 pack 准入名单（origin 精确值）；空 = generic 永不激活（fail-closed）。 */
   genericAllowlist: string[];
+  /**
+   * L2 写入通道（adr-014 §5，P2.5-c）：缺省 = 通道关闭（config_draft 不注入、config-decision 与
+   * /v1/user-config 均拒）。l1Baseline/configSchemas 取自装配快照（不可变），组装期定格一次。
+   */
+  userConfig?: GatewayUserConfigDeps;
+}
+
+export interface GatewayUserConfigDeps {
+  store: UserConfigStore;
+  /** 写入期只收紧校验基线（validateOverlayAgainstL1）：全 pack 工具/自动化并集。 */
+  l1Baseline: UserOverlayL1Baseline;
+  /** packId → pack 声明的 configSchema；validateUserOverlay 的 packConfig fail-closed 表。 */
+  configSchemas: Record<string, JsonObject>;
+  /** 挂起草稿有效期（毫秒）；缺省 10 分钟。 */
+  draftTtlMs?: number;
 }
 
 /** 执行结局 → 审计 outcome 闭集映射；deny/reject 不产 tool-execution（未执行），故只映射已执行结果。 */
@@ -118,7 +144,7 @@ function createFrameValidator(): ValidateFunction {
 
 /**
  * C3 上行帧受理表（联合类型穷举镜像：契约增/减帧型而此处漏更即编译期爆错）。
- * false = 契约内但 handler 未启用（config-decision 归 P2.5-c 写入通道），fail-closed 拒收。
+ * false = 契约内但 handler 未启用，fail-closed 拒收。
  */
 const UPSTREAM_ACCEPTANCE: Record<UpstreamFrame['type'], boolean> = {
   'context-report': true,
@@ -126,7 +152,7 @@ const UPSTREAM_ACCEPTANCE: Record<UpstreamFrame['type'], boolean> = {
   'hitl-decision': true,
   'exec-result': true,
   'snapshot-report': true,
-  'config-decision': false,
+  'config-decision': true,
 };
 
 function isUpstreamType(type: string): type is UpstreamFrame['type'] {
@@ -268,6 +294,155 @@ const SITE_NAVIGATE_TOOL_SPEC: LlmToolSpec = {
   description: SITE_NAVIGATE_TOOL_DEF.description,
   params: SITE_NAVIGATE_TOOL_DEF.params,
 };
+
+/**
+ * built-in 配置草稿工具（adr-014 teach 流，U8）：写入通道组装时注入。零副作用——只产草稿卡
+ * （config-draft 帧下发），真正的确认是上行 config-decision，故不经 toolgate 裁决链路；
+ * 条目 id/origin/createdAt 与 change 全部服务端构造，对话内容永不直写配置。
+ */
+const CONFIG_DRAFT_TOOL_SPEC: LlmToolSpec = {
+  name: CONFIG_DRAFT_TOOL_ID,
+  description:
+    '当用户表达了希望长期记住的稳定偏好/个人规则/事实（如「以后都…」「记住我…」），或要求收紧某工具的执行确认（如「以后 X 操作都先问我」）时，用它生成个人配置草稿供用户确认；一次性/仅本轮的要求不要调用。packId 填当前站点的 pack id，跨站通用偏好填 "*"；featureId 可选且仅作用于 rules/facts（限定仅某功能生效）；riskTierRaise 恒为整 pack 生效、不可与 featureId 同用，以工具 id 为键、值只能是 hitl（执行前确认）或 forbidden（禁止）。调用后草稿卡会呈现给用户确认，未确认前配置不会生效；不要替用户假设确认结果。',
+  params: CONFIG_DRAFT_PARAMS_SCHEMA,
+};
+
+const configDraftParamsValidator: ValidateFunction = new Ajv2020({ strict: true }).compile(
+  CONFIG_DRAFT_PARAMS_SCHEMA,
+);
+
+/** 会话态挂起草稿（一次性，TTL 内有效）：config-decision 按 draftId 消费；change 只存服务端，不经客户端往返（U8）。 */
+interface PendingConfigDraft {
+  subject: UserConfigSubject;
+  packId: string;
+  rules?: UserOverlayEntry[];
+  facts?: UserOverlayEntry[];
+  riskTierRaise?: Record<string, UserOverlayRiskTierRaise>;
+  expiresAt: number;
+  /** true = accept 处理中（并发裁决 409）；失败路径复位以允许 TTL 内重试。 */
+  inFlight?: boolean;
+}
+
+const CONFIG_DRAFT_TTL_MS = 600_000;
+
+/** overlay 写入体积守卫（adr-014「单用户 overlay 预期 KB 级」的机械化）：超限 400 拒收；schema 层 maxItems 演进锚点=G4。 */
+const USER_OVERLAY_MAX_BYTES = 128 * 1024;
+const USER_OVERLAY_MAX_ENTRIES = 500;
+
+/** overlay 全作用域 rules/facts 条目总数（体积守卫用；形状异常按 0 计——后续 schema 校验兜底拒收）。 */
+function countOverlayEntries(body: unknown): number {
+  const packs = (body as { packs?: Record<string, unknown> } | null)?.packs;
+  if (typeof packs !== 'object' || packs === null) return 0;
+  let count = 0;
+  for (const scope of Object.values(packs)) {
+    for (const key of ['rules', 'facts'] as const) {
+      const entries = (scope as Record<string, unknown> | null)?.[key];
+      if (Array.isArray(entries)) count += entries.length;
+    }
+  }
+  return count;
+}
+
+/**
+ * 面板写入的来源归一（R4 保真）：id 不在当前 overlay 的新增条目 origin 强制 'manual' 并剥离
+ * sourceSessionId——teach 来源只能经确认写入通道产生；既有条目（按 id 命中）原样保留。
+ * 就地修改 body（后续仍过全量 schema 校验）。
+ */
+function normalizeOverlayOrigins(body: unknown, current: UserOverlay | null): void {
+  const existingIds = new Set<string>();
+  for (const scope of Object.values(current?.packs ?? {})) {
+    for (const key of ['rules', 'facts'] as const) {
+      for (const entry of (scope as UserOverlayPackScope)[key] ?? []) existingIds.add(entry.id);
+    }
+  }
+  const packs = (body as { packs?: Record<string, unknown> } | null)?.packs;
+  if (typeof packs !== 'object' || packs === null) return;
+  for (const scope of Object.values(packs)) {
+    for (const key of ['rules', 'facts'] as const) {
+      const entries = (scope as Record<string, unknown> | null)?.[key];
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        if (typeof entry !== 'object' || entry === null) continue;
+        const record = entry as Record<string, unknown>;
+        if (typeof record['id'] === 'string' && existingIds.has(record['id'])) continue;
+        record['origin'] = 'manual';
+        delete record['sourceSessionId'];
+      }
+    }
+  }
+}
+
+const entryId = (prefix: 'r' | 'f'): string => `${prefix}-${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+
+/** 草稿条目构造：id/origin/sourceSessionId/createdAt 服务端生成，text 取自工具实参。 */
+function draftEntries(
+  prefix: 'r' | 'f',
+  texts: Array<{ text: string }>,
+  sessionId: string,
+  featureId: string | undefined,
+  createdAt: string,
+): UserOverlayEntry[] {
+  return texts.map((item) => ({
+    id: entryId(prefix),
+    text: item.text,
+    ...(featureId !== undefined ? { featureId } : {}),
+    origin: 'teach',
+    sourceSessionId: sessionId,
+    createdAt,
+  }));
+}
+
+/** config-draft 帧的 change 投影（用户须看到真实将写入什么，R3）：与 accept 合并的输入同源。 */
+function draftChange(draft: PendingConfigDraft): JsonObject {
+  const change: JsonObject = {};
+  if (draft.rules !== undefined) change['rules'] = draft.rules as unknown as JsonValue;
+  if (draft.facts !== undefined) change['facts'] = draft.facts as unknown as JsonValue;
+  if (draft.riskTierRaise !== undefined) {
+    change['restrictions'] = { riskTierRaise: { ...draft.riskTierRaise } };
+  }
+  return change;
+}
+
+/** 人读摘要（确认卡展示）：只述条数与收紧项，不复述全文（正文由 change 逐条预览承载）。 */
+function draftSummary(draft: PendingConfigDraft): string {
+  const parts: string[] = [];
+  if (draft.rules !== undefined) parts.push(`新增 ${draft.rules.length} 条个人规则`);
+  if (draft.facts !== undefined) parts.push(`新增 ${draft.facts.length} 条个人事实`);
+  if (draft.riskTierRaise !== undefined) {
+    const labels: Record<UserOverlayRiskTierRaise, string> = { hitl: '需确认', forbidden: '禁止' };
+    parts.push(
+      `收紧工具：${Object.entries(draft.riskTierRaise)
+        .map(([toolId, tier]) => `${toolId} → ${labels[tier]}`)
+        .join('、')}`,
+    );
+  }
+  return parts.join('；');
+}
+
+/**
+ * accept 合并（只收紧）：rules/facts 追加；riskTierRaise 按键并入——已 disabledTools 的键跳过
+ * （已从工具面移除、无可收紧），既有 forbidden 不被 hitl 降档。返回新 overlay，不回改入参。
+ */
+function mergeDraftIntoOverlay(current: UserOverlay | null, draft: PendingConfigDraft): UserOverlay {
+  const base: UserOverlay =
+    current !== null
+      ? structuredClone(current)
+      : { schemaVersion: 1, subject: draft.subject, packs: {} };
+  const scope = (base.packs[draft.packId] ?? {}) as UserOverlayPackScope;
+  if (draft.rules !== undefined) scope.rules = [...(scope.rules ?? []), ...draft.rules];
+  if (draft.facts !== undefined) scope.facts = [...(scope.facts ?? []), ...draft.facts];
+  if (draft.riskTierRaise !== undefined) {
+    const disabled = new Set(scope.restrictions?.disabledTools ?? []);
+    const merged = { ...(scope.restrictions?.riskTierRaise ?? {}) };
+    for (const [toolId, tier] of Object.entries(draft.riskTierRaise)) {
+      if (disabled.has(toolId)) continue;
+      merged[toolId] = merged[toolId] === 'forbidden' ? 'forbidden' : tier;
+    }
+    scope.restrictions = { ...(scope.restrictions ?? {}), riskTierRaise: merged };
+  }
+  base.packs[draft.packId] = scope;
+  return base;
+}
 
 /** 快照 URL → 围栏比对用路径；解析失败返回 ''（围栏必不匹配，fail-closed）。 */
 function pathOf(url: string): string {
@@ -411,6 +586,8 @@ interface SessionRuntime {
   pendingSnapshot: Map<string, (report: SnapshotReportFrame | null) => void>;
   /** 最近一次快照的判定上下文（ref 闭集 + 页路径）；dom 签发校验依据，无快照即 deny。 */
   domContext: DomGateContext | null;
+  /** 配置草稿挂起表（adr-014 teach 流）：draftId → 草稿；一次性 + TTL，config-decision 消费。 */
+  pendingConfigDrafts: Map<string, PendingConfigDraft>;
   /** 自动扫描状态由服务端持有，供 MV3 service worker 重启后查询恢复单飞锁。 */
   automationRuns: Map<string, { status: 'running' | 'succeeded' | 'failed'; updatedAt: number }>;
 }
@@ -499,6 +676,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         pendingExec: new Map(),
         pendingSnapshot: new Map(),
         domContext: null,
+        pendingConfigDrafts: new Map(),
         automationRuns: new Map(),
       };
       runtimes.set(sessionId, runtime);
@@ -989,6 +1167,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
         composed.packId !== null
           ? [RECORD_APPLICATION_TOOL_SPEC, LIST_APPLICATIONS_TOOL_SPEC]
           : [];
+      // config_draft 与写入通道同门：通道未组装时不给草稿入口（草稿无从确认写入）。
+      const configTools: LlmToolSpec[] =
+        deps.userConfig !== undefined ? [CONFIG_DRAFT_TOOL_SPEC] : [];
       // adr-019：prepare 工具面由 pack 声明驱动（authorization.preparation），与 featureId 解耦；
       // 履约依赖未组装（无协调器/无商品映射）时不注入，模型面不出现无法兑现的工具。
       const prepareTargets = new Map<string, ToolDefinition>();
@@ -1009,6 +1190,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...docTools,
         ...navTools,
         ...appTools,
+        ...configTools,
         ...fulfillmentPrepareTools,
         ...selectedHostTools.map(toLlmToolSpec),
       ];
@@ -1283,6 +1465,148 @@ export function createGateway(deps: GatewayDeps): Gateway {
         });
         messages.push(prepareEcho, prepareObs);
         turnMessages.push(prepareEcho, prepareObs);
+        continue;
+      }
+
+      if (call.name === CONFIG_DRAFT_TOOL_ID && deps.userConfig !== undefined) {
+        // teach 草稿（非终结、零副作用，U8）：服务端构造条目与 change、存会话态挂起草稿、
+        // 下发 config-draft 确认卡；observation 只回喂「已发出等待确认」，写入结果不经本工具回传。
+        const draftCall = call;
+        const feedback = (content: JsonValue): void => {
+          const draftEcho: LlmMessage = {
+            role: 'assistant',
+            content: roundText,
+            toolCalls: [{ id: draftCall.toolCallId, name: draftCall.name, params: draftCall.params }],
+          };
+          const draftObs: LlmMessage = {
+            role: 'tool',
+            toolCallId: draftCall.toolCallId,
+            content: JSON.stringify(content),
+          };
+          messages.push(draftEcho, draftObs);
+          turnMessages.push(draftEcho, draftObs);
+        };
+        if (!configDraftParamsValidator(call.params)) {
+          feedback({ error: 'config-draft-invalid-params：实参不符合 config_draft 入参契约，请修正后重试' });
+          continue;
+        }
+        const params = call.params as {
+          packId: string;
+          featureId?: string;
+          rules?: Array<{ text: string }>;
+          facts?: Array<{ text: string }>;
+          riskTierRaise?: Record<string, UserOverlayRiskTierRaise>;
+        };
+        if (params.packId === '*' && params.riskTierRaise !== undefined) {
+          feedback({ error: 'config-draft-global-scope-no-restrictions：全局作用域 "*" 无工具面可收紧，riskTierRaise 须指定具体 packId' });
+          continue;
+        }
+        // riskTierRaise 恒为 pack 级（overlay restrictions 无 feature 维度）：与 featureId 同现会使
+        // 确认卡显示范围窄于真实生效面（违反「scope 是 change 的机械投影」），草稿期即拒。
+        if (params.featureId !== undefined && params.riskTierRaise !== undefined) {
+          feedback({ error: 'config-draft-pack-level-restrictions：riskTierRaise 恒为整 pack 生效，不可与 featureId 同用；请去掉 featureId 或将规则与收紧拆为两次草稿' });
+          continue;
+        }
+        // L1 只收紧预检：base 更严（如 forbidden）时 hitl 声明必被写入期拒绝——草稿期反馈让 agent 即时纠正；
+        // 未知 toolId 同拒（写入后恒为惰性条目，纯审计噪音）。
+        if (params.riskTierRaise !== undefined) {
+          const baselineTiers = new Map(
+            deps.userConfig.l1Baseline.tools.map((tool) => [tool.id, tool.riskTier]),
+          );
+          const rank: Record<string, number> = { auto: 0, hitl: 1, forbidden: 2 };
+          const rejected = Object.entries(params.riskTierRaise).find(([toolId, tier]) => {
+            const base = baselineTiers.get(toolId);
+            return base === undefined || (rank[base] ?? 2) > (rank[tier] ?? 0);
+          });
+          if (rejected !== undefined) {
+            const base = baselineTiers.get(rejected[0]);
+            feedback({
+              error:
+                base === undefined
+                  ? `config-draft-unknown-tool：工具 ${rejected[0]} 不在当前工具面，收紧无效`
+                  : `config-draft-not-tightening：工具 ${rejected[0]} 的基础分级已是 ${base}，声明 ${rejected[1]} 不构成收紧`,
+            });
+            continue;
+          }
+        }
+        // 预览 = 落盘（R3）：当前 overlay 已 disabledTools 的键从草稿剔除（合并期本会静默跳过——
+        // 在创建期剔除使确认卡展示与真实写入一致）；剔空且无 rules/facts 即无草稿可产。
+        let riskTierRaise = params.riskTierRaise;
+        if (riskTierRaise !== undefined) {
+          try {
+            const existing = (await deps.userConfig.store.read(subjectOf(claims))).overlay;
+            const scope = existing?.packs[params.packId] as UserOverlayPackScope | undefined;
+            const disabled = new Set(scope?.restrictions?.disabledTools ?? []);
+            if (disabled.size > 0) {
+              riskTierRaise = Object.fromEntries(
+                Object.entries(riskTierRaise).filter(([toolId]) => !disabled.has(toolId)),
+              );
+              if (Object.keys(riskTierRaise).length === 0) riskTierRaise = undefined;
+            }
+          } catch {
+            // 存储暂不可用：不阻断草稿创建（accept 时仍会读取并校验，fail-closed 在写入点）。
+          }
+          if (riskTierRaise === undefined && params.rules === undefined && params.facts === undefined) {
+            feedback({ error: 'config-draft-empty：所列工具均已被用户禁用，无可写入内容' });
+            continue;
+          }
+        }
+        // packId/featureId 存在性校验（"*" 除外）：不在快照的 pack 写入后永不生效（惰性条目），
+        // 草稿期即拒让 agent 纠正；顺带取 pack.name/featureTitle 人读标签，未声明即省略、
+        // 卡片回退 packId·featureId 展示。describeInjection 不带 subject（纯 L1，不产生 L2 双读）。
+        let title: string | undefined;
+        if (params.packId !== '*') {
+          try {
+            const desc = await deps.assembly.describeInjection({
+              sessionId,
+              packId: params.packId,
+              featureId: params.featureId ?? null,
+            });
+            if (desc.packName !== undefined) {
+              title =
+                desc.featureTitle !== undefined
+                  ? `${desc.packName} · ${desc.featureTitle}`
+                  : desc.packName;
+            }
+          } catch {
+            feedback({
+              error: `config-draft-unknown-scope：packId ${params.packId}${params.featureId !== undefined ? ` 或 featureId ${params.featureId}` : ''} 不在当前配置内，写入不会生效；请改用当前站点的 packId（跨站偏好用 "*"）`,
+            });
+            continue;
+          }
+        }
+        const createdAt = new Date().toISOString();
+        const draft: PendingConfigDraft = {
+          subject: subjectOf(claims),
+          packId: params.packId,
+          ...(params.rules !== undefined
+            ? { rules: draftEntries('r', params.rules, sessionId, params.featureId, createdAt) }
+            : {}),
+          ...(params.facts !== undefined
+            ? { facts: draftEntries('f', params.facts, sessionId, params.featureId, createdAt) }
+            : {}),
+          ...(riskTierRaise !== undefined ? { riskTierRaise: { ...riskTierRaise } } : {}),
+          expiresAt: Date.now() + (deps.userConfig.draftTtlMs ?? CONFIG_DRAFT_TTL_MS),
+        };
+        const draftId = `d-${randomUUID()}`;
+        const runtime = runtimeOf(sessionId);
+        for (const [id, pending] of runtime.pendingConfigDrafts) {
+          if (pending.expiresAt < Date.now()) runtime.pendingConfigDrafts.delete(id);
+        }
+        runtime.pendingConfigDrafts.set(draftId, draft);
+        broadcast(sessionId, {
+          type: 'config-draft',
+          sessionId,
+          draftId,
+          scope: {
+            packId: params.packId,
+            ...(params.featureId !== undefined ? { featureId: params.featureId } : {}),
+            ...(title !== undefined ? { title } : {}),
+          },
+          change: draftChange(draft),
+          summary: draftSummary(draft),
+        });
+        feedback({ draftId, status: 'pending-decision' });
         continue;
       }
 
@@ -1716,6 +2040,69 @@ export function createGateway(deps: GatewayDeps): Gateway {
         sendJson(res, 202, { accepted: true });
         return;
       }
+      case 'config-decision': {
+        // 草稿一次性 fail-closed：未知/过期/并发处理中 → 409；消费（摘除）只发生在写入成功或 reject
+        // 之后——瞬时存储故障（503）与合并校验冲突（400）不吞噬用户已确认的草稿，TTL 内可重试。
+        if (deps.userConfig === undefined) {
+          sendJson(res, 400, { error: '用户配置写入通道未启用' });
+          return;
+        }
+        const runtime = runtimeOf(session.sessionId);
+        const draft = runtime.pendingConfigDrafts.get(upstream.draftId);
+        if (draft === undefined || draft.expiresAt < Date.now()) {
+          runtime.pendingConfigDrafts.delete(upstream.draftId);
+          sendJson(res, 409, { error: '配置草稿无对应挂起（已处理、过期或伪造 draftId）' });
+          return;
+        }
+        if (draft.inFlight === true) {
+          sendJson(res, 409, { error: '配置草稿正在处理中' });
+          return;
+        }
+        if (upstream.decision === 'reject') {
+          // 弃草稿：不落盘、无 user-config-write 事件；draftId 一次性失效。
+          runtime.pendingConfigDrafts.delete(upstream.draftId);
+          sendJson(res, 202, { accepted: true });
+          return;
+        }
+        // accept：读当前 overlay → 只收紧合并 → 组合校验 + 只收紧校验 → 落盘 → 审计（origin=teach）。
+        draft.inFlight = true;
+        let current: UserOverlay | null;
+        try {
+          current = (await deps.userConfig.store.read(draft.subject)).overlay;
+        } catch {
+          draft.inFlight = false;
+          sendJson(res, 503, { error: '用户配置存储暂不可用，草稿未写入；稍后可重试确认' });
+          return;
+        }
+        const merged = mergeDraftIntoOverlay(current, draft);
+        const validated = validateUserOverlay(merged, { configSchemas: deps.userConfig.configSchemas });
+        const checked = validated.ok
+          ? validateOverlayAgainstL1(validated.overlay, deps.userConfig.l1Baseline)
+          : validated;
+        if (!checked.ok) {
+          draft.inFlight = false;
+          sendJson(res, 400, {
+            error: '草稿与当前配置合并后未通过校验，未写入',
+            issues: checked.issues,
+          });
+          return;
+        }
+        let revision: string;
+        try {
+          revision = (await deps.userConfig.store.write(draft.subject, checked.overlay)).revision;
+        } catch {
+          draft.inFlight = false;
+          sendJson(res, 503, { error: '用户配置写入失败，草稿未生效；稍后可重试确认' });
+          return;
+        }
+        runtime.pendingConfigDrafts.delete(upstream.draftId);
+        recordEvent(session.sessionId, claims, null, {
+          type: 'user-config-write',
+          data: { subject: draft.subject, revision, overlay: checked.overlay, origin: 'teach' },
+        });
+        sendJson(res, 202, { accepted: true, revision });
+        return;
+      }
     }
   }
 
@@ -1847,12 +2234,106 @@ export function createGateway(deps: GatewayDeps): Gateway {
     sendJson(res, 200, { token });
   }
 
+  /** GET /v1/user-config（配置中心读取面）：subject 只由 claims 推导；空态 overlay=null + 稳定空 revision。 */
+  async function handleUserConfigGet(
+    res: ServerResponse,
+    claims: IdentityClaims,
+    userConfig: GatewayUserConfigDeps,
+  ): Promise<void> {
+    try {
+      const { overlay, revision } = await userConfig.store.read(subjectOf(claims));
+      sendJson(res, 200, { overlay, revision });
+    } catch {
+      sendJson(res, 503, { error: '用户配置存储不可用' });
+    }
+  }
+
+  /**
+   * PUT /v1/user-config（面板结构化编辑，R3/U8）：body = 完整 overlay；subject 必须与 claims 推导值
+   * 一致；校验链 = validateUserOverlay（含 configSchemas）+ validateOverlayAgainstL1（禁旁路），
+   * 任何 400 不落盘；写后审计 user-config-write（origin=panel，写后全量快照）。
+   * 可选 ?expectedRevision= 乐观并发控制：与当前 revision 不符即 409（防面板旧态覆盖 teach 写入）。
+   * 来源保真（R4）：新增条目（id 不在当前 overlay）origin 归一为 manual、剥离 sourceSessionId——
+   * 面板路径不可伪饰 teach 来源；既有条目原样保留。
+   */
+  async function handleUserConfigPut(
+    req: IncomingMessage,
+    res: ServerResponse,
+    claims: IdentityClaims,
+    userConfig: GatewayUserConfigDeps,
+  ): Promise<void> {
+    let raw: string;
+    try {
+      raw = await readBody(req);
+    } catch {
+      sendJson(res, 400, { error: '请求体读取失败' });
+      return;
+    }
+    if (Buffer.byteLength(raw, 'utf8') > USER_OVERLAY_MAX_BYTES) {
+      sendJson(res, 400, { error: `overlay 超出体积上限（${USER_OVERLAY_MAX_BYTES} 字节）` });
+      return;
+    }
+    let body: unknown;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      sendJson(res, 400, { error: '请求体不是合法 JSON' });
+      return;
+    }
+    const subject = subjectOf(claims);
+    const claimed = (body as { subject?: { tenant?: unknown; hostUserId?: unknown } } | null)?.subject;
+    if (claimed?.tenant !== subject.tenant || claimed?.hostUserId !== subject.hostUserId) {
+      sendJson(res, 400, { error: 'overlay.subject 与身份 claims 推导值不一致' });
+      return;
+    }
+    if (countOverlayEntries(body) > USER_OVERLAY_MAX_ENTRIES) {
+      sendJson(res, 400, { error: `overlay 条目数超出上限（${USER_OVERLAY_MAX_ENTRIES} 条）` });
+      return;
+    }
+    let current: { overlay: UserOverlay | null; revision: string };
+    try {
+      current = await userConfig.store.read(subject);
+    } catch {
+      sendJson(res, 503, { error: '用户配置存储不可用' });
+      return;
+    }
+    const expectedRevision = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get(
+      'expectedRevision',
+    );
+    if (expectedRevision !== null && expectedRevision !== current.revision) {
+      sendJson(res, 409, { error: '配置已被其他写入更新（revision 不符），请重新加载后再保存' });
+      return;
+    }
+    normalizeOverlayOrigins(body, current.overlay);
+    const validated = validateUserOverlay(body, { configSchemas: userConfig.configSchemas });
+    const checked = validated.ok
+      ? validateOverlayAgainstL1(validated.overlay, userConfig.l1Baseline)
+      : validated;
+    if (!checked.ok) {
+      sendJson(res, 400, { error: 'overlay 未通过写入期校验', issues: checked.issues });
+      return;
+    }
+    let revision: string;
+    try {
+      revision = (await userConfig.store.write(subject, checked.overlay)).revision;
+    } catch {
+      sendJson(res, 503, { error: '用户配置写入失败' });
+      return;
+    }
+    // 面板写入无会话：审计以固定占位 sessionId 落 record-only 旁路，subject/revision 仍可互证（R4）。
+    recordEvent('user-config-panel', claims, null, {
+      type: 'user-config-write',
+      data: { subject, revision, overlay: checked.overlay, origin: 'panel' },
+    });
+    sendJson(res, 200, { revision });
+  }
+
   async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         ...corsHeaders,
         'access-control-allow-headers': 'authorization,content-type',
-        'access-control-allow-methods': 'GET,POST,OPTIONS',
+        'access-control-allow-methods': 'GET,POST,PUT,OPTIONS',
       });
       res.end();
       return;
@@ -1879,6 +2360,16 @@ export function createGateway(deps: GatewayDeps): Gateway {
         data: { clientKind: 'extension', iss: claims.iss },
       });
       sendJson(res, 201, { sessionId: session.sessionId });
+      return;
+    }
+    if (pathname === '/v1/user-config') {
+      if (deps.userConfig === undefined) {
+        sendJson(res, 404, { error: '用户配置写入通道未启用' });
+        return;
+      }
+      if (req.method === 'GET') return handleUserConfigGet(res, claims, deps.userConfig);
+      if (req.method === 'PUT') return handleUserConfigPut(req, res, claims, deps.userConfig);
+      sendJson(res, 404, { error: '未知路由' });
       return;
     }
     if (pathname === '/v1/automation-descriptors' && req.method === 'GET') {

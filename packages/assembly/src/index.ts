@@ -11,6 +11,7 @@ import type {
   InjectionBlock,
   InjectionDescription,
   InjectionToolDescriptor,
+  JsonObject,
   PackAutomation,
   PackManifest,
   ReadPackDocResult,
@@ -97,6 +98,8 @@ interface LoadedPack {
   docsDir: string | null;
   /** adr-019 周期自动化声明；无声明为空数组。 */
   automations: PackAutomation[];
+  /** pack 声明的用户可配置点（adr-020）；null = 未声明（L2 packConfig 写入期无表项即拒）。 */
+  configSchema: JsonObject | null;
 }
 
 interface LoadedSnapshot {
@@ -445,6 +448,7 @@ function loadPack(
     docsIndex: docs.docsIndex,
     docsDir: docs.docsDir,
     automations: pack.automations ?? [],
+    configSchema: pack.configSchema ?? null,
   };
 }
 
@@ -556,6 +560,7 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
     docsIndex: docs.docsIndex,
     docsDir: docs.docsDir,
     automations: [],
+    configSchema: null,
   };
   return {
     version: manifest.version,
@@ -972,6 +977,13 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
         }
       }
       return structuredClone(descriptors);
+    },
+    async listConfigSchemas() {
+      const schemas: Record<string, JsonObject> = {};
+      for (const pack of getSnapshot().packs.values()) {
+        if (pack.configSchema !== null) schemas[pack.packId] = pack.configSchema;
+      }
+      return structuredClone(schemas);
     },
   };
 }

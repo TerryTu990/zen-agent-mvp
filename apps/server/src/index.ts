@@ -10,6 +10,7 @@ import type {
   FulfillmentCoordinatorPort,
   LlmPort,
   ToolGatePort,
+  UserConfigStore,
 } from '@zen-agent/contracts';
 import { createAssemblyPort } from '@zen-agent/assembly';
 import { createToolGatePort, type BoundedFulfillmentPolicy } from '@zen-agent/toolgate';
@@ -78,6 +79,8 @@ export interface ServerOptions {
    * compose 按 subject 合并 L2；缺省 = 不组装（纯 L1 装配）。布局 `<dir>/<tenant>/<hostUserId>.json`。
    */
   userConfigDir?: string;
+  /** 配置草稿（teach 流）有效期毫秒；缺省 10 分钟。 */
+  configDraftTtlMs?: number;
   /** generic 兜底 pack 的服务端准入名单（origin 精确值闭集）；缺省/空 = generic 永不激活（fail-closed，U7）。 */
   genericAllowlist?: string[];
   /** ADR-016：运营者预批准的服务端有界履约策略；不从客户端或模型上下文接受。 */
@@ -141,15 +144,19 @@ export interface ServerPorts {
   llm: LlmPort;
   audit: AuditPort;
   fulfillment?: FulfillmentCoordinatorPort;
+  /** L2 用户覆盖层存储（adr-014）：assembly 与网关写入通道共用同一实例；缺省 = 未启用 L2。 */
+  userConfigStore?: UserConfigStore;
 }
 
 export async function assemblePorts(options: ServerOptions): Promise<ServerPorts> {
+  const userConfigStore =
+    options.userConfigDir !== undefined
+      ? createFsUserConfigStore({ dir: options.userConfigDir })
+      : undefined;
   const assembly = createAssemblyPort({
     snapshotRoot: options.snapshotRoot,
     systemPromptPath: options.systemPromptPath,
-    ...(options.userConfigDir !== undefined
-      ? { userConfigStore: createFsUserConfigStore({ dir: options.userConfigDir }) }
-      : {}),
+    ...(userConfigStore !== undefined ? { userConfigStore } : {}),
   });
   // 触发快照惰性载入：坏快照 fail-fast（快照拒载错误），先于读全 pack 工具并集。
   await assembly.resolveFeature({ url: '' });
@@ -202,6 +209,7 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
     llm: createLlmPort({ allowedProviders: options.allowedProviders }),
     audit: createAuditPort({ sinkPath: options.auditSinkPath }),
     ...(fulfillment !== undefined ? { fulfillment } : {}),
+    ...(userConfigStore !== undefined ? { userConfigStore } : {}),
   };
 }
 
@@ -230,6 +238,27 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
         })
       : undefined;
   const store: SessionStore = persistentStore ?? memoryStore;
+  // L2 写入通道依赖（adr-014 §5）：校验基线取自装配快照（不可变），组装期定格一次即可。
+  const userConfig =
+    ports.userConfigStore !== undefined
+      ? {
+          store: ports.userConfigStore,
+          ...(options.configDraftTtlMs !== undefined ? { draftTtlMs: options.configDraftTtlMs } : {}),
+          configSchemas: await ports.assembly.listConfigSchemas(),
+          l1Baseline: {
+            tools: (await ports.assembly.allTools()).map((tool) => ({
+              id: tool.id,
+              riskTier: tool.riskTier,
+            })),
+            automations: (await ports.assembly.listAutomations()).map((descriptor) => ({
+              id: descriptor.automation.id,
+              ...(descriptor.automation.defaultPeriodMinutes !== undefined
+                ? { defaultPeriodMinutes: descriptor.automation.defaultPeriodMinutes }
+                : {}),
+            })),
+          },
+        }
+      : undefined;
   const gateway = createGateway({
     assembly: ports.assembly,
     llm: ports.llm,
@@ -249,6 +278,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     corsOrigin: options.corsOrigin ?? '*',
     applicationsDir: options.applicationsDir ?? '.za/applications',
     genericAllowlist: options.genericAllowlist ?? [],
+    ...(userConfig !== undefined ? { userConfig } : {}),
     ...(options.demoToken?.enabled
       ? { demoToken: { jwtSecret: options.jwtSecret, iss: options.demoToken.iss } }
       : {}),

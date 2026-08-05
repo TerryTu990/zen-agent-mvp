@@ -24,7 +24,7 @@ import {
   type BackgroundRuntimeMessage,
   type MessageDeliveryFailure,
 } from './messaging.js';
-import { reducePanelHistory, removeSettledHitl } from './panel-history.js';
+import { reducePanelHistory, removeSettledConfigDraft, removeSettledHitl } from './panel-history.js';
 import { verifyExecInstruction } from './exec-verification.js';
 import { normalizeTrustedServerBaseUrl } from './server-url.js';
 import { runToolbarSidePanelAction } from './side-panel-action.js';
@@ -113,7 +113,7 @@ type UpstreamContentMessage = Exclude<
 
 type UpstreamPanelMessage = Extract<
   SidePanelToBackgroundMessage,
-  { kind: 'user-message' | 'hitl-decision' }
+  { kind: 'user-message' | 'hitl-decision' | 'config-decision' }
 >;
 
 interface AutoScanMessage {
@@ -259,7 +259,13 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
     }
     if (route === 'panel') {
-      if (frame.type === 'text-delta' || frame.type === 'turn-complete' || frame.type === 'tool-card' || frame.type === 'hitl-request') {
+      if (
+        frame.type === 'text-delta' ||
+        frame.type === 'turn-complete' ||
+        frame.type === 'tool-card' ||
+        frame.type === 'hitl-request' ||
+        frame.type === 'config-draft'
+      ) {
         emitUi({ kind: 'frame', frame });
       }
       return;
@@ -606,6 +612,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         };
       case 'hitl-decision':
         return { type: 'hitl-decision', sessionId, hitlId: message.hitlId, decision: message.decision };
+      case 'config-decision':
+        return { type: 'config-decision', sessionId, draftId: message.draftId, decision: message.decision };
       case 'exec-result':
         // sessionId 权威归 background：以本会话盖章覆盖 content 侧原料值。
         return { ...message.result, sessionId };
@@ -886,6 +894,26 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           if (accepted) updateHistory((history) => removeSettledHitl(history, message.hitlId));
           else postPanel(port, { kind: 'history-replay', events: panelHistory });
           postToPanels({ kind: 'hitl-result', hitlId: message.hitlId, accepted });
+        });
+        return;
+      }
+      if (message.kind === 'config-decision') {
+        pipeline = pipeline.then(async () => {
+          const result = await deliver(message);
+          const terminal = result.accepted || result.httpStatus === 409 || result.httpStatus === 400;
+          if (terminal) {
+            // 裁决送达或服务端终态拒绝（409 已消费/过期、400 校验不过）：出历史，卡片不再重现可操作态。
+            updateHistory((history) => removeSettledConfigDraft(history, message.draftId));
+            if (!result.accepted) {
+              emitUi({
+                kind: 'status',
+                message: '配置草稿已失效或未通过校验，未写入；需要时请重新让助手生成草稿。',
+              });
+            }
+          } else {
+            // 网络/5xx 可重试失败：重放历史让卡片恢复可操作。
+            postPanel(port, { kind: 'history-replay', events: panelHistory });
+          }
         });
         return;
       }

@@ -36,3 +36,13 @@ export function removeSettledHitl(
     (item) => !(item.kind === 'frame' && item.frame.type === 'hitl-request' && item.frame.hitlId === hitlId),
   );
 }
+
+/** 已裁决草稿出历史：draftId 服务端一次性消费，重放不得再呈现可操作卡。 */
+export function removeSettledConfigDraft(
+  history: readonly SidePanelUiEvent[],
+  draftId: string,
+): SidePanelUiEvent[] {
+  return history.filter(
+    (item) => !(item.kind === 'frame' && item.frame.type === 'config-draft' && item.frame.draftId === draftId),
+  );
+}

@@ -103,6 +103,21 @@ button { cursor: pointer; }
 .za-hitl-approve { color: white; background: var(--clay); }
 .za-hitl-reject { color: var(--ink); background: var(--paper); }
 
+.za-config-card { display: flex; flex-direction: column; gap: 7px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.za-config-title { color: var(--agent-deep); font-weight: 700; }
+.za-config-scope, .za-config-summary, .za-config-preview, .za-config-preview-label { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+.za-config-preview-label { font-weight: 600; }
+.za-config-preview { padding-left: 19px; }
+.za-config-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.za-config-actions button { padding: 7px; border: 1px solid var(--line); border-radius: 8px; }
+.za-config-approve { color: white; background: var(--agent-deep); }
+.za-config-reject { color: var(--ink); background: var(--paper); }
+.za-config-note { color: var(--ink-soft); font-size: 11px; line-height: 1.5; }
+.za-config-outcome { color: var(--agent-deep); font-size: 12px; line-height: 1.5; }
+.za-config-outcome:empty { display: none; }
+.za-config-card[data-decided] .za-config-actions { opacity: .62; }
+.za-config-card[data-decided] button { cursor: default; }
+
 .za-empty { margin: auto; max-width: 260px; text-align: center; color: var(--ink-soft); }
 .za-empty strong { display: block; margin-bottom: 7px; color: var(--agent); font: 600 21px/1.2 var(--serif); }
 .za-empty span { font-size: 12px; line-height: 1.65; }

@@ -195,3 +195,66 @@ export const SITE_NAVIGATE_RESULT_SCHEMA: JsonObject = {
   required: ['url'],
   properties: { url: { type: 'string' } },
 };
+
+/**
+ * 内建配置草稿工具的结构契约（adr-014 teach 流，U8）：agent 识别用户表达的稳定偏好后调用，
+ * 只产草稿卡（config-draft 帧下发）、零副作用——真正的确认是上行 config-decision，故 riskTier=auto、
+ * 不复用 hitl 裁决链路。不入 pack tools.json，由网关注入工具面并在服务端专路处理（条目 id/origin/
+ * createdAt/change 均服务端构造，客户端只回传 draftId+decision）。
+ * params 字段约束与 user-overlay.schema.json 同源对齐（text/featureId/toolId/riskTierRaise 值域），
+ * 保证草稿通过本入参校验后构造出的 overlay 片段不因结构越界在写入期被拒。
+ * rules/facts/riskTierRaise 至少一项非空（anyOf 强制）。
+ */
+export const CONFIG_DRAFT_TOOL_ID = 'config_draft';
+
+export const CONFIG_DRAFT_PARAMS_SCHEMA: JsonObject = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['packId'],
+  // anyOf 分支内的 properties 空 stub 满足 ajv strictRequired（required 属性须在同层 properties 声明）。
+  anyOf: [
+    { required: ['rules'], properties: { rules: true } },
+    { required: ['facts'], properties: { facts: true } },
+    { required: ['riskTierRaise'], properties: { riskTierRaise: true } },
+  ],
+  properties: {
+    packId: { type: 'string', pattern: '^(\\*|[a-z][a-z0-9-]*)$' },
+    featureId: { type: 'string', pattern: '^[a-z][a-z0-9-]*$' },
+    rules: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['text'],
+        properties: { text: { type: 'string', minLength: 1, maxLength: 2000 } },
+      },
+    },
+    facts: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['text'],
+        properties: { text: { type: 'string', minLength: 1, maxLength: 2000 } },
+      },
+    },
+    riskTierRaise: {
+      type: 'object',
+      minProperties: 1,
+      propertyNames: { pattern: '^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)*$' },
+      additionalProperties: { type: 'string', enum: ['hitl', 'forbidden'] },
+    },
+  },
+};
+
+export const CONFIG_DRAFT_RESULT_SCHEMA: JsonObject = {
+  type: 'object',
+  required: ['draftId', 'status'],
+  properties: {
+    draftId: { type: 'string' },
+    /** 唯一合法结局：草稿已发出等待用户裁决；写入结果不经本工具回传（accept 走 config-decision 专路）。 */
+    status: { type: 'string', enum: ['pending-decision'] },
+  },
+};

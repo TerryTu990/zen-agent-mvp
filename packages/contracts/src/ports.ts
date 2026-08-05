@@ -225,6 +225,11 @@ export interface AssemblyPort {
   listToolOwnership(): Promise<ToolOwnership[]>;
   /** 全 pack 自动化描述符（adr-019）：id 跨 pack 唯一（载入期查重拒载）；generic pack 无（schema 禁声明）。 */
   listAutomations(): Promise<AutomationDescriptor[]>;
+  /**
+   * packId → pack.json 声明的 configSchema（adr-020）；未声明的 pack 不入表。
+   * L2 写入通道以此表调 validateUserOverlay 做 packConfig 写入期校验（无表项即拒，fail-closed）。
+   */
+  listConfigSchemas(): Promise<Record<string, JsonObject>>;
 }
 
 // ---- ToolGatePort（③工具执行层：唯一决策点 + 代执行指令签发/回收）----

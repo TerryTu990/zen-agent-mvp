@@ -13,7 +13,7 @@ import type {
 export type SidePanelUiEvent =
   | {
       kind: 'frame';
-      frame: Extract<DownstreamFrame, { type: 'text-delta' | 'turn-complete' | 'tool-card' | 'hitl-request' }>;
+      frame: Extract<DownstreamFrame, { type: 'text-delta' | 'turn-complete' | 'tool-card' | 'hitl-request' | 'config-draft' }>;
     }
   | { kind: 'status'; message: string }
   | { kind: 'user-echo'; text: string; messageId?: string };
@@ -59,6 +59,8 @@ export type SidePanelToBackgroundMessage =
   | { kind: 'browsing-context'; groupId: number; url?: string; title?: string }
   | { kind: 'user-message'; messageId: string; text: string; displayText?: string; executionPreference: ExecutionPreference }
   | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
+  // L2 草稿裁决（U8）：面板只回传 draftId+decision，change 不经客户端往返。
+  | { kind: 'config-decision'; draftId: string; decision: 'accept' | 'reject' }
   | { kind: 'stop-operation'; messageId?: string }
   | { kind: 'ping' };
 

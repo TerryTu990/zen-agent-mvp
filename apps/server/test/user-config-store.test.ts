@@ -107,4 +107,32 @@ describe('fs UserConfigStore（adr-014 §6 存储与故障语义）', () => {
     const other = await store.read({ tenant: 'default', hostUserId: 'host-2002' });
     expect(other.overlay).toBeNull();
   });
+
+  it('大小写仅异的两 hostUserId 映射不同文件（消歧后缀），大小写不敏感文件系统上互不覆盖', async () => {
+    const { dir, store } = storeIn();
+    const upper = { tenant: 'default', hostUserId: 'Alice' };
+    const lower = { tenant: 'default', hostUserId: 'alice' };
+    await store.write(upper, { schemaVersion: 1, subject: upper, packs: {} });
+    await store.write(lower, {
+      schemaVersion: 1,
+      subject: lower,
+      packs: { shop: { rules: [{ id: 'r-lc', text: '小写用户的规则。', origin: 'manual', createdAt: '2026-08-05T00:00:00.000Z' }] } },
+    });
+
+    // 隔离语义：大写 subject 读回自身内容，不被小写 subject 的写入覆盖（新 store 实例绕过进程内缓存，直读文件）
+    const fresh = createFsUserConfigStore({ dir });
+    const upperRead = await fresh.read(upper);
+    const lowerRead = await fresh.read(lower);
+    expect(upperRead.overlay).toEqual({ schemaVersion: 1, subject: upper, packs: {} });
+    expect(lowerRead.overlay?.subject).toEqual(lower);
+
+    // 消歧后缀语义：编码段追加 '-' + sha256(原值) 前 8 hex——两文件名忽略大小写后仍互异
+    const tenantDir = join(dir, readdirSync(dir)[0]!);
+    const files = readdirSync(tenantDir);
+    expect(files).toHaveLength(2);
+    for (const name of files) {
+      expect(name).toMatch(/-[0-9a-f]{8}\.json$/);
+    }
+    expect(new Set(files.map((name) => name.toLowerCase())).size).toBe(2);
+  });
 });

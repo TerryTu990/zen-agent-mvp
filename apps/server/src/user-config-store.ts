@@ -7,7 +7,7 @@
  * 无 lastGood → 抛类型化错误，由 compose 承担 fail-open-closed 拆分降级（U7）。
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateUserOverlay } from '@zen-agent/contracts';
 import type {
@@ -21,15 +21,17 @@ import type {
 /**
  * subject 段 → 文件系统段的确定性编码：percent-encode 使分隔符/点段/任意字符集（如 email 形
  * hostUserId）均可安全映射——invalid-subject 与存储故障因此解耦，字符集不与 C2 契约耦合。
- * 空段仍拒绝（无法定位）。
+ * 空段仍拒绝（无法定位）。尾缀 '-' + sha256(原值) 前 8 hex 做大小写消歧：大小写不敏感文件系统
+ * 上仅大小写有异的两 subject 不落同一路径、互不覆盖。
  */
 function encodeSegment(value: string): string {
   if (value.length === 0 || value.length > 512) {
     throw new UserConfigStoreError('invalid-subject', 'subject 路径段为空或超长');
   }
-  return encodeURIComponent(value).replace(/\*/g, '%2A').replace(/^\.+$/, (dots) =>
+  const encoded = encodeURIComponent(value).replace(/\*/g, '%2A').replace(/^\.+$/, (dots) =>
     dots.replace(/\./g, '%2E'),
   );
+  return `${encoded}-${sha256Hex(value).slice(0, 8)}`;
 }
 
 export type UserConfigStoreErrorCode = 'invalid-subject' | 'read-failed' | 'write-failed';
@@ -48,6 +50,31 @@ function sha256Hex(content: string | Buffer): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+/**
+ * 旧布局（无 -8hex 消歧尾缀）文件检测：当前布局不定位此类文件（读作空态），存量将被静默弃置——
+ * 启动时一次性警示留人工处置线索。无发布存量（消歧尾缀早于任何启用 L2 的发布），仅护开发/演示机。
+ */
+function warnLegacyLayoutOnce(dir: string): void {
+  try {
+    const legacy: string[] = [];
+    for (const tenant of readdirSync(dir, { withFileTypes: true })) {
+      if (!tenant.isDirectory()) continue;
+      for (const file of readdirSync(join(dir, tenant.name))) {
+        if (file.endsWith('.json') && !/-[0-9a-f]{8}\.json$/.test(file)) {
+          legacy.push(join(tenant.name, file));
+        }
+      }
+    }
+    if (legacy.length > 0) {
+      console.warn(
+        `[user-config] 检测到 ${legacy.length} 个旧布局 overlay 文件（无消歧尾缀，不会被读取）：${legacy.slice(0, 5).join(', ')}${legacy.length > 5 ? ' …' : ''}`,
+      );
+    }
+  } catch {
+    // 目录不存在/不可读：首次启动的正常形态，不警示。
+  }
+}
+
 const EMPTY_REVISION = sha256Hex('null');
 
 export interface FsUserConfigStoreOptions {
@@ -58,6 +85,7 @@ export interface FsUserConfigStoreOptions {
 export function createFsUserConfigStore(options: FsUserConfigStoreOptions): UserConfigStore {
   // 每 subject 最近一次成功读取（进程内）：读失败时的 stale 降级来源。
   const lastGood = new Map<string, UserConfigReadResult>();
+  warnLegacyLayoutOnce(options.dir);
 
   const locate = (subject: UserConfigSubject): { key: string; dir: string; path: string } => {
     const tenantSeg = encodeSegment(subject.tenant);

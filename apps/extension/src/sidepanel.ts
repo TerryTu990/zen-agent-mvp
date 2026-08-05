@@ -4,6 +4,7 @@ import {
   MAX_ATTACHMENT_COUNT,
   prepareAttachments,
 } from './composer-attachments.js';
+import { renderConfigDraftCard } from './config-draft-card.js';
 import { createConversationUi } from './conversation-hitl.js';
 import type { ExecutionPreference } from './frames.js';
 import {
@@ -286,6 +287,11 @@ export function startSidePanel(elements: SidePanelElements): void {
       else runningTools.delete(event.frame.toolCallId);
       ui.renderToolCard(event.frame);
       updateComposer();
+    } else if (event.frame.type === 'config-draft') {
+      ui.hideThinking();
+      renderConfigDraftCard(elements.messages, event.frame, (decision) => {
+        send({ kind: 'config-decision', draftId: decision.draftId, decision: decision.decision });
+      });
     } else {
       runningTools.clear();
       hitlPending = true;

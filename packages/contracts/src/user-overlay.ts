@@ -206,7 +206,10 @@ export interface UserOverlayL1AutomationBaseline {
 
 /**
  * 写入期只收紧校验的 L1 基线（U1：JSON 可序列化，写入通道自 assembly 端口取得后传入）：
- * tools/automations 的 id 均为跨 pack 去重后的全局闭集（载入期命名空间纪律保证）。
+ * tools/automations 的 id 均为跨 pack 去重后的全局并集（载入期命名空间纪律保证唯一）。
+ * 口径与合并期不同且刻意为之：写入期用全局并集只判「声明值是否低于 L1」（放宽面），
+ * 不判 toolId 归属哪个 pack；作用域归属与越界引用归合并期按激活 pack 闭集逐条失效——
+ * 两口径分工不构成放宽面（并集里查不到的 toolId 写入期放过、合并期必失效）。
  */
 export interface UserOverlayL1Baseline {
   tools: UserOverlayL1ToolBaseline[];

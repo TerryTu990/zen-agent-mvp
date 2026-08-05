@@ -27,6 +27,9 @@ export {
   SITE_NAVIGATE_TOOL_ID,
   SITE_NAVIGATE_PARAMS_SCHEMA,
   SITE_NAVIGATE_RESULT_SCHEMA,
+  CONFIG_DRAFT_TOOL_ID,
+  CONFIG_DRAFT_PARAMS_SCHEMA,
+  CONFIG_DRAFT_RESULT_SCHEMA,
 } from './tool-definition.js';
 export type { IdentityClaims } from './identity-claims.js';
 export type {

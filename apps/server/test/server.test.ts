@@ -8,6 +8,7 @@ import type { CardInventoryPort } from '@zen-agent/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startServer, type RunningServer } from '../src/index.js';
 import { redactSnapshotValues } from '../src/gateway.js';
+import { createFsUserConfigStore } from '../src/user-config-store.js';
 import { createMemorySessionStore, createPersistentSessionStore } from '../src/sessions.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
@@ -287,7 +288,7 @@ describe('上行帧校验（400/404/409 闭集）', () => {
     expect(res.status).toBe(400);
   });
 
-  it('契约内未启用上行帧（config-decision，P2.5-c 启用）→ 400 且文案如实', async () => {
+  it('config-decision 在未组装写入通道（无 userConfigDir）的服务上 → 400 fail-closed', async () => {
     const token = await signToken();
     const sessionId = await createSession(token);
     const res = await postFrame(token, sessionId, {
@@ -297,7 +298,7 @@ describe('上行帧校验（400/404/409 闭集）', () => {
       decision: 'accept',
     });
     expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toContain('尚未启用');
+    expect(((await res.json()) as { error: string }).error).toContain('未启用');
   });
 
   it('帧 sessionId 与路径不一致 → 400', async () => {
@@ -2463,11 +2464,11 @@ describe('adr-014 L2 注入贯通：个人规则进入实际 system 注入且与
   const userConfigDir = mkdtempSync(join(tmpdir(), 'za-l2-inject-'));
 
   beforeAll(async () => {
-    // claims 固定 tenant=demo-tenant / hostUserId=host-u1（signToken 缺省）；预置该 subject 的 overlay。
-    mkdirSync(join(userConfigDir, 'demo-tenant'), { recursive: true });
-    writeFileSync(
-      join(userConfigDir, 'demo-tenant', 'host-u1.json'),
-      JSON.stringify({
+    // claims 固定 tenant=demo-tenant / hostUserId=host-u1（signToken 缺省）；经 store 端口预置该
+    // subject 的 overlay——文件段编码（percent-encode + 大小写消歧尾缀）是存储实现细节，测试不硬编码路径。
+    await createFsUserConfigStore({ dir: userConfigDir }).write(
+      { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+      {
         schemaVersion: 1,
         subject: { tenant: 'demo-tenant', hostUserId: 'host-u1' },
         packs: {
@@ -2482,7 +2483,7 @@ describe('adr-014 L2 注入贯通：个人规则进入实际 system 注入且与
             ],
           },
         },
-      }),
+      },
     );
     capturing = await startCapturingMock();
     prevBaseUrl = process.env['ZA_LLM_BASE_URL'];
