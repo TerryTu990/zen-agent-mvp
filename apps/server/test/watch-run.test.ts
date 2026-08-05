@@ -361,16 +361,24 @@ describe('watch 自动回合：变化检测与报告收口（R6）', () => {
         expect(skipped['summary']).toBeUndefined();
         expect(framesByType(sse.frames, 'text-delta').length).toBe(textDeltasBefore);
 
-        // 基线未被跳过轮污染：回到被监测页后，与首轮基线比对仍能检出真变化。
+        // 基线未被跳过轮污染：回到被监测页且内容与首轮相同 → 必须判「无变化」。
+        // 这一轮才有鉴别力：若跳过轮推进了基线，这里会与「完全不同的内容」相比而产出报告。
         const resumed = await driveWatchRun(token, sessionId, sse, 'offpage_run_3', {
+          labels: ['ORD-2001 待发货'],
+        });
+        expect(resumed['summary']).toBeUndefined();
+        expect(framesByType(sse.frames, 'text-delta').length).toBe(textDeltasBefore);
+
+        // 基线仍是首轮那一份：真变化照常检出。
+        const changed = await driveWatchRun(token, sessionId, sse, 'offpage_run_4', {
           labels: ['ORD-2001 已发货'],
         });
-        expect(String(resumed['summary'] ?? '')).not.toBe('');
+        expect(String(changed['summary'] ?? '')).toContain('待发货');
 
         const outcomes = auditEventsFor(sessionId)
           .filter((event) => event['type'] === 'tool-execution' && eventData(event)['toolId'] === WATCH_ID)
           .map((event) => eventData(event)['outcome']);
-        expect(outcomes).toEqual(['ok', 'skipped', 'ok']);
+        expect(outcomes).toEqual(['ok', 'skipped', 'ok', 'ok']);
       } finally {
         sse.close();
       }

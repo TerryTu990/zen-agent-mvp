@@ -255,7 +255,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         const detected = frame.type === 'tool-card' ? (frame.summary ?? '') : '';
         postStatus(
           detected === ''
-            ? `自动化「${finishedId}」回合异常结束，已暂停。`
+            ? `自动化「${finishedId}」回合异常结束，已暂停；核对后可在配置中心「自动化」页重新启用。`
             : `自动化「${finishedId}」检出变化但报告生成失败：${detected}；已暂停。`,
         );
       } else if (frame.type === 'tool-card' && (frame.summary ?? '') !== '') {
@@ -267,7 +267,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
     if (shouldPauseAutoScan(autoScanRun, frame)) {
       void chrome.storage.local.set({ [autoScanEnabledKeyFor(autoScanRun!.automationId)]: false });
-      postStatus(`自动化「${autoScanRun!.automationId}」已因异常暂停；核对页面与策略后可在设置页重新启用。`);
+      postStatus(
+        `自动化「${autoScanRun!.automationId}」已因异常暂停；核对页面与策略后可在配置中心「自动化」页重新启用。`,
+      );
       if (frame.type === 'hitl-request') {
         // 自动回合本不应进入人工确认；安全拒绝可让服务端回合收尾并发出明确完成帧，避免单飞锁悬挂。
         pipeline = pipeline.then(async () => {
@@ -1041,7 +1043,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         await chrome.storage.local.set({ [enabledKey]: false });
         postStatus(
           `自动化「${run.automationId}」被服务端判为不可运行，已暂停；` +
-            '触发器可能已被删除或禁用，也可能是服务端暂未启用个人配置存储；核对后可在设置页重新启用。',
+            '触发器可能已被删除或禁用，也可能是服务端暂未启用个人配置存储；核对后可在配置中心「自动化」页重新启用。',
         );
         return;
       }

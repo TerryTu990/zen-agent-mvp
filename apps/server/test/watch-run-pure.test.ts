@@ -48,8 +48,19 @@ describe('被监测页归一标识', () => {
   it('跟踪参数与参数顺序、尾斜杠不改变标识——否则同一页的来路变体各自建基线，变化永不报告', () => {
     const base = watchPageKey('https://shop.test/item/1');
     expect(watchPageKey('https://shop.test/item/1?utm_source=weibo&gclid=abc')).toBe(base);
+    expect(watchPageKey('https://shop.test/item/1?UTM_Source=weibo')).toBe(base);
+    // spm 是阿里系逐次导航轮换的位置埋点：入标识会让这些站点的 watch 每轮判否。
+    expect(watchPageKey('https://shop.test/item/1?spm=a2170.1.2.3')).toBe(base);
     expect(watchPageKey('https://shop.test/item/1/')).toBe(base);
     expect(watchPageKey('https://shop.test/list?b=2&a=1')).toBe(watchPageKey('https://shop.test/list?a=1&b=2'));
+  });
+
+  it('参数值里的分隔符经编码后才拼接——否则单参与双参会产出同一标识而共用基线', () => {
+    expect(watchPageKey('https://shop.test/p?b=%26c%3Dd')).not.toBe(watchPageKey('https://shop.test/p?b=&c=d'));
+  });
+
+  it('ref 是内容选择参数（如 ?ref=chapter-3），参与标识', () => {
+    expect(watchPageKey('https://shop.test/doc?ref=a')).not.toBe(watchPageKey('https://shop.test/doc?ref=b'));
   });
 
   it('站点自有查询串与 hash 参与标识——否则分页/筛选/hash 路由共用一条基线，每轮互相 diff 出虚假变化', () => {

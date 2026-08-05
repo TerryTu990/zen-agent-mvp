@@ -731,6 +731,18 @@ describe('C5 audit-event M3 门禁/裁决/执行事件', () => {
         durationMs: 12,
       },
     },
+    // 自动回合「本轮没看到被监测页」的结局：与 ok 分开，否则运行历史会把「没看成」渲染成「看过没变」。
+    'tool-execution skipped': {
+      ...base,
+      type: 'tool-execution',
+      data: {
+        toolCallId: 'watch_run_2',
+        toolId: 'watch-orders',
+        execution: 'server',
+        outcome: 'skipped',
+        durationMs: 8,
+      },
+    },
   };
 
   it.each(Object.keys(validEvents))('合法事件 %s 通过校验', (label) => {

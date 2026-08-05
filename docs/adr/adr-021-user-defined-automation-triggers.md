@@ -88,7 +88,8 @@ interface PlatformAutomationTemplate {
   两端必须同判定——客户端选中而服务端判否的页，本轮报告整条丢失；拉取失败 **fail-closed 不调度**。
 - **归一标识** = origin + 去尾斜杠路径 + 排序去跟踪参数后的查询串 + hash，工作页判定与比对基线共用：
   判定比归并粗则同一页的变体各自建基线、永不汇报；判定比归并细则不同页共用一条基线、每轮 diff 出虚假变化。
-  查询串与 hash 必须入内——分页/筛选/hash 路由是不同的页；只剥离纯广告点击标识（`utm_*`/`gclid` 族）。
+  查询串与 hash 必须入内——分页/筛选/hash 路由是不同的页；只剥离不改变页面内容的来路标识
+  （`utm_*` 前缀、`gclid` 族广告点击标识、阿里系逐次轮换的 `spm` 位置埋点）。
 - 「上报页不是被监测页」按**本轮跳过**收尾而非失败：用户在派发与取快照之间切页、站点回写参数都会走到这里，
   记成失败会让客户端把触发器整条停用。
 - 配置入口复用配置中心自动化页（G4 已落）的分组结构，不另起一套。
@@ -99,9 +100,12 @@ interface PlatformAutomationTemplate {
   `automationId` 的语义扩为「pack automation id **或** 用户 watch id」（文法本就一致）。
 - **C5 加法**：事件基类加可选 `automationRunId` / `automationId`（无人值守 run 的审计归因）；
   `tool-decision` data 加可选 `unattendedReadOnly: true`（只读强制的判定归因，是「无人值守不执行写操作」
-  的机械可检证据，E2E-F 断言点）。schema 与 TS 投影同步（U6）。
-- 全部为可选字段新增：旧 overlay / 旧事件 / 旧帧原样有效（U3 加法路径）；`contractVersion` 不变
+  的机械可检证据，E2E-F 断言点）；`tool-execution.outcome` 闭集加 `skipped`（本轮未执行且非故障——
+  上报的不是被监测页即属此类）。schema 与 TS 投影同步（U6）。
+- 可选字段新增与闭集加宽：旧 overlay / 旧事件 / 旧帧原样有效（U3 加法路径）；`contractVersion` 不变
   （pack 面无新字段，`engines.contract` 比对基准不受影响）。
+  **闭集加宽对读方的要求与可选字段不同**：按 `outcome` 分支的消费方须显式处理 `skipped`，
+  且 MUST NOT 与 `ok` 合并统计——合并即让「本轮没看成」在运行历史里显示为「看过、没变」。
 
 ### 6. AGENT-04 合规论证（用户层只收紧）
 
