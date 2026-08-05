@@ -68,22 +68,18 @@ Chrome 的“加载已解压的扩展程序”不能选择 zip 文件，必须�
 2. 打开页面右上角“开发者模式”。
 3. 点击左上角“加载已解压的扩展程序”。
 4. 在文件选择器中按 `Command+Shift+G`，粘贴上述“已解压目录”的绝对路径，回车后选择该目录。
-5. 在扩展卡片中打开“详细信息 → 扩展程序选项”，确认服务端地址为 `https://agent.flash-api.com`，粘贴管理员在服务器签发的令牌并保存。令牌不得写入仓库或聊天。
+5. 在扩展卡片中打开“详细信息 → 扩展程序选项”，确认服务端地址为 `https://agent.flash-api.com`。身份无需填写：插件首次运行自动匿名激活。
 
 `release/artifacts/` 被 gitignore；重新构建生产扩展后，需要重新解压对应版本 zip，不能沿用旧版本目录。
 
-## 用户认证（当前形态：管理员签发令牌）
+## 用户认证（身份零配置：匿名自动激活）
 
-平台不建账号；用户须持管理员签发的短期 JWT 方可使用（服务端验签 fail-closed）。宿主 SSO 接入是终局形态，届时由其签发、本流程退场。
+平台不建账号，用户也无需填写任何令牌：插件首次运行生成本地安装 id，向 `POST /v1/activation`
+换取 24h 匿名令牌，过期与 401 自动重取（adr-022）。签发方是服务端自身，其 iss 由服务端无条件
+并入验签白名单，故 `.env` 的 `ZA_JWT_ISS_ALLOWLIST` 不影响登录，发布时无需为此改服务器 .env。
+账号登录（Google）是正式投产前置条件，届时本节改写。
 
-签发脚本随发布同步到服务器（`remote/sign-token.sh` → `/root/zen-agent/sign-token.sh`），在服务器上执行：
-
-```bash
-ssh lingm2
-cd /root/zen-agent && ./sign-token.sh <宿主用户id>        # 默认 30 天；第二参数可改天数
-```
-把输出的令牌发给用户 → 用户在扩展**选项页**（chrome://extensions → zen-agent → 扩展选项）粘贴保存。
-令牌过期重签重配；`/demo-token` 自签端点在生产保持关闭。
+管理员侧没有发令牌这一步；用户接入 = 装扩展 + 确认服务端地址。
 
 ## 快速发布
 
@@ -91,7 +87,6 @@ cd /root/zen-agent && ./sign-token.sh <宿主用户id>        # 默认 30 天；
 release/build-server-image.sh          # 1. 构建 amd64 镜像
 release/deploy-server.sh --snapshot assets # 2. 上传版本快照 + 校验 + 成对切换 + 冒烟
 release/build-extension.sh             # 3. （插件有变更时）打 zip
-release/sign-token.sh -u <用户id>      # 4. 给新用户签发访问令牌
 ```
 
 首次部署前提（人工，一次性）：服务器 `/root/zen-agent/.env` 按 `remote/env.example` 填好真值；

@@ -2,12 +2,11 @@
  * 真机验收的服务端启动器：把 server 指向 acceptance 双站点 pack registry（codeflow-console × mail-126）+ 真实 LLM，常驻前台。
  * 快照根为仓内 examples/acceptance（registry 形态，两 pack 各带 site 围栏）；跨站任务回合数较多，故设 ZA_MAX_TURN_ROUNDS=40。
  * demo .env 的 ZF_LLM_* 经 --env-file 注入并映射为 ZA_LLM_*（密钥不入上下文，SEC-02）。
- * 启动前打印一枚自签 za.token（HS256，hostUserId=codeflow userId），供扩展 chrome.storage.local 配置。
+ * 身份无需配置：插件装上即匿名自动登录（adr-022）；边车只下发服务端地址与验收自动化开关。
  *
  * 启动：node --env-file=../tmp/zen-agent-demo/.env scripts/e2e/serve-acceptance.mjs
  */
 import { spawn } from 'node:child_process';
-import { createHmac } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join, resolve } from 'node:path';
@@ -19,34 +18,10 @@ const SNAPSHOT_ROOT = resolve(REPO_ROOT, 'examples', 'acceptance');
 
 const JWT_SECRET = process.env.ZA_TEST_JWT_SECRET ?? 'za-test-secret';
 const SIGNING_SECRET = process.env.ZA_TEST_SIGNING_SECRET ?? 'za-test-signing-secret';
-const JWT_ISS = 'zen-agent-demo';
+const JWT_ISS = 'zen-agent-anon';
 const PORT = Number(process.env.ZA_PORT ?? 8787);
-/** codeflow 用户 id：作为 hostUserId 写入 JWT（与 tools.json 的 New-Api-User 一致）。 */
-const HOST_USER_ID = process.env.ZA_CODEFLOW_USER_ID ?? '2579';
 
-/** 扩展 chrome.storage.local 的配置键（拆写以免被开发期 secret 守卫误判为明文凭证赋值）。 */
-const TOKEN_KEY = 'za.' + 'token';
 const BASEURL_KEY = 'za.serverBaseUrl';
-
-function base64url(input) {
-  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function signToken() {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = base64url(
-    JSON.stringify({
-      sub: 'codeflow-user',
-      tenant: 'codeflow',
-      roles: ['user'],
-      hostUserId: HOST_USER_ID,
-      iss: JWT_ISS,
-      exp: Math.floor(Date.now() / 1000) + 24 * 3600,
-    }),
-  );
-  const signature = base64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
-  return `${header}.${payload}.${signature}`;
-}
 
 function main() {
   if (!existsSync(SERVER_DIST)) {
@@ -59,7 +34,6 @@ function main() {
   }
 
   const config = {
-    [TOKEN_KEY]: signToken(),
     [BASEURL_KEY]: `http://127.0.0.1:${PORT}`,
     // ZA_AUTO_ACTIVATE=1 时才下发验收自动化开关（codeflow 页打开即视同点图标；126 由 navigate 入组）；
     // 缺省不下发，保持产品默认「点图标才激活」。曾吃过 autoActivate 的浏览器需清残留键：
@@ -67,7 +41,7 @@ function main() {
     ...(process.env.ZA_AUTO_ACTIVATE === '1' ? { 'za.autoActivate': ['https://codeflow.asia'] } : {}),
   };
 
-  // 配置边车：扩展 service worker 控制台 fetch 本端点即可写入 chrome.storage（避免手动粘贴长 token 被弯引号/截断破坏）。
+  // 配置边车：扩展 service worker 控制台 fetch 本端点即可写入 chrome.storage（免去手敲本机端口）。
   const CONFIG_PORT = PORT + 1;
   createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
@@ -78,7 +52,7 @@ function main() {
     console.log(
       `fetch('http://127.0.0.1:${CONFIG_PORT}/config').then(r=>r.json()).then(c=>chrome.storage.local.set(c)).then(()=>console.log('za config set'))`,
     );
-    console.log('\n（token 24h 有效；边车仅本地、仅发这份配置）');
+    console.log('\n（身份由插件自动匿名激活，无需配置；边车仅本地、仅发这份配置）');
     console.log('==============================================================================\n');
   });
 
@@ -87,7 +61,8 @@ function main() {
   console.log('- codeflow.asia/console：create-token / get-token-key（客户端代执行）、list-models（服务端）');
   console.log('- mail.126.com：mail-compose 写信页 dom 代操作（page-operate，riskTier hitl）');
   console.log('- ZA_MAX_TURN_ROUNDS=40：跨站任务（建 key → 开 126 → 写信）回合数较多');
-  console.log('demo-token 自取端点已启用（POST /demo-token，body {hostUserId}→{token}）');
+  console.log('- 身份：插件自动匿名登录（tenant=anon）；codeflow-console 的 per-origin 宿主身份不再注入，');
+  console.log('  该 pack 用 {{hostUserId}} 的 http 工具会因缺宿主身份被 toolgate 拒绝');
   console.log('=========================================================\n');
 
   const child = spawn('node', [SERVER_DIST], {
@@ -98,8 +73,6 @@ function main() {
       ZA_JWT_SECRET: JWT_SECRET,
       ZA_SIGNING_SECRET: SIGNING_SECRET,
       ZA_JWT_ISS_ALLOWLIST: JWT_ISS,
-      ZA_JWT_ISS: JWT_ISS,
-      ZA_DEMO_TOKEN_ENABLED: '1',
       ZA_SNAPSHOT_ROOT: SNAPSHOT_ROOT,
       ZA_SYSTEM_PROMPT_PATH: join(REPO_ROOT, 'assets', 'system-prompt.md'),
       ZA_PORT: String(PORT),

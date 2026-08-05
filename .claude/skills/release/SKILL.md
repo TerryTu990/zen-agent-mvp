@@ -21,11 +21,11 @@ description: 发布 zen-agent——构建服务端镜像/插件 zip，部署到 
 1. `release/build-extension.sh` → `release/artifacts/zen-agent-extension-<version>.zip`（版本取 manifest.json；生产服务端地址经 esbuild define 烤入缺省值，可用 `ZA_SERVER_BASE_URL` env 覆盖）。
 2. 版本升级记得先改 `apps/extension/manifest.json` 的 `version` 并提交。
 
-## 用户接入（管理员签发令牌）
+## 用户接入（身份零配置）
 
-1. `release/sign-token.sh -u <宿主用户id> [-d 天数]` 在服务器容器内签发（secret 不出服务器，输出仅 token）。
-2. 令牌发给用户 → 用户在扩展选项页粘贴保存 → 打开宿主站点点图标即用。
-3. 过期重签重配；`/demo-token` 端点生产保持关闭；宿主 SSO 接入后本流程退场。
+1. 装扩展 → 在扩展选项页确认服务端地址 → 打开站点点图标即用；没有发令牌这一步。
+2. 身份由插件首次运行自动匿名激活（adr-022），24h 过期与 401 自动重取，用户无需填写。
+3. 匿名激活的 iss 由服务端无条件并入验签白名单，发布时无需为此改服务器 `.env`；账号登录（Google）是正式投产前置条件，届时本节改写。
 
 ## 回滚（服务端）
 
@@ -40,7 +40,6 @@ ssh lingm2 "cd /root/zen-agent && sed -i 's/^ZA_IMAGE_TAG=.*/ZA_IMAGE_TAG=<旧SH
 - **首次**：服务器 `/root/zen-agent/.env` 按 `release/remote/env.example` 填真值（secret 不经开发机传输）。
 - **1panel 反代**：`agent.flash-api.com:443 → 127.0.0.1:9010` 已配；若 SSE 不流式（对话卡顿到整段出现），需在 1panel 该站点关闭响应缓冲（proxy_buffering off）并放宽 read timeout（心跳 15s）。
 - secret 轮换、证书续期。
-- sign-token.sh 触发生产容器 exec，auto 模式会被拦——由 Terry 亲自跑或逐次放行。
 
 ## 红线
 

@@ -39,8 +39,6 @@ export type ContentToBackgroundMessage =
   | { kind: 'exec-result'; result: ExecResultFrame }
   // 页面快照上报（dom 代操作观察半程）；sessionId 同样由 background 盖章。
   | { kind: 'snapshot-report'; report: SnapshotReportFrame }
-  // 页面同源读取的宿主用户 id（P0-b 自取 token 用），非 C3 上行帧、不进转发管线。
-  | { kind: 'host-identity'; hostUserId: string }
   // navigate 代执行（ADR-013 批次④）：dom 批次遇 navigate 步请 background 在本组窗口开目标页并入组；
   // requestId 关联 navigate-result 回执，不进上行转发管线。
   | { kind: 'navigate-request'; requestId: string; url: string }

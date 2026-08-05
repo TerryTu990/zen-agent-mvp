@@ -62,6 +62,9 @@ const DEFAULT_SERVER_BASE_URL =
     ? __ZA_SERVER_BASE_URL__
     : 'http://127.0.0.1:8787';
 
+// 全局唯一身份提供者：单飞与退避跨会话组共享，避免多组同时激活。
+const identity = createIdentityProvider();
+
 interface Session {
   baseUrl: string;
   token: string;
@@ -111,7 +114,6 @@ function originOf(url: string | undefined): string | null {
 
 type UpstreamContentMessage = Exclude<
   ContentToBackgroundMessage,
-  | { kind: 'host-identity' }
   | { kind: 'ping' }
   | { kind: 'navigate-request' }
   | { kind: 'page-status' }
@@ -136,7 +138,6 @@ interface AutoScanMessage {
  * 下行帧按 routeForFrame 路由（叙事/HITL → Side Panel；exec/guide/snapshot → 活跃执行页）。
  */
 function createGroupBridge(groupId: number, onEmpty: () => void) {
-  const identity = createIdentityProvider();
   const abort = new AbortController();
   const contentMembers = createGroupMembers<chrome.runtime.Port>();
   const panels = new Set<chrome.runtime.Port>();
@@ -183,8 +184,6 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   let anonymousTurns = 0;
   let deliveryRequests = 0;
   let configurationDirty = false;
-  // 组内任一页面同源读取的宿主用户 id；无 za.token 时用于向 demo-token 端点自取（P0-b）。
-  let hostUserId: string | null = null;
   // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
   let expectedActiveTabId: number | null = null;
   let autoScanRun: AutoScanRun | null = null;
@@ -330,21 +329,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
     let token: string;
     try {
-      token = await identity.getToken();
-    } catch (error) {
-      if (hostUserId === null) {
-        lastSessionFailure = { failure: 'configuration' };
-        postStatus(error instanceof Error ? error.message : '访问令牌读取失败');
-        return null;
-      }
-      // 无手动配置的 za.token：以页面登录用户 id 自取 demo token（不覆盖已有配置）。
-      try {
-        token = await identity.provisionToken(baseUrl, hostUserId);
-      } catch {
-        lastSessionFailure = { failure: 'session-unavailable' };
-        postStatus('自动获取访问令牌失败，请确认已登录宿主系统或手动配置 za.token');
-        return null;
-      }
+      token = await identity.getToken(baseUrl);
+    } catch {
+      lastSessionFailure = { failure: 'session-unavailable' };
+      postStatus('无法建立与 zen-agent 服务的身份连接，请检查网络后重试');
+      return null;
     }
     // 优先复用本组已存 sessionId：SW 被回收重启后，服务端会话及其挂起 HITL/代执行等待器仍在，
     // 复用即恢复 in-flight 流程、避免每次重连新建会话（会话风暴 + nonce↔会话错位 409）。
@@ -363,20 +352,34 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       await chrome.storage.session.remove(key);
     }
     if (generation !== sessionGeneration) return null;
-    let response: Response;
-    try {
-      response = await fetch(`${baseUrl}/v1/sessions`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${token}` },
-      });
-    } catch {
+    // null = 网络不可达（与「服务端明确拒绝」区分开，后者仍有响应可判读）。
+    const createSession = async (bearer: string): Promise<Response | null> => {
+      try {
+        return await fetch(`${baseUrl}/v1/sessions`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${bearer}` },
+        });
+      } catch {
+        return null;
+      }
+    };
+    let response = await createSession(token);
+    if (response !== null && response.status === 401) {
+      // 缓存令牌可能已被服务端作废：重新激活匿名身份后重试一次；仍被拒即如实报错（判定权归服务端，U7）。
+      const renewed = await identity.refreshToken(baseUrl).then((value) => value, () => null);
+      if (renewed !== null) {
+        token = renewed;
+        response = await createSession(token);
+      }
+    }
+    if (response === null) {
       lastSessionFailure = { failure: 'unreachable' };
       postStatus(`无法连接 zen-agent 服务（${baseUrl}）`);
       return null;
     }
     if (response.status === 401) {
       lastSessionFailure = { failure: 'unauthorized', httpStatus: response.status };
-      postStatus('身份校验未通过（HTTP 401），请检查 za.token 配置');
+      postStatus('身份校验未通过（HTTP 401），重新获取身份后仍被拒绝，请稍后重试');
       return null;
     }
     if (!response.ok) {
@@ -673,7 +676,12 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       });
       if (response.status === 401) {
         await invalidateSession();
-        postStatus('身份校验未通过（HTTP 401），请检查 za.token 配置');
+        const renewed = await identity.refreshToken(session.baseUrl).then(() => true, () => false);
+        postStatus(
+          renewed
+            ? '身份已过期，已自动重新获取，请重新发送'
+            : '身份校验未通过（HTTP 401），重新获取身份失败，请检查网络后重试',
+        );
         return { accepted: false, failure: 'unauthorized', httpStatus: response.status };
       } else if (response.status === 404) {
         await invalidateSession();
@@ -802,10 +810,6 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     port.onMessage.addListener((raw) => {
       const message = raw as ContentToBackgroundMessage | null;
       if (message === null) return;
-      if (message.kind === 'host-identity') {
-        hostUserId = message.hostUserId;
-        return;
-      }
       // navigate 代执行请求：本地处理（开页入组），不进上行转发管线。
       if (message.kind === 'navigate-request') {
         void handleNavigate(port, message);
@@ -1233,10 +1237,8 @@ async function fetchWatchInstances(baseUrl: string, token: string): Promise<Watc
  */
 async function refreshAutomationDescriptors(): Promise<void> {
   try {
-    const items = await chrome.storage.local.get('za.token');
-    const token = items['za.token'];
-    if (typeof token !== 'string' || token === '') return;
     const baseUrl = await readServerBaseUrl();
+    const token = await identity.getToken(baseUrl);
     const [response, watches] = await Promise.all([
       fetch(`${baseUrl}/v1/automation-descriptors`, { headers: { authorization: `Bearer ${token}` } }),
       fetchWatchInstances(baseUrl, token),
@@ -1336,9 +1338,18 @@ chrome.runtime.onStartup.addListener(() => void autoScanBootstrap());
 chrome.runtime.onInstalled.addListener(() => void autoScanBootstrap());
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
-  if (changes['za.token'] !== undefined || changes['za.serverBaseUrl'] !== undefined) {
-    for (const bridge of groups.values()) bridge.configurationChanged();
-    void refreshAutomationDescriptors().then(() => syncAutoScanAlarms());
+  const installIdChange = changes['za.installId'];
+  if (installIdChange !== undefined || changes['za.serverBaseUrl'] !== undefined) {
+    void (async () => {
+      // 换身份 = 换 installId：先丢弃旧身份令牌，否则后续会话仍以旧 subject 建立。
+      // 首次生成（无 oldValue）不是换身份，此时缓存本就为空，不必多跑一次激活。
+      if (installIdChange !== undefined && installIdChange.oldValue !== undefined) {
+        await identity.invalidate();
+      }
+      for (const bridge of groups.values()) bridge.configurationChanged();
+      await refreshAutomationDescriptors();
+      await syncAutoScanAlarms();
+    })();
     return;
   }
   if (changes[AUTOMATION_DESCRIPTORS_KEY] !== undefined) {

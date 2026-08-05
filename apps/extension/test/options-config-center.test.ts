@@ -17,9 +17,7 @@ import {
   type UserOverlayView,
 } from '../src/config-center.js';
 
-const SUBJECT = { tenant: 'demo-tenant', hostUserId: 'host-u1' };
-/** 轮换场景的另一枚假值（非真实凭证，只用于断言请求头随保存即时更新）。 */
-const ROTATED_FIXTURE = 'eyJ-fake-rotated-value';
+const SUBJECT = { tenant: 'anon', hostUserId: 'anon-u1-abcdefghijklmnop' };
 const AUTH_TOKEN = 'eyJ-fake-token-for-dom-leak-assertion';
 
 const PACKS: PackView[] = [
@@ -100,6 +98,8 @@ interface StubResponse {
 interface Harness {
   root: HTMLElement;
   deps: ConfigCenterDeps;
+  /** 默认服务端桩：覆写 fetch 的用例可按需委派回来，只改自己关心的那一段行为。 */
+  defaultFetch: ConfigCenterDeps['fetch'];
   calls: FetchCall[];
   putQueue: StubResponse[];
   /** 服务端当前态：409 后的自动重载读到的就是此对象。 */
@@ -154,12 +154,11 @@ function createHarness(overrides: Partial<ConfigCenterDeps> = {}): Harness {
     fetch: fetchStub,
     baseUrl: 'http://127.0.0.1:8787',
     authToken: AUTH_TOKEN,
-    tokenConfigured: true,
     serverBaseUrl: 'http://127.0.0.1:8787',
     saveSettings: async () => undefined,
     ...overrides,
   };
-  return { root, deps, calls, putQueue, stored };
+  return { root, deps, defaultFetch: fetchStub, calls, putQueue, stored };
 }
 
 async function mounted(harness: Harness): Promise<ConfigCenterHandle> {
@@ -579,23 +578,24 @@ describe('自动化页 · 用户自建触发器（adr-021）', () => {
   });
 });
 
-describe('全局设置页（令牌不回显 + verbosity 偏好）', () => {
-  it('令牌已配置时只显示状态，输入框与整页 DOM 均不含令牌明文（SEC-04）', async () => {
+describe('全局设置页（身份只读展示 + verbosity 偏好）', () => {
+  it('身份只读呈现指纹，无任何令牌输入入口，整页 DOM 不含令牌明文（SEC-04）', async () => {
     const harness = createHarness();
     await mounted(harness);
-    const tokenInput = panel(harness.root, 'global').querySelector<HTMLInputElement | HTMLTextAreaElement>(
-      '#za-cc-token',
-    )!;
-    expect(tokenInput).not.toBeNull();
-    expect(tokenInput.value).toBe('');
+    const global = panel(harness.root, 'global');
+    expect(global.querySelector('#za-cc-token')).toBeNull();
+    expect(global.querySelector('input[type="password"]')).toBeNull();
     expect(harness.root.innerHTML).not.toContain(AUTH_TOKEN);
-    expect(harness.root.querySelector('.za-cc-token-state')?.textContent).toContain('已配置');
+    // 指纹取 hostUserId 去掉 anon- 前缀的前 8 位，完整标识不直接铺在页面上。
+    expect(global.querySelector('#za-cc-identity')?.textContent).toBe('u1-abcde');
   });
 
-  it('令牌未配置时状态如实呈现为未配置', async () => {
-    const harness = createHarness({ tokenConfigured: false, authToken: '' });
+  it('尚未连上服务端时如实说明身份未知，不臆造标识', async () => {
+    const harness = createHarness({ fetch: async () => jsonResponse(401, { error: '身份校验未通过' }) });
     await mounted(harness);
-    expect(harness.root.querySelector('.za-cc-token-state')?.textContent).toContain('未配置');
+    const global = panel(harness.root, 'global');
+    expect(global.querySelector('#za-cc-identity')).toBeNull();
+    expect(global.textContent).toContain('身份标识未知');
   });
 
   it('verbosity 选择写入 "*" 作用域偏好', async () => {
@@ -711,60 +711,86 @@ describe('保存链路（乐观并发 + 服务端校验反馈）', () => {
     expect(status).not.toContain('已保存');
   });
 
-  it('首装（无凭证、读取全 401）：填入凭证后保存即落盘并以新凭证重读，一次完成配置', async () => {
+  it('地址填错：改地址即落盘并立刻以新地址重读，但旧身份到新服务端必失效——如实标注未提交并指出重开本页', async () => {
     const saved: Array<Record<string, string>> = [];
+    const attempts: string[] = [];
+    // 新服务端只认自己签发的令牌（两台的 JWT 密钥不同），本页开页时取得的是旧地址的身份。
+    const NEW_HOST = 'http://127.0.0.1:8787';
+    // 现生成：仓库内不留形似令牌的固定串（SEC-01），断言只关心「新旧不同且被携带」。
+    const NEW_HOST_TOKEN = `eyJ-${crypto.randomUUID()}`;
     const fresh = createHarness({
-      authToken: '',
-      tokenConfigured: false,
+      baseUrl: 'http://127.0.0.1:9999',
+      serverBaseUrl: 'http://127.0.0.1:9999',
+      normalizeBaseUrl: (value) => value,
       saveSettings: async (patch) => {
         saved.push(patch as Record<string, string>);
       },
+      fetch: async (input, init) => {
+        const url = String(input);
+        attempts.push(`${init?.method ?? 'GET'} ${url}`);
+        const authorization = (init?.headers as Record<string, string> | undefined)?.['authorization'];
+        if (!url.startsWith(NEW_HOST) || authorization !== `Bearer ${NEW_HOST_TOKEN}`) {
+          return jsonResponse(401, { error: '身份校验未通过' });
+        }
+        return fresh.defaultFetch(input, init);
+      },
     });
     const handle = await mounted(fresh);
-    // 首屏因未鉴权失败，但页面可用且如实说明
-    expect(fresh.root.querySelector('.za-cc-status')?.textContent ?? '').not.toContain('已保存');
-    const input = fresh.root.querySelector<HTMLInputElement>('#za-cc-token');
-    expect(input, '全局设置须有凭证输入框').not.toBeNull();
-    input!.value = ROTATED_FIXTURE;
+    setValue(fresh.root.querySelector<HTMLInputElement>('#za-cc-base-url')!, NEW_HOST);
+    attempts.length = 0;
     await handle.save();
 
-    expect(saved).toHaveLength(1);
-    expect(Object.values(saved[0]!)).toContain(ROTATED_FIXTURE);
-    // 保存后以新凭证重读成功 → 归属键可得 → 个人配置随即提交
-    expect(fresh.calls.some((call) => call.authorization === `Bearer ${ROTATED_FIXTURE}`)).toBe(true);
-    expect(fresh.root.querySelector('.za-cc-status')?.textContent ?? '').toContain('已保存');
+    expect(saved).toEqual([{ serverBaseUrl: NEW_HOST }]);
+    expect(attempts.some((attempt) => attempt.startsWith(`GET ${NEW_HOST}/v1/user-config`))).toBe(true);
+    expect(attempts.some((attempt) => attempt.startsWith('PUT'))).toBe(false);
+    const status = fresh.root.querySelector('.za-cc-status')?.textContent ?? '';
+    expect(status).toContain('本机设置已保存');
+    expect(status).toContain('个人配置未提交');
+    expect(status).toContain('重新打开本页');
   });
 
-  it('凭证仍无效时：本机设置照样落盘，个人配置如实标注未提交（不静默吞掉用户操作）', async () => {
+  it('已连上服务端后改地址：PUT 被新服务端 401 拒，状态行须同时给出「地址已存 / 配置未提交 / 重开本页」', async () => {
+    const saved: Array<Record<string, string>> = [];
+    const NEW_HOST = 'http://127.0.0.1:8788';
+    const switching = createHarness({
+      normalizeBaseUrl: (value) => value,
+      saveSettings: async (patch) => {
+        saved.push(patch as Record<string, string>);
+      },
+      fetch: async (input, init) => {
+        if (String(input).startsWith(NEW_HOST)) return jsonResponse(401, { error: '身份校验未通过' });
+        return switching.defaultFetch(input, init);
+      },
+    });
+    const handle = await mounted(switching);
+    setValue(switching.root.querySelector<HTMLInputElement>('#za-cc-base-url')!, NEW_HOST);
+    await handle.save();
+
+    expect(saved).toEqual([{ serverBaseUrl: NEW_HOST }]);
+    const status = switching.root.querySelector('.za-cc-status')?.textContent ?? '';
+    expect(status).toContain('本机设置已保存');
+    expect(status).toContain('个人配置未提交');
+    expect(status).toContain('重新打开本页');
+    expect(status).not.toBe('已保存');
+  });
+
+  it('服务端仍不可达时：本机设置照样落盘，个人配置如实标注未提交（不静默吞掉用户操作）', async () => {
     const saved: Array<Record<string, string>> = [];
     const unreachable = createHarness({
-      authToken: '',
-      tokenConfigured: false,
+      normalizeBaseUrl: (value) => value,
       saveSettings: async (patch) => {
         saved.push(patch as Record<string, string>);
       },
       fetch: async () => jsonResponse(401, { error: '身份校验未通过' }),
     });
     const handle = await mounted(unreachable);
-    const input = unreachable.root.querySelector<HTMLInputElement>('#za-cc-token')!;
-    input.value = ROTATED_FIXTURE;
+    setValue(unreachable.root.querySelector<HTMLInputElement>('#za-cc-base-url')!, 'http://127.0.0.1:9999');
     await handle.save();
 
     expect(saved).toHaveLength(1);
     const status = unreachable.root.querySelector('.za-cc-status')?.textContent ?? '';
     expect(status).toContain('本机设置已保存');
     expect(status).toContain('个人配置未提交');
-  });
-
-  it('轮换凭证后同一页面的后续请求即用新值（无需重开）', async () => {
-    const fresh = createHarness({ authToken: '', tokenConfigured: false });
-    const handle = await mounted(fresh);
-    const input = fresh.root.querySelector<HTMLInputElement>('#za-cc-token')!;
-    input.value = ROTATED_FIXTURE;
-    await handle.save();
-    await handle.save();
-    const authed = fresh.calls.filter((call) => call.authorization === `Bearer ${ROTATED_FIXTURE}`);
-    expect(authed.length).toBeGreaterThan(0);
   });
 
   it('自动化本机镜像只在 PUT 成功后落盘：保存失败不得让闹钟先跑起来', async () => {

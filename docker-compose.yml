@@ -16,7 +16,7 @@ services:
       # --- 快照根：指向下方挂入的站点包目录（容器内路径）---
       ZA_SNAPSHOT_ROOT: /app/snapshot
       # --- 按需项 ---
-      ZA_JWT_ISS_ALLOWLIST: ${ZA_JWT_ISS_ALLOWLIST:-zen-agent-demo}
+      ZA_JWT_ISS_ALLOWLIST: ${ZA_JWT_ISS_ALLOWLIST:-zen-agent-anon}
       ZA_CORS_ORIGIN: ${ZA_CORS_ORIGIN:-*}
       # server 通道宿主凭证（如有）：ZA_CRED_<UPPER_SNAKE(credentialRef)>
       # ZA_CRED_CODEFLOW_PLATFORM_KEY: ${ZA_CRED_CODEFLOW_PLATFORM_KEY}

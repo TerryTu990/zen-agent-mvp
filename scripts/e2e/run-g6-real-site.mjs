@@ -42,7 +42,7 @@
  * maxTurnRounds 内完成 N 行写入。文档正文的 `contenteditable=true` 只在聚焦后出现，未聚焦时
  * 快照里没有可写目标——模型须先点进正文，这一步能否稳定完成由首跑判定。
  */
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -74,9 +74,15 @@ const FEISHU_DOC_URL = process.env.ZA_E2E_FEISHU_DOC_URL ?? '';
 const [JWT_SECRET, SIGNING_SECRET] = ['jwt', 'signing'].map(
   (role) => `g6-real-site-e2e-${role}-${randomBytes(16).toString('hex')}`,
 );
-const JWT_ISS = 'zen-agent-demo';
-const TENANT = 'g6-real-site-tenant';
-const HOST_USER_ID = 'g6-real-site-user';
+const JWT_ISS = 'zen-agent-anon';
+/**
+ * gateway 必须起在插件开发构建的默认服务地址上（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）：
+ * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
+ * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
+ */
+const SERVER_PORT = 8787;
+/** 插件自己生成的安装 id（持有型凭证，只存本机 profile）：启动后读回，证据脱敏与审计断言都以它为准。 */
+let installId = '';
 
 /** 真实 LLM 回合慢：单条指令的收敛等待上界。 */
 const TURN_TIMEOUT_MS = Number(process.env.ZA_E2E_TURN_TIMEOUT_MS ?? 300_000);
@@ -91,7 +97,7 @@ function assert(condition, message) {
  */
 function redact(text) {
   let out = text;
-  for (const secret of [JWT_SECRET, SIGNING_SECRET, process.env.ZF_LLM_API_KEY]) {
+  for (const secret of [installId, JWT_SECRET, SIGNING_SECRET, process.env.ZF_LLM_API_KEY]) {
     if (typeof secret === 'string' && secret !== '') out = out.split(secret).join('[redacted-secret]');
   }
   return out.replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, '[redacted-jwt]');
@@ -115,20 +121,6 @@ async function countListItems(panel) {
     if (match !== null) seen.add(Number(match[1]));
   }
   return seen.size;
-}
-
-function base64url(input) {
-  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function signTestJwt() {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = base64url(JSON.stringify({
-    sub: `user-${HOST_USER_ID}`, tenant: TENANT, roles: ['ops'], hostUserId: HOST_USER_ID,
-    iss: JWT_ISS, exp: Math.floor(Date.now() / 1000) + 7200,
-  }));
-  const signature = base64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
-  return `${header}.${payload}.${signature}`;
 }
 
 /**
@@ -240,7 +232,7 @@ async function startRealServer({ auditPath, sessionDir, userConfigDir }) {
   process.env.ZA_LLM_MODEL = model;
   const { startServer } = await import(pathToFileURL(join(REPO_ROOT, 'apps/server/dist/index.js')).href);
   return startServer({
-    port: 0, jwtSecret: JWT_SECRET, signingSecret: SIGNING_SECRET, issAllowlist: [JWT_ISS],
+    port: SERVER_PORT, jwtSecret: JWT_SECRET, signingSecret: SIGNING_SECRET, issAllowlist: [JWT_ISS],
     // generic 兜底 pack（browse.page-operate）居 examples/acceptance；assets/ 尚无 generic pack。
     snapshotRoot: join(REPO_ROOT, 'examples', 'acceptance'),
     systemPromptPath: join(REPO_ROOT, 'assets/system-prompt.md'),
@@ -251,7 +243,7 @@ async function startRealServer({ auditPath, sessionDir, userConfigDir }) {
   });
 }
 
-async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
+async function driveOnce(runIndex, context, sw, extensionId, auditPath) {
   const runTag = `ZA-E2E-${runIndex + 1}-${randomUUID().slice(0, 8)}`;
   const auditBefore = auditEvents(auditPath).length;
 
@@ -350,7 +342,8 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
   }
 
   const excerpt = events.map((event) => JSON.stringify(event)).join('\n');
-  assert(!excerpt.includes(token), '审计片段泄漏了访问令牌');
+  assert(!excerpt.includes(installId), '审计片段泄漏了安装 id');
+  assert(!/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/.test(excerpt), '审计片段含 JWT 原文');
   writeFileSync(join(EVIDENCE_DIR, `run-${runIndex + 1}-audit.jsonl`), `${redact(excerpt)}\n`, 'utf8');
   writeFileSync(join(EVIDENCE_DIR, `result-${runIndex + 1}.json`), `${redact(JSON.stringify({
     case: 'E2E-E', run: runIndex + 1, status: 'passed', ranAt: new Date().toISOString(),
@@ -387,7 +380,6 @@ async function main() {
     });
     cleanups.push(() => server.close());
     const serverBase = `http://127.0.0.1:${server.port}`;
-    const token = signTestJwt();
 
     console.log('[3/4] 打开持久化 profile 的真实 Chromium（须已登录 goofish 与飞书）…');
     const context = await chromium.launchPersistentContext(PROFILE_DIR, {
@@ -396,17 +388,21 @@ async function main() {
     });
     cleanups.push(() => context.close());
     const sw = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker', { timeout: 20_000 });
-    await sw.evaluate(async ([authToken, base, origins]) => {
-      await chrome.storage.local.set({
-        'za.token': authToken, 'za.serverBaseUrl': base, 'za.autoActivate': origins,
-      });
-    }, [token, serverBase, [GOOFISH_ORIGIN, new URL(FEISHU_DOC_URL).origin]]);
+    // 身份零预置：插件自己匿名激活（持久化 profile 上安装 id 跨次复用）；脚本只读回它用于脱敏与泄漏断言。
+    await sw.evaluate(async ([base, origins]) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base, 'za.autoActivate': origins });
+    }, [serverBase, [GOOFISH_ORIGIN, new URL(FEISHU_DOC_URL).origin]]);
+    for (let attempt = 0; attempt < 60 && installId === ''; attempt += 1) {
+      installId = await sw.evaluate(async () => (await chrome.storage.local.get('za.installId'))['za.installId'] ?? '');
+      if (installId === '') await new Promise((r) => setTimeout(r, 500));
+    }
+    assert(installId !== '', '插件未生成安装 id（匿名自动登录未发生）');
     const extensionId = new URL(sw.url()).host;
 
     console.log(`[4/4] 连跑 ${RUNS} 次（通过门要求 ≥3 次全通过）…`);
     for (let index = 0; index < RUNS; index += 1) {
       console.log(`  第 ${index + 1}/${RUNS} 次…`);
-      await driveOnce(index, context, sw, extensionId, token, auditPath);
+      await driveOnce(index, context, sw, extensionId, auditPath);
       console.log(`  第 ${index + 1}/${RUNS} 次通过 ✅`);
     }
     console.log(`E2E-E 真实站点主案例 ${RUNS}/${RUNS} 次全部通过 ✅（证据：${EVIDENCE_DIR}）`);

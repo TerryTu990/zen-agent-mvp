@@ -12,21 +12,6 @@ import {
   type ContentToBackgroundMessage,
 } from './messaging.js';
 
-function readHostUserId(): string | null {
-  try {
-    const raw = localStorage.getItem('user');
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed !== 'object' || parsed === null || !('id' in parsed)) return null;
-    const id = (parsed as { id: unknown }).id;
-    if (typeof id === 'string' && id !== '') return id;
-    if (typeof id === 'number') return String(id);
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 let activated = false;
 const pageInstanceId = crypto.randomUUID();
 
@@ -113,8 +98,6 @@ function activate(): void {
 
   const announce = (): void => {
     if (port === null) return;
-    const hostUserId = readHostUserId();
-    if (hostUserId !== null) port.postMessage({ kind: 'host-identity', hostUserId });
     port.postMessage({ kind: 'context-report', ...createContextReporter().collect() });
   };
 

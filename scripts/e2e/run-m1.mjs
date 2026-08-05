@@ -12,16 +12,17 @@
  *
  * 环境编排（谁先谁后）：构建 extension → 起 mock LLM(8788) → 起 server(8787) →
  *   静态托管 host-demo(4173) → chromium launchPersistentContext 加载扩展（优先 headless 新架构，
- *   不支持扩展则回退 headed）；jose 之外用 node crypto 现签 HS256 测试 JWT，经 service worker
- *   target 注入 chrome.storage.local（token + serverBaseUrl）。
+ *   不支持扩展则回退 headed）；身份零预置——插件自己匿名激活，脚本只经 service worker target
+ *   注入 chrome.storage.local 的 serverBaseUrl 与 autoActivate。
  */
 import { spawn } from 'node:child_process';
-import { createHmac } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { activate } from './anon-identity.mjs';
 import { startMockLlm } from '../mock-llm/server.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -29,7 +30,7 @@ const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
 const HOST_DEMO_DIR = join(REPO_ROOT, 'examples', 'host-demo');
 
 const JWT_SECRET = 'za-test-secret';
-const JWT_ISS = 'zen-agent-demo';
+const JWT_ISS = 'zen-agent-anon';
 const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_MOCK_PORT ?? 8788);
 const HOST_PORT = Number(process.env.ZA_E2E_HOST_PORT ?? 4173);
@@ -39,27 +40,6 @@ const ORDER_LIST_URL = `${HOST_BASE}/order-list.html`;
 const ORDER_DETAIL_URL = `${HOST_BASE}/order-detail.html?orderId=ORD-1001`;
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css' };
-
-function base64url(input) {
-  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-/** HS256 现签测试 JWT：claims 过 C2 identity-claims 契约，exp 为 now+10min。 */
-function signTestJwt() {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = base64url(
-    JSON.stringify({
-      sub: 'e2e-user',
-      tenant: 'e2e-tenant',
-      roles: ['user'],
-      hostUserId: 'host-e2e-user',
-      iss: JWT_ISS,
-      exp: Math.floor(Date.now() / 1000) + 600,
-    }),
-  );
-  const signature = base64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
-  return `${header}.${payload}.${signature}`;
-}
 
 function startStaticHost() {
   const server = createServer((req, res) => {
@@ -139,7 +119,8 @@ async function waitServerReady() {
 }
 
 /** 独立会话直接断言服务端 featureId/注入换出（scenario b 的服务端契约面，与扩展 UI 面互补）。 */
-async function assertInjectionSwap(token) {
+async function assertInjectionSwap() {
+  const { token } = await activate(SERVER_BASE, randomUUID());
   const authJson = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
   const auth = { authorization: `Bearer ${token}` };
   const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
@@ -267,7 +248,6 @@ async function runScenarios(context, worker, extensionId, hostPage, panelPage) {
 }
 
 async function main() {
-  const token = signTestJwt();
   const cleanups = [];
   let failure = null;
 
@@ -319,17 +299,17 @@ async function main() {
     if (!context || !sw) throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
     cleanups.push(() => context.close());
 
-    // 经 service worker 注入令牌与服务端地址；za.autoActivate 命中 host origin 使 reload 后自动激活
-    // （显式发起模型下 content 不自动连会话，autoActivate 供自动化驱动等价"打开即注入"）。
+    // 身份零预置：插件首次用到时自己完成匿名激活。经 service worker 只注入服务端地址；
+    // za.autoActivate 命中 host origin 使 reload 后自动激活（显式发起模型下 content 不自动连会话，
+    // autoActivate 供自动化驱动等价"打开即注入"）。
     await sw.evaluate(
-      async ([t, base, origin]) => {
+      async ([base, origin]) => {
         await chrome.storage.local.set({
-          'za.token': t,
           'za.serverBaseUrl': base,
           'za.autoActivate': [origin],
         });
       },
-      [token, SERVER_BASE, HOST_BASE],
+      [SERVER_BASE, HOST_BASE],
     );
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
@@ -342,7 +322,7 @@ async function main() {
 
     console.log('场景断言：');
     await runScenarios(context, sw, extensionId, page, panel);
-    await assertInjectionSwap(token);
+    await assertInjectionSwap();
 
     console.log('\nM1 E2E 全部场景通过 ✅');
   } catch (error) {

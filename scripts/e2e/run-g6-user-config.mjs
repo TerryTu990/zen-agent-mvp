@@ -9,7 +9,7 @@
  *   B4 收紧生效：同一工具再次被调用时弹 HITL 确认卡（收紧前同一工具在 M3 既有 E2E 中为直执无卡），确认后经签名指令真实执行一次。
  *
  * E2E-C（治理故障语义，U7 拆分降级）
- *   C1 构造损坏 overlay（新 subject，进程内 lastGood 缓存必空）→ 切 za.token 到该身份 → 新会话。
+ *   C1 构造损坏 overlay（新 subject，进程内 lastGood 缓存必空）→ 切 za.installId 到该身份 → 新会话。
  *   C2 rules 不可读 → 会话正常纯 L1：讲解回合正常完成，system 注入含 L1 功能规则、无任何 L2 条目。
  *   C3/C4 restrictions 不可读 → 受影响工具拒执行：该工具不在模型工具面；模型幻觉调用被拒、宿主 API 零调用、无 HITL 卡、无代执行。
  *   C5 审计 assembly 事件带 userConfigDegraded=fail-open-closed。
@@ -17,12 +17,13 @@
  * 纪律：只读产品源码与 assets/，不修改；LLM 一律 mock（不加载任何 .env）；证据落 evidenceDir 且不含令牌值。
  */
 import { spawn } from 'node:child_process';
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
+import { ANON_TENANT, activate } from './anon-identity.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -38,12 +39,23 @@ const USER_CONFIG_DIR = join(WORK_DIR, 'user-config');
 const [JWT_SECRET, SIGNING_SECRET] = ['jwt', 'signing'].map(
   (role) => `g6-user-config-e2e-${role}-${randomBytes(16).toString('hex')}`,
 );
-const JWT_ISS = 'zen-agent-demo';
-const TENANT = 'g6-tenant';
-const USER_MAIN = 'g6-host-user';
-const USER_DEGRADED = 'g6-degraded-user';
+const JWT_ISS = 'zen-agent-anon';
+const TENANT = ANON_TENANT;
+/** E2E-C 用的第二个匿名身份（换身份 = 换 installId）；现生成，不落仓。 */
+const INSTALL_DEGRADED = randomUUID();
+/** 主身份的安装 id 由插件自己生成（零预置），运行中从 chrome.storage 读回。 */
+let installMain = '';
+/** 两个身份的 hostUserId 由服务端激活响应给出（派生权威在服务端）。 */
+let userMain = '';
+let userDegraded = '';
 
 const HOST_PORT = Number(process.env.ZA_E2E_G6_HOST_PORT ?? 4173);
+/**
+ * gateway 必须起在插件开发构建的默认服务地址上（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）：
+ * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
+ * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
+ */
+const SERVER_PORT = 8787;
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_G6_MOCK_PORT ?? 8798);
 const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
 const ORDER_LIST_URL = `${HOST_BASE}/order-list.html`;
@@ -79,24 +91,6 @@ function evidenceRoot() {
   return resolve(raw === undefined || raw === '' ? DEFAULT_EVIDENCE_ROOT : raw);
 }
 
-function base64url(input) {
-  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function signTestJwt(hostUserId) {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = base64url(JSON.stringify({
-    sub: `${hostUserId}-sub`,
-    tenant: TENANT,
-    roles: ['user'],
-    hostUserId,
-    iss: JWT_ISS,
-    exp: Math.floor(Date.now() / 1000) + 1800,
-  }));
-  const signature = base64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
-  return `${header}.${payload}.${signature}`;
-}
-
 /**
  * fs UserConfigStore 的 subject 段编码镜像（apps/server/src/user-config-store.ts encodeSegment）。
  * 仅用于 E2E-C 在服务端从未读过该 subject 时预置损坏文件；编码若漂移，C 段的 degraded 断言会直接失败，
@@ -123,6 +117,30 @@ async function waitFor(predicate, { timeoutMs = 20_000, intervalMs = 150, label 
     if (Date.now() > deadline) throw new Error(`等待超时：${label}`);
     await new Promise((r) => setTimeout(r, intervalMs));
   }
+}
+
+/**
+ * 停掉 extension service worker（等价 MV3 空闲回收）：进程内的匿名令牌缓存随之丢失，
+ * 下次唤醒才会按新的 za.installId 重新激活——只清 chrome.storage 换不掉已在内存里的旧身份令牌。
+ */
+async function stopServiceWorker(context, workerUrl) {
+  const page = context.pages()[0] ?? (await context.newPage());
+  const cdp = await context.newCDPSession(page);
+  const versions = new Map();
+  cdp.on('ServiceWorker.workerVersionUpdated', ({ versions: updates }) => {
+    for (const version of updates) versions.set(version.versionId, version);
+  });
+  await cdp.send('ServiceWorker.enable');
+  const isRunning = (version) => version.scriptURL === workerUrl && version.runningStatus === 'running';
+  await waitFor(() => [...versions.values()].some(isRunning), {
+    label: '读取运行中的 service worker 版本', timeoutMs: 10_000,
+  });
+  const active = [...versions.values()].find(isRunning);
+  await cdp.send('ServiceWorker.stopWorker', { versionId: active.versionId });
+  await waitFor(() => versions.get(active.versionId)?.runningStatus === 'stopped', {
+    label: 'service worker 停止', timeoutMs: 10_000,
+  });
+  await cdp.detach();
 }
 
 // ---------------------------------------------------------------- 宿主站点
@@ -337,13 +355,13 @@ function writeEvidence(caseDir, name, content) {
   writeFileSync(join(caseDir, name), content, 'utf8');
 }
 
-/** 审计片段归档：只留治理相关事件类型，并核验令牌值不在其中（SEC-01/04）。 */
-function archiveAudit(caseDir, name, since, tokens) {
+/** 审计片段归档：只留治理相关事件类型，并核验安装 id 与令牌原文不在其中（SEC-01/04）。 */
+function archiveAudit(caseDir, name, since, installIds) {
   const events = auditLines().slice(since);
   const picked = events.filter((event) => AUDIT_TYPES.has(event.type));
   const text = picked.map((event) => JSON.stringify(event)).join('\n');
-  for (const token of tokens) {
-    assert(!text.includes(token), `${name} 审计片段泄漏访问令牌值`);
+  for (const installId of installIds) {
+    assert(!text.includes(installId), `${name} 审计片段泄漏安装 id`);
   }
   assert(!/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(text), `${name} 审计片段含 JWT 原文`);
   writeEvidence(caseDir, name, `${text}\n`);
@@ -386,7 +404,7 @@ async function main() {
     process.env.ZA_LLM_MODEL = 'mock-model';
     const { startServer } = await import(pathToFileURL(join(REPO_ROOT, 'apps/server/dist/index.js')).href);
     const server = await startServer({
-      port: 0,
+      port: SERVER_PORT,
       jwtSecret: JWT_SECRET,
       signingSecret: SIGNING_SECRET,
       issAllowlist: [JWT_ISS],
@@ -400,6 +418,9 @@ async function main() {
     });
     cleanups.push(() => server.close());
     const serverBase = `http://127.0.0.1:${server.port}`;
+    // 身份派生以服务端为准：激活只签发、不落盘，故预激活 degraded 身份不会让它进 lastGood 缓存，
+    // C1「该 subject 服务端从未成功读过」的前提仍成立。
+    ({ hostUserId: userDegraded } = await activate(serverBase, INSTALL_DEGRADED));
 
     console.log('[4/6] 真实 Chromium 加载 MV3 extension…');
     let context;
@@ -425,15 +446,13 @@ async function main() {
     if (context === undefined || sw === undefined) throw new Error('Chromium 无法加载扩展');
     cleanups.push(() => context.close());
 
-    const tokenMain = signTestJwt(USER_MAIN);
-    const tokenDegraded = signTestJwt(USER_DEGRADED);
-    await sw.evaluate(async ([token, base, origin]) => {
+    // 身份零预置：插件自己生成安装 id 并匿名激活；脚本读回它换算主身份的 subject（overlay 归属键）。
+    await sw.evaluate(async ([base, origin]) => {
       await chrome.storage.local.set({
-        'za.token': token,
         'za.serverBaseUrl': base,
         'za.autoActivate': [origin],
       });
-    }, [tokenMain, serverBase, HOST_BASE]);
+    }, [serverBase, HOST_BASE]);
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
     await new Promise((r) => setTimeout(r, 400));
@@ -442,6 +461,10 @@ async function main() {
     await panel.setViewportSize({ width: 460, height: 900 });
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     await panel.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 20_000 });
+
+    installMain = await sw.evaluate(async () => (await chrome.storage.local.get('za.installId'))['za.installId']);
+    assert(typeof installMain === 'string' && installMain !== '', '插件未生成安装 id（匿名自动登录未发生）');
+    ({ hostUserId: userMain } = await activate(serverBase, installMain));
 
     // ------------------------------------------------------------ E2E-B
     console.log('[5/6] E2E-B：L2 全链路（teach 草稿 → 确认 → 注入 → 配置中心收紧 → HITL）');
@@ -454,17 +477,17 @@ async function main() {
     const cardText = await card.innerText();
     assert(cardText.includes(RULE_TEXT), `草稿卡未逐条预览将写入的规则正文：${cardText}`);
     assert(cardText.includes('对话不会直接修改你的配置'), '草稿卡缺信任 microcopy');
-    assert(readOverlay(USER_MAIN) === null, '草稿未确认前不得落盘（U8）');
+    assert(readOverlay(userMain) === null, '草稿未确认前不得落盘（U8）');
     await panel.screenshot({ path: join(evidenceB, 'b1-config-draft-card.png'), fullPage: true });
     note('B1 teach：config_draft → 草稿卡出现且逐条预览 change；确认前零落盘');
 
     await card.locator('.za-config-approve').click();
-    await waitFor(() => readOverlay(USER_MAIN) !== null, { label: 'B1 overlay 落盘' });
-    const overlayAfterTeach = readOverlay(USER_MAIN);
+    await waitFor(() => readOverlay(userMain) !== null, { label: 'B1 overlay 落盘' });
+    const overlayAfterTeach = readOverlay(userMain);
     const teachRule = overlayAfterTeach?.packs?.[PACK_ID]?.rules?.[0];
     assert(teachRule?.text === RULE_TEXT, `落盘规则正文不符：${JSON.stringify(teachRule)}`);
     assert(teachRule?.origin === 'teach', `落盘条目 origin 应为 teach，实际 ${teachRule?.origin}`);
-    assert(overlayAfterTeach.subject?.tenant === TENANT && overlayAfterTeach.subject?.hostUserId === USER_MAIN,
+    assert(overlayAfterTeach.subject?.tenant === TENANT && overlayAfterTeach.subject?.hostUserId === userMain,
       'overlay subject 未由服务端按 claims 推导');
     await waitFor(async () => (await card.getAttribute('data-decided')) === 'accept', { label: 'B1 卡片终态' });
     note('B1 确认：.za-config-approve → 服务端合并落盘（origin=teach、subject 由 claims 推导）');
@@ -520,7 +543,7 @@ async function main() {
     await waitFor(async () => (await options.locator('.za-cc-status').innerText()).trim() === '已保存',
       { label: 'B3 配置中心保存成功' });
     await options.screenshot({ path: join(evidenceB, 'b3-config-center-tighten.png'), fullPage: true });
-    const overlayAfterTighten = readOverlay(USER_MAIN);
+    const overlayAfterTighten = readOverlay(userMain);
     assert(overlayAfterTighten?.packs?.[PACK_ID]?.restrictions?.riskTierRaise?.[TIGHTEN_TOOL] === 'hitl',
       `B3：收紧未落盘：${JSON.stringify(overlayAfterTighten?.packs?.[PACK_ID]?.restrictions)}`);
     const preservedRule = overlayAfterTighten?.packs?.[PACK_ID]?.rules?.find((r) => r.id === teachRule.id);
@@ -550,7 +573,7 @@ async function main() {
     await panel.locator('[data-za-injection-toggle]').click();
     note('B4 透明视图：工具面呈现 auto→hitl 收紧箭头与收紧来源');
 
-    const auditB = archiveAudit(evidenceB, 'audit-e2e-b.jsonl', auditBaseB, [tokenMain, tokenDegraded]);
+    const auditB = archiveAudit(evidenceB, 'audit-e2e-b.jsonl', auditBaseB, [installMain, INSTALL_DEGRADED]);
     const writeEvents = auditB.filter((event) => event.type === 'user-config-write');
     assert(writeEvents.some((event) => event.data.origin === 'teach'), 'B：审计缺 origin=teach 的写入事件');
     assert(writeEvents.some((event) => event.data.origin === 'panel'), 'B：审计缺 origin=panel 的写入事件');
@@ -572,13 +595,17 @@ async function main() {
     const refreshBeforeC = host.counts.refresh;
 
     // C1 预置损坏 overlay（该 subject 服务端从未成功读过 → 进程内 lastGood 必空 → read 抛错）
-    const degradedPath = overlayPathFor(USER_DEGRADED);
+    const degradedPath = overlayPathFor(userDegraded);
     mkdirSync(join(degradedPath, '..'), { recursive: true });
     writeFileSync(degradedPath, '{ "schemaVersion": 1, "packs": { "host-demo": { "restrictions": ', 'utf8');
-    await sw.evaluate(async (token) => {
-      await chrome.storage.local.set({ 'za.token': token });
-    }, tokenDegraded);
-    // 换身份即换会话（background 侦听 za.token 变更后作废旧会话）：宿主页重载使新会话重新拿到页面上下文，
+    // 换身份 = 换 installId：除落盘的缓存令牌外，还要重启 extension 丢掉 service worker 进程内的
+    // 令牌缓存——否则插件仍拿旧身份的令牌开会话，C 段就换不到「服务端从未读过」的新 subject。
+    await sw.evaluate(async (installId) => {
+      await chrome.storage.local.remove('za.anonToken');
+      await chrome.storage.local.set({ 'za.installId': installId });
+    }, INSTALL_DEGRADED);
+    await stopServiceWorker(context, sw.url());
+    // 换身份即换会话（background 侦听 za.installId 变更后作废旧会话）：宿主页重载使新会话重新拿到页面上下文，
     // 否则新会话 currentUrl 为空、装配回落「仅基座」，L1/L2 两分支都无从观察。
     await page.reload({ waitUntil: 'load' });
     await new Promise((r) => setTimeout(r, 600));
@@ -611,7 +638,7 @@ async function main() {
     note('C4 受影响工具拒执行：模型幻觉调用被拒、宿主接口零调用、无 HITL 卡');
 
     // C5 审计与透明视图
-    const auditC = archiveAudit(evidenceC, 'audit-e2e-c.jsonl', auditBaseC, [tokenMain, tokenDegraded]);
+    const auditC = archiveAudit(evidenceC, 'audit-e2e-c.jsonl', auditBaseC, [installMain, INSTALL_DEGRADED]);
     const degradedAssembly = auditC.filter(
       (event) => event.type === 'assembly' && event.data.userConfigDegraded === 'fail-open-closed',
     );

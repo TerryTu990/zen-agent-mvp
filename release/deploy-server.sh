@@ -64,8 +64,7 @@ docker save "${IMAGE}" | gzip | ssh "${HOST}" 'gunzip | docker load'
 echo "[2/6] 创建版本化 release ${DEPLOY_ID}…"
 ssh "${HOST}" "install -d -m 700 ${REMOTE_DIR}/releases ${REMOTE_DIR}/snapshots && install -d -m 700 ${RELEASE_DIR}"
 scp -q release/remote/docker-compose.yml release/remote/activate-release.sh "${HOST}:${RELEASE_DIR}/"
-scp -q release/remote/sign-token.sh "${HOST}:${REMOTE_DIR}/sign-token.sh"
-ssh "${HOST}" "chmod 700 ${RELEASE_DIR}/activate-release.sh ${REMOTE_DIR}/sign-token.sh"
+ssh "${HOST}" "chmod 700 ${RELEASE_DIR}/activate-release.sh"
 
 TARGET_SNAPSHOT="${REMOTE_DIR}/snapshots/${SNAPSHOT_VERSION}"
 STAGING_SNAPSHOT="${REMOTE_DIR}/snapshots/.staging-${SNAPSHOT_VERSION}-${DEPLOY_ID}"
@@ -81,8 +80,13 @@ ssh "${HOST}" "flock -x ${REMOTE_DIR}/snapshot.lock -c 'if test -d ${TARGET_SNAP
 echo "[4/6] 服务器侧串行激活；失败自动恢复完整旧 release…"
 ssh "${HOST}" "${RELEASE_DIR}/activate-release.sh ${REMOTE_DIR} ${RELEASE_DIR} ${TAG} ${TARGET_SNAPSHOT} ${REMOTE_DIR}/lark-cli"
 
-echo '[5/6] 报告型对外站点 healthz（不参与已完成的原子激活/回滚）…'
+echo '[5/6] 报告型对外冒烟：healthz + 匿名激活（不参与已完成的原子激活/回滚）…'
 curl -fsS --max-time 10 https://agent.flash-api.com/healthz >/dev/null
+# 匿名激活是全体用户唯一的登录路径，且 healthz 不触任何端口——须单独打一发真实请求，
+# 否则边缘路由/旧镜像导致的“全体登录不了”只能靠用户反馈发现。响应体含令牌，一律丢弃不打印（SEC-01/04）。
+curl -fsS --max-time 10 -X POST https://agent.flash-api.com/v1/activation \
+  -H 'content-type: application/json' \
+  -d "{\"installId\":\"$(node -e 'process.stdout.write(crypto.randomUUID())')\"}" -o /dev/null
 
 echo '[6/6] 完成。'
 echo "部署完成：${IMAGE} @ ${HOST}，snapshot=${TARGET_SNAPSHOT}，release=${DEPLOY_ID}"

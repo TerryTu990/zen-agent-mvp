@@ -19,7 +19,6 @@
  * 且 server 注入 ZA_SIGNING_SECRET（U7 一次性签名前提）。
  */
 import { spawn } from 'node:child_process';
-import { createHmac } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -33,7 +32,7 @@ const HOST_DEMO_DIR = join(REPO_ROOT, 'examples', 'host-demo');
 
 const JWT_SECRET = 'za-test-secret';
 const SIGNING_SECRET = 'za-test-signing-secret';
-const JWT_ISS = 'zen-agent-demo';
+const JWT_ISS = 'zen-agent-anon';
 const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_MOCK_PORT ?? 8788);
 const HOST_PORT = Number(process.env.ZA_E2E_HOST_PORT ?? 4173);
@@ -42,26 +41,6 @@ const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
 const ORDER_LIST_URL = `${HOST_BASE}/order-list.html`;
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css' };
-
-function base64url(input) {
-  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function signTestJwt() {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = base64url(
-    JSON.stringify({
-      sub: 'e2e-user',
-      tenant: 'e2e-tenant',
-      roles: ['user'],
-      hostUserId: 'host-e2e-user',
-      iss: JWT_ISS,
-      exp: Math.floor(Date.now() / 1000) + 600,
-    }),
-  );
-  const signature = base64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
-  return `${header}.${payload}.${signature}`;
-}
 
 function sendApiJson(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -257,7 +236,6 @@ async function runScenarios(hostPage, panelPage, counts) {
 }
 
 async function main() {
-  const token = signTestJwt();
   const cleanups = [];
   let failure = null;
 
@@ -309,16 +287,16 @@ async function main() {
     if (!context || !sw) throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
     cleanups.push(() => context.close());
 
-    // za.autoActivate 命中 host origin 使 reload 后自动激活（显式发起模型下 content 不自动连会话）。
+    // 身份零预置：插件自己匿名激活。za.autoActivate 命中 host origin 使 reload 后自动激活
+    //（显式发起模型下 content 不自动连会话）。
     await sw.evaluate(
-      async ([t, base, origin]) => {
+      async ([base, origin]) => {
         await chrome.storage.local.set({
-          'za.token': t,
           'za.serverBaseUrl': base,
           'za.autoActivate': [origin],
         });
       },
-      [token, SERVER_BASE, HOST_BASE],
+      [SERVER_BASE, HOST_BASE],
     );
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });

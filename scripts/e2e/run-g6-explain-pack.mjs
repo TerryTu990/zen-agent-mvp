@@ -54,12 +54,13 @@
  * 证据：evidence/e2e-d/d2-*.{png,txt,json}
  */
 import { spawn } from 'node:child_process';
-import { createHmac, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { activate } from './anon-identity.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -81,8 +82,13 @@ const EVIDENCE_ROOT = resolve(
 const [JWT_SECRET, SIGNING_SECRET] = ['jwt', 'signing'].map(
   (role) => `g6-e2e-${role}-${randomBytes(16).toString('hex')}`,
 );
-const JWT_ISS = 'zen-agent-demo';
-const SERVER_PORT = Number(process.env.ZA_E2E_G6_SERVER_PORT ?? 8801);
+const JWT_ISS = 'zen-agent-anon';
+/**
+ * gateway 必须起在插件开发构建的默认服务地址上（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）：
+ * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
+ * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
+ */
+const SERVER_PORT = 8787;
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_G6_MOCK_PORT ?? 8803);
 // 站点端口硬绑：夹具 pack.json 的 site.origin 与此处必须同值，不经 env 覆盖。
 const EXPLAIN_PORT = 4183;
@@ -106,34 +112,18 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function base64url(input) {
-  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
+/** 插件自己生成的安装 id（持有型凭证）：会话建立后从 chrome.storage 读回，脚本据它取同一身份的令牌。 */
+let installId = '';
+/** 旁路订阅/查询用的匿名令牌；读到 installId 后填入。 */
+let anonToken = '';
 
-function signTestJwt() {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = base64url(
-    JSON.stringify({
-      sub: 'g6-e2e-user',
-      tenant: 'g6-e2e',
-      roles: ['user'],
-      hostUserId: 'g6-host-user',
-      iss: JWT_ISS,
-      exp: Math.floor(Date.now() / 1000) + 1800,
-    }),
-  );
-  const signature = base64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
-  return `${header}.${payload}.${signature}`;
-}
-
-const TOKEN = signTestJwt();
-
-/** 证据落盘前统一脱敏：夹具 token/secret 值一律不入任何产物（SEC-01）。 */
+/** 证据落盘前统一脱敏：安装 id、任何 JWT 原文与夹具密钥一律不入产物（SEC-01/04）。 */
 function redact(text) {
-  return String(text)
-    .split(TOKEN).join('[redacted-token]')
-    .split(JWT_SECRET).join('[redacted-secret]')
-    .split(SIGNING_SECRET).join('[redacted-secret]');
+  let out = String(text);
+  for (const secret of [installId, JWT_SECRET, SIGNING_SECRET]) {
+    if (secret !== '') out = out.split(secret).join('[redacted-secret]');
+  }
+  return out.replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, '[redacted-jwt]');
 }
 
 function writeEvidence(caseDir, name, content) {
@@ -334,7 +324,7 @@ async function subscribeSse(sessionId) {
   const controller = new AbortController();
   const frames = [];
   const response = await fetch(`${SERVER_BASE}/v1/sessions/${sessionId}/events`, {
-    headers: { authorization: `Bearer ${TOKEN}`, accept: 'text/event-stream' },
+    headers: { authorization: `Bearer ${anonToken}`, accept: 'text/event-stream' },
     signal: controller.signal,
   });
   if (!response.ok) throw new Error(`订阅 SSE 失败：HTTP ${response.status}`);
@@ -366,7 +356,7 @@ async function subscribeSse(sessionId) {
 
 async function fetchInjection(sessionId) {
   const response = await fetch(`${SERVER_BASE}/v1/sessions/${sessionId}/injection`, {
-    headers: { authorization: `Bearer ${TOKEN}` },
+    headers: { authorization: `Bearer ${anonToken}` },
   });
   return response.ok ? response.json() : null;
 }
@@ -767,15 +757,15 @@ async function main() {
     if (context === null || sw === null) throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
     cleanups.push(() => context.close());
 
+    // 身份零预置：插件自己匿名激活。
     await sw.evaluate(
-      async ([token, base, origins]) => {
+      async ([base, origins]) => {
         await chrome.storage.local.set({
-          'za.token': token,
           'za.serverBaseUrl': base,
           'za.autoActivate': origins,
         });
       },
-      [TOKEN, SERVER_BASE, [EXPLAIN_ORIGIN, KNOWLEDGE_ORIGIN]],
+      [SERVER_BASE, [EXPLAIN_ORIGIN, KNOWLEDGE_ORIGIN]],
     );
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
@@ -795,6 +785,10 @@ async function main() {
       },
       { label: '等待插件建立会话（审计 session-start）', timeoutMs: 25000 },
     );
+    // 会话级端点按 ownerSub 校验：脚本必须用插件那一枚安装 id 取令牌，才能旁路订阅同一会话。
+    installId = await sw.evaluate(async () => (await chrome.storage.local.get('za.installId'))['za.installId']);
+    assert(typeof installId === 'string' && installId !== '', '插件未生成安装 id（匿名自动登录未发生）');
+    ({ token: anonToken } = await activate(SERVER_BASE, installId));
     const sse = await subscribeSse(sessionId);
     cleanups.push(() => sse.close());
     await waitFor(

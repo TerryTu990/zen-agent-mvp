@@ -12,7 +12,7 @@
  *
  * 运行：node scripts/e2e/run-g6-automation.mjs [--evidence-dir=<绝对路径>]
  */
-import { createHmac, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
+import { ANON_TENANT, activate } from './anon-identity.mjs';
 import { startMockLlm } from '../mock-llm/server.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -38,9 +39,15 @@ const EVIDENCE_DIR = resolve(
 const [JWT_SECRET, SIGNING_SECRET] = ['jwt', 'signing'].map(
   (role) => `g6-automation-e2e-${role}-${randomBytes(16).toString('hex')}`,
 );
-const JWT_ISS = 'zen-agent-demo';
-const TENANT = 'g6-automation-tenant';
-const HOST_USER_ID = 'g6-automation-user';
+const JWT_ISS = 'zen-agent-anon';
+/**
+ * gateway 必须起在插件开发构建的默认服务地址上（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）：
+ * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
+ * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
+ */
+const SERVER_PORT = 8787;
+/** 插件自己生成的安装 id：会话建立后读回，触发器按它派生的 subject 登记，二者才是同一身份。 */
+let installId = '';
 
 const STATUS_WATCH_ID = 'watch-status-board';
 const GUARD_WATCH_ID = 'watch-guard-board';
@@ -52,20 +59,6 @@ const ROUND_TIMEOUT_MS = 120_000;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
-}
-
-function base64url(input) {
-  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function signTestJwt() {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = base64url(JSON.stringify({
-    sub: `user-${HOST_USER_ID}`, tenant: TENANT, roles: ['ops'], hostUserId: HOST_USER_ID,
-    iss: JWT_ISS, exp: Math.floor(Date.now() / 1000) + 3600,
-  }));
-  const signature = base64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
-  return `${header}.${payload}.${signature}`;
 }
 
 function run(command, args) {
@@ -213,40 +206,15 @@ async function main() {
     process.env.ZA_LLM_MODEL = 'mock-model';
     const { startServer } = await import(pathToFileURL(join(REPO_ROOT, 'apps/server/dist/index.js')).href);
     const server = await startServer({
-      port: 0, jwtSecret: JWT_SECRET, signingSecret: SIGNING_SECRET, issAllowlist: [JWT_ISS],
+      port: SERVER_PORT, jwtSecret: JWT_SECRET, signingSecret: SIGNING_SECRET, issAllowlist: [JWT_ISS],
       snapshotRoot: join(REPO_ROOT, 'assets'), systemPromptPath: join(REPO_ROOT, 'assets/system-prompt.md'),
       auditSinkPath: auditPath, sessionDir, userConfigDir, heartbeatMs: 60_000,
       allowedProviders: ['openai-compatible'],
     });
     cleanups.push(() => server.close());
     const serverBase = `http://127.0.0.1:${server.port}`;
-    const token = signTestJwt();
 
-    console.log('[3/7] 写入用户自建触发器（PUT /v1/user-config，走 L2 双校验链）…');
-    const overlay = {
-      schemaVersion: 1,
-      subject: { tenant: TENANT, hostUserId: HOST_USER_ID },
-      packs: {},
-      watches: [
-        {
-          id: STATUS_WATCH_ID, templateId: 'page-watch', url: statusUrl,
-          minutes: 5, enabled: true, focus: '关注在售商品条目的增减',
-        },
-        {
-          // focus 携带 mock 哨兵：驱动无人值守轮次里的越权写工具请求（模型幻觉的确定性替身）。
-          id: GUARD_WATCH_ID, templateId: 'page-watch', url: guardUrl,
-          minutes: 5, enabled: true, focus: `风控条目变化时${WRITE_SENTINEL}`,
-        },
-      ],
-    };
-    const written = await fetch(`${serverBase}/v1/user-config`, {
-      method: 'PUT',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(overlay),
-    });
-    assert(written.status === 200, `触发器写入失败：${written.status} ${await written.text()}`);
-
-    console.log('[4/7] 真实 Chromium 加载 MV3 extension 并激活被监测页…');
+    console.log('[3/7] 真实 Chromium 加载 MV3 extension 并激活被监测页…');
     let context;
     let sw;
     for (const headless of [true, false]) {
@@ -273,11 +241,42 @@ async function main() {
     if (context === undefined || sw === undefined) throw new Error('Chromium 未加载扩展 service worker');
     cleanups.push(() => context.close());
 
-    await sw.evaluate(async ([authToken, base, origin]) => {
-      await chrome.storage.local.set({
-        'za.token': authToken, 'za.serverBaseUrl': base, 'za.autoActivate': [origin],
-      });
-    }, [token, serverBase, site.origin]);
+    // 身份零预置：插件自己匿名激活，脚本读回它的安装 id——触发器必须登记在插件所属 subject 下，
+    // 否则本机调度取不到自建触发器（服务端按 claims 推导 subject，不认脚本另造的身份）。
+    await waitFor(async () => {
+      installId = await sw.evaluate(async () => (await chrome.storage.local.get('za.installId'))['za.installId'] ?? '');
+      return typeof installId === 'string' && installId !== '';
+    }, '插件生成安装 id（匿名自动登录）', 30_000);
+
+    const { token, hostUserId } = await activate(serverBase, installId);
+
+    console.log('[4/7] 写入用户自建触发器（PUT /v1/user-config，走 L2 双校验链）…');
+    const overlay = {
+      schemaVersion: 1,
+      subject: { tenant: ANON_TENANT, hostUserId },
+      packs: {},
+      watches: [
+        {
+          id: STATUS_WATCH_ID, templateId: 'page-watch', url: statusUrl,
+          minutes: 5, enabled: true, focus: '关注在售商品条目的增减',
+        },
+        {
+          // focus 携带 mock 哨兵：驱动无人值守轮次里的越权写工具请求（模型幻觉的确定性替身）。
+          id: GUARD_WATCH_ID, templateId: 'page-watch', url: guardUrl,
+          minutes: 5, enabled: true, focus: `风控条目变化时${WRITE_SENTINEL}`,
+        },
+      ],
+    };
+    const written = await fetch(`${serverBase}/v1/user-config`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify(overlay),
+    });
+    assert(written.status === 200, `触发器写入失败：${written.status} ${await written.text()}`);
+
+    await sw.evaluate(async ([base, origin]) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base, 'za.autoActivate': [origin] });
+    }, [serverBase, site.origin]);
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
     const extensionId = new URL(sw.url()).host;
@@ -396,7 +395,8 @@ async function main() {
         (event.type === 'assembly' && event.automationId !== undefined),
     );
     const excerptText = excerpt.map((event) => JSON.stringify(event)).join('\n');
-    assert(!excerptText.includes(token), '审计片段泄漏了访问令牌');
+    assert(!excerptText.includes(installId), '审计片段泄漏了安装 id');
+    assert(!/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/.test(excerptText), '审计片段含 JWT 原文');
     assert(!excerptText.includes(JWT_SECRET) && !excerptText.includes(SIGNING_SECRET), '审计片段泄漏了本地测试密钥');
     writeFileSync(join(EVIDENCE_DIR, 'audit-excerpt.jsonl'), `${excerptText}\n`, 'utf8');
     writeFileSync(join(EVIDENCE_DIR, 'result.json'), `${JSON.stringify({

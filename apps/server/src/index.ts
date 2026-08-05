@@ -26,6 +26,7 @@ import {
   type SessionStore,
 } from './sessions.js';
 import { createGateway } from './gateway.js';
+import { ANON_ISS } from './activation.js';
 import { createFsUserConfigStore } from './user-config-store.js';
 
 export interface ServerOptions {
@@ -37,6 +38,7 @@ export interface ServerOptions {
   jwtSecret: string;
   /** Ed25519 私钥派生种子；空值拒绝启动，经 env 注入不落仓/日志，插件只取得公钥。 */
   signingSecret: string;
+  /** 外部签发方白名单；本机匿名激活的 iss 恒被接受，无需也无法经此项关闭。 */
   issAllowlist: string[];
   snapshotRoot: string;
   systemPromptPath: string;
@@ -55,11 +57,6 @@ export interface ServerOptions {
   compressThreshold?: number;
   /** Access-Control-Allow-Origin 响应头值，默认 '*'。 */
   corsOrigin?: string;
-  /**
-   * P0-b demo-token 端点（env 门控）：enabled=false 时 /demo-token 恒 404。
-   * 签发复用 jwtSecret（与 verifier 同 secret，故自签 token 能验签通过）；iss 须在 issAllowlist 内。
-   */
-  demoToken?: { enabled: boolean; iss: string };
   /**
    * server 通道凭证解析：ServerAdapter.credentialRef → 真值。由组装边界运行时注入、真值不入配置/日志/审计（SEC-01/02）。
    * 缺省或解析不到时 executeServer 返回 credential-unresolved。
@@ -268,7 +265,8 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     audit: ports.audit,
     verifier: createTokenVerifier({
       jwtSecret: options.jwtSecret,
-      issAllowlist: options.issAllowlist,
+      // 自签必自验：匿名激活的 iss 与验签同属本进程，运维改白名单不得让 server 签出自己随即拒绝的令牌。
+      issAllowlist: [...new Set([...options.issAllowlist, ANON_ISS])],
     }),
     store,
     heartbeatMs: options.heartbeatMs ?? 15_000,
@@ -278,10 +276,8 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     corsOrigin: options.corsOrigin ?? '*',
     applicationsDir: options.applicationsDir ?? '.za/applications',
     genericAllowlist: options.genericAllowlist ?? [],
+    activationJwtSecret: options.jwtSecret,
     ...(userConfig !== undefined ? { userConfig } : {}),
-    ...(options.demoToken?.enabled
-      ? { demoToken: { jwtSecret: options.jwtSecret, iss: options.demoToken.iss } }
-      : {}),
   });
   const server = createServer(gateway.handler);
   await new Promise<void>((resolve, reject) => {

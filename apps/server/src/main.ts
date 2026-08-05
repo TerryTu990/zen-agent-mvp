@@ -2,6 +2,7 @@
  * CLI 入口：env → ServerOptions → startServer。
  * ZA_LLM_BASE_URL / ZA_LLM_API_KEY / ZA_LLM_MODEL 由 llm-port 在调用时读取，此处只做启动期提示。
  */
+import { ANON_ISS } from './activation.js';
 import { parseFulfillmentProductKeys, parseGenericAllowlist, startServer } from './index.js';
 import type { BoundedFulfillmentPolicy } from '@zen-agent/toolgate';
 
@@ -99,7 +100,7 @@ startServer({
   host,
   jwtSecret,
   signingSecret,
-  issAllowlist: (process.env['ZA_JWT_ISS_ALLOWLIST'] ?? 'zen-agent-demo')
+  issAllowlist: (process.env['ZA_JWT_ISS_ALLOWLIST'] ?? ANON_ISS)
     .split(',')
     .map((iss) => iss.trim())
     .filter((iss) => iss !== ''),
@@ -131,10 +132,6 @@ startServer({
     : {}),
   sessionTtlMs,
   allowedProviders: ['openai-compatible'],
-  demoToken: {
-    enabled: process.env['ZA_DEMO_TOKEN_ENABLED'] === '1',
-    iss: process.env['ZA_JWT_ISS'] ?? 'zen-agent-demo',
-  },
   resolveCredential,
 }).then(
   ({ port: boundPort }) => {

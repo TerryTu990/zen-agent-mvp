@@ -3,7 +3,7 @@
  * L1 只读投影取自 GET /v1/packs；L2 编辑面读写 /v1/user-config（?expectedRevision= 乐观并发，
  * 409 即重载后由用户复核重提）。治理语义在 UI 层机械成立：低于 pack 基线的档位不可选（只收紧）、
  * 条目逐条标来源与作用域、未开放能力置灰且不做假跳转。
- * 令牌只呈现「已配置 / 未配置」状态，值不入 DOM（ZA-C-SEC-04）。
+ * 身份为只读展示（匿名自动登录，adr-022）：令牌值不入 DOM（ZA-C-SEC-04）。
  * 服务端契约类型在此手抄镜像——插件不依赖 @zen-agent/*（U5）。
  */
 
@@ -110,11 +110,11 @@ export interface ConfigCenterDeps {
   fetch: typeof globalThis.fetch;
   /** 服务端 API 基址（无尾斜杠）。 */
   baseUrl: string;
+  /** 宿主取得的匿名令牌；空串 = 尚未激活成功，本页读写将得到 401 并如实呈现。 */
   authToken: string;
-  tokenConfigured: boolean;
   /** 全局设置页回显的用户自配服务端地址；空串 = 用构建缺省。 */
   serverBaseUrl: string;
-  saveSettings(patch: { token?: string; serverBaseUrl?: string }): Promise<void>;
+  saveSettings(patch: { serverBaseUrl?: string }): Promise<void>;
   /**
    * 服务端地址信任归一（宿主注入 normalizeTrustedServerBaseUrl）：返回 null 即不受信。
    * 缺省 = 不切换本页请求基址（仅落盘，下次开页由宿主归一）——令牌绝不发往未归一地址。
@@ -175,7 +175,9 @@ export function minPeriodMinutes(defaultPeriodMinutes?: number): number {
 export function describeLoadFailure(status: number, body: unknown): string {
   const detail = (typeof body === 'object' && body !== null ? body : {}) as { error?: unknown };
   const error = typeof detail.error === 'string' ? detail.error : '';
-  if (status === 401) return '尚未配置有效访问令牌，请在「全局设置」填写后重新打开本页。';
+  if (status === 401) {
+    return '尚未取得身份或身份已失效（身份由插件自动获取，无需填写）：请在「全局设置」确认服务端地址、检查网络后重新打开本页。';
+  }
   return error === '' ? `读取失败（HTTP ${status}）` : error;
 }
 
@@ -187,6 +189,10 @@ export function describeSaveFailure(status: number, body: unknown): string {
   };
   const error = typeof detail.error === 'string' ? detail.error : '';
   if (status === 409) return '配置已在别处更新，已重新加载最新配置；请复核后重新提交。';
+  // 身份是开页时按当时的服务端地址取得的：本页内改地址后旧身份必被新服务端拒，重开本页即按新地址重新取得。
+  if (status === 401) {
+    return '个人配置未提交：身份已失效或与当前服务端地址不匹配（身份由插件按服务端地址自动获取，无需填写）——请重新打开本页后重新提交。';
+  }
   if (status === 400) {
     const issues = Array.isArray(detail.issues) ? detail.issues : [];
     const lines = issues
@@ -438,9 +444,8 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     verbosity: '',
     loadError: null,
   };
-  let tokenConfigured = deps.tokenConfigured;
-  // 凭证与基址在保存后就地更新：换令牌/换地址后本页后续请求即用新值，无需重开。
-  let authToken = deps.authToken;
+  const authToken = deps.authToken;
+  // 基址在保存后就地更新：换地址后本页后续请求即用新值，无需重开。
   let apiBaseUrl = deps.baseUrl;
   let serverBaseUrl = deps.serverBaseUrl;
 
@@ -942,35 +947,48 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
 
   // ---- 全局设置页 ----
 
-  let tokenInput: HTMLInputElement | null = null;
   let baseUrlInput: HTMLInputElement | null = null;
-  let tokenState: HTMLElement | null = null;
+
+  /** 身份只读展示：形态 + hostUserId 指纹前 8 位；完整标识经复制按钮取用（排障时报给运维）。 */
+  function identityField(): HTMLElement {
+    const field = el('div', 'za-cc-field');
+    const head = el('div', 'za-cc-field-head');
+    head.append(el('span', 'za-cc-label', '身份'), badge('za-cc-badge-kind', '匿名（自动登录）'));
+    field.append(head);
+
+    const hostUserId = state.subject?.hostUserId ?? '';
+    if (hostUserId === '') {
+      field.append(el('p', 'za-cc-hint', '尚未连上服务端，身份标识未知；插件会在联网后自动完成登录。'));
+      return field;
+    }
+    const row = el('div', 'za-cc-field-inline');
+    const fingerprint = el('code', 'za-cc-identity', hostUserId.replace(/^anon-/, '').slice(0, 8));
+    fingerprint.id = 'za-cc-identity';
+    const copy = el('button', 'za-cc-btn', '复制完整标识');
+    copy.type = 'button';
+    copy.addEventListener('click', () => {
+      if (typeof navigator.clipboard?.writeText !== 'function') {
+        setStatus('当前环境不支持剪贴板，请手动选择文本复制', true);
+        return;
+      }
+      void navigator.clipboard.writeText(hostUserId).then(
+        () => setStatus('身份标识已复制'),
+        () => setStatus('复制失败，请手动选择文本复制', true),
+      );
+    });
+    row.append(fingerprint, copy);
+    field.append(
+      row,
+      el('p', 'za-cc-hint', '无需填写任何凭证；个人配置按此标识归属，换浏览器或重装扩展会得到新标识。'),
+    );
+    return field;
+  }
 
   function renderGlobalPanel(): void {
     const panel = panelOf('global');
     panel.replaceChildren(pageHead('全局设置'));
 
     const connection = section('连接');
-    const tokenField = el('div', 'za-cc-field');
-    const tokenLabelRow = el('div', 'za-cc-field-head');
-    const tokenLabel = el('label', 'za-cc-label', '访问令牌');
-    tokenLabel.htmlFor = 'za-cc-token';
-    tokenState = el(
-      'span',
-      'za-cc-token-state',
-      tokenConfigured ? '已配置（值不回显）' : '未配置',
-    );
-    tokenLabelRow.append(tokenLabel, tokenState);
-    tokenInput = el('input', 'za-cc-input');
-    tokenInput.type = 'password';
-    tokenInput.id = 'za-cc-token';
-    tokenInput.autocomplete = 'off';
-    tokenInput.placeholder = tokenConfigured ? '如需更换，粘贴新令牌覆盖' : '粘贴管理员签发的令牌';
-    tokenField.append(
-      tokenLabelRow,
-      tokenInput,
-      el('p', 'za-cc-hint', '令牌只存于本浏览器；面板不回显已保存的值，留空即保持不变。'),
-    );
 
     const baseUrlField = el('div', 'za-cc-field');
     const baseUrlLabel = el('label', 'za-cc-label', '服务端地址');
@@ -980,7 +998,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     baseUrlInput.value = serverBaseUrl;
     baseUrlInput.placeholder = '留空使用默认';
     baseUrlField.append(baseUrlLabel, baseUrlInput);
-    connection.append(tokenField, baseUrlField);
+    connection.append(identityField(), baseUrlField);
 
     const preferences = section('偏好');
     const verbosityField = el('div', 'za-cc-field-inline');
@@ -1202,17 +1220,14 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
   }
 
   /**
-   * 本机设置持久化（令牌/服务端地址）：与 L2 提交解耦——首装、令牌过期、服务端不可达时
-   * 用户仍须能存下令牌。写入成功后同步刷新本实例持有的凭证与基址，后续请求即用新值。
+   * 本机设置持久化（服务端地址）：与 L2 提交解耦——服务端不可达时用户仍须能改地址。
+   * 写入成功后同步刷新本实例持有的基址，后续请求即用新值。
    */
   async function persistLocalSettings(): Promise<boolean> {
-    const patch: { token?: string; serverBaseUrl?: string } = {};
-    const token = tokenInput?.value.trim() ?? '';
-    if (token !== '') patch.token = token;
+    const patch: { serverBaseUrl?: string } = {};
     const baseUrl = baseUrlInput?.value.trim() ?? '';
     // 地址信任归一是采用该地址的前置条件：未归一地址一律不落盘、更不切换本页基址——
     // 否则本页会立刻把令牌发往该地址（server-url 的 TLS/loopback 硬门不得被绕过）。
-    // 令牌与地址各自独立成败：地址不受信不拖累令牌保存（同一 blocker 的成因）。
     let trustedBaseUrl: string | null = null;
     let untrustedBaseUrl = false;
     if (baseUrl !== serverBaseUrl) {
@@ -1225,12 +1240,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       return false;
     }
     await deps.saveSettings(patch);
-    if (patch.token !== undefined) {
-      authToken = patch.token;
-      tokenConfigured = true;
-      if (tokenInput !== null) tokenInput.value = '';
-      if (tokenState !== null) tokenState.textContent = '已配置（值不回显）';
-    }
     if (patch.serverBaseUrl !== undefined) {
       serverBaseUrl = patch.serverBaseUrl;
       if (trustedBaseUrl !== null && trustedBaseUrl !== '') {
@@ -1274,13 +1283,13 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     } catch (error) {
       setStatus(
         error instanceof UntrustedBaseUrlError
-          ? '服务端地址不受信：生产地址必须使用 HTTPS（仅 127.0.0.1/localhost 可用 HTTP），该地址未保存；其余本机设置已保存'
+          ? '服务端地址不受信：生产地址必须使用 HTTPS（仅 127.0.0.1/localhost 可用 HTTP），该地址未保存'
           : '本机设置保存失败',
         true,
       );
       return;
     }
-    // 凭证/地址刚变更且此前无可用连接（首装/凭证过期）：以新值重读 L1+L2 并重渲染。
+    // 地址刚变更且此前无可用连接（首装/地址填错）：以新值重读 L1+L2 并重渲染。
     // 已有连接时不重读——重读会以服务端态覆盖待保存编辑，把丢弃当成功宣告（R6）。
     if (localSaved && state.subject === null) {
       try {
@@ -1294,8 +1303,8 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     if (state.subject === null) {
       setStatus(
         localSaved
-          ? '本机设置已保存；个人配置未提交（仍未连上服务端，请核对访问令牌与服务端地址）'
-          : '个人配置未提交：尚未连上服务端，请先在全局设置填写访问令牌与服务端地址',
+          ? '本机设置已保存；个人配置未提交：新地址下尚无可用身份——请重新打开本页后重新提交（仍不通则核对服务端地址与网络）'
+          : '个人配置未提交：尚未连上服务端，请核对全局设置里的服务端地址与网络',
         true,
       );
       return;
@@ -1338,6 +1347,10 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     if (response.status === 409) {
       await reloadOverlay();
       setStatus(describeSaveFailure(409, body), true);
+      return;
+    }
+    if (response.status === 401) {
+      setStatus(`${localSaved ? '本机设置已保存；' : ''}${describeSaveFailure(401, body)}`, true);
       return;
     }
     setStatus(describeSaveFailure(response.status, body), true);

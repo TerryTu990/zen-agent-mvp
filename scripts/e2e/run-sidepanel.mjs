@@ -19,6 +19,9 @@ function run(command, args, options = {}) {
   });
 }
 
+/** 与插件开发构建的默认服务地址同端口（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）。 */
+const FIXTURE_PORT = 8787;
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -37,6 +40,8 @@ async function main() {
   let delayedFrameStatus = null;
   let sessionSequence = 0;
   const eventStreams = new Map();
+  /** 夹具签发过的匿名令牌（形状占位，非真实凭证）：401 前后各一枚，用于核对重试是否换了身份。 */
+  const issuedTokens = [];
   const frameRequests = [];
   const stopRequests = [];
   const fixtureActiveTurnIds = new Set();
@@ -48,30 +53,8 @@ async function main() {
     } else {
       console.log(`[1/3] 使用最终 zip 解包目录：${EXTENSION_DIR}`);
     }
-    console.log('[2/3] 真实 Chromium 加载 MV3 extension…');
-    let sw;
-    for (const headless of [true, false]) {
-      await run('rm', ['-rf', PROFILE_DIR]);
-      const candidate = await chromium.launchPersistentContext(PROFILE_DIR, {
-        headless,
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
-      });
-      sw = await waitServiceWorker(candidate).catch(() => null);
-      if (sw !== null) {
-        context = candidate;
-        console.log(`  扩展已加载（headless=${headless}）`);
-        break;
-      }
-      await candidate.close();
-    }
-    if (context === undefined || sw === undefined || sw === null) {
-      throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
-    }
-    const extensionId = new URL(sw.url()).host;
-    const manifest = await sw.evaluate(() => chrome.runtime.getManifest());
-    assert(manifest.side_panel?.default_path === 'sidepanel.html', 'manifest 未声明 Side Panel 页面');
-    assert(manifest.permissions?.includes('sidePanel'), 'manifest 未声明 sidePanel 权限');
-
+    // 夹具须先于 Chromium 起、且占用插件开发构建的默认服务地址：面板与 service worker 都按该地址取身份，
+    // 夹具不在那里就一律拿不到令牌，401 后的重新激活路径无从观察。
     authServer = createServer(async (req, res) => {
       const headers = {
         'content-type': 'application/json',
@@ -82,6 +65,18 @@ async function main() {
       if (req.method === 'OPTIONS') {
         res.writeHead(204, headers);
         res.end();
+        return;
+      }
+      // 匿名激活（adr-022）：插件零配置自己来换令牌；每次换发新值，401 后的重激活才可辨识。
+      if (req.method === 'POST' && req.url === '/v1/activation') {
+        const issued = `fixture-${issuedTokens.length + 1}.e2e.stub`;
+        issuedTokens.push(issued);
+        res.writeHead(200, headers);
+        res.end(JSON.stringify({
+          token: issued,
+          expiresAt: Math.floor(Date.now() / 1000) + 3600,
+          hostUserId: 'anon-sidepanel-e2e-fixture',
+        }));
         return;
       }
       if (req.method === 'POST' && req.url === '/v1/sessions') {
@@ -169,11 +164,37 @@ async function main() {
       res.writeHead(404, headers);
       res.end('{"error":"fixture-not-found"}');
     });
-    await new Promise((resolveListen) => authServer.listen(0, '127.0.0.1', resolveListen));
+    await new Promise((resolveListen) => authServer.listen(FIXTURE_PORT, '127.0.0.1', resolveListen));
     const authAddress = authServer.address();
     assert(authAddress !== null && typeof authAddress === 'object', '无法启动鉴权失败夹具');
+
+    console.log('[2/3] 真实 Chromium 加载 MV3 extension…');
+    let sw;
+    for (const headless of [true, false]) {
+      await run('rm', ['-rf', PROFILE_DIR]);
+      const candidate = await chromium.launchPersistentContext(PROFILE_DIR, {
+        headless,
+        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+      });
+      sw = await waitServiceWorker(candidate).catch(() => null);
+      if (sw !== null) {
+        context = candidate;
+        console.log(`  扩展已加载（headless=${headless}）`);
+        break;
+      }
+      await candidate.close();
+    }
+    if (context === undefined || sw === undefined || sw === null) {
+      throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
+    }
+    const extensionId = new URL(sw.url()).host;
+    const manifest = await sw.evaluate(() => chrome.runtime.getManifest());
+    assert(manifest.side_panel?.default_path === 'sidepanel.html', 'manifest 未声明 Side Panel 页面');
+    assert(manifest.permissions?.includes('sidePanel'), 'manifest 未声明 sidePanel 权限');
+
+    // 身份零预置：插件自己完成匿名激活；这里只显式指向夹具（与默认同址，默认值变更时不至于哑连生产）。
     await sw.evaluate(async (baseUrl) => {
-      await chrome.storage.local.set({ 'za.token': 'e2e-invalid-token', 'za.serverBaseUrl': baseUrl });
+      await chrome.storage.local.set({ 'za.serverBaseUrl': baseUrl });
     }, `http://127.0.0.1:${authAddress.port}`);
 
     console.log('[3/3] 打开打包后的 Side Panel 并验证需求入口…');
@@ -212,16 +233,17 @@ async function main() {
       }).observe(document.body, { attributes: true, childList: true, subtree: true });
     });
     await panel.getByRole('button', { name: '发送消息' }).click();
-    await panel.getByText('访问令牌无效或已过期，请在扩展设置中更新后重试；草稿仍保留', { exact: true }).waitFor();
+    // 文案可能随身份形态改写，故按语义匹配：既要指认身份/令牌失效，又要承诺草稿保留。
+    await panel.getByText(/(令牌|身份).*草稿仍保留/).waitFor();
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '检查当前页面，不要执行操作', '服务端拒绝后文本草稿未保留');
     await panel.getByRole('button', { name: '移除附件 policy.md' }).waitFor();
-    await sw.evaluate(() => chrome.storage.local.set({ 'za.token': 'e2e-refreshed-token' }));
     await panel.getByRole('button', { name: '发送消息' }).click();
     await panel.getByText('检查当前页面，不要执行操作', { exact: false }).waitFor();
-    assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '更新令牌后重试未使用新会话');
-    assert(frameRequests[0]?.authorization === 'Bearer e2e-invalid-token', '首次 frames 未使用旧令牌夹具');
-    assert(frameRequests[1]?.authorization === 'Bearer e2e-refreshed-token', '更新后重试未使用新令牌');
-    assert(frameRequests[0]?.sessionId !== frameRequests[1]?.sessionId, '更新令牌后仍复用了旧 sessionId');
+    assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '重新激活后重试未使用新会话');
+    assert(issuedTokens.length >= 1, '夹具未收到任何匿名激活请求：插件没有自己取身份');
+    assert(frameRequests[1]?.authorization === `Bearer ${issuedTokens.at(-1)}`, '401 后重试未使用重新激活的令牌');
+    assert(frameRequests[0]?.authorization !== frameRequests[1]?.authorization, '401 后重试仍复用了被拒的令牌');
+    assert(frameRequests[0]?.sessionId !== frameRequests[1]?.sessionId, '重新激活后仍复用了旧 sessionId');
     assert(frameRequests[0]?.messageId === frameRequests[1]?.messageId, '401 重试改变了 messageId，无法保证幂等');
     await panel.getByRole('button', { name: '发送消息' }).waitFor();
 

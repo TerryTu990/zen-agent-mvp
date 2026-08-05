@@ -32,6 +32,7 @@ export {
   CONFIG_DRAFT_RESULT_SCHEMA,
 } from './tool-definition.js';
 export type { IdentityClaims } from './identity-claims.js';
+export type { ActivationRequest, ActivationResponse } from './activation.js';
 export type {
   ClientCapability,
   HitlDecisionValue,

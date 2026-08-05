@@ -2,20 +2,30 @@
  * Zen Commerce 闲鱼全链浏览器 E2E：真实 Chromium + MV3 extension + gateway/toolgate，
  * 页面使用 seller.goofish.com HTTPS origin 的受控 route fixture，不接触真实账号或订单。
  */
-import { createHmac } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
+import { anonHostUserId } from './anon-identity.mjs';
 import { startMockLlm } from '../mock-llm/server.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
 const JWT_SECRET = 'xianyu-e2e-jwt-fixture';
 const SIGNING_SECRET = 'xianyu-e2e-signing-fixture';
-const JWT_ISS = 'zen-agent-demo';
+const JWT_ISS = 'zen-agent-anon';
+/**
+ * gateway 必须起在插件开发构建的默认服务地址上（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）：
+ * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
+ * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
+ */
+const SERVER_PORT = 8787;
+/** 履约策略要按插件所属身份登记，故这里控制身份：换身份 = 换 installId。 */
+const INSTALL_ID = randomUUID();
+const ACCOUNT_ID = anonHostUserId(INSTALL_ID);
 const MOCK_LLM_PORT = process.env.ZA_E2E_XIANYU_MOCK_PORT === undefined
   ? 0
   : Number(process.env.ZA_E2E_XIANYU_MOCK_PORT);
@@ -29,20 +39,6 @@ const HREF_CANARY = 'href-query-canary';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
-}
-
-function base64url(input) {
-  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function signTestJwt() {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = base64url(JSON.stringify({
-    sub: 'xianyu-e2e-user', tenant: 'xianyu-e2e', roles: ['ops'], hostUserId: 'seller-e2e',
-    iss: JWT_ISS, exp: Math.floor(Date.now() / 1000) + 600,
-  }));
-  const signature = base64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
-  return `${header}.${payload}.${signature}`;
 }
 
 function run(command, args) {
@@ -249,11 +245,11 @@ async function main() {
       { id: `shipping-${productId}`, toolId: 'xianyu-shipping.execute-intent' },
       { id: `delivery-${productId}`, toolId: 'xianyu-fulfillment.execute-intent' },
     ].map((entry) => ({
-      ...entry, accountId: 'seller-e2e', siteOrigin: SELLER_ORIGIN, productIds: [productId],
+      ...entry, accountId: ACCOUNT_ID, siteOrigin: SELLER_ORIGIN, productIds: [productId],
       validUntil, maxCodesPerOrder: 1, dailyOrderLimit: 5, dayBoundaryOffsetMinutes: 480,
     })));
     const server = await startServer({
-      port: 0, jwtSecret: JWT_SECRET, signingSecret: SIGNING_SECRET, issAllowlist: [JWT_ISS],
+      port: SERVER_PORT, jwtSecret: JWT_SECRET, signingSecret: SIGNING_SECRET, issAllowlist: [JWT_ISS],
       snapshotRoot: join(REPO_ROOT, 'assets'), systemPromptPath: join(REPO_ROOT, 'assets/system-prompt.md'),
       auditSinkPath: auditPath, sessionDir, heartbeatMs: 60_000,
       allowedProviders: ['openai-compatible'],
@@ -293,13 +289,17 @@ async function main() {
     }
     if (context === undefined || sw === undefined) throw new Error('Chromium 未加载扩展 service worker');
     cleanups.push(() => context.close());
-    const token = signTestJwt();
-    await sw.evaluate(async ([authToken, base]) => {
+    // 预置安装 id：插件据此匿名激活，得到的 hostUserId 即上面履约策略登记的 accountId。
+    // service worker 此刻已用自生成的安装 id 激活过一次，故连同落盘的缓存令牌一并清掉；
+    // 进程内缓存由 background 侦听 za.installId 变更后作废（identity.invalidate）。
+    await sw.evaluate(async ([installId, base]) => {
+      await chrome.storage.local.remove('za.anonToken');
       await chrome.storage.local.set({
-        'za.token': authToken, 'za.serverBaseUrl': base,
+        'za.installId': installId,
+        'za.serverBaseUrl': base,
         'za.autoActivate': ['https://seller.goofish.com'],
       });
-    }, [token, serverBase]);
+    }, [INSTALL_ID, serverBase]);
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
     const extensionId = new URL(sw.url()).host;

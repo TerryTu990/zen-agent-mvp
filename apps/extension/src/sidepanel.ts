@@ -153,9 +153,9 @@ export function startSidePanel(elements: SidePanelElements): void {
   const deliveryFailureMessage = (failure: MessageDeliveryFailure | undefined, httpStatus: number | undefined): string => {
     switch (failure) {
       case 'configuration':
-        return '扩展连接配置不完整，请在扩展设置中检查访问令牌和服务地址';
+        return '扩展连接配置不完整，请在扩展设置中检查服务地址';
       case 'unauthorized':
-        return '访问令牌无效或已过期，请在扩展设置中更新后重试';
+        return '身份校验未通过，已尝试重新登录，请稍后重试';
       case 'session-expired':
         return '会话已失效，已准备重新连接，请直接重试';
       case 'session-interrupted':

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zen-agent.dev/schema/activation/v1.json",
+  "title": "zen-agent 匿名激活契约（activation，C2 身份契约族加法扩展，SSOT）",
+  "description": "POST /v1/activation 的请求/响应闭集：客户端以本地生成的安装 id 换取短时效 token，用户零填写。【身份派生】hostUserId = 'anon-' + base64url(SHA-256(installId))，sub 同值，tenant='anon'，iss='zen-agent-anon'——服务端只用 installId 的哈希，MUST NOT 存储或记录其原值（installId 是持有型凭证，SEC-01/04）。签发的 token 经网关既有验签路径投影为 C2 IdentityClaims，C2 结构零改动。【已知取舍】匿名激活无持有证明：安装 id 泄漏即可冒充，故要求 122+ 位随机不可枚举、仅本地存储、仅经 HTTPS 传输；身份强度由账号登录（投产前置条件）提供。两个方向的载荷均 JSON 可序列化（U1）。",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ],
+  "$defs": {
+    "request": {
+      "$comment": "激活请求（客户端 → 服务端）。端点恒启用、不要求 authorization：安装 id 本身即持有型凭证。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["installId"],
+      "properties": {
+        "installId": {
+          "$comment": "客户端首次运行生成并持久化的安装 id（122+ 位随机，如 crypto.randomUUID()）。charset 取 base64url ∪ UUID 连字符形态；下界 32 = 122+ 位随机的最短可打印编码长度，杜绝可枚举短值；上界 128 防超长载荷。",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "minLength": 32,
+          "maxLength": 128
+        }
+      }
+    },
+    "response": {
+      "$comment": "激活响应（服务端 → 客户端）。客户端只缓存本对象，过期或遇 401 时以同一 installId 重新激活。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token", "expiresAt", "hostUserId"],
+      "properties": {
+        "token": {
+          "$comment": "签发的 JWT（compact serialization 三段式）。仅供客户端原样回传 Authorization，客户端不解析其内容。",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+        },
+        "expiresAt": {
+          "$comment": "token 过期时刻（epoch 秒，与 C2 claims 的 exp 同值同单位）。客户端据此判活并提前重新激活；上界 4102444800（2100-01-01）是单位守卫——毫秒量级取值一律被拒，堵住「一端发秒一端读毫秒」的静默漂移。",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4102444800
+        },
+        "hostUserId": {
+          "$comment": "派生的匿名主体标识：'anon-' + base64url(SHA-256(installId))（无填充，恒 43 字符）。L2 overlay 的存储分段键与审计 userId 取值源；不可反推 installId。",
+          "type": "string",
+          "pattern": "^anon-[A-Za-z0-9_-]{43}$"
+        }
+      }
+    }
+  }
+}

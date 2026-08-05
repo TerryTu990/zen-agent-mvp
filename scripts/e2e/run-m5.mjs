@@ -17,7 +17,6 @@
  * 持久化会话历史含站点边界标记（切到站点乙 origin）。za.autoActivate 只配站点甲，站点乙靠 navigate 入组。
  */
 import { spawn } from 'node:child_process';
-import { createHmac } from 'node:crypto';
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
@@ -37,8 +36,13 @@ const SESSION_DIR = join(WORK_DIR, 'sessions');
 
 const JWT_SECRET = 'za-test-secret';
 const SIGNING_SECRET = 'za-test-signing-secret';
-const JWT_ISS = 'zen-agent-demo';
-const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8797);
+const JWT_ISS = 'zen-agent-anon';
+/**
+ * gateway 必须起在插件开发构建的默认服务地址上（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）：
+ * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
+ * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
+ */
+const SERVER_PORT = 8787;
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_MOCK_PORT ?? 8798);
 // 站点端口固定：mock 剧本与 pack.json origin 均硬绑 4173/4174，不经 env 覆盖。
 const HOST_A_PORT = 4173;
@@ -50,26 +54,6 @@ const ORDER_LIST_URL = `${HOST_A_ORIGIN}/order-list.html`;
 const BOUNDARY_MARKER = '【站点边界】';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css' };
-
-function base64url(input) {
-  return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function signTestJwt() {
-  const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const payload = base64url(
-    JSON.stringify({
-      sub: 'e2e-user',
-      tenant: 'e2e-tenant',
-      roles: ['user'],
-      hostUserId: 'host-e2e-user',
-      iss: JWT_ISS,
-      exp: Math.floor(Date.now() / 1000) + 600,
-    }),
-  );
-  const signature = base64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
-  return `${header}.${payload}.${signature}`;
-}
 
 /** 纯静态文件服务（两站各一实例，dom 代操作无宿主 API 面）。 */
 function startStaticHost(rootDir, port) {
@@ -311,7 +295,6 @@ async function runScenarios(context, packAPage, panelPage) {
 }
 
 async function main() {
-  const token = signTestJwt();
   const cleanups = [];
   let failure = null;
 
@@ -368,16 +351,16 @@ async function main() {
     if (!context || !sw) throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
     cleanups.push(() => context.close());
 
-    // za.autoActivate 只配站点甲：站点甲页 reload 后自动激活建组；站点乙由 navigate 入组（不靠 autoActivate）。
+    // 身份零预置：插件自己匿名激活。za.autoActivate 只配站点甲：站点甲页 reload 后自动激活建组；
+    // 站点乙由 navigate 入组（不靠 autoActivate）。
     await sw.evaluate(
-      async ([t, base, origin]) => {
+      async ([base, origin]) => {
         await chrome.storage.local.set({
-          'za.token': t,
           'za.serverBaseUrl': base,
           'za.autoActivate': [origin],
         });
       },
-      [token, SERVER_BASE, HOST_A_ORIGIN],
+      [SERVER_BASE, HOST_A_ORIGIN],
     );
     const packAPage = context.pages()[0];
     await packAPage.reload({ waitUntil: 'load' });

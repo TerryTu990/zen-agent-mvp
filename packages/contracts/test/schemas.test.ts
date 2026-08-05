@@ -21,6 +21,7 @@ function compile(ajv: Ajv2020, file: string) {
 describe('C1-C5 schema 契约', () => {
   it('schemas/ 下契约齐备（含 ADR-013 pack/registry 扩展）', () => {
     expect(schemaFiles.sort()).toEqual([
+      'activation.schema.json',
       'audit-event.schema.json',
       'client-access-layer.schema.json',
       'config-snapshot.schema.json',

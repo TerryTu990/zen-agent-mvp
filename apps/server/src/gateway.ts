@@ -60,7 +60,7 @@ import type {
   UserOverlayWatch,
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
-import { signDemoToken, type DemoTokenSigner } from './demo-token.js';
+import { createActivationRequestValidator, issueActivationToken } from './activation.js';
 import {
   BOUNDARY_MARKER,
   compressHistory,
@@ -107,8 +107,8 @@ export interface GatewayDeps {
   compressThreshold: number;
   /** Access-Control-Allow-Origin 响应头值。 */
   corsOrigin: string;
-  /** 存在即启用 POST /demo-token（P0-b，env 门控）；缺省=端点关闭（404）。 */
-  demoToken?: DemoTokenSigner;
+  /** 匿名激活签发密钥；与 verifier 同一 HS256 secret，故签出的 token 能被本 server 验签通过。 */
+  activationJwtSecret: string;
   /** 投递记录（求职 agent 业务日志）落盘目录：record_application 按天写 `<dir>/<date>.jsonl`。 */
   applicationsDir: string;
   /** generic 兜底 pack 准入名单（origin 精确值）；空 = generic 永不激活（fail-closed）。 */
@@ -171,17 +171,37 @@ function isUpstreamType(type: string): type is UpstreamFrame['type'] {
   return type in UPSTREAM_ACCEPTANCE;
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+class BodyTooLargeError extends Error {}
+
+/**
+ * maxBytes 给未鉴权入口划缓冲上界：超限即停止累积并拒绝，之后到达的分片一律丢弃，
+ * 故进程内存不随请求体增长（鉴权入口沿用无界读，其调用方已过验签）。
+ */
+function readBody(req: IncomingMessage, maxBytes = Number.POSITIVE_INFINITY): Promise<string> {
   return new Promise((resolve, reject) => {
     let raw = '';
+    let bytes = 0;
+    let overflow = false;
     req.setEncoding('utf8');
     req.on('data', (chunk: string) => {
+      if (overflow) return;
+      bytes += Buffer.byteLength(chunk, 'utf8');
+      if (bytes > maxBytes) {
+        overflow = true;
+        reject(new BodyTooLargeError());
+        return;
+      }
       raw += chunk;
     });
-    req.on('end', () => resolve(raw));
+    req.on('end', () => {
+      if (!overflow) resolve(raw);
+    });
     req.on('error', reject);
   });
 }
+
+/** 激活请求体上界：契约里 installId 上限 128 字符，加 JSON 外壳远不及此值。 */
+const ACTIVATION_MAX_BODY_BYTES = 1024;
 
 /**
  * built-in 引导工具：不入 tools.json、不经 toolgate（那是 M3 宿主 API 工具路径）。
@@ -611,6 +631,7 @@ const SNAPSHOT_TIMEOUT_MS = 15_000;
 
 export function createGateway(deps: GatewayDeps): Gateway {
   const validateFrame = createFrameValidator();
+  const validateActivationRequest = createActivationRequestValidator();
   const runtimes = new Map<string, SessionRuntime>();
   const openStreams = new Map<ServerResponse, () => void>();
   const corsHeaders = { 'access-control-allow-origin': deps.corsOrigin } as const;
@@ -2500,29 +2521,36 @@ export function createGateway(deps: GatewayDeps): Gateway {
   }
 
   /**
-   * P0-b demo-token 签发（demo 级）：有意不要求 authorization——此端点就是发 token 的，故须先于 verifier 判定。
-   * 信任模型见 demo-token.ts：真实鉴权在代执行时靠用户 cookie，伪造 hostUserId 只会被下游宿主拒绝。
+   * 匿名激活（唯一身份入口）：有意不要求 authorization——此端点就是发 token 的，故须先于 verifier 判定。
+   * 唯一未鉴权的收体入口，故请求体先过 ACTIVATION_MAX_BODY_BYTES 上界（声明值与实收值都查），
+   * 未鉴权方无从让服务端缓冲任意大的载荷。错误分支只回固定文案，不回显 installId 原值（SEC-04）。
    */
-  async function handleDemoToken(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const signer = deps.demoToken;
-    if (signer === undefined) {
-      sendJson(res, 404, { error: '未知路由' });
+  async function handleActivation(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const declaredLength = Number(req.headers['content-length']);
+    if (Number.isFinite(declaredLength) && declaredLength > ACTIVATION_MAX_BODY_BYTES) {
+      sendJson(res, 413, { error: '激活请求体过大' });
+      return;
+    }
+    let raw: string;
+    try {
+      raw = await readBody(req, ACTIVATION_MAX_BODY_BYTES);
+    } catch (cause) {
+      if (cause instanceof BodyTooLargeError) sendJson(res, 413, { error: '激活请求体过大' });
+      else sendJson(res, 400, { error: '请求体读取失败' });
       return;
     }
     let body: unknown;
     try {
-      body = JSON.parse(await readBody(req));
+      body = JSON.parse(raw);
     } catch {
       sendJson(res, 400, { error: '请求体不是合法 JSON' });
       return;
     }
-    const hostUserId = (body as { hostUserId?: unknown }).hostUserId;
-    if (typeof hostUserId !== 'string' || !/^[\w-]{1,64}$/.test(hostUserId)) {
-      sendJson(res, 400, { error: 'hostUserId 缺失或格式非法' });
+    if (!validateActivationRequest(body)) {
+      sendJson(res, 400, { error: '激活请求不过 activation 契约' });
       return;
     }
-    const token = await signDemoToken(signer, hostUserId);
-    sendJson(res, 200, { token });
+    sendJson(res, 200, await issueActivationToken(deps.activationJwtSecret, body.installId));
   }
 
   /** GET /v1/user-config（配置中心读取面）：subject 只由 claims 推导；空态 overlay=null + 稳定空 revision。 */
@@ -2638,8 +2666,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
       sendJson(res, 200, { ok: true });
       return;
     }
-    if (req.method === 'POST' && requestPath === '/demo-token') {
-      return handleDemoToken(req, res);
+    if (req.method === 'POST' && requestPath === '/v1/activation') {
+      return handleActivation(req, res);
     }
     const claims = await deps.verifier.verify(req.headers.authorization);
     if (claims === null) {
