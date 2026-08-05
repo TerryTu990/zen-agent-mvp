@@ -2,13 +2,27 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type {
   ClientCapability,
+  ConfigDecisionFrame,
+  ConfigDraftFrame,
+  ContextReportFrame,
   DomStepAction,
   DownstreamFrame,
+  ExecInstructionFrame,
+  ExecResultFrame,
+  GuideActionFrame,
   GuideActionKind,
+  HitlDecisionFrame,
   HitlDecisionValue,
+  HitlRequestFrame,
   HttpMethod,
+  SnapshotReportFrame,
+  SnapshotRequestFrame,
+  TextDeltaFrame,
+  ToolCardFrame,
   ToolCardStatus,
+  TurnCompleteFrame,
   UpstreamFrame,
+  UserMessageFrame,
 } from '../src/frames.js';
 
 interface FrameDef {
@@ -105,6 +119,95 @@ const domStepActionMirror: Record<DomStepAction, true> = {
   highlight: true,
 };
 
+/** `Record<keyof T, true>` 使 TS 侧漏抄字段在编译期即报错；键集再与 schema 属性集运行期对照。 */
+const keysOf = <T extends object>(mirror: Record<keyof T, true>): string[] => Object.keys(mirror);
+
+const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
+  {
+    def: 'contextReport',
+    keys: keysOf<ContextReportFrame>({
+      type: true, sessionId: true, url: true, title: true, featureId: true, snapshot: true,
+    }),
+  },
+  {
+    def: 'userMessage',
+    keys: keysOf<UserMessageFrame>({
+      type: true, sessionId: true, text: true, messageId: true,
+      executionPreference: true, automationRunId: true, automationId: true,
+    }),
+  },
+  {
+    def: 'hitlDecision',
+    keys: keysOf<HitlDecisionFrame>({
+      type: true, sessionId: true, hitlId: true, decision: true, comment: true,
+    }),
+  },
+  {
+    def: 'execResult',
+    keys: keysOf<ExecResultFrame>({
+      type: true, sessionId: true, nonce: true, ok: true, status: true, body: true, error: true,
+    }),
+  },
+  {
+    def: 'snapshotReport',
+    keys: keysOf<SnapshotReportFrame>({
+      type: true, sessionId: true, requestId: true, url: true, title: true,
+      pageInstanceId: true, elements: true, notices: true, evidence: true,
+    }),
+  },
+  {
+    def: 'configDecision',
+    keys: keysOf<ConfigDecisionFrame>({
+      type: true, sessionId: true, draftId: true, decision: true,
+    }),
+  },
+  {
+    def: 'textDelta',
+    keys: keysOf<TextDeltaFrame>({ type: true, sessionId: true, delta: true, priority: true }),
+  },
+  {
+    def: 'turnComplete',
+    keys: keysOf<TurnCompleteFrame>({ type: true, sessionId: true, idle: true, messageId: true }),
+  },
+  {
+    def: 'toolCard',
+    keys: keysOf<ToolCardFrame>({
+      type: true, sessionId: true, toolCallId: true, toolId: true, status: true, summary: true, mode: true,
+    }),
+  },
+  {
+    def: 'hitlRequest',
+    keys: keysOf<HitlRequestFrame>({
+      type: true, sessionId: true, hitlId: true, toolCallId: true, toolId: true, reason: true, params: true,
+    }),
+  },
+  {
+    def: 'execInstruction',
+    keys: keysOf<ExecInstructionFrame>({
+      type: true, sessionId: true, toolCallId: true, nonce: true, issuedAt: true,
+      expiresAt: true, ttl: true, signature: true, request: true,
+    }),
+  },
+  {
+    def: 'guideAction',
+    keys: keysOf<GuideActionFrame>({
+      type: true, sessionId: true, action: true, selector: true, message: true,
+    }),
+  },
+  {
+    def: 'snapshotRequest',
+    keys: keysOf<SnapshotRequestFrame>({
+      type: true, sessionId: true, requestId: true, evidenceRules: true,
+    }),
+  },
+  {
+    def: 'configDraft',
+    keys: keysOf<ConfigDraftFrame>({
+      type: true, sessionId: true, draftId: true, scope: true, summary: true, change: true,
+    }),
+  },
+];
+
 describe('frames.ts 与 C3 schema 的闭集同构', () => {
   it('上行帧 type 闭集一致', () => {
     expect(Object.keys(upstreamMirror).sort()).toEqual(frameTypesOf('upstreamFrame').sort());
@@ -146,5 +249,14 @@ describe('frames.ts 与 C3 schema 的闭集同构', () => {
     expect(Object.keys(domStepActionMirror).sort()).toEqual(
       [...(defOf('domStep').properties.action?.enum ?? [])].sort(),
     );
+  });
+
+  /**
+   * type 闭集一致不足以拦住字段级漂移：镜像少抄一个字段时全部单测仍绿，
+   * 只有浏览器级 E2E 才会暴露（`automationId` 即此例）。逐帧对账属性集把两个方向都钉死——
+   * Record 键由 TS 侧编译期强制穷举，值与 schema 属性集运行期比对。
+   */
+  it.each(FRAME_PROPERTY_MIRRORS)('$def 的属性集与 schema 一致（U5 手抄镜像防漂移）', ({ def, keys }) => {
+    expect([...keys].sort()).toEqual(Object.keys(defOf(def).properties).sort());
   });
 });

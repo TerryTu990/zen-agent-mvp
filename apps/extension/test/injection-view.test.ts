@@ -189,6 +189,11 @@ describe('工具面收紧展示（baseTier → effectiveTier）', () => {
       description({
         toolIds: [],
         userConfigRevision: undefined,
+        // 降级轮 L2 注入段为空（rules/facts 读不到）：L2 分区须由收紧标注独立撑起，不靠遗留 block。
+        blocks: [
+          { kind: 'system-prompt', bytes: 4096, origin: 'L0' },
+          { kind: 'feature-rules', id: 'xianyu-orders', bytes: 2048, origin: 'L1' },
+        ],
         tools: [
           {
             toolId: 'xianyu-orders.page-operate',
@@ -211,9 +216,45 @@ describe('工具面收紧展示（baseTier → effectiveTier）', () => {
     expect(root.querySelectorAll('.za-injection-tool')).toHaveLength(2);
     const row = toolRow(root, 'xianyu-orders.page-operate');
     expect(row.dataset['zaToolUnavailable']).toBe('true');
+    expect(row.querySelector('.za-injection-tool-unavailable')?.textContent).toBe('本轮不可用');
     expect(row.querySelector('.za-injection-tightened-by')?.textContent).toContain('存储故障');
     expect(root.querySelector('.za-injection-degraded')?.textContent).toContain('个人定制读取失败');
-    expect(root.querySelector('.za-injection-layer[data-za-layer="L2"]')).not.toBeNull();
+    const l2 = root.querySelector('.za-injection-layer[data-za-layer="L2"]');
+    expect(l2).not.toBeNull();
+    expect(l2!.querySelector('.za-injection-layer-empty')?.textContent).toContain('未被清空');
+  });
+
+  it('用户长期关停的工具不说成「本轮不可用」，且基线本就禁止的工具不标收紧来源', () => {
+    const root = container();
+    renderInjectionView(
+      root,
+      description({
+        toolIds: [],
+        tools: [
+          {
+            toolId: 'xianyu-orders.page-operate',
+            baseTier: 'auto',
+            effectiveTier: 'forbidden',
+            origin: 'L1',
+            tightenedBy: 'xianyu-seller',
+          },
+          {
+            toolId: 'xianyu-orders.purge-orders',
+            baseTier: 'forbidden',
+            effectiveTier: 'forbidden',
+            origin: 'L1',
+            tightenedBy: 'storage-failure',
+          },
+        ],
+      }),
+    );
+
+    const disabled = toolRow(root, 'xianyu-orders.page-operate');
+    expect(disabled.querySelector('.za-injection-tool-unavailable')?.textContent).toBe('已被你的定制关闭');
+    expect(disabled.querySelector('.za-injection-tightened-by')?.textContent).toContain('xianyu-seller');
+
+    const alwaysForbidden = toolRow(root, 'xianyu-orders.purge-orders');
+    expect(alwaysForbidden.querySelector('.za-injection-tightened-by')).toBeNull();
   });
 });
 

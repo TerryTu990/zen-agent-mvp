@@ -380,6 +380,55 @@ describe('watch 自动回合：无人值守只读底线（R7，结构强制）',
     30_000,
   );
 
+  it('未知 automationId 一律拒绝，不回落普通回合（回落即把完整工具面交给无人值守轮）', async () => {
+    const hostUserId = 'watch-unknown';
+    const token = await signToken(hostUserId);
+    expect((await putOverlay(token, watchOverlay(hostUserId, [watchEntry()]))).status).toBe(200);
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: WATCH_URL });
+      const res = await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: WATCH_PROMPT,
+        automationRunId: 'unknown_run_1',
+        automationId: 'watch-never-created',
+        executionPreference: 'dom-only',
+      });
+      expect(res.status).toBe(403);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(framesByType(sse.frames, 'snapshot-request')).toEqual([]);
+      expect(framesByType(sse.frames, 'text-delta')).toEqual([]);
+    } finally {
+      sse.close();
+    }
+  }, 15_000);
+
+  it('只带 automationRunId 的帧被拒：归属判定的入口不能由客户端是否自愿声明决定', async () => {
+    const hostUserId = 'watch-halfid';
+    const token = await signToken(hostUserId);
+    expect((await putOverlay(token, watchOverlay(hostUserId, [watchEntry()]))).status).toBe(200);
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: WATCH_URL });
+      const res = await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: WATCH_PROMPT,
+        automationRunId: 'halfid_run_1',
+        executionPreference: 'dom-only',
+      });
+      expect(res.status).toBe(400);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(framesByType(sse.frames, 'snapshot-request')).toEqual([]);
+      expect(framesByType(sse.frames, 'text-delta')).toEqual([]);
+    } finally {
+      sse.close();
+    }
+  }, 15_000);
+
   it('未启用的 watch 实例不可发起自动回合（服务端拒，不依赖客户端自律）', async () => {
     const hostUserId = 'watch-disabled';
     const token = await signToken(hostUserId);

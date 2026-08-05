@@ -161,6 +161,7 @@ function hasUserLayer(description: InjectionDescriptionView, l2Blocks: Injection
 function renderLayer(
   layer: InjectionOrigin,
   blocks: InjectionBlockView[],
+  degraded = false,
 ): HTMLElement {
   const section = el('section', 'za-injection-layer');
   section.dataset['zaLayer'] = layer;
@@ -168,10 +169,15 @@ function renderLayer(
   head.append(el('span', 'za-injection-layer-tag', layer));
   head.append(el('span', 'za-injection-layer-name', LAYER_NAMES[layer]));
   section.append(head);
+  // 降级轮的空态不能说「无」——用户的定制还在，只是本轮读不到；说成「无」会让人以为配置丢了。
   section.append(
     blocks.length > 0
       ? renderBlockList(blocks)
-      : el('p', 'za-injection-layer-empty', '本轮无该层注入段'),
+      : el(
+          'p',
+          'za-injection-layer-empty',
+          degraded ? '本轮读取失败，未注入（你的定制未被清空）' : '本轮无该层注入段',
+        ),
   );
   return section;
 }
@@ -186,7 +192,9 @@ function renderTool(toolId: string, tool: InjectionToolView | undefined): HTMLEl
     row.append(el('span', 'za-injection-tier-arrow', '→'));
     row.append(el('span', 'za-injection-tier-effective', tierText(tool.effectiveTier)));
   }
-  if (tool.tightenedBy !== undefined) {
+  // 收紧来源只在档位确实被抬高时才说——基线本就是 forbidden 的工具没有被谁收紧，
+  // 标上来源会让用户以为它原本可用、故障恢复后能用。
+  if (tool.tightenedBy !== undefined && tool.effectiveTier !== tool.baseTier) {
     row.append(
       el(
         'span',
@@ -203,7 +211,10 @@ function renderTool(toolId: string, tool: InjectionToolView | undefined): HTMLEl
 /**
  * 工具面渲染以「可见面 ∪ 逐项描述」为行集：收紧到禁止的工具已不在 toolIds 内，
  * 若只按可见面渲染，被收紧掉的工具会连同其收紧来源一起从视图消失——用户看到的是
- * 「agent 忽然什么都不做」而无从追溯（违 R4/R6）。故落面工具也成行，标注为本轮不可用。
+ * 「agent 忽然什么都不做」而无从追溯（违 R4/R6）。故落面工具也成行。
+ *
+ * 落面原因决定措辞：存储降级是本轮的、会自行恢复；其余（用户自己关停等）是长期的，
+ * 说成「本轮」会让用户等一个永远不来的恢复。
  */
 function renderTools(description: InjectionDescriptionView): HTMLElement {
   const section = el('section', 'za-injection-tools');
@@ -216,7 +227,13 @@ function renderTools(description: InjectionDescriptionView): HTMLElement {
     if (visible.has(tool.toolId)) continue;
     const row = renderTool(tool.toolId, tool);
     row.dataset['zaToolUnavailable'] = 'true';
-    row.append(el('span', 'za-injection-tool-unavailable', '本轮不可用'));
+    row.append(
+      el(
+        'span',
+        'za-injection-tool-unavailable',
+        tool.tightenedBy === 'storage-failure' ? '本轮不可用' : '已被你的定制关闭',
+      ),
+    );
     list.append(row);
   }
   section.append(list);
@@ -245,11 +262,12 @@ export function renderInjectionView(root: HTMLElement, description: InjectionDes
     else byLayer.get(block.origin)?.push(block);
   }
 
+  const degraded = isStorageDegraded(description);
   const layers = el('div', 'za-injection-layers');
   for (const layer of LAYER_ORDER) {
     const blocks = byLayer.get(layer) ?? [];
     const visible = layer === 'L2' ? hasUserLayer(description, blocks) : blocks.length > 0;
-    if (visible) layers.append(renderLayer(layer, blocks));
+    if (visible) layers.append(renderLayer(layer, blocks, layer === 'L2' && degraded));
   }
   root.append(layers);
 

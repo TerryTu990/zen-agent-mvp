@@ -12,7 +12,7 @@ import type {
 
 /**
  * automationId 的 watch 归属判定：
- *  - none：不是 watch（pack 声明的自动化或未知 id），按普通回合处理（工具面来源与判定链路不变）；
+ *  - none：不是 watch——pack 声明的自动化按普通回合处理，未知 id 由调用方 fail-closed 拒绝；
  *  - blocked：是 watch 但当前不可运行（未启用 / 模板不在平台闭集 / 非只读模板），fail-closed 拒绝——
  *    绝不回落普通回合，否则 watch id 会拿到完整工具面，只读强制被绕过；
  *  - ready：可运行的只读实例。
@@ -33,23 +33,32 @@ export function resolveWatchRun(overlay: UserOverlay | null, automationId: strin
 }
 
 /**
- * 工作页归属（origin + 路径前缀，与 pack automation 的 origin + workRoutes 同判定形状）：
- * 客户端上报的快照 URL 不在实例范围内时，本轮报告的就不是被监测的页面——fail-closed 判否。
+ * 工作页归属（origin + 路径精确相等）：客户端上报的快照 URL 不在实例范围内时，
+ * 本轮报告的就不是被监测的页面——fail-closed 判否。查询串与 hash 不参与判定。
  */
 export function isWatchWorkPage(watchUrl: string, reportedUrl: string): boolean {
-  let target: URL;
-  let reported: URL;
-  try {
-    target = new URL(watchUrl);
-    reported = new URL(reportedUrl);
-  } catch {
-    return false;
-  }
-  if (target.origin !== reported.origin) return false;
-  // watch 指定的是一个页面而非路由族：路径精确相等（去尾斜杠差异），
+  const target = watchPageKey(watchUrl);
+  const reported = watchPageKey(reportedUrl);
+  // watch 指定的是一个页面而非路由族：路径精确相等。
   // 前缀语义会让同 origin 的其他页面被当作被监测页并产生虚假变化。
-  const normalize = (path: string): string => (path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path);
-  return normalize(target.pathname) === normalize(reported.pathname);
+  return target !== null && target === reported;
+}
+
+/**
+ * 被监测页的归一标识（origin + 去尾斜杠路径）：查询串与 hash 不入内，
+ * 因为它们不改变「哪一个页面」。比对基线以此归并——用完整 URL 会让同一页的
+ * 跟踪参数变体各自建基线，每轮都命中「首轮建基线」分支而永不报告变化。
+ * URL 不可解析时返回 null（fail-closed：不可解析的两端不相等）。
+ */
+export function watchPageKey(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const path = parsed.pathname;
+  return parsed.origin + (path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path);
 }
 
 /** 比对基线：只留可稳定复现的要素投影（ref 每次快照重新编号，不入基线）。 */

@@ -82,6 +82,7 @@ import {
   hasWatchChange,
   isWatchWorkPage,
   resolveWatchRun,
+  watchPageKey,
   watchReportPrompt,
   watchSnapshotOf,
   type WatchSnapshot,
@@ -1958,8 +1959,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
       redactSnapshotValues(report.elements),
       report.notices ?? [],
     );
-    // 基线按 (subject, watchId, 实际快照页) 归并：换页不与旧页比对，避免虚假「新增/消失」报告。
-    const baselineKey = JSON.stringify([claims.tenant, claims.hostUserId, watch.id, snapshot.url]);
+    // 基线按 (subject, watchId, 被监测页) 归并：改指目标页不与旧页比对，避免虚假「新增/消失」报告。
+    const baselineKey = JSON.stringify([claims.tenant, claims.hostUserId, watch.id, watchPageKey(watch.url)]);
     const previous = watchBaselines.get(baselineKey);
     // 基线推进（LRU 上界防无界增长）：首轮与无变化轮即刻推进；有变化轮推迟到报告成功之后——
     // 否则报告失败会把已检出的变化连同基线一起吞掉，该变化永不再报（R6）。
@@ -2107,25 +2108,42 @@ export function createGateway(deps: GatewayDeps): Gateway {
         // watch 归属判定先于一切回合登记（adr-021）：不可运行的实例不占幂等位、不产任何帧。
         // 存储读失败时不得回落普通回合——那会让 watch id 拿到完整工具面，只读强制被绕过（fail-closed）。
         let watchRun: UserOverlayWatch | null = null;
-        if (upstream.automationId !== undefined && deps.userConfig !== undefined) {
-          let overlay: UserOverlay | null;
-          let stale = false;
-          try {
-            const read = await deps.userConfig.store.read(subjectOf(claims));
-            overlay = read.overlay;
-            stale = read.stale === true;
-          } catch {
-            sendJson(res, 503, { error: '用户配置暂不可用，未启动自动回合' });
+        // 自动回合的两个标识必须同行：只带 automationRunId 的帧若被当普通回合放行，
+        // 无人值守轮次即拿到完整工具面——归属判定的入口不能由客户端自愿声明与否决定。
+        if (upstream.automationRunId !== undefined && upstream.automationId === undefined) {
+          sendJson(res, 400, { error: '自动回合缺少 automationId，未启动回合' });
+          return;
+        }
+        // 上面的守卫使两者同在同缺，绑成一个值让后续无须各自兜底。
+        const automationRun =
+          upstream.automationRunId !== undefined && upstream.automationId !== undefined
+            ? { runId: upstream.automationRunId, automationId: upstream.automationId }
+            : null;
+        if (upstream.automationId !== undefined) {
+          // pack 声明的自动化取自装配快照（L1），其合法性与 L2 存储是否装配无关——
+          // 把这一判定挂在可选依赖上会让拒绝面随组装方式漂移。
+          const packDeclared = (await deps.assembly.listAutomations()).some(
+            (descriptor) => descriptor.automation.id === upstream.automationId,
+          );
+          if (!packDeclared && deps.userConfig === undefined) {
+            sendJson(res, 403, { error: '未启用用户配置存储，无法确认自动化实例，未启动自动回合' });
             return;
           }
-          const resolution = resolveWatchRun(overlay, upstream.automationId);
-          // 未解析出 watch 时不得直接回落普通回合——无人值守轮次拿到完整工具面即 R7 失守。
-          // 只有命中 L1 pack automation 闭集（adr-019 既有语义）才按普通回合继续；其余一律拒绝。
-          if (resolution.kind === 'none') {
-            const declared = deps.userConfig.l1Baseline.automations.some(
-              (automation) => automation.id === upstream.automationId,
-            );
-            if (!declared) {
+          if (!packDeclared && deps.userConfig !== undefined) {
+            let overlay: UserOverlay | null;
+            let stale = false;
+            try {
+              const read = await deps.userConfig.store.read(subjectOf(claims));
+              overlay = read.overlay;
+              stale = read.stale === true;
+            } catch {
+              sendJson(res, 503, { error: '用户配置暂不可用，未启动自动回合' });
+              return;
+            }
+            const resolution = resolveWatchRun(overlay, upstream.automationId);
+            // 未解析出 watch 且不是 pack 声明的自动化：一律拒绝，绝不回落普通回合——
+            // 无人值守轮次拿到完整工具面即 R7 失守。
+            if (resolution.kind === 'none') {
               sendJson(res, stale ? 503 : 403, {
                 error: stale
                   ? '用户配置为降级快照，无法确认自动化实例，未启动自动回合'
@@ -2133,12 +2151,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
               });
               return;
             }
+            if (resolution.kind === 'blocked') {
+              sendJson(res, 403, { error: `自动化实例不可运行：${resolution.reason}` });
+              return;
+            }
+            if (resolution.kind === 'ready') watchRun = resolution.watch;
           }
-          if (resolution.kind === 'blocked') {
-            sendJson(res, 403, { error: `自动化实例不可运行：${resolution.reason}` });
-            return;
-          }
-          if (resolution.kind === 'ready') watchRun = resolution.watch;
         }
         if (upstream.messageId !== undefined) {
           const reservation = deps.store.reserveMessageTurn(session.sessionId, upstream.messageId);
@@ -2173,12 +2191,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
             if (completed !== undefined) deps.store.setMessageTurn(session.sessionId, completed[0], null);
           }
         }
-        if (upstream.automationRunId !== undefined) {
-          if (runtime.automationRuns.has(upstream.automationRunId)) {
+        if (automationRun !== null) {
+          if (runtime.automationRuns.has(automationRun.runId)) {
             sendJson(res, 409, { error: '自动扫描轮次已存在' });
             return;
           }
-          runtime.automationRuns.set(upstream.automationRunId, { status: 'running', updatedAt: Date.now() });
+          runtime.automationRuns.set(automationRun.runId, { status: 'running', updatedAt: Date.now() });
         }
         runtime.pendingTurns += 1;
         if (upstream.messageId !== undefined) runtime.activeMessageIds.add(upstream.messageId);
@@ -2194,7 +2212,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   session,
                   claims,
                   watchRun,
-                  { runId: upstream.automationRunId ?? randomUUID(), automationId: watchRun.id },
+                  { runId: automationRun?.runId ?? randomUUID(), automationId: watchRun.id },
                   upstream.text,
                   upstream.messageId,
                 );
@@ -2209,29 +2227,29 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   upstream.messageId,
                 );
               }
-              if (upstream.automationRunId !== undefined) {
-                runtime.automationRuns.set(upstream.automationRunId, {
+              if (automationRun !== null) {
+                runtime.automationRuns.set(automationRun.runId, {
                   status: succeeded ? 'succeeded' : 'failed',
                   updatedAt: Date.now(),
                 });
                 broadcast(session.sessionId, {
                   type: 'tool-card',
                   sessionId: session.sessionId,
-                  toolCallId: upstream.automationRunId,
-                  toolId: upstream.automationId ?? 'automation',
+                  toolCallId: automationRun.runId,
+                  toolId: automationRun.automationId,
                   status: succeeded ? 'succeeded' : 'failed',
                   ...(summary !== undefined ? { summary } : {}),
                   mode: 'server',
                 });
               }
             } catch (cause) {
-              if (upstream.automationRunId !== undefined) {
-                runtime.automationRuns.set(upstream.automationRunId, { status: 'failed', updatedAt: Date.now() });
+              if (automationRun !== null) {
+                runtime.automationRuns.set(automationRun.runId, { status: 'failed', updatedAt: Date.now() });
                 broadcast(session.sessionId, {
                   type: 'tool-card',
                   sessionId: session.sessionId,
-                  toolCallId: upstream.automationRunId,
-                  toolId: upstream.automationId ?? 'automation',
+                  toolCallId: automationRun.runId,
+                  toolId: automationRun.automationId,
                   status: 'failed',
                   mode: 'server',
                 });

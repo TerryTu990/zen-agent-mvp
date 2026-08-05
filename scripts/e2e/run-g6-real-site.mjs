@@ -34,6 +34,10 @@
  * 已知未验证点（本脚本从未执行过，如实声明）：闲鱼搜索结果页与飞书表格页的可交互要素能否被
  * page_snapshot 稳定采集、以及模型能否在 maxTurnRounds 内完成 N 行写入，均需首次真跑确认；
  * 若快照不足以定位单元格，需为飞书表格补 pack（走 L1 载入校验），而不是放宽 generic 工具面。
+ * 第三点：写入结果的 oracle 用 `document.body.innerText` 数运行标记——飞书表格若以 canvas 或
+ * 虚拟滚动渲染，该 oracle 恒为 0 且「确认先于写入」的两条前置断言会退化为恒真（方向是 fail-closed，
+ * 不会假绿，但案例会被永久堵死）。首跑前须先单独验证 oracle 可读，不可读则改用导出/可复制区域，
+ * 或以审计 tool-execution 计数为主 oracle、截图为人证。
  */
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -44,7 +48,9 @@ import { chromium } from 'playwright';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
-const TEST_ROOT = '/Users/terrytu/Workspace2025/Working/tmp/zen-agent';
+// 证据默认落仓内（.za 已在 gitignore）；机器专属位置由运行者以 ZA_E2E_TEST_ROOT 传入，
+// 不写进源码——发布门脚本须能被他人在别的机器上复跑取证。
+const TEST_ROOT = resolve(process.env.ZA_E2E_TEST_ROOT ?? join(REPO_ROOT, '.za', 'e2e'));
 
 const PROFILE_DIR = resolve(process.env.ZA_E2E_PROFILE_DIR ?? join(REPO_ROOT, '.za', 'e2e-profile-real-site'));
 const EVIDENCE_DIR = resolve(
@@ -74,6 +80,28 @@ const TURN_TIMEOUT_MS = Number(process.env.ZA_E2E_TURN_TIMEOUT_MS ?? 300_000);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+/**
+ * 证据落盘前统一脱敏。本驱动是四个里唯一在真实 ZF_LLM_API_KEY 下运行的，
+ * 证据又要长期留存作发布凭据——按 SEC-01/04 一律过滤，不依赖「当前事件体不含凭证」这一时点事实。
+ */
+function redact(text) {
+  let out = text;
+  for (const secret of [JWT_SECRET, SIGNING_SECRET, process.env.ZF_LLM_API_KEY]) {
+    if (typeof secret === 'string' && secret !== '') out = out.split(secret).join('[redacted-secret]');
+  }
+  return out.replace(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, '[redacted-jwt]');
+}
+
+/** 面板提取清单的条目数：提取指令要求「按编号列出」，故数行首编号。 */
+function countNumberedItems(text) {
+  const seen = new Set();
+  for (const line of text.split('\n')) {
+    const match = /^\s*(\d{1,2})[.、)]/.exec(line);
+    if (match !== null) seen.add(Number(match[1]));
+  }
+  return seen.size;
 }
 
 function base64url(input) {
@@ -215,38 +243,51 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
   await sheetPage.screenshot({ path: join(EVIDENCE_DIR, `run-${runIndex + 1}-sheet.png`), fullPage: false });
   await panel.screenshot({ path: join(EVIDENCE_DIR, `run-${runIndex + 1}-panel.png`), fullPage: true });
 
-  const markers = await markersInSheet();
-  assert(markers === ITEM_COUNT, `表格新增行数 ${markers} 与提取数 ${ITEM_COUNT} 不一致`);
-  assert(writeApprovals.length > 0, '写入未经任何 HITL 确认卡');
+  // 提取数取自面板正文的编号行，而非常量——否则「模型少提或编造补足」这条产品承诺零覆盖：
+  // 拿 ITEM_COUNT 和 ITEM_COUNT 比恒真。
+  const extractedItems = countNumberedItems(extraction);
   assert(
-    writeApprovals.every((approval) => approval.markersBefore < ITEM_COUNT),
-    'HITL 确认卡出现时表格已被写满：确认没有先于写入',
+    extractedItems === ITEM_COUNT,
+    `面板提取清单为 ${extractedItems} 条，与要求的 ${ITEM_COUNT} 条不符（模型少提或多报）`,
   );
+  const markers = await markersInSheet();
+  assert(markers === extractedItems, `表格新增行数 ${markers} 与实际提取数 ${extractedItems} 不一致`);
+  assert(writeApprovals.length > 0, '写入未经任何 HITL 确认卡');
   assert(writeApprovals[0].markersBefore === 0, '首张确认卡出现前表格已有本次运行标记：存在未确认的写入');
 
   const events = auditEvents(auditPath).slice(auditBefore);
   const decisions = events.filter((event) => event.type === 'tool-decision');
   const executions = events.filter((event) => event.type === 'tool-execution');
   assert(events.some((event) => event.type === 'assembly'), '审计缺装配事件');
-  assert(
-    decisions.some((event) => event.data.verdict === 'approve' && event.data.riskTier === 'hitl'),
-    '审计缺 hitl 分级的放行判定',
+  // 「确认先于写入」按审计流逐条配对：只断言「存在 approve」「存在 execution」无法区分
+  // 「一次确认放行一次写入」与「一次确认放行五次写入」——后者有四次写入无人确认。
+  const approvals = decisions.filter(
+    (event) => event.data.verdict === 'approve' && event.data.riskTier === 'hitl',
   );
-  assert(!decisions.some((event) => event.data.verdict === 'deny'), '出现了未预期的拒绝判定');
+  assert(approvals.length > 0, '审计缺 hitl 分级的放行判定');
   assert(
-    executions.some((event) => event.data.outcome === 'ok'),
-    '审计缺成功的代执行事件',
+    approvals.length >= executions.length,
+    `放行判定 ${approvals.length} 次少于代执行 ${executions.length} 次：存在未经确认的写入`,
   );
+  for (const [index, execution] of executions.entries()) {
+    const approval = approvals[index];
+    assert(
+      approval !== undefined && approval.ts <= execution.ts,
+      `第 ${index + 1} 次代执行没有先于它的放行判定`,
+    );
+  }
+  assert(executions.some((event) => event.data.outcome === 'ok'), '审计缺成功的代执行事件');
 
   const excerpt = events.map((event) => JSON.stringify(event)).join('\n');
   assert(!excerpt.includes(token), '审计片段泄漏了访问令牌');
-  writeFileSync(join(EVIDENCE_DIR, `run-${runIndex + 1}-audit.jsonl`), `${excerpt}\n`, 'utf8');
-  writeFileSync(join(EVIDENCE_DIR, `result-${runIndex + 1}.json`), `${JSON.stringify({
+  writeFileSync(join(EVIDENCE_DIR, `run-${runIndex + 1}-audit.jsonl`), `${redact(excerpt)}\n`, 'utf8');
+  writeFileSync(join(EVIDENCE_DIR, `result-${runIndex + 1}.json`), `${redact(JSON.stringify({
     case: 'E2E-E', run: runIndex + 1, status: 'passed', ranAt: new Date().toISOString(),
-    runTag, keyword: SEARCH_KEYWORD, expectedItems: ITEM_COUNT, markersWritten: markers,
+    runTag, keyword: SEARCH_KEYWORD, expectedItems: ITEM_COUNT, extractedItems, markersWritten: markers,
     extractApprovals: extractApprovals.length, writeApprovals: writeApprovals.length,
+    approvals: approvals.length, executions: executions.length,
     extractionExcerpt: extraction.slice(-2000),
-  }, null, 2)}\n`, 'utf8');
+  }, null, 2))}\n`, 'utf8');
 
   await panel.close();
   await sheetPage.close();

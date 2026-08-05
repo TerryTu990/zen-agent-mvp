@@ -752,7 +752,10 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     panel.replaceChildren(
       pageHead('自动化', [create]),
       notice('无人值守任务不允许自动执行不可撤销的写操作——平台底线，不可配置。', 'lock'),
-      notice('周期自动化只唤醒已打开且已加入会话组的声明工作页；不会自动新建页面，任一不确定状态即暂停。'),
+      notice(
+        '周期自动化只唤醒已打开且已加入会话组的声明工作页，不会自动新建页面。' +
+          '你自建的触发器在目标页未打开时只跳过本轮；站点包自动化在离开工作流后会自动停止。',
+      ),
     );
     if (state.loadError !== null) {
       panel.append(notice(state.loadError, 'warn'));
@@ -788,7 +791,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       el(
         'p',
         'za-cc-hint',
-        `平台通用模板：${WATCH_TEMPLATE_LABEL['page-watch']}——按周期读取你已打开并加入会话组的目标页，与上轮快照比对；有变化时在侧边栏汇报，无变化不打扰。平台不会自动新建页面，目标页需保持打开。`,
+        `平台通用模板：${WATCH_TEMPLATE_LABEL['page-watch']}——按周期读取你已打开并加入会话组的目标页，与上轮快照比对；有变化时在侧边栏汇报，无变化不打扰。平台不会自动新建页面，目标页需保持打开。当前比对的是可交互要素、表格与列表项、页面提示文本与标题；普通段落正文里的纯文字改动（如内嵌的价格数字）暂时检不出，此类页面可能长期无汇报。`,
       ),
     );
     if (state.watches.length === 0 && state.foreignWatches.length === 0) {

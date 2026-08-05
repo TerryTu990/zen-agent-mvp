@@ -163,6 +163,7 @@ describe('C3 client-access-layer 消息帧', () => {
       text: '怎么筛选待发货订单？',
       executionPreference: 'dom-only',
       automationRunId: 'scan_run_001',
+      automationId: 'watch-orders',
     },
     'text-delta': {
       type: 'text-delta',
@@ -207,6 +208,14 @@ describe('C3 client-access-layer 消息帧', () => {
       sessionId: 's-001',
       text: '自动扫描',
       automationRunId: 'short',
+      automationId: 'watch-orders',
+    },
+    // 只带 automationRunId 会让服务端的 watch 归属判定整段被跳过，无人值守轮拿到完整工具面。
+    'user-message 自动回合缺 automationId': {
+      type: 'user-message',
+      sessionId: 's-001',
+      text: '自动扫描',
+      automationRunId: 'scan_run_002',
     },
     'context-report 缺 required url': { type: 'context-report', sessionId: 's-001' },
     '未知帧 type 被闭集拒绝': { type: 'page-reload', sessionId: 's-001' },

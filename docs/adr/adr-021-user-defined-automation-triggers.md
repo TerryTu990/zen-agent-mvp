@@ -74,15 +74,20 @@ interface PlatformAutomationTemplate {
   报告（R6），需要人确认的事项由用户在人工会话中处理。
 
 `automationId` 由客户端上行，但**只收紧不授权**：服务端解析到只读模板的 watch 即收窄该轮工具面；
-解析不到则按普通回合处理（工具面来源与判定链路与人工回合完全相同）——故该字段不构成放宽面。
+解析不到则**拒绝该轮**（未知实例 403、降级快照下无法确认 403/503），不回落普通回合——回落会把
+无人值守轮次交还完整工具面，只读底线随之失守。`automationRunId` 与 `automationId` 必须同行
+（schema `dependentRequired` + 服务端前置拒绝），否则归属判定的入口就成了客户端的自愿声明。
 
 ### 4. 报告收口（R6）与客户端调度
 
 - watch run 产出结构化报告（变化摘要 + 依据的快照要素），经完成帧 tool-card 呈现并进面板历史；
   **无变化不打扰面板**，只落审计（设计稿运行历史「无变化」行的数据源）。
 - extension：watch 实例经 `GET /v1/user-config` 拉取，与 pack automation 描述符**合并调度**——复用既有
-  alarm / 组级单飞锁 / SW 恢复机制，按实例 id 通用化；watch 工作页判定 = URL origin + path 前缀
-  （pack automation 是 origin + workRoutes，同一判定形状）；拉取失败 **fail-closed 不调度**。
+  alarm / 组级单飞锁 / SW 恢复机制，按实例 id 通用化；watch 工作页判定 = URL origin + path **精确相等**
+  （watch 指定的是一个页面；pack automation 是 origin + workRoutes 前缀，覆盖一族工作流页面），
+  两端必须同判定——客户端选中而服务端判否的页会以失败帧收尾并连带停用触发器；拉取失败 **fail-closed 不调度**。
+- 比对基线按 (subject, watchId, 被监测页归一标识) 归并；归一标识不含查询串与 hash——含则同一页的
+  跟踪参数变体各自建基线，每轮都落在「首轮建基线」而永不汇报变化。
 - 配置入口复用配置中心自动化页（G4 已落）的分组结构，不另起一套。
 
 ### 5. C3/C5 加法

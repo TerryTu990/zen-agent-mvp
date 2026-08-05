@@ -1028,7 +1028,21 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         postStatus(`自动化「${run.automationId}」工作页上下文同步失败，已暂停。`);
         return;
       }
-      await forward(scanMessage);
+      // 服务端可拒绝自动回合（adr-021 fail-closed）。被拒的轮次不会有完成帧，
+      // 锁必须就地释放，否则悬挂到下周期被恢复判定当成异常并关停触发器。
+      const delivery = await deliver(scanMessage);
+      if (delivery.accepted) return;
+      if (autoScanRun?.runId === run.runId) {
+        autoScanRun = null;
+        await chrome.storage.session.remove(autoScanRunKey);
+      }
+      // 503 = 服务端暂时无法确认实例（存储抖动 / 降级快照）：瞬时故障不动用户配置，下周期自然重试。
+      if (delivery.httpStatus === 503) {
+        postStatus(`自动化「${run.automationId}」本轮未启动（服务端暂不可用），下个周期重试。`);
+        return;
+      }
+      await chrome.storage.local.set({ [enabledKey]: false });
+      postStatus(`自动化「${run.automationId}」未被服务端接受，已暂停；请核对该触发器是否仍存在。`);
     });
     return 'started';
   }

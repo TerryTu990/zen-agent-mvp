@@ -89,13 +89,17 @@ describe('watch 实例派生周期自动化描述符', () => {
   });
 });
 
-describe('watch 工作页判定（origin + 路径前缀，复用既有闭集判定）', () => {
+describe('watch 工作页判定（origin + 路径精确相等，与服务端同判定）', () => {
   const descriptor = watchAutomationDescriptor({ ...watch, url: 'https://example.test/news/tech' });
 
-  it('同 origin 且路径前缀命中才算工作页', () => {
+  it('同 origin 且路径精确相等才算工作页；查询串与尾斜杠不改变判定', () => {
     expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech')).toBe(true);
     expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech?page=2')).toBe(true);
-    expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech/2026')).toBe(true);
+    expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech/')).toBe(true);
+  });
+
+  it('子路径页不算工作页：选中它会被服务端判否，回失败帧后触发器整条被暂停', () => {
+    expect(isAutoScanWorkPage(descriptor, 'https://example.test/news/tech/2026')).toBe(false);
   });
 
   it('前缀相邻、上级路径、异 origin、异协议与坏 URL 一律不算工作页', () => {
@@ -108,10 +112,20 @@ describe('watch 工作页判定（origin + 路径前缀，复用既有闭集判�
     expect(isAutoScanWorkPage(descriptor, undefined)).toBe(false);
   });
 
-  it('站点根 URL 的实例覆盖该 origin 全站', () => {
+  it('站点根 URL 的实例只覆盖首页本身，不覆盖该 origin 全站', () => {
     const rootWatch = watchAutomationDescriptor({ ...watch, url: 'https://example.test/' });
-    expect(isAutoScanWorkPage(rootWatch, 'https://example.test/any/deep/path')).toBe(true);
+    expect(isAutoScanWorkPage(rootWatch, 'https://example.test/')).toBe(true);
+    expect(isAutoScanWorkPage(rootWatch, 'https://example.test/any/deep/path')).toBe(false);
     expect(isAutoScanWorkPage(rootWatch, 'https://other.test/any')).toBe(false);
+  });
+
+  it('pack 自动化保持路径前缀语义（工作流覆盖一族页面），不受 watch 收紧影响', () => {
+    expect(isAutoScanWorkPage(packDescriptor, 'https://seller.goofish.com/#/seller-trade/order-manage')).toBe(true);
+    const pathPack: AutomationDescriptor = {
+      ...packDescriptor,
+      automation: { ...packDescriptor.automation, workRoutes: ['/orders'] },
+    };
+    expect(isAutoScanWorkPage(pathPack, 'https://seller.goofish.com/orders/1001')).toBe(true);
   });
 });
 

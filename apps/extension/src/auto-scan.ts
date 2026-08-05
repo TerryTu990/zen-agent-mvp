@@ -146,23 +146,33 @@ export function normalizeAutoScanMinutes(value: unknown, fallback = DEFAULT_AUTO
 
 /**
  * 只复用用户已打开的声明工作页；origin 须精确等于 pack 围栏。
- * workRoute 以 '#' 开头按 hash 路由（? 前段）精确匹配，否则按路径段前缀匹配。
+ *
+ * 两种路由语义按来源分叉，且必须与服务端同判定：
+ *  - pack 自动化：workRoute 以 '#' 开头按 hash 路由（? 前段）精确匹配，否则按路径段前缀匹配（工作流覆盖一族页面）；
+ *  - 用户自建 watch：路径精确相等——watch 指定的是一个页面。若此处仍用前缀语义，
+ *    子路径页会被选中并发起回合，而服务端判否后回失败帧，客户端据此把触发器整条暂停。
  */
 export function isAutoScanWorkPage(descriptor: AutomationDescriptor, url: string | undefined): boolean {
   if (url === undefined) return false;
   try {
     const parsed = new URL(url);
     if (parsed.origin !== descriptor.origin) return false;
+    const exactPath = descriptor.packId === WATCH_DESCRIPTOR_PACK_ID;
     const hashRoute = parsed.hash.split('?')[0];
-    return descriptor.automation.workRoutes.some((route) =>
-      route.startsWith('#')
-        ? hashRoute === route
-        : parsed.pathname === route || parsed.pathname.startsWith(route.endsWith('/') ? route : `${route}/`),
-    );
+    return descriptor.automation.workRoutes.some((route) => {
+      if (route.startsWith('#')) return hashRoute === route;
+      if (exactPath) return trimTrailingSlash(parsed.pathname) === trimTrailingSlash(route);
+      return (
+        parsed.pathname === route || parsed.pathname.startsWith(route.endsWith('/') ? route : `${route}/`)
+      );
+    });
   } catch {
     return false;
   }
 }
+
+const trimTrailingSlash = (path: string): string =>
+  path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path;
 
 /**
  * 平台内建自动化模板闭集镜像（contracts PLATFORM_AUTOMATION_TEMPLATES / adr-021）：

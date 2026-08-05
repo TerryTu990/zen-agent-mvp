@@ -14,7 +14,7 @@ export const PLATFORM_MIN_WATCH_MINUTES = 5;
 /** 关注点文本上限（字符）：进自动回合提示词，故与规则条目一样受上界约束。 */
 export const WATCH_FOCUS_MAX_LENGTH = 200;
 
-/** 单个 watch 的唤醒周期上限（分钟）：超过一天的周期用调度已无意义，写入期拒收。 */
+/** 单个 watch 的唤醒周期上限（分钟）：与客户端 alarm 排程上界同值，超出的实例写入期即拒收。 */
 const WATCH_MAX_MINUTES = 60;
 
 export interface PlatformAutomationTemplate {
@@ -50,7 +50,9 @@ export const PLATFORM_AUTOMATION_TEMPLATES: readonly PlatformAutomationTemplate[
   {
     id: 'page-watch',
     title: '页面变化监测',
-    description: '按周期读取你已打开并加入会话组的目标页，与上轮快照比对；有变化时产出报告，无变化不打扰。平台不会自动新建页面。',
+    description:
+      '按周期读取你已打开并加入会话组的目标页，与上轮快照比对；有变化时产出报告，无变化不打扰。' +
+      '平台不会自动新建页面。比对面为可交互要素、表格与列表项、页面提示文本与标题，不含普通段落正文。',
     readOnly: true,
     paramsSchema: PAGE_WATCH_PARAMS_SCHEMA,
   },

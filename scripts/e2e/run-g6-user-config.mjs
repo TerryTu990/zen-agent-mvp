@@ -34,7 +34,7 @@ const AUDIT_SINK = join(WORK_DIR, 'events.jsonl');
 const SESSION_DIR = join(WORK_DIR, 'sessions');
 const USER_CONFIG_DIR = join(WORK_DIR, 'user-config');
 
-// 固定夹具值，非真实密钥（真实密钥经 env 注入，ZA-C-SEC-02）。
+// 本地 harness 的测试签名密钥：每次运行进程内随机生成，非任何真实凭证。
 const [JWT_SECRET, SIGNING_SECRET] = ['jwt', 'signing'].map(
   (role) => `g6-user-config-e2e-${role}-${randomBytes(16).toString('hex')}`,
 );
@@ -50,6 +50,8 @@ const ORDER_LIST_URL = `${HOST_BASE}/order-list.html`;
 
 const PACK_ID = 'host-demo';
 const TIGHTEN_TOOL = 'order-list.refresh-orders';
+/** 基线为 hitl 的工具：用于验证「比基线更宽的档位不可选」——在基线 auto 的工具上该断言恒真。 */
+const WIDEN_GUARD_TOOL = 'order-list.cancel-order';
 const RULE_TEXT = '刷新订单前先用一句话说明将要做什么。';
 const DRAFT_ACK = '好的，我已生成个人配置草稿，请在卡片上确认后保存。';
 const REFRESH_DONE = '已刷新，当前 2 笔订单';
@@ -500,6 +502,16 @@ async function main() {
     const baseCell = options.locator(`[data-za-panel="overlay"] tr[data-za-tool-id="${TIGHTEN_TOOL}"] .za-cc-tool-base`);
     assert((await baseCell.innerText()).includes('auto'), 'B3：目标工具的站点包基线不是 auto，收紧用例前提不成立');
     assert(await tierSelect.locator('option[value="auto"]').isEnabled(), 'B3：基线 auto 档位应可选');
+    // R1 只收紧：比基线更宽的档位必须不可选。用基线 hitl 的工具验证——
+    // 在基线 auto 的工具上「auto 可选」恒真，证不出任何收紧约束。
+    const hitlBaselineSelect = options.locator(
+      `[data-za-panel="overlay"] select[data-za-tool-id="${WIDEN_GUARD_TOOL}"]`,
+    );
+    await hitlBaselineSelect.waitFor({ state: 'visible', timeout: 20_000 });
+    assert(await hitlBaselineSelect.locator('option[value="auto"]').isDisabled(),
+      `B3：基线 hitl 的 ${WIDEN_GUARD_TOOL} 竟可放宽为 auto——R1 只收紧被破坏`);
+    assert(await hitlBaselineSelect.locator('option[value="forbidden"]').isEnabled(),
+      'B3：比基线更严的 forbidden 档位应可选');
     const teachRuleRow = options.locator(`[data-za-panel="overlay"] [data-za-rule-id="${teachRule.id}"]`);
     assert((await teachRuleRow.count()) === 1, 'B3：配置中心未呈现 teach 沉淀的规则条目');
     assert((await teachRuleRow.innerText()).includes('对话沉淀'), 'B3：teach 条目缺来源标注');
@@ -513,7 +525,7 @@ async function main() {
       `B3：收紧未落盘：${JSON.stringify(overlayAfterTighten?.packs?.[PACK_ID]?.restrictions)}`);
     const preservedRule = overlayAfterTighten?.packs?.[PACK_ID]?.rules?.find((r) => r.id === teachRule.id);
     assert(preservedRule?.origin === 'teach', 'B3：面板整份提交后 teach 条目未原样保留');
-    note('B3 配置中心：auto→hitl 收紧落盘、teach 条目原样保留、低于基线档位不可选');
+    note('B3 配置中心：auto→hitl 收紧落盘、teach 条目原样保留、比基线更宽的档位不可选（基线 hitl 的工具上 auto 为 disabled）');
 
     // B4 收紧生效 → HITL 卡
     assert(host.counts.refresh === 0, 'B4 前提：宿主刷新接口应尚未被调用');
@@ -618,11 +630,13 @@ async function main() {
       'injection-view-degraded.txt',
       `工具行数：${toolRowsVisible}\n含「因存储故障降级收紧」：${degradedViewText.includes('因存储故障降级收紧')}\n---\n${degradedViewText}\n`,
     );
-    notes.push(
-      `C5 透明视图（观察记录，非断言）：降级轮工具行数=${toolRowsVisible}，`
-      + `含「因存储故障降级收紧」=${degradedViewText.includes('因存储故障降级收紧')}`,
-    );
-    console.log(`  [obs] ${notes[notes.length - 1]}`);
+    // 降级轮的透明视图是「compose 真实输出 → 视图」这条接缝的唯一浏览器级守卫：
+    // 曾因视图只按可见面渲染而整段留白，单测夹具无法复现该形状。
+    assert(toolRowsVisible > 0, 'C5：降级轮透明视图无任何工具行——用户看不到 agent 为何不动手');
+    assert(degradedViewText.includes('因存储故障降级收紧'),
+      'C5：降级轮工具行缺「因存储故障降级收紧」来源标注');
+    assert(degradedViewText.includes('个人定制读取失败'), 'C5：降级轮缺顶部降级说明横幅');
+    note(`C5 透明视图：降级轮逐条列出工具（${toolRowsVisible} 行）+ 收紧来源标注 + 顶部降级横幅`);
 
     writeEvidence(evidenceB, 'assertions.log', `${notes.filter((n) => n.startsWith('B')).join('\n')}\n`);
     writeEvidence(evidenceC, 'assertions.log', `${notes.filter((n) => n.startsWith('C')).join('\n')}\n`);

@@ -60,6 +60,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "sessionId", "text"],
+      "dependentRequired": { "automationRunId": ["automationId"] },
       "properties": {
         "type": { "const": "user-message" },
         "sessionId": { "$ref": "#/$defs/sessionId" },
