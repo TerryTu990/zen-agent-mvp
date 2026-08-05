@@ -1,7 +1,11 @@
 /**
  * E2E-E 真实站点主案例（实施方案 §6 案例 E）驱动：goofish.com 搜索 AI 相关商品 → 提取商品清单 →
- * 经 HITL 确认后写入飞书云盘 `zen-agent-test` 文件夹下的表格。真实 LLM + 真实站点 + 真实用户会话，
+ * 经 HITL 确认后写入飞书云盘 `zen-agent-test` 文件夹下的文档正文。真实 LLM + 真实站点 + 真实用户会话，
  * 全链路只经既有 generic pack `browse.page-operate`（riskTier=hitl，hitlMode=every-call）代操作。
+ *
+ * 写入落点是**文档正文**而非表格：飞书表格与多维表格的网格为 canvas 渲染，DOM 内既无单元格节点、
+ * innerText 也读不到格内文本，DOM 工具面对其既不可观察也不可操作（实测：canvas=1、gridcell=0、
+ * 键入内容不进 body 文本）。这是 DOM agent 对 canvas 类应用的能力边界，不是本脚本的取舍。
  *
  * 本脚本**不在 G6 自动批次内执行**：它依赖真实 LLM 凭证与操作者已登录的飞书/闲鱼页面会话，
  * 由操作者本人运行。平台零特权：不存任何 provider token，身份全部由持久化 Chromium profile 的
@@ -11,7 +15,7 @@
  *   ZF_LLM_BASE_URL / ZF_LLM_API_KEY / ZF_LLM_MODEL   真实 provider 凭证，进程内映射为 ZA_LLM_*
  * 可选覆盖（无则用下方默认值）：
  *   ZA_E2E_PROFILE_DIR      持久化 Chromium 用户目录（须已登录 goofish 与飞书），默认 .za/e2e-profile-real-site
- *   ZA_E2E_FEISHU_SHEET_URL 目标飞书表格 URL（zen-agent-test 文件夹内新建的表格文件）
+ *   ZA_E2E_FEISHU_DOC_URL   目标飞书文档 URL（zen-agent-test 文件夹内新建的空白文档，形如 /docx/<id>）
  *   ZA_E2E_SEARCH_KEYWORD   闲鱼搜索关键词，默认 “AI”
  *   ZA_E2E_ITEM_COUNT       要求提取并写入的商品条数，默认 5
  *   ZA_E2E_RUNS             重复跑次数，默认 3（通过门要求 ≥3 次全通过）
@@ -23,23 +27,20 @@
  * 证据默认落 <repo>/.za/e2e/e2e-evidence/e2e-e；要落到别处用 ZA_E2E_TEST_ROOT 或 --evidence-dir=。
  *
  * 判定口径（四段式，全部满足才算该次通过；连续 3 次全通过才满足 §6 通过门）：
- *   前置：profile 已登录 goofish 与飞书；目标表格存在且首行为表头；LLM 凭证可用。
- *   步骤：闲鱼搜索页 → 提取 N 条（标题+价格）→ 打开飞书表格并拖入同一任务组 → 指令写入 N 行，
- *         每行首列写本次运行标记 ZA-E2E-<runId>。
- *   断言：① 表格中出现且恰好出现 N 处本次运行标记（新增行数 == 提取数）；
- *         ② 每一次写入批次都先出现 HITL 确认卡、且卡片出现时表格标记数仍为 0（确认先于写入）；
+ *   前置：profile 已登录 goofish 与飞书；目标文档存在且正文为空；LLM 凭证可用。
+ *   步骤：闲鱼搜索页 → 提取 N 条（标题+价格）→ 打开飞书文档并拖入同一任务组 → 指令追加 N 行，
+ *         每行以本次运行标记 ZA-E2E-<runId> 开头。
+ *   断言：① 文档中出现且恰好出现 N 处本次运行标记（新增行数 == 提取数）；
+ *         ② 每一次写入批次都先出现 HITL 确认卡、且卡片出现时文档标记数仍为 0（确认先于写入）；
  *         ③ 审计含全链路：assembly → hitl-verdict(decision=approve) 与任务级复用的 tool-decision(verdict=allow, riskTier=hitl) → tool-execution(outcome=ok)，
  *            且逐条授权先于其代执行；
  *         ④ 面板提取清单条目数 == N（模型没有少提或编造）。
- *   证据：每次运行归档 面板截图 + 表格截图 + 脱敏审计片段 + result-<run>.json 到证据目录。
+ *   证据：每次运行归档 面板截图 + 文档截图 + 脱敏审计片段 + result-<run>.json 到证据目录。
  *
- * 已知未验证点（本脚本从未执行过，如实声明）：闲鱼搜索结果页与飞书表格页的可交互要素能否被
- * page_snapshot 稳定采集、以及模型能否在 maxTurnRounds 内完成 N 行写入，均需首次真跑确认；
- * 若快照不足以定位单元格，需为飞书表格补 pack（走 L1 载入校验），而不是放宽 generic 工具面。
- * 第三点：写入结果的 oracle 用 `document.body.innerText` 数运行标记——飞书表格若以 canvas 或
- * 虚拟滚动渲染，该 oracle 恒为 0 且「确认先于写入」的两条前置断言会退化为恒真（方向是 fail-closed，
- * 不会假绿，但案例会被永久堵死）。首跑前须先单独验证 oracle 可读，不可读则改用导出/可复制区域，
- * 或以审计 tool-execution 计数为主 oracle、截图为人证。
+ * oracle 可读性已实测：文档正文写入后进入 `document.body.innerText`，标记可数。
+ * 尚未验证：闲鱼搜索结果页与飞书文档页的可交互要素能否被 page_snapshot 稳定采集、模型能否在
+ * maxTurnRounds 内完成 N 行写入。文档正文的 `contenteditable=true` 只在聚焦后出现，未聚焦时
+ * 快照里没有可写目标——模型须先点进正文，这一步能否稳定完成由首跑判定。
  */
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -67,7 +68,7 @@ const RUNS = Number(
 const ITEM_COUNT = Number(process.env.ZA_E2E_ITEM_COUNT ?? 5);
 const SEARCH_KEYWORD = process.env.ZA_E2E_SEARCH_KEYWORD ?? 'AI';
 const GOOFISH_ORIGIN = 'https://www.goofish.com';
-const FEISHU_SHEET_URL = process.env.ZA_E2E_FEISHU_SHEET_URL ?? '';
+const FEISHU_DOC_URL = process.env.ZA_E2E_FEISHU_DOC_URL ?? '';
 
 // 本地 harness 的测试签名密钥：只用于签本进程内的测试 JWT / 代执行 HMAC，非任何真实凭证。
 const [JWT_SECRET, SIGNING_SECRET] = ['jwt', 'signing'].map(
@@ -144,9 +145,9 @@ async function bootstrapLogin() {
   const goofish = context.pages()[0] ?? (await context.newPage());
   await goofish.goto(GOOFISH_ORIGIN).catch(() => {});
   const feishu = await context.newPage();
-  await feishu.goto(FEISHU_SHEET_URL === '' ? 'https://feishu.cn' : FEISHU_SHEET_URL).catch(() => {});
+  await feishu.goto(FEISHU_DOC_URL === '' ? 'https://feishu.cn' : FEISHU_DOC_URL).catch(() => {});
   console.log(`profile 目录：${PROFILE_DIR}`);
-  console.log('在打开的窗口里分别登录 goofish 与飞书（飞书需能打开目标表格），完成后关闭整个浏览器窗口。');
+  console.log('在打开的窗口里分别登录 goofish 与飞书（飞书需能打开目标文档），完成后关闭整个浏览器窗口。');
   await new Promise((settle) => context.once('close', settle));
   console.log('登录态已写入 profile；接着跑：node --env-file=<测试根>/.env scripts/e2e/run-g6-real-site.mjs --runs=3');
 }
@@ -182,7 +183,7 @@ async function panelText(panel) {
 }
 
 /**
- * 发一条指令并等回合收敛：期间出现的每张 HITL 卡都先记录「卡片出现时的表格标记数」再批准——
+ * 发一条指令并等回合收敛：期间出现的每张 HITL 卡都先记录「卡片出现时的文档标记数」再批准——
  * 「确认先于写入」是本案例的核心断言，不能只看卡片出现过。
  */
 async function sendAndApprove(panel, text, observeMarkers) {
@@ -223,7 +224,7 @@ async function startRealServer({ auditPath, sessionDir, userConfigDir }) {
     auditSinkPath: auditPath, sessionDir, userConfigDir, heartbeatMs: 60_000,
     allowedProviders: ['openai-compatible'],
     // 真实站点两端都无专属 pack：须显式准入 generic 兜底（缺省 fail-closed 永不激活）。
-    genericAllowlist: [GOOFISH_ORIGIN, new URL(FEISHU_SHEET_URL).origin],
+    genericAllowlist: [GOOFISH_ORIGIN, new URL(FEISHU_DOC_URL).origin],
   });
 }
 
@@ -240,8 +241,8 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
   await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
   await panel.locator('#za-input:not([disabled])').waitFor({ timeout: 30_000 });
 
-  const sheetPage = await context.newPage();
-  await sheetPage.goto(FEISHU_SHEET_URL, { waitUntil: 'domcontentloaded' });
+  const docPage = await context.newPage();
+  await docPage.goto(FEISHU_DOC_URL, { waitUntil: 'domcontentloaded' });
   // 与用户「把标签拖进 Zen 任务组」等价：同组才共享会话与工具面围栏。
   const groupId = await sw.evaluate(async (url) => {
     const [tab] = await chrome.tabs.query({ url: `${new URL(url).origin}/*` });
@@ -249,19 +250,19 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
     if (groups[0] === undefined || tab?.id === undefined) return null;
     await chrome.tabs.group({ groupId: groups[0].id, tabIds: [tab.id] });
     return groups[0].id;
-  }, FEISHU_SHEET_URL);
-  assert(typeof groupId === 'number', '飞书表格页未能加入 Zen 任务组');
+  }, FEISHU_DOC_URL);
+  assert(typeof groupId === 'number', '飞书文档页未能加入 Zen 任务组');
 
-  const markersInSheet = async () => {
-    const text = await sheetPage.evaluate(() => document.body.innerText);
+  const markersInDoc = async () => {
+    const text = await docPage.evaluate(() => document.body.innerText);
     return text.split(runTag).length - 1;
   };
-  assert((await markersInSheet()) === 0, '运行标记在写入前已出现在表格中（标记不唯一）');
+  assert((await markersInDoc()) === 0, '运行标记在写入前已出现在文档中（标记不唯一）');
 
   const extractApprovals = await sendAndApprove(
     panel,
     `在当前闲鱼搜索结果页提取前 ${ITEM_COUNT} 条商品的标题与价格，按编号列出；先不要写入任何地方。`,
-    markersInSheet,
+    markersInDoc,
   );
   const extraction = await panelText(panel);
   // 条目数必须在提取轮结束时取——写入轮的回复会成为最后一条消息。
@@ -270,12 +271,12 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
 
   const writeApprovals = await sendAndApprove(
     panel,
-    `把上面提取的 ${ITEM_COUNT} 条商品写入当前飞书表格，每条一行：第一列填 ${runTag}，` +
-    `第二列填商品标题，第三列填价格。只写这 ${ITEM_COUNT} 行，不要修改任何已有内容。`,
-    markersInSheet,
+    `把上面提取的 ${ITEM_COUNT} 条商品追加到当前飞书文档的正文末尾，每条占一行，` +
+    `行格式为「${runTag} | 商品标题 | 价格」。只追加这 ${ITEM_COUNT} 行，不要修改任何已有内容。`,
+    markersInDoc,
   );
-  await sheetPage.bringToFront();
-  await sheetPage.screenshot({ path: join(EVIDENCE_DIR, `run-${runIndex + 1}-sheet.png`), fullPage: false });
+  await docPage.bringToFront();
+  await docPage.screenshot({ path: join(EVIDENCE_DIR, `run-${runIndex + 1}-doc.png`), fullPage: false });
   await panel.screenshot({ path: join(EVIDENCE_DIR, `run-${runIndex + 1}-panel.png`), fullPage: true });
 
   // 提取数取自面板实际清单而非常量——否则「模型少提或编造补足」这条产品承诺零覆盖：
@@ -284,10 +285,10 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
     extractedItems === ITEM_COUNT,
     `面板提取清单为 ${extractedItems} 条，与要求的 ${ITEM_COUNT} 条不符（模型少提或多报）`,
   );
-  const markers = await markersInSheet();
-  assert(markers === extractedItems, `表格新增行数 ${markers} 与实际提取数 ${extractedItems} 不一致`);
+  const markers = await markersInDoc();
+  assert(markers === extractedItems, `文档新增行数  与实际提取数  不一致`);
   assert(writeApprovals.length > 0, '写入未经任何 HITL 确认卡');
-  assert(writeApprovals[0].markersBefore === 0, '首张确认卡出现前表格已有本次运行标记：存在未确认的写入');
+  assert(writeApprovals[0].markersBefore === 0, '首张确认卡出现前文档已有本次运行标记：存在未确认的写入');
 
   const events = auditEvents(auditPath).slice(auditBefore);
   const decisions = events.filter((event) => event.type === 'tool-decision');
@@ -335,7 +336,7 @@ async function driveOnce(runIndex, context, sw, extensionId, token, auditPath) {
   }, null, 2))}\n`, 'utf8');
 
   await panel.close();
-  await sheetPage.close();
+  await docPage.close();
 }
 
 async function main() {
@@ -343,7 +344,7 @@ async function main() {
     await bootstrapLogin();
     return;
   }
-  assert(FEISHU_SHEET_URL !== '', '缺 ZA_E2E_FEISHU_SHEET_URL：请指向 zen-agent-test 文件夹内的目标表格');
+  assert(FEISHU_DOC_URL !== '', '缺 ZA_E2E_FEISHU_DOC_URL：请指向 zen-agent-test 文件夹内的目标文档');
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   const stateRoot = join(TEST_ROOT, 'e2e-state', 'e2e-e');
   mkdirSync(stateRoot, { recursive: true });
@@ -374,7 +375,7 @@ async function main() {
       await chrome.storage.local.set({
         'za.token': authToken, 'za.serverBaseUrl': base, 'za.autoActivate': origins,
       });
-    }, [token, serverBase, [GOOFISH_ORIGIN, new URL(FEISHU_SHEET_URL).origin]]);
+    }, [token, serverBase, [GOOFISH_ORIGIN, new URL(FEISHU_DOC_URL).origin]]);
     const extensionId = new URL(sw.url()).host;
 
     console.log(`[4/4] 连跑 ${RUNS} 次（通过门要求 ≥3 次全通过）…`);
