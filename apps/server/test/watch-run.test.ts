@@ -375,10 +375,16 @@ describe('watch 自动回合：变化检测与报告收口（R6）', () => {
         });
         expect(String(changed['summary'] ?? '')).toContain('待发货');
 
+        // 上报 URL 根本不可解析是客户端故障，不是「用户切了页」：记 error，与跳过分开。
+        await driveWatchRun(token, sessionId, sse, 'offpage_run_5', {
+          labels: ['ORD-2001 已发货'],
+          reportUrl: 'not-a-url',
+        });
+
         const outcomes = auditEventsFor(sessionId)
           .filter((event) => event['type'] === 'tool-execution' && eventData(event)['toolId'] === WATCH_ID)
           .map((event) => eventData(event)['outcome']);
-        expect(outcomes).toEqual(['ok', 'skipped', 'ok', 'ok']);
+        expect(outcomes).toEqual(['ok', 'skipped', 'ok', 'ok', 'error']);
       } finally {
         sse.close();
       }

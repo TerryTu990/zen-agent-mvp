@@ -256,7 +256,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         postStatus(
           detected === ''
             ? `自动化「${finishedId}」回合异常结束，已暂停；核对后可在配置中心「自动化」页重新启用。`
-            : `自动化「${finishedId}」检出变化但报告生成失败：${detected}；已暂停。`,
+            : `自动化「${finishedId}」检出变化但报告生成失败：${detected}；已暂停，核对后可在配置中心「自动化」页重新启用。`,
         );
       } else if (frame.type === 'tool-card' && (frame.summary ?? '') !== '') {
         // 带摘要的完成帧是自动回合面向用户的报告（R6）：照常进面板与历史；
