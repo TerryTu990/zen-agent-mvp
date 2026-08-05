@@ -22,6 +22,11 @@ iss 白名单（auth.ts）；存在自签激活 token 路径（demo-token.ts，�
 
 ### 1. subject 与身份：渐进绑定
 
+> **本节被 adr-022 修订（2026-08-06）**：下表三签发形态收敛为两种——匿名自动登录（安装 id 哈希派生
+> hostUserId，`iss='zen-agent-anon'`）→ P4 平台账号（Google）。ToB 宿主签发形态随 SSOT v2 定位换轨
+> 删除；「匿名密钥对 + 公钥指纹」判定为过度设计，改为安装 id 的 SHA-256 派生。渐进绑定、零特权、
+> 平台账号 ≠ 宿主账号红线、Google 首发裁决均维持不变。以 adr-022 为准。
+
 L2 归属键 `subject = (tenant, hostUserId)`，取自每次请求的 C2 claims；`iss` 区分三种签发形态，
 C2 契约零改动（hostUserId 语义泛化为「签发方名下的稳定用户标识」）：
 

@@ -43,7 +43,7 @@ S3 多形态客户端 → S4 七系统拆分+状态外置）。关键维度的�
 | 工具执行通道 | client 代执行 + server 直调 + dom 可见步进（adr-010/011）三通道 | 同左，通道恒为工具定义的配置维度（U3） |
 | 配置 | git 文件：registry（manifest.json）+ `packs/<packId>/`（adr-013/020）；pack 三来源（官方/社区/自建）契约统一 | S2 配置中心产出同构快照，消费端零改动（U4） |
 | 用户层 | L2 用户覆盖层契约已裁决（adr-014），P2.5 落地 | 同契约，存储按触发条件外置 |
-| 身份 | C2 短期 JWT；自签激活 token；渐进绑定：匿名密钥对 → P4 平台账号（Google 首发，adr-014） | 完整身份联邦（三签发形态并存，iss 区分） |
+| 身份 | C2 短期 JWT；匿名自动登录（安装 id → 激活端点签发，adr-022）；渐进绑定：匿名 → P4 平台账号（Google 首发，正式投产前置条件） | 完整身份联邦（匿名 + 平台账号两签发形态并存，iss 区分） |
 | 部署/多租户 | 模块化单体、单租户；多租户模型已裁决（共享内容+租户指针，adr-020） | 三级扩展：垂直 → 会话亲和水平复制 → S4 七系统拆分 |
 | 会话 | 标签组会话、可跨站点（adr-012/013）；上下文治理 P0-P2 | 状态外置、SSE 集群 |
 | HITL | 分级挂起 + 卡片确认 + 任务级授权（adr-016） | 同左 + pending 持久化跨端恢复 |
@@ -58,7 +58,7 @@ S3 多形态客户端 → S4 七系统拆分+状态外置）。关键维度的�
 | ③ | 工具执行层 | **唯一决策点**（分级+身份校验+L2 收紧终值，fail-closed）+ 多通道执行器 + observation 规整回喂 | packages/toolgate | 独立服务 |
 | ④ | LLM 接入层 | provider 白名单插拔、密钥托管、配额、故障切换 | packages/llm-port | 独立服务 |
 | ⑤ | 配置中心 | registry + pack 管理、L2 用户覆盖层存取（UserConfigStore）、版本化快照发布 | git 文件 + `.za/user-config/` | 独立后台系统 |
-| ⑥ | 身份联邦 | 短期 JWT 签发/验签/透传；三签发形态；平台零特权、不存宿主凭证 | 网关内验签模块 + 激活签发 | 独立/复用 IAM + 平台账号服务 |
+| ⑥ | 身份联邦 | 短期 JWT 签发/验签/透传；两签发形态（匿名 / P4 平台账号，adr-022）；平台零特权、不存宿主凭证 | 网关内验签模块 + 匿名激活签发 | 独立/复用 IAM + 平台账号服务 |
 | ⑦ | 观测审计 | record-only 旁路事件流（脱敏落盘）、操作审计、质量指标 | packages/audit → `.za/events.jsonl` | 独立服务 + DB |
 
 **边界铁律**：装配对 agent 透明、治理不可被对话内容改变（已升格 U8）；决策永远服务端、客户端
@@ -84,7 +84,7 @@ S3 多形态客户端 → S4 七系统拆分+状态外置）。关键维度的�
 ## 5. 契约清单（各出 `.schema.json` + 契约文档，schema 为准）
 
 - **C1 工具定义**（`tool-definition`）：`{id, featureIds[], description, params, execution 闭集, riskTier('auto'|'hitl'|'forbidden'), adapter, resultSchema, authorization(含 preparation, adr-019)}`；pack v2 字段见 adr-020。
-- **C2 身份契约**（`identity-claims`）：claims 闭集 `{sub, tenant, roles[], hostUserId, iss, exp}`；`iss` 区分三签发形态；平台零特权。
+- **C2 身份契约**（`identity-claims`）：claims 闭集 `{sub, tenant, roles[], hostUserId, iss, exp}`；`iss` 区分签发形态（adr-022 后为匿名 / P4 平台账号两种）；平台零特权。
 - **C3 客户端接入层**（`client-access-layer`）：五能力 + 消息帧闭集（上行 context-report / user-message / hitl-decision / exec-result；下行 text-delta / tool-card / hitl-request / exec-instruction / guide-action / dom 步进帧族）；P2.5-c 增 `config-draft`/`config-decision`（加法）。
 - **C4 配置快照**（`config-snapshot`）：registry（`manifest.json{version, packs[]}`，演进含 source/hash/租户清单）+ `packs/<packId>/{pack.json, features/<id>/{feature.md, facts.md, tools.json}, skills/, docs/, eval/}`；纯数据（ZA-C-AGENT-03）。
 - **C5 审计事件**（`audit-event`）：全链路事件结构，落盘前脱敏；P2.5-a 增 `user-config-write` 类型与 `userConfigRevision` 字段。
@@ -97,10 +97,12 @@ D1 插件优先 · D2 客户端代执行优先 · D3 决策与执行分离 · D4
 D6 SSE 而非 WS · D7 配置先文件后 UI · D8 讲解质量第一 · D9 MVP 不做 DOM 自动化（被 D11 取代）·
 D10（adr-010）server 通道与 credentialRef · D11（adr-011）可见页面代操作（dom 步进）·
 D12（adr-012）会话=标签组 · D13（adr-013）站点包与跨站任务组 ·
-**D14（adr-014）用户级配置层**：L2 契约、渐进绑定身份（匿名密钥对→Google 账号）、故障语义拆分、U4/U8 配套 ·
+**D14（adr-014）用户级配置层**：L2 契约、渐进绑定身份（§1 身份形态经 adr-022 修订）、故障语义拆分、U4/U8 配套 ·
 D15（adr-015）Chrome side panel · D16（adr-016）有界履约授权 · D17（adr-017）飞书卡片库存 ·
 D18（adr-018）周期履约触发 · D19（adr-019）pack 声明式 preparation 与自动化 ·
-**D20（adr-020）pack 契约 v2**：三来源、capabilities/configSchema、registry 指针、多租户共享内容模型、存储矩阵。
+**D20（adr-020）pack 契约 v2**：三来源、capabilities/configSchema、registry 指针、多租户共享内容模型、存储矩阵 ·
+D21（adr-021）用户自建自动化触发器 ·
+**D22（adr-022）匿名自动登录**：安装 id → 短期 JWT、hostUserId 哈希派生、删手填令牌与 demo-token、Google 登录为投产前置条件。
 
 ## 7. 治理体系（两层，速查入口 `CLAUDE.md`）
 
@@ -115,7 +117,7 @@ D18（adr-018）周期履约触发 · D19（adr-019）pack 声明式 preparation
 ```
 zen-agent-mvp/
 ├── CLAUDE.md / README.md
-├── docs/{reference/, adr/（D1-D20）, plans/, design/（产品设计稿+UI 规范）, research/, roadmap.md}
+├── docs/{reference/, adr/（D1-D22）, plans/, design/（产品设计稿+UI 规范）, research/, roadmap.md}
 ├── .claude/{rules/, hooks/, skills/, settings.json}
 ├── packages/{contracts, assembly, toolgate, llm-port, audit, fulfillment, card-inventory}
 ├── apps/{server, extension}

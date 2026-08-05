@@ -64,7 +64,7 @@
 │ apps/server（模块化单体：一个 Node 进程，唯一组装点）                    │
 │                                                                    │
 │  ② 会话网关（内部模块：gateway 回合循环 / auth 验签⑥ / sessions       │
-│     会话持久化 / compress 历史压缩 / history 观测瘦身 / demo-token）    │
+│     会话持久化 / compress 历史压缩 / history 观测瘦身 / activation）    │
 │     验 token → 会话生命周期 → 装配 → agent loop → SSE 下发            │
 │     内建工具注入：guide_highlight / page_snapshot / pack_doc /        │
 │     site_navigate（渐进披露，随装配条件注入，不入 pack tools.json）     │
@@ -307,7 +307,7 @@ agent 下一轮即持有新站上下文，直接续作任务（先 page_snapshot
 | `packages/fulfillment` | C6 FulfillmentCoordinatorPort | 先预占库存、生成固定通知、登记 opaque intent、按回执回填 | DOM 执行；toolgate 决策；记录卡密 |
 | `packages/llm-port` | C6 LlmPort | openai 兼容流式对接、provider 白名单、密钥 env 托管、toolId 出网净化、实参非法诊断 | 感知业务语义与装配内容 |
 | `packages/audit` | C5 生产端（AuditPort） | record-only 旁路落盘、落盘前脱敏 | 进入控制流（故障吞掉） |
-| `apps/server` | 唯一组装点（U2） | 内部六模块：gateway（回合循环/内建工具/HITL 挂起恢复/自愈重试）、auth（验签）、sessions（持久化）、compress（P1 压缩）、history（P0 瘦身）、demo-token | 第二组装点；横向 import |
+| `apps/server` | 唯一组装点（U2） | 内部六模块：gateway（回合循环/内建工具/HITL 挂起恢复/自愈重试）、auth（验签）、sessions（持久化）、compress（P1 压缩）、history（P0 瘦身）、activation（匿名身份签发，adr-022） | 第二组装点；横向 import |
 | `apps/extension` | C3 实现（五能力） | 会话组管理、dom 步进器、HITL 卡片、快照采集、身份透传 | 零治理判定（U7） |
 
 ### 7.2 扩展点清单（怎么扩、动哪里）

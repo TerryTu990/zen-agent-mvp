@@ -154,7 +154,7 @@
 
 | 变量 | 作用 |
 |---|---|
-| `ZA_JWT_SECRET` | JWT 验签密钥（HS256），也是 demo-token 签发密钥 |
+| `ZA_JWT_SECRET` | JWT 验签密钥（HS256），也是 `POST /v1/activation` 匿名激活的签发密钥 |
 | `ZA_SIGNING_SECRET` | 服务端派生 Ed25519 私钥的一次性指令签名种子（U7）；插件仅经已鉴权 SSE 取得公钥 |
 | `ZA_SNAPSHOT_ROOT` | 快照根目录（§2） |
 
@@ -165,7 +165,7 @@
 | `ZA_HOST` | `127.0.0.1` | 监听地址；容器/对外部署设 `0.0.0.0`（对外暴露是有意决策，不做默认） |
 | `ZA_PORT` | `8787` | 监听端口 |
 | `ZA_CORS_ORIGIN` | `*` | `Access-Control-Allow-Origin` 响应头 |
-| `ZA_JWT_ISS_ALLOWLIST` | `zen-agent-demo` | 验签 iss 白名单（逗号分隔） |
+| `ZA_JWT_ISS_ALLOWLIST` | `zen-agent-anon` | 外部签发方的 iss 白名单（逗号分隔）；匿名激活签发的 `zen-agent-anon` 由服务端在组装时无条件并入，覆盖或漏填此项都不会让服务端拒绝自己签发的令牌 |
 | `ZA_MAX_TURN_ROUNDS` | `12` | agent loop 单回合轮数上限（跨站任务建议 40） |
 
 ### LLM 上游（openai 兼容；调用时惰性读取）
@@ -195,19 +195,17 @@
 | `ZA_LARK_CLI_PATH` | `lark-cli` | 可选 CLI 可执行文件路径（容器/sidecar 部署时显式设置） |
 | `LARKSUITE_CLI_CONFIG_DIR` | CLI 默认目录；生产为 `/data/lark-cli` | 飞书 profile 与 token 刷新状态目录；生产必须挂服务器受控持久卷，不进镜像或仓库 |
 
-### 凭证与演示
+### 凭证
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
 | `ZA_CRED_<UPPER_SNAKE(ref)>` | 无 | server 通道凭证真值：`credentialRef` 驼峰转大写蛇形（`wikiPlatformKey → ZA_CRED_WIKI_PLATFORM_KEY`）；解析不到 → `credential-unresolved`，真值不落配置/日志/审计 |
-| `ZA_DEMO_TOKEN_ENABLED` | 关（`==="1"` 才开） | `/demo-token` 自签端点（仅本机开发/E2E；生产保持关闭） |
-| `ZA_JWT_ISS` | `zen-agent-demo` | demo-token 签发的 iss |
 
-生产的用户令牌不走 demo-token：由管理员经 `release/sign-token.sh` 在服务器容器内签发（iss=`zen-agent`，须列入 `ZA_JWT_ISS_ALLOWLIST`），用户在扩展选项页配置。
+用户令牌零配置：扩展首次运行以本地安装 id 向 `POST /v1/activation` 换取 24h 短时效令牌（adr-022），无 env 门控、无管理员签发环节。
 
 ### 客户端（扩展）配置
 
-扩展经 `chrome.storage.local` 配置：`za.token`（平台 JWT）、`za.serverBaseUrl`（默认 `http://127.0.0.1:8787`）、`za.autoActivate`（origin 数组，命中即自动挂面板——**仅验收自动化用**，产品默认点图标激活）。
+扩展经 `chrome.storage.local` 配置：`za.serverBaseUrl`（默认 `http://127.0.0.1:8787`）、`za.autoActivate`（origin 数组，命中即自动挂面板——**仅验收自动化用**，产品默认点图标激活）。身份键 `za.installId`（安装 id）与 `za.anonToken`（激活所得令牌缓存）由扩展自行维护，非用户配置项。
 
 ## 5. 运行数据落点（`.za/`，已 gitignore）
 
