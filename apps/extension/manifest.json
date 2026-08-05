@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "137",
   "name": "Zen Agent",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "可被你塑形的浏览器 agent：在任意站点按站点/功能装配规则、知识与工具面，提供功能讲解、UI 引导与受控代执行。",
   "icons": {
     "16": "icons/icon-16.png",
