@@ -25,7 +25,7 @@ release/
 │   ├── activate-release.sh    # flock、冒烟、完整回滚状态机
 │   └── env.example            # 服务器侧 .env 模板（真值只在服务器上填）
 └── artifacts/                 # 本地产物输出（gitignore）
-    ├── zen-commerce-agent-extension-<version>.zip
+    ├── zen-agent-extension-<version>.zip
     └── zen-agent-server-<tag>.tar.gz   # deploy 脚本临时产物
 ```
 
@@ -49,7 +49,7 @@ release/
 | 形态 | 产物 | 分发 |
 |---|---|---|
 | 服务端 | docker 镜像 `zen-agent-server:<git-sha>` | `deploy-server.sh` 到 lingm2 |
-| Chrome 插件 | `artifacts/zen-commerce-agent-extension-<version>.zip`（生产服务端地址已烤入缺省值） | 手工分发/企业策略/商店 |
+| Chrome 插件 | `artifacts/zen-agent-extension-<version>.zip`（生产服务端地址已烤入缺省值） | 手工分发/企业策略/商店 |
 | 嵌入 SDK / 浏览器壳 | （未有产物） | 锚点：S3 多形态客户端落地时补 `build-sdk.sh` 等 |
 
 ## 安装生产 Chrome 扩展（本机）
@@ -58,8 +58,8 @@ Chrome 的“加载已解压的扩展程序”不能选择 zip 文件，必须�
 
 当前生产扩展：
 
-- zip：`/Users/terrytu/Workspace2025/Working/zen-agent-mvp/release/artifacts/zen-commerce-agent-extension-0.3.4.zip`
-- 已解压、可直接选择的目录：`/Users/terrytu/Workspace2025/Working/zen-agent-mvp/release/artifacts/zen-commerce-agent-extension-0.3.4`
+- zip：`/Users/terrytu/Workspace2025/Working/zen-agent-mvp/release/artifacts/zen-agent-extension-0.4.0.zip`
+- 已解压、可直接选择的目录：`/Users/terrytu/Workspace2025/Working/zen-agent-mvp/release/artifacts/zen-agent-extension-0.4.0`
 - Chrome 文件选择器中应看到该目录内有 `manifest.json`、`options.html`、`dist/` 和 `icons/`；选择这个目录本身，不要进入 `dist/`，也不要选择 zip。
 
 安装步骤：

@@ -1199,7 +1199,7 @@ chrome.action.onClicked.addListener((tab) => {
     openPanel: () => chrome.sidePanel.open({ tabId }),
     activatePage: () => handleIconClick(tab),
   }).catch(() => {
-    console.error('Zen Commerce Agent 工具栏激活失败');
+    console.error('Zen Agent 工具栏激活失败');
   });
 });
 

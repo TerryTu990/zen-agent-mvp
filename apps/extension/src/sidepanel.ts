@@ -37,12 +37,12 @@ export interface SidePanelElements {
 
 export function mountSidePanel(root: HTMLElement): SidePanelElements {
   root.innerHTML = `
-    <section class="za-shell" aria-label="Zen Commerce Agent 控制台">
+    <section class="za-shell" aria-label="Zen Agent 控制台">
       <section class="za-context" data-za-context data-state="waiting" aria-live="polite">
         <span class="za-context-dot" aria-hidden="true"></span>
         <div class="za-context-copy">
           <div class="za-context-title">等待连接任务页面</div>
-          <div class="za-context-detail">打开闲鱼卖家后台后点击 Zen Commerce 图标</div>
+          <div class="za-context-detail">打开要辅助的站点后点击 Zen Agent 图标</div>
         </div>
         <label>
           <span hidden>执行偏好</span>
@@ -169,7 +169,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       case 'server-rejected':
         return httpStatus === undefined ? '服务端拒绝了消息，请稍后重试' : `服务端拒绝了消息（HTTP ${httpStatus}），请稍后重试`;
       default:
-        return '会话暂不可用，请重新打开闲鱼页面后重试';
+        return '会话暂不可用，请重新打开该站点页面后重试';
     }
   };
 

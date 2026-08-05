@@ -180,7 +180,7 @@ async function main() {
     const panel = await context.newPage();
     await panel.setViewportSize({ width: 420, height: 780 });
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-    await panel.locator('section[aria-label="Zen Commerce Agent 控制台"]').waitFor();
+    await panel.locator('section[aria-label="Zen Agent 控制台"]').waitFor();
     assert((await panel.locator('.za-topbar').count()) === 0, 'Side Panel 不应重复渲染 Chrome 原生标题');
     await panel.getByText('没有可恢复的 Zen 任务', { exact: true }).waitFor();
     assert(await panel.getByRole('button', { name: '发送消息' }).isDisabled(), '无任务组时发送入口必须禁用');

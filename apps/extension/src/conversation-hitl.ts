@@ -56,7 +56,7 @@ function summarizeDomTask(params: JsonObject): { title: string; detail: string; 
 
 const WHO_LABEL: Record<'user' | 'assistant', string> = {
   user: '你',
-  assistant: 'Zen Commerce',
+  assistant: 'Zen Agent',
 };
 
 export function createConversationUi(messages: HTMLElement): ConversationUi {
