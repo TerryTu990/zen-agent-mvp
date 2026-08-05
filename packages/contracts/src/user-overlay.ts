@@ -63,6 +63,7 @@ export interface UserOverlayPackPreferences {
  * 偏好仅 verbosity（automations 锚定 pack 声明，无全局语义）。
  */
 export interface UserOverlayGlobalScope {
+  /** 上限 200 条（schema maxItems），facts 同。 */
   rules?: UserOverlayEntry[];
   facts?: UserOverlayEntry[];
   preferences?: { verbosity?: UserOverlayVerbosity };
@@ -71,6 +72,7 @@ export interface UserOverlayGlobalScope {
 export interface UserOverlayPackScope {
   /** pack 级关停；只允许 false，缺省 = 启用（R1 只收紧）。 */
   enabled?: false;
+  /** 上限 200 条（schema maxItems），facts 同。 */
   rules?: UserOverlayEntry[];
   facts?: UserOverlayEntry[];
   restrictions?: UserOverlayRestrictions;
@@ -82,7 +84,7 @@ export interface UserOverlayPackScope {
 export interface UserOverlay {
   schemaVersion: 1;
   subject: UserConfigSubject;
-  /** 键 "*" = 全局作用域（UserOverlayGlobalScope 形状，schema properties."*" 强制）；其余键 = packId。 */
+  /** 键 "*" = 全局作用域（UserOverlayGlobalScope 形状，schema properties."*" 强制）；其余键 = packId。上限 100 键（schema maxProperties）。 */
   packs: Record<string, UserOverlayGlobalScope | UserOverlayPackScope>;
 }
 
@@ -90,6 +92,11 @@ export interface UserOverlayValidationIssue {
   /** JSON Pointer 风格定位（如 /packs/xianyu-seller/restrictions）。 */
   path: string;
   message: string;
+  /**
+   * 'scale' = 仅规模上界越界（条目数/作用域数），结构本身合法。读路径可据此对既有存量放行
+   * （规模上界是写入期约束，不应使早于该约束写下的 overlay 变为不可读）；写入期一律拒收。
+   */
+  kind?: 'scale';
 }
 
 export interface ValidateUserOverlayOptions {
@@ -105,13 +112,18 @@ export type UserOverlayValidationResult =
   | { ok: true; overlay: UserOverlay }
   | { ok: false; issues: UserOverlayValidationIssue[] };
 
+/** 仅规模类的 schema 关键字：越界不代表结构非法（见 UserOverlayValidationIssue.kind）。 */
+const SCALE_KEYWORDS = new Set(['maxItems', 'maxProperties']);
+
 const overlaySchemaUrl = new URL('../schemas/user-overlay.schema.json', import.meta.url);
 
 let overlayValidator: ValidateFunction | null = null;
 
 function getOverlayValidator(): ValidateFunction {
   if (overlayValidator === null) {
-    const ajv = new Ajv2020({ strict: true });
+    // allErrors：规模上界（maxItems/maxProperties）在关键字求值序里先于结构下探，
+    // 单错短路会让「既超规模又结构非法」的样本只报出规模错——读路径的 scale 放行据此会被绕过。
+    const ajv = new Ajv2020({ strict: true, allErrors: true });
     addFormats.default(ajv);
     overlayValidator = ajv.compile(JSON.parse(readFileSync(overlaySchemaUrl, 'utf8')) as object);
   }
@@ -169,6 +181,7 @@ export function validateUserOverlay(
       issues: (validate.errors ?? []).map((error) => ({
         path: error.instancePath,
         message: error.message ?? 'schema 校验不通过',
+        ...(SCALE_KEYWORDS.has(error.keyword) ? { kind: 'scale' as const } : {}),
       })),
     };
   }

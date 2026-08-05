@@ -22,9 +22,10 @@
       }
     },
     "packs": {
-      "$comment": "作用域表：\"*\" 走独立子 schema（全局作用域），packId 键走 patternProperties（pack 级作用域）；两者之外的键一律拒绝。",
+      "$comment": "作用域表：\"*\" 走独立子 schema（全局作用域），packId 键走 patternProperties（pack 级作用域）；两者之外的键一律拒绝。maxProperties=100 为作用域键规模上限（含 \"*\"），与 entryList 的 maxItems 共同把「单用户 overlay 预期 KB 级」写进契约（写入端点另有体积/总条目守卫，两层不互相替代）。",
       "type": "object",
       "additionalProperties": false,
+      "maxProperties": 100,
       "properties": {
         "*": { "$ref": "#/$defs/globalScope" }
       },
@@ -59,8 +60,10 @@
       }
     },
     "entryList": {
+      "$comment": "单作用域单类目（rules 或 facts）的条目上限 200：注入规模与面板可读性的契约上界，超限即拒收。",
       "type": "array",
       "minItems": 1,
+      "maxItems": 200,
       "items": { "$ref": "#/$defs/entry" }
     },
     "restrictions": {

@@ -9,6 +9,7 @@ import type {
   HitlDecisionValue,
   SnapshotReportFrame,
 } from './frames.js';
+import type { InjectionDescriptionView } from './injection-view.js';
 
 export type SidePanelUiEvent =
   | {
@@ -61,6 +62,8 @@ export type SidePanelToBackgroundMessage =
   | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
   // L2 草稿裁决（U8）：面板只回传 draftId+decision，change 不经客户端往返。
   | { kind: 'config-decision'; draftId: string; decision: 'accept' | 'reject' }
+  // 注入透明视图取数：面板不持有会话与令牌，由 background 转发 GET /v1/sessions/:id/injection。
+  | { kind: 'injection-request' }
   | { kind: 'stop-operation'; messageId?: string }
   | { kind: 'ping' };
 
@@ -77,6 +80,9 @@ export type BackgroundToSidePanelMessage =
       httpStatus?: number;
     }
   | { kind: 'hitl-result'; hitlId: string; accepted: boolean }
+  // 取数成功即带服务端原样描述；失败只带人读原因（不含令牌与栈细节，SEC-04）。
+  | { kind: 'injection-result'; ok: true; description: InjectionDescriptionView }
+  | { kind: 'injection-result'; ok: false; error: string }
   | { kind: 'stop-result'; messageId?: string; accepted: boolean }
   | { kind: 'operation-state'; running: boolean }
   | {

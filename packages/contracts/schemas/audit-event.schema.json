@@ -142,6 +142,11 @@
         "packDisabled": {
           "$comment": "true = 激活 pack 被用户 enabled:false 关停而回落仅基座；缺省=非关停回落（审计据此区分「无 pack」与「已关停」）。",
           "const": true
+        },
+        "disabledPackId": {
+          "$comment": "被关停的 packId（随 packDisabled 一同记录）：关停轮事件顶层 packId 已回落缺省，追溯『哪个 pack 被关停』只此一处；缺省=非关停回落。",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
         }
       }
     },

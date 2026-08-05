@@ -108,8 +108,14 @@ export function decideAutoScanRecovery(status: AutoScanRecoveryStatus): AutoScan
   return 'release-and-pause';
 }
 
+/** 唤醒周期上界（分钟）：调度端与配置面板共用同一值域，避免面板显示与实际排程分叉。 */
+export const MAX_AUTO_SCAN_MINUTES = 60;
+
 export function normalizeAutoScanMinutes(value: unknown, fallback = DEFAULT_AUTO_SCAN_MINUTES): number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 60
+  return typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= MAX_AUTO_SCAN_MINUTES
     ? value
     : fallback;
 }

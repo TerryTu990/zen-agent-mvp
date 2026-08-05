@@ -1,5 +1,6 @@
 import type { DownstreamFrame, UpstreamFrame } from './frames.js';
 import { createIdentityProvider } from './identity.js';
+import type { InjectionDescriptionView } from './injection-view.js';
 import { createSseParser } from './sse.js';
 import { createGroupMembers, routeForFrame, type FrameRoute } from './group-routing.js';
 import {
@@ -826,6 +827,27 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     port.onDisconnect.addListener(() => detachContent(port));
   }
 
+  /**
+   * 注入透明视图取数：转发本组会话的 GET /v1/sessions/:id/injection，不新增鉴权面；无会话时按需建立会话（首次点开抽屉会产生建会话副作用）。
+   * 失败一律回人读原因（不含令牌与响应体细节），且不影响会话与投递管线。
+   */
+  async function describeInjection(): Promise<Extract<BackgroundToSidePanelMessage, { kind: 'injection-result' }>> {
+    const session = await ensureSession();
+    if (session === null) return { kind: 'injection-result', ok: false, error: '会话暂不可用，请稍后重试' };
+    try {
+      const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/injection`, {
+        headers: { authorization: `Bearer ${session.token}` },
+        signal: abort.signal,
+      });
+      if (!response.ok) {
+        return { kind: 'injection-result', ok: false, error: `服务端未返回注入构成（HTTP ${response.status}）` };
+      }
+      return { kind: 'injection-result', ok: true, description: await response.json() as InjectionDescriptionView };
+    } catch {
+      return { kind: 'injection-result', ok: false, error: '无法连接服务端，请检查网络后重试' };
+    }
+  }
+
   function attachPanel(port: chrome.runtime.Port): void {
     pendingPanels.add(port);
     const finishAttach = (): void => {
@@ -878,6 +900,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           postStatus(accepted ? '已停止当前任务。' : '停止请求未被服务端接受，请稍后重试。');
           postToPanels({ kind: 'stop-result', messageId, accepted });
         });
+        return;
+      }
+      if (message.kind === 'injection-request') {
+        // 只读取数，不入投递管线：透明视图不排在会话消息之后，也不阻塞会话消息。
+        void describeInjection().then((result) => postPanel(port, result));
         return;
       }
       if (message.kind === 'user-message') {

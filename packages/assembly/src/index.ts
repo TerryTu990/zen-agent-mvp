@@ -13,7 +13,10 @@ import type {
   InjectionToolDescriptor,
   JsonObject,
   PackAutomation,
+  PackDescriptor,
+  PackFeatureDescriptor,
   PackManifest,
+  PackToolDescriptor,
   ReadPackDocResult,
   RegistryManifest,
   RiskTier,
@@ -753,6 +756,7 @@ function assembleInjection(
       ? l2.overlay.packs[packId]
       : undefined;
   const packDisabled = (requestedScope as UserOverlayPackScope | undefined)?.enabled === false;
+  const disabledPackId = packDisabled ? packId : null;
   const activePackId = packDisabled ? null : packId;
 
   // 站点索引跨功能稳定（不随 featureId 变），全局计算、只按当前激活 pack 标注（当前）；<2 site → null。
@@ -855,7 +859,7 @@ function assembleInjection(
         ...(effectiveTools !== undefined ? { effectiveTools } : {}),
         ...(invalidRefs.length > 0 ? { invalidRefs } : {}),
         ...(l2.stale === true ? { userConfigStale: true as const } : {}),
-        ...(packDisabled ? { packDisabled: true as const } : {}),
+        ...(disabledPackId !== null ? { packDisabled: true as const, disabledPackId } : {}),
       }
     : {};
 
@@ -884,6 +888,7 @@ function assembleInjection(
       ...(feature?.title != null ? { featureTitle: feature.title } : {}),
       ...(effectiveTools !== undefined ? { tools: structuredClone(effectiveTools) } : {}),
       ...(l2Active && l2.revision !== undefined ? { userConfigRevision: l2.revision } : {}),
+      ...(disabledPackId !== null ? { disabledPackId } : {}),
     },
   };
 }
@@ -975,6 +980,42 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
         for (const automation of pack.automations) {
           descriptors.push({ packId: pack.packId, origin: pack.origin, automation });
         }
+      }
+      return structuredClone(descriptors);
+    },
+    async listPacks() {
+      const descriptors: PackDescriptor[] = [];
+      for (const pack of getSnapshot().packs.values()) {
+        const tools = new Map<string, PackToolDescriptor>();
+        const features: PackFeatureDescriptor[] = [];
+        for (const [featureId, assets] of pack.features) {
+          features.push({ featureId, ...(assets.title !== null ? { title: assets.title } : {}) });
+          for (const tool of assets.tools) {
+            tools.set(tool.id, {
+              toolId: tool.id,
+              baseTier: tool.riskTier,
+              description: tool.description,
+            });
+          }
+        }
+        descriptors.push({
+          packId: pack.packId,
+          version: pack.version,
+          source: pack.source,
+          ...(pack.name !== null ? { name: pack.name } : {}),
+          ...(pack.summary !== null ? { summary: pack.summary } : {}),
+          ...(pack.origin !== null ? { origin: pack.origin, locations: [...pack.locations] } : {}),
+          ...(pack.generic ? { generic: true as const } : {}),
+          features,
+          tools: [...tools.values()],
+          automations: pack.automations.map((automation) => ({
+            id: automation.id,
+            ...(automation.defaultPeriodMinutes !== undefined
+              ? { defaultPeriodMinutes: automation.defaultPeriodMinutes }
+              : {}),
+          })),
+          ...(pack.configSchema !== null ? { configSchema: pack.configSchema } : {}),
+        });
       }
       return structuredClone(descriptors);
     },

@@ -96,6 +96,8 @@ export interface ComposeResult {
   userFacts?: UserInjectionEntry[];
   /** true = 本轮激活 pack 被用户 enabled:false 关停而回落仅基座（packId 已为 null）；审计与网关据此区分「无 pack」与「已关停」。 */
   packDisabled?: true;
+  /** 被关停的 packId（随 packDisabled 一同产出）：关停轮 packId 已回落 null，审计与配置中心据此追溯是哪个 pack 被关停；缺省 = 非关停轮。 */
+  disabledPackId?: string;
   /**
    * 工具面逐项生效分级（与 describeInjection 的 tools 同源同值）：disabledTools 条目从 agent 可见
    * tools 移除但在此保留并置 effectiveTier:'forbidden'（幻觉调用仍被拒）；缺省 = 无 L2 参与。
@@ -166,6 +168,8 @@ export interface InjectionDescription {
   featureTitle?: string;
   /** 本轮定格的 L2 overlay revision：与 ComposeResult.userConfigRevision 同源同值（R4 三方互证）；缺省 = 无 L2 参与或读失败降级。 */
   userConfigRevision?: string;
+  /** 被关停的 packId（与 ComposeResult.disabledPackId 同源同值）：关停轮 packId 已回落 null，透明视图据此如实呈现「已关停」而非「无 pack」；缺省 = 非关停轮。 */
+  disabledPackId?: string;
 }
 
 /** pack docs 正文按需读取（渐进披露的 pack_doc 内建工具后端）：只读当前激活 pack 的 docs/。 */
@@ -211,6 +215,52 @@ export interface AutomationDescriptor {
   automation: PackAutomation;
 }
 
+/** pack 内功能投影：title 缺省时展示回退 featureId。 */
+export interface PackFeatureDescriptor {
+  featureId: string;
+  title?: string;
+}
+
+/** pack 工具面投影：baseTier 是 L2 收紧矩阵每行的档位下界（低于它的档位不可选，R1 只收紧）。 */
+export interface PackToolDescriptor {
+  toolId: string;
+  baseTier: RiskTier;
+  description: string;
+}
+
+/** pack 自动化投影（区别于 AutomationDescriptor：后者含调度所需 PackAutomation 全量）：仅展示与周期下限所需字段。 */
+export interface PackAutomationDescriptor {
+  id: string;
+  /** pack 预设唤醒周期；L2 minutes 下限 = max(本值, 平台下限)。 */
+  defaultPeriodMinutes?: number;
+}
+
+/**
+ * 已安装 pack 的展示投影（配置中心 L1 数据源）：只投影展示与 L2 编辑所需字段，
+ * 不含 skills/docs/feature 正文与工具 adapter（配置中心不需要，且避免把执行细节外泄到客户端）。
+ */
+export interface PackDescriptor {
+  packId: string;
+  /** pack.json name；缺省 = 展示回退 packId。 */
+  name?: string;
+  version: string;
+  /** registry 登记来源（来源徽章数据源）。 */
+  source: PackSource;
+  summary?: string;
+  /** site.origin；generic 兜底 pack 与 legacy 缺省 pack 无围栏，省略。 */
+  origin?: string;
+  /** 已归一路径前缀围栏；无 site 时省略。 */
+  locations?: string[];
+  /** true = generic 兜底 pack（无站点围栏，由网关运行时绑定活跃页 origin）。 */
+  generic?: true;
+  features: PackFeatureDescriptor[];
+  /** 该 pack 各 feature 工具的并集（按 toolId 去重）。 */
+  tools: PackToolDescriptor[];
+  automations: PackAutomationDescriptor[];
+  /** pack 声明的用户可配置点（adr-020）；未声明时省略。 */
+  configSchema?: JsonObject;
+}
+
 export interface AssemblyPort {
   resolveFeature(input: ResolveFeatureInput): Promise<ResolveFeatureResult>;
   compose(input: ComposeInput): Promise<ComposeResult>;
@@ -230,6 +280,8 @@ export interface AssemblyPort {
    * L2 写入通道以此表调 validateUserOverlay 做 packConfig 写入期校验（无表项即拒，fail-closed）。
    */
   listConfigSchemas(): Promise<Record<string, JsonObject>>;
+  /** 已安装 pack 的展示投影（配置中心站点包页/个人定制页的 L1 数据源）：含未激活与被用户关停的 pack（关停状态属 L2，不在本投影）。 */
+  listPacks(): Promise<PackDescriptor[]>;
 }
 
 // ---- ToolGatePort（③工具执行层：唯一决策点 + 代执行指令签发/回收）----

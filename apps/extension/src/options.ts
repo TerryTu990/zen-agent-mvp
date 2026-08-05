@@ -1,101 +1,83 @@
-/** 选项页：访问令牌与服务端地址写入 chrome.storage.local；令牌值不回显日志（SEC-04）。 */
+/**
+ * 选项页宿主：把 chrome.storage.local 的本机设置（令牌 / 服务端地址 / 自动化调度镜像）
+ * 接到配置中心四页上。令牌只写不读回 DOM（ZA-C-SEC-04）。
+ * 自动化偏好双写：L2（治理可见、服务端合并）+ 本地 `za.autoScan.*`（background alarm 的调度数据源）。
+ */
 import {
   AUTOMATION_DESCRIPTORS_KEY,
   autoScanEnabledKeyFor,
   autoScanMinutesKeyFor,
-  DEFAULT_AUTO_SCAN_MINUTES,
   parseAutomationDescriptors,
-  type AutomationDescriptor,
 } from './auto-scan.js';
+import { mountConfigCenter } from './config-center.js';
+import { normalizeTrustedServerBaseUrl } from './server-url.js';
 
 const TOKEN_KEY = 'za.token';
 const BASEURL_KEY = 'za.serverBaseUrl';
 
-const tokenInput = document.getElementById('token') as HTMLTextAreaElement;
-const baseUrlInput = document.getElementById('baseUrl') as HTMLInputElement;
-const saveButton = document.getElementById('save') as HTMLButtonElement;
-const status = document.getElementById('status') as HTMLElement;
-const automationsContainer = document.getElementById('automations') as HTMLElement;
-const automationsHint = document.getElementById('automationsHint') as HTMLElement;
+// 发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），开发构建回退本机。
+declare const __ZA_SERVER_BASE_URL__: string | undefined;
+const DEFAULT_SERVER_BASE_URL =
+  typeof __ZA_SERVER_BASE_URL__ === 'string' && __ZA_SERVER_BASE_URL__ !== ''
+    ? __ZA_SERVER_BASE_URL__
+    : 'http://127.0.0.1:8787';
 
-interface AutomationControl {
-  automationId: string;
-  enabledInput: HTMLInputElement;
-  minutesInput: HTMLInputElement;
-}
-const automationControls: AutomationControl[] = [];
+const root = document.getElementById('za-config-center') as HTMLElement;
 
-function showStatus(message: string, isError = false): void {
-  status.textContent = message;
-  status.className = isError ? 'err' : '';
-}
-
-function renderAutomations(descriptors: AutomationDescriptor[], stored: Record<string, unknown>): void {
-  automationControls.length = 0;
-  automationsContainer.replaceChildren();
-  automationsHint.hidden = descriptors.length === 0;
-  for (const descriptor of descriptors) {
+/**
+ * 本机调度偏好三态：键不存在 = 从未配置（不产 enabled 字段），存在则如实取值——
+ * 「显式停用」与「从未配置」必须可区分，否则新装机器会被判成「本机已暂停」（R6）。
+ */
+function readLocalAutomations(
+  items: Record<string, unknown>,
+): Record<string, { enabled?: boolean; minutes?: number }> {
+  const prefs: Record<string, { enabled?: boolean; minutes?: number }> = {};
+  for (const descriptor of parseAutomationDescriptors(items[AUTOMATION_DESCRIPTORS_KEY])) {
     const automationId = descriptor.automation.id;
-    const enabledLabel = document.createElement('label');
-    enabledLabel.className = 'check';
-    const enabledInput = document.createElement('input');
-    enabledInput.type = 'checkbox';
-    enabledInput.checked = stored[autoScanEnabledKeyFor(automationId)] === true;
-    enabledLabel.append(enabledInput, `启用周期自动化「${automationId}」（${descriptor.origin}）`);
-
-    const minutesLabel = document.createElement('label');
-    minutesLabel.textContent = '周期（分钟）';
-    const hint = document.createElement('span');
-    hint.className = 'hint';
-    hint.textContent = '1–60';
-    minutesLabel.append(hint);
-    const minutesInput = document.createElement('input');
-    minutesInput.type = 'number';
-    minutesInput.min = '1';
-    minutesInput.max = '60';
-    minutesInput.step = '1';
-    const storedMinutes = stored[autoScanMinutesKeyFor(automationId)];
-    minutesInput.value = String(
-      typeof storedMinutes === 'number'
-        ? storedMinutes
-        : descriptor.automation.defaultPeriodMinutes ?? DEFAULT_AUTO_SCAN_MINUTES,
-    );
-
-    automationsContainer.append(enabledLabel, minutesLabel, minutesInput);
-    automationControls.push({ automationId, enabledInput, minutesInput });
+    const minutes = items[autoScanMinutesKeyFor(automationId)];
+    const enabledKey = autoScanEnabledKeyFor(automationId);
+    prefs[automationId] = {
+      ...(Object.hasOwn(items, enabledKey) ? { enabled: items[enabledKey] === true } : {}),
+      ...(typeof minutes === 'number' ? { minutes } : {}),
+    };
   }
+  return prefs;
 }
 
 void chrome.storage.local.get(null).then((items) => {
   const token = items[TOKEN_KEY];
-  const baseUrl = items[BASEURL_KEY];
-  if (typeof token === 'string') tokenInput.value = token;
-  if (typeof baseUrl === 'string') baseUrlInput.value = baseUrl;
-  renderAutomations(parseAutomationDescriptors(items[AUTOMATION_DESCRIPTORS_KEY]), items);
-});
+  const storedBaseUrl = items[BASEURL_KEY];
+  const authToken = typeof token === 'string' ? token : '';
+  const serverBaseUrl = typeof storedBaseUrl === 'string' ? storedBaseUrl : '';
+  // 非受信地址（非 HTTPS 且非本机）回落构建缺省：令牌只随请求发往受信端点。
+  const baseUrl =
+    normalizeTrustedServerBaseUrl(serverBaseUrl === '' ? DEFAULT_SERVER_BASE_URL : serverBaseUrl) ??
+    DEFAULT_SERVER_BASE_URL;
 
-saveButton.addEventListener('click', () => {
-  const token = tokenInput.value.trim();
-  const baseUrl = baseUrlInput.value.trim();
-  if (token === '') {
-    showStatus('访问令牌不能为空', true);
-    return;
-  }
-  const entries: Record<string, unknown> = { [TOKEN_KEY]: token };
-  for (const control of automationControls) {
-    const minutes = Number(control.minutesInput.value);
-    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) {
-      showStatus(`自动化「${control.automationId}」周期必须是 1 到 60 分钟的整数`, true);
-      return;
-    }
-    entries[autoScanEnabledKeyFor(control.automationId)] = control.enabledInput.checked;
-    entries[autoScanMinutesKeyFor(control.automationId)] = minutes;
-  }
-  void (baseUrl === ''
-    ? chrome.storage.local.remove(BASEURL_KEY)
-    : chrome.storage.local.set({ [BASEURL_KEY]: baseUrl })
-  )
-    .then(() => chrome.storage.local.set(entries))
-    .then(() => showStatus('已保存；重新打开宿主页面生效'))
-    .catch(() => showStatus('保存失败，请重试', true));
+  mountConfigCenter(root, {
+    fetch: globalThis.fetch.bind(globalThis),
+    baseUrl,
+    authToken,
+    tokenConfigured: authToken !== '',
+    serverBaseUrl,
+    normalizeBaseUrl: normalizeTrustedServerBaseUrl,
+    localAutomations: readLocalAutomations(items),
+    async saveSettings(patch) {
+      const entries: Record<string, unknown> = {};
+      if (patch.token !== undefined) entries[TOKEN_KEY] = patch.token;
+      if (patch.serverBaseUrl !== undefined && patch.serverBaseUrl !== '') {
+        entries[BASEURL_KEY] = patch.serverBaseUrl;
+      }
+      if (patch.serverBaseUrl === '') await chrome.storage.local.remove(BASEURL_KEY);
+      if (Object.keys(entries).length > 0) await chrome.storage.local.set(entries);
+    },
+    async saveAutomations(prefs) {
+      const entries: Record<string, unknown> = {};
+      for (const [automationId, pref] of Object.entries(prefs)) {
+        entries[autoScanEnabledKeyFor(automationId)] = pref.enabled;
+        entries[autoScanMinutesKeyFor(automationId)] = pref.minutes;
+      }
+      if (Object.keys(entries).length > 0) await chrome.storage.local.set(entries);
+    },
+  });
 });

@@ -207,6 +207,23 @@ describe('GET /v1/user-config（配置中心读取面）', () => {
     expect(state.revision).toBe(EMPTY_REVISION);
   });
 
+  it('响应携带 claims 推导的 subject：零定制用户据此构造合法归属键（客户端不臆造）', async () => {
+    const hostUserId = 'ucw-subject-echo';
+    const token = await signToken(hostUserId);
+    const res = await fetch(`${baseUrl}/v1/user-config`, { headers: authHeaders(token) });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { subject?: { tenant: string; hostUserId: string } };
+    expect(body.subject).toEqual({ tenant: TENANT, hostUserId });
+
+    // 用该 subject 构造的 overlay 可直接通过 PUT 的一致性校验（闭环）
+    const saved = await putOverlay(token, {
+      schemaVersion: 1,
+      subject: body.subject,
+      packs: { 'host-demo': { enabled: false } },
+    });
+    expect(saved.status).toBe(200);
+  });
+
   it('PUT 后立即 GET：revision 与 overlay 一致（边界：写读闭环）', async () => {
     const hostUserId = 'ucw-roundtrip';
     const token = await signToken(hostUserId);

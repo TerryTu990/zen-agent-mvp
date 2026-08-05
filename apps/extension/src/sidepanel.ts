@@ -7,6 +7,7 @@ import {
 import { renderConfigDraftCard } from './config-draft-card.js';
 import { createConversationUi } from './conversation-hitl.js';
 import type { ExecutionPreference } from './frames.js';
+import { renderInjectionView } from './injection-view.js';
 import {
   SIDE_PANEL_PORT_NAME,
   type BackgroundToSidePanelMessage,
@@ -30,6 +31,8 @@ export interface SidePanelElements {
   context: HTMLElement;
   contextTitle: HTMLElement;
   contextDetail: HTMLElement;
+  injection: HTMLElement;
+  injectionToggle: HTMLButtonElement;
 }
 
 export function mountSidePanel(root: HTMLElement): SidePanelElements {
@@ -50,7 +53,9 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
             <option value="prefer-server-api">优先服务端 API</option>
           </select>
         </label>
+        <button class="za-injection-toggle" data-za-injection-toggle type="button" aria-expanded="false" aria-label="查看当前页面注入构成" title="查看当前页面注入构成">注入</button>
       </section>
+      <section class="za-injection" data-za-injection aria-label="当前页面注入构成" aria-live="polite" hidden></section>
       <section data-za-messages aria-live="polite">
         <div class="za-empty"><strong>把操作交给 Zen</strong><span>对话会留在这里；页面只负责观察与执行。</span></div>
       </section>
@@ -85,6 +90,8 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
   const context = root.querySelector<HTMLElement>('[data-za-context]');
   const contextTitle = root.querySelector<HTMLElement>('.za-context-title');
   const contextDetail = root.querySelector<HTMLElement>('.za-context-detail');
+  const injection = root.querySelector<HTMLElement>('[data-za-injection]');
+  const injectionToggle = root.querySelector<HTMLButtonElement>('[data-za-injection-toggle]');
   if (
     messages === null ||
     input === null ||
@@ -96,7 +103,9 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
     preference === null ||
     context === null ||
     contextTitle === null ||
-    contextDetail === null
+    contextDetail === null ||
+    injection === null ||
+    injectionToggle === null
   ) {
     throw new Error('Side Panel 初始化失败');
   }
@@ -112,6 +121,8 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
     context,
     contextTitle,
     contextDetail,
+    injection,
+    injectionToggle,
   };
 }
 
@@ -238,6 +249,12 @@ export function startSidePanel(elements: SidePanelElements): void {
       updateComposer();
       return false;
     }
+  };
+
+  const closeInjection = (): void => {
+    elements.injection.hidden = true;
+    elements.injection.textContent = '';
+    elements.injectionToggle.setAttribute('aria-expanded', 'false');
   };
 
   const updateContext = (message: Extract<BackgroundToSidePanelMessage, { kind: 'task-context' }>): void => {
@@ -389,6 +406,12 @@ export function startSidePanel(elements: SidePanelElements): void {
       }
     } else if (message.kind === 'hitl-result') {
       if (!message.accepted) elements.composerNotice.textContent = '确认结果未送达，确认卡已恢复，请重试';
+    } else if (message.kind === 'injection-result') {
+      // 抽屉已关闭说明用户已不再查看，迟到的响应直接丢弃。
+      if (!elements.injection.hidden) {
+        if (message.ok) renderInjectionView(elements.injection, message.description);
+        else elements.injection.textContent = message.error;
+      }
     } else {
       renderUiEvent(message);
     }
@@ -447,6 +470,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     elements.contextDetail.textContent = `任务组 ${groupId}`;
     elements.messages.textContent = '';
     ui = createConversationUi(elements.messages);
+    closeInjection();
     ready = false;
     resetActivity();
     connect();
@@ -533,6 +557,18 @@ export function startSidePanel(elements: SidePanelElements): void {
     }
     if (isBusy()) return;
     void submit();
+  });
+  elements.injectionToggle.addEventListener('click', () => {
+    if (!elements.injection.hidden) {
+      closeInjection();
+      return;
+    }
+    elements.injection.hidden = false;
+    elements.injectionToggle.setAttribute('aria-expanded', 'true');
+    elements.injection.textContent = '正在读取当前页面注入构成…';
+    if (!send({ kind: 'injection-request' })) {
+      elements.injection.textContent = '连接已中断，暂时无法读取当前页面注入构成';
+    }
   });
   elements.upload.addEventListener('click', () => elements.fileInput.click());
   elements.fileInput.addEventListener('change', () => {

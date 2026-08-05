@@ -2,39 +2,160 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>Zen Commerce Agent 设置</title>
+  <title>Zen Agent 配置中心</title>
   <style>
-    body { font: 14px/1.6 system-ui, -apple-system, sans-serif; color: #1c1b18; background: #faf9f6; margin: 0; padding: 32px; }
-    .card { max-width: 560px; margin: 0 auto; background: #fff; border: 1px solid #e4e1da; border-radius: 14px; padding: 24px 28px; }
-    h1 { font-size: 17px; margin: 0 0 4px; }
-    .sub { color: #8a867d; font-size: 12.5px; margin: 0 0 20px; }
-    label { display: block; font-weight: 600; font-size: 13px; margin: 14px 0 6px; }
-    .hint { font-weight: 400; color: #8a867d; font-size: 12px; margin-left: 6px; }
-    input, textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d8d4cb; border-radius: 8px; font: inherit; font-size: 13px; }
-    input[type="checkbox"] { width: auto; }
-    .check { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-    textarea { height: 88px; resize: vertical; font-family: ui-monospace, monospace; word-break: break-all; }
-    .row { display: flex; align-items: center; gap: 10px; margin-top: 20px; }
-    button { padding: 8px 18px; border: none; border-radius: 8px; font: inherit; cursor: pointer; background: #1c1b18; color: #faf9f6; }
-    #status { font-size: 12.5px; color: #4a7c59; }
-    #status.err { color: #b4552f; }
+    /* 语义令牌层（docs/design/ui-style-guide.md §3）：界面样式只消费本层，不写原始值。 */
+    :root {
+      --bg: #f4f5f7;
+      --surface: #ffffff;
+      --ink: #1a1d21;
+      --ink-2: #4b5563;
+      --muted: #8a919c;
+      --line: #e5e7eb;
+      --line-strong: #d1d5db;
+      --brand: #0f766e;
+      --brand-soft: #e6f2f1;
+      --auto: #16803c; --auto-bg: #e8f5ec;
+      --hitl: #b45309; --hitl-bg: #fdf3e3;
+      --off: #b91c1c; --off-bg: #fdeaea;
+      --info: #1d4ed8; --info-bg: #eef4fd;
+      --radius: 12px;
+      --radius-sm: 8px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+      background: var(--bg); color: var(--ink); font-size: 13px; line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    .za-cc { display: flex; max-width: 960px; min-height: 100vh; margin: 0 auto; background: var(--bg); }
+
+    .za-cc-nav {
+      width: 200px; flex-shrink: 0; background: var(--surface);
+      border-right: 1px solid var(--line); padding: 20px 12px;
+    }
+    .za-cc-logo { font-size: 16px; font-weight: 700; color: var(--brand); padding: 0 10px; }
+    .za-cc-logo-sub { font-size: 11px; color: var(--muted); padding: 2px 10px 16px; }
+    .za-cc-nav-item {
+      display: block; width: 100%; text-align: left; padding: 8px 10px; margin-bottom: 4px;
+      border: none; background: none; border-radius: var(--radius-sm);
+      color: var(--ink-2); font: inherit; font-size: 13px; cursor: pointer;
+    }
+    .za-cc-nav-item-active { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+
+    .za-cc-main { flex: 1; padding: 20px 24px 88px; min-width: 0; }
+    .za-cc-page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .za-cc-page-title { font-size: 15px; font-weight: 600; }
+    .za-cc-head-actions { display: flex; gap: 8px; }
+
+    .za-cc-btn {
+      padding: 6px 14px; border-radius: var(--radius-sm); font: inherit; font-size: 13px; cursor: pointer;
+      background: var(--surface); color: var(--ink-2); border: 1px solid var(--line-strong);
+    }
+    .za-cc-btn-primary { background: var(--brand); color: #fff; border-color: var(--brand); }
+    .za-cc-btn-danger { color: var(--off); border-color: var(--off-bg); padding: 2px 10px; font-size: 12px; }
+    .za-cc-unavailable { color: var(--muted); background: var(--bg); cursor: not-allowed; }
+    button:focus-visible, select:focus-visible, input:focus-visible {
+      outline: 2px solid var(--brand); outline-offset: 2px;
+    }
+
+    .za-cc-notice { border-radius: var(--radius-sm); padding: 8px 12px; font-size: 12px; margin-bottom: 12px; }
+    .za-cc-notice-info { background: var(--info-bg); color: var(--info); }
+    .za-cc-notice-warn { background: var(--hitl-bg); color: var(--hitl); }
+    .za-cc-notice-lock { background: var(--bg); color: var(--ink-2); border: 1px solid var(--line-strong); }
+    .za-cc-empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
+    .za-cc-hint { color: var(--muted); font-size: 11px; }
+
+    .za-cc-badge-paused { border-color: #b45309; color: #b45309; background: #fdf6ec; }
+      .za-cc-badge {
+      display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+      line-height: 1.5; vertical-align: middle; background: var(--bg); color: var(--ink-2);
+      border: 1px solid var(--line);
+    }
+    .za-cc-badge-official { background: var(--brand-soft); color: var(--brand); border-color: var(--brand-soft); }
+    .za-cc-badge-community { background: var(--info-bg); color: var(--info); border-color: var(--info-bg); }
+    .za-cc-badge-local { background: var(--bg); color: var(--ink-2); border-color: var(--line-strong); }
+    .za-cc-badge-origin { background: var(--bg); color: var(--muted); }
+    .za-cc-badge-kind { background: var(--brand-soft); color: var(--brand); border-color: var(--brand-soft); }
+    .za-cc-badge-tight { background: var(--hitl-bg); color: var(--hitl); border-color: var(--hitl-bg); }
+    .za-cc-badge-warn { background: var(--off-bg); color: var(--off); border-color: var(--off-bg); }
+
+    .za-cc-pack, .za-cc-section, .za-cc-scope {
+      background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .04); padding: 14px 16px; margin-bottom: 12px;
+    }
+    .za-cc-scope .za-cc-section { box-shadow: none; border: none; padding: 8px 0 0; margin-bottom: 0; }
+    .za-cc-pack-row, .za-cc-scope-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .za-cc-pack-name { font-size: 13px; font-weight: 600; }
+    .za-cc-pack-version, .za-cc-pack-features, .za-cc-pack-tools, .za-cc-pack-locations { font-size: 12px; color: var(--muted); }
+    .za-cc-pack-origin { font-size: 12px; color: var(--ink-2); }
+    .za-cc-pack-sub { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+    .za-cc-pack-desc { font-size: 12px; color: var(--muted); }
+    .za-cc-pack-ops { margin-left: auto; display: flex; gap: 8px; }
+    .za-cc-pack-ops .za-cc-btn { padding: 2px 10px; font-size: 12px; }
+
+    .za-cc-switch { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12px; color: var(--ink-2); }
+    .za-cc-switch input { width: 16px; height: 16px; accent-color: var(--brand); }
+
+    .za-cc-section-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    .za-cc-scope-title { font-size: 13px; font-weight: 600; }
+    .za-cc-scope-note { font-size: 12px; color: var(--muted); }
+
+    .za-cc-rule, .za-cc-fact {
+      display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line);
+    }
+    .za-cc-rule-text, .za-cc-fact-text { font-size: 13px; }
+    .za-cc-rule-scope, .za-cc-fact-scope, .za-cc-rule-created, .za-cc-fact-created {
+      font-size: 12px; color: var(--muted);
+    }
+    .za-cc-rule-delete, .za-cc-fact-delete { margin-left: auto; }
+
+    .za-cc-matrix { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    .za-cc-matrix th {
+      font-size: 12px; color: var(--muted); font-weight: 500; text-align: left;
+      padding: 6px 8px; border-bottom: 1px solid var(--line);
+    }
+    .za-cc-matrix td { padding: 8px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: middle; }
+    .za-cc-matrix tr:last-child td { border-bottom: none; }
+    .za-cc-tool-name { font-weight: 500; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+    .za-cc-tool-desc { display: block; font-size: 11px; color: var(--muted); line-height: 1.4; }
+    .za-cc-tool-base { font-size: 12px; color: var(--ink-2); }
+
+    .za-cc-automation { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+    .za-cc-automation-name { font-weight: 500; }
+    .za-cc-automation .za-cc-switch { margin-left: 0; }
+
+    .za-cc-field { margin-bottom: 12px; }
+    .za-cc-field-head { display: flex; align-items: center; gap: 8px; }
+    .za-cc-field-inline { display: inline-flex; align-items: center; gap: 8px; }
+    .za-cc-label { font-size: 13px; font-weight: 600; }
+    .za-cc-token-state { font-size: 11px; color: var(--muted); }
+    .za-cc-input, select, input[type="number"] {
+      padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+      font: inherit; font-size: 13px; background: var(--surface); color: var(--ink);
+    }
+    .za-cc-input { width: 100%; }
+    input[type="number"] { width: 88px; }
+    .za-cc-pending-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+    .za-cc-section-locked { background: var(--bg); }
+    .za-cc-lock-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); color: var(--ink-2); }
+    .za-cc-lock-tag { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+    .za-cc-footer {
+      position: sticky; bottom: 0; display: flex; align-items: center; gap: 12px;
+      padding: 12px 0; margin-top: 4px; background: var(--bg); border-top: 1px solid var(--line);
+    }
+    .za-cc-status { font-size: 12px; color: var(--auto); }
+    .za-cc-status-err { color: var(--off); }
+    .za-cc-revision { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .za-cc-nav-item, .za-cc-btn { transition: background 150ms ease-out, color 150ms ease-out; }
+    }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>Zen Commerce Agent 设置</h1>
-    <p class="sub">访问令牌由管理员签发；令牌仅存于本浏览器（chrome.storage.local），不会发给服务端以外的任何地方。</p>
-    <label>访问令牌<span class="hint">向管理员获取，过期后重新获取并更新</span></label>
-    <textarea id="token" placeholder="粘贴管理员发给你的令牌（eyJ 开头的一长串）"></textarea>
-    <label>服务端地址<span class="hint">一般无需修改</span></label>
-    <input id="baseUrl" placeholder="留空使用默认" />
-    <div id="automations"></div>
-    <p class="sub" id="automationsHint">周期自动化默认关闭。只唤醒已打开且已加入会话组的声明工作页；不会自动新建页面。任一不确定状态会暂停。</p>
-    <div class="row">
-      <button id="save">保存</button>
-      <span id="status"></span>
-    </div>
-  </div>
+  <main id="za-config-center"></main>
   <script src="dist/options.js"></script>
 </body>
 </html>

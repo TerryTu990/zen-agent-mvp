@@ -325,7 +325,7 @@ interface PendingConfigDraft {
 
 const CONFIG_DRAFT_TTL_MS = 600_000;
 
-/** overlay 写入体积守卫（adr-014「单用户 overlay 预期 KB 级」的机械化）：超限 400 拒收；schema 层 maxItems 演进锚点=G4。 */
+/** overlay 写入体积守卫：端点守总量（字节/条目），schema 守单作用域形状上界（maxItems/maxProperties）。 */
 const USER_OVERLAY_MAX_BYTES = 128 * 1024;
 const USER_OVERLAY_MAX_ENTRIES = 500;
 
@@ -1125,6 +1125,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             ? { invalidRefs: composed.invalidRefs }
             : {}),
           ...(composed.packDisabled === true ? { packDisabled: true as const } : {}),
+          ...(composed.disabledPackId !== undefined ? { disabledPackId: composed.disabledPackId } : {}),
         },
       }, pack);
       // L2 定格面（封 TOCTOU）：本轮 compose 冻结的生效面贯穿全部判定与签发；
@@ -2240,9 +2241,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
     claims: IdentityClaims,
     userConfig: GatewayUserConfigDeps,
   ): Promise<void> {
+    const subject = subjectOf(claims);
     try {
-      const { overlay, revision } = await userConfig.store.read(subjectOf(claims));
-      sendJson(res, 200, { overlay, revision });
+      const { overlay, revision } = await userConfig.store.read(subject);
+      // subject 随读取面下发（U3 加法）：overlay=null 的零定制用户据此构造合法归属键，
+      // 客户端不解 JWT、不臆造 subject（PUT 端点按 claims 严格比对）。
+      sendJson(res, 200, { overlay, revision, subject });
     } catch {
       sendJson(res, 503, { error: '用户配置存储不可用' });
     }
@@ -2375,6 +2379,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
     if (pathname === '/v1/automation-descriptors' && req.method === 'GET') {
       // adr-019：pack 声明的周期自动化描述符（纯调度/提示词数据）；客户端据此调度 alarm 与渲染开关，治理仍全在服务端。
       sendJson(res, 200, { descriptors: await deps.assembly.listAutomations() });
+      return;
+    }
+    if (pathname === '/v1/packs' && req.method === 'GET') {
+      // 配置中心 L1 数据源：已安装 pack 的展示投影（只读、无副作用）；L2 关停/收紧状态走 /v1/user-config。
+      sendJson(res, 200, { packs: await deps.assembly.listPacks() });
       return;
     }
     const automationMatch = /^\/v1\/sessions\/([^/]+)\/automation-runs\/([^/]+)$/.exec(pathname);

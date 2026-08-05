@@ -11,10 +11,13 @@ restore_dist() {
 }
 trap restore_dist EXIT
 
-# 先走常规构建（含 tsc --noEmit 类型门禁与 content.js），再以生产地址重打 background.js。
+# 先走常规构建（含 tsc --noEmit 类型门禁与 content.js），再以生产地址重打读取该缺省值的入口。
+# options.js 与 background.js 同源消费 __ZA_SERVER_BASE_URL__：配置中心直连服务端读写 L1/L2。
 pnpm --filter @zen-agent/extension build >/dev/null
 (cd apps/extension && pnpm exec esbuild src/background.ts --bundle --format=esm \
   --define:__ZA_SERVER_BASE_URL__="\"${SERVER_BASE_URL}\"" --outfile=dist/background.js >/dev/null)
+(cd apps/extension && pnpm exec esbuild src/options.ts --bundle --format=iife \
+  --define:__ZA_SERVER_BASE_URL__="\"${SERVER_BASE_URL}\"" --outfile=dist/options.js >/dev/null)
 
 VERSION="$(node -p "JSON.parse(require('fs').readFileSync('apps/extension/manifest.json','utf8')).version")"
 OUT_DIR="release/artifacts"

@@ -135,4 +135,56 @@ describe('fs UserConfigStore（adr-014 §6 存储与故障语义）', () => {
     }
     expect(new Set(files.map((name) => name.toLowerCase())).size).toBe(2);
   });
+
+  it('存量规模越界（条目数超上界）：读路径放行不降级——契约收紧不使既有配置不可读', async () => {
+    const { dir, store } = storeIn();
+    await store.write(subject, overlayOf('占位。'));
+    const tenantDir = join(dir, readdirSync(dir)[0]!);
+    const file = join(tenantDir, readdirSync(tenantDir)[0]!);
+    const oversized = {
+      schemaVersion: 1,
+      subject,
+      packs: {
+        shop: {
+          rules: Array.from({ length: 201 }, (_, i) => ({
+            id: `r-${i}`,
+            text: `规则 ${i}。`,
+            origin: 'manual',
+            createdAt: '2026-08-05T00:00:00.000Z',
+          })),
+        },
+      },
+    };
+    writeFileSync(file, JSON.stringify(oversized), 'utf8');
+    const fresh = createFsUserConfigStore({ dir });
+    const read = await fresh.read(subject);
+    expect(read.stale).toBeUndefined();
+    expect(read.overlay?.packs['shop']?.rules).toHaveLength(201);
+  });
+
+  it('既超规模又结构非法：仍走降级（放行只对纯规模越界，不得成为结构校验的绕过口）', async () => {
+    const { dir, store } = storeIn();
+    await store.write(subject, overlayOf('占位。'));
+    const tenantDir = join(dir, readdirSync(dir)[0]!);
+    const file = join(tenantDir, readdirSync(tenantDir)[0]!);
+    const broken = {
+      schemaVersion: 1,
+      subject,
+      packs: {
+        shop: {
+          rules: Array.from({ length: 201 }, (_, i) => ({
+            id: `r-${i}`,
+            text: `规则 ${i}。`,
+            origin: i === 0 ? 'BOGUS' : 'manual',
+            createdAt: '2026-08-05T00:00:00.000Z',
+          })),
+        },
+      },
+    };
+    writeFileSync(file, JSON.stringify(broken), 'utf8');
+    const fresh = createFsUserConfigStore({ dir });
+    await expect(fresh.read(subject)).rejects.toSatisfy(
+      (error) => error instanceof UserConfigStoreError && error.code === 'read-failed',
+    );
+  });
 });

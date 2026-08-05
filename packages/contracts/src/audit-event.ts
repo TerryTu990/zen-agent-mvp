@@ -72,6 +72,8 @@ export interface AssemblyEvent extends AuditEventBase {
     invalidRefs?: string[];
     /** true = 激活 pack 被用户 enabled:false 关停而回落仅基座；缺省 = 非关停回落。 */
     packDisabled?: true;
+    /** 被关停的 packId（随 packDisabled 一同记录）：关停轮事件顶层 packId 已回落缺省，追溯「哪个 pack 被关停」只此一处。 */
+    disabledPackId?: string;
   };
 }
 

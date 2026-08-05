@@ -130,7 +130,20 @@ export function createFsUserConfigStore(options: FsUserConfigStoreOptions): User
         return degrade(key, 'JSON 解析失败');
       }
       const validated = validateUserOverlay(parsed);
-      if (!validated.ok) return degrade(key, 'overlay 不过契约校验');
+      if (!validated.ok) {
+        // 规模上界（条目数/作用域数）是写入期约束：早于该约束写下的存量 overlay 结构仍合法，
+        // 读路径放行并告警，避免用户配置因契约收紧变为不可读且无自助恢复路径；结构非法仍降级。
+        if (!validated.issues.every((issue) => issue.kind === 'scale')) {
+          return degrade(key, 'overlay 不过契约校验');
+        }
+        console.warn(
+          `[user-config] overlay 规模超出当前上界（${validated.issues.length} 项），已按存量放行；下次保存时须先精简`,
+        );
+        const oversized = parsed as UserOverlay;
+        const oversizedRevision = sha256Hex(raw);
+        remember(key, oversized, oversizedRevision);
+        return { overlay: oversized, revision: oversizedRevision };
+      }
       const revision = sha256Hex(raw);
       remember(key, validated.overlay, revision);
       return { overlay: validated.overlay, revision };
