@@ -88,7 +88,7 @@ describe('routeDownstreamFrame 下行帧分发', () => {
   it('snapshot-request → snapshot.collect，快照经 send 回传 snapshot-report（requestId 关联）', () => {
     const { deps, sent } = makeDeps();
     routeDownstreamFrame({ type: 'snapshot-request', sessionId: 's1', requestId: 'r1' }, deps);
-    expect(deps.snapshot.collect).toHaveBeenCalledWith(undefined);
+    expect(deps.snapshot.collect).toHaveBeenCalledWith(undefined, false);
     expect(sent).toContainEqual({
       kind: 'snapshot-report',
       report: {
@@ -131,6 +131,41 @@ describe('routeDownstreamFrame 下行帧分发', () => {
     });
   });
 
+  it('snapshot-request：includeText 透传采集器，正文与截断标记随 report 上行', () => {
+    const { deps, sent } = makeDeps({
+      snapshot: {
+        collect: vi.fn().mockReturnValue({
+          url: 'http://host/article',
+          title: '文章页',
+          elements: [],
+          notices: [],
+          evidence: {},
+          text: '正文前缀',
+          textTruncated: true,
+        }),
+      },
+    });
+    routeDownstreamFrame(
+      { type: 'snapshot-request', sessionId: 's1', requestId: 'r4', includeText: true },
+      deps,
+    );
+    expect(deps.snapshot.collect).toHaveBeenCalledWith(undefined, true);
+    expect(sent).toContainEqual({
+      kind: 'snapshot-report',
+      report: {
+        type: 'snapshot-report',
+        sessionId: 's1',
+        requestId: 'r4',
+        url: 'http://host/article',
+        pageInstanceId: 'page-instance-1',
+        title: '文章页',
+        elements: [],
+        text: '正文前缀',
+        textTruncated: true,
+      },
+    });
+  });
+
   it('snapshot-request：把 pack 证据配方交给采集器并回传结构化证据', () => {
     const rule = {
       id: 'message-receipts',
@@ -153,7 +188,7 @@ describe('routeDownstreamFrame 下行帧分发', () => {
       { type: 'snapshot-request', sessionId: 's1', requestId: 'r3', evidenceRules: [rule] },
       deps,
     );
-    expect(deps.snapshot.collect).toHaveBeenCalledWith([rule]);
+    expect(deps.snapshot.collect).toHaveBeenCalledWith([rule], false);
     expect(sent).toContainEqual({
       kind: 'snapshot-report',
       report: {

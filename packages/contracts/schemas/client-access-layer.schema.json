@@ -594,6 +594,10 @@
           "type": "string",
           "minLength": 1
         },
+        "includeText": {
+          "$comment": "是否随快照采集页面正文（缺省 false=不采集）：正文体量大，只在 agent 显式需要阅读页面内容的那一轮开启。开启不改变任何治理判定，正文与元素清单同为不可信观察。",
+          "type": "boolean"
+        },
         "evidenceRules": {
           "$comment": "当前 feature 的 pack 级只读证据配方；由服务端从已装配 DOM 工具提取，客户端只执行采集、不据此做治理判定。",
           "type": "array",
@@ -718,6 +722,16 @@
             "maxLength": 200
           }
         },
+        "text": {
+          "$comment": "页面正文纯文本（仅当 snapshot-request.includeText=true 时采集）：缺省=未请求正文或页面无正文，二者对 agent 等价，故空串不是合法取值。上限 40000 是契约硬顶，客户端自身截断阈值 MUST 不高于此值；正文与 elements 同属不可信观察，服务端不据此放行任何操作。",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40000
+        },
+        "textTruncated": {
+          "$comment": "正文是否被客户端截断：true=text 只是页面正文的前缀，agent MUST NOT 据此断言页面已读全；缺省或 false=text 为完整正文。禁止静默截断，故 text 缺席时本字段无意义（dependentRequired 拒绝）。",
+          "type": "boolean"
+        },
         "evidence": {
           "$comment": "按 pack 配方采集的结构化只读证据；键为配方 id，值只含唯一容器数量与最新状态枚举，不含正文。",
           "type": "object",
@@ -745,6 +759,11 @@
             }
           }
         }
+      },
+      "dependentRequired": {
+        "textTruncated": [
+          "text"
+        ]
       }
     },
     "configDraft": {

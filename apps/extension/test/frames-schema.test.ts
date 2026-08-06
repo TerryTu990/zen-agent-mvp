@@ -157,6 +157,7 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
     keys: keysOf<SnapshotReportFrame>({
       type: true, sessionId: true, requestId: true, url: true, title: true,
       pageInstanceId: true, elements: true, notices: true, evidence: true,
+      text: true, textTruncated: true,
     }),
   },
   {
@@ -201,7 +202,7 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
   {
     def: 'snapshotRequest',
     keys: keysOf<SnapshotRequestFrame>({
-      type: true, sessionId: true, requestId: true, evidenceRules: true,
+      type: true, sessionId: true, requestId: true, evidenceRules: true, includeText: true,
     }),
   },
   {

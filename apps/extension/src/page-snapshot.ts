@@ -5,6 +5,7 @@
  * 保证 jsdom 可测且不因宿主 CSS 花活漏采。
  */
 import type { SnapshotElement, SnapshotEvidence, SnapshotEvidenceRule } from './frames.js';
+import { extractPageText, sameOriginDoc } from './page-text.js';
 import { MAX_ELEMENTS, MAX_LABEL_LENGTH, MAX_NOTICES, MAX_NOTICE_LENGTH } from './tuning.js';
 
 const INTERACTIVE_SELECTOR = [
@@ -67,11 +68,15 @@ export interface PageSnapshot {
   notices: string[];
   /** pack 配方产出的结构化证据；只含容器数量与状态枚举，不含正文。 */
   evidence: Record<string, SnapshotEvidence>;
+  /** 正文纯文本；仅 includeText 请求且页面确有正文时出现（空正文一律缺席）。 */
+  text?: string;
+  /** true = text 只是正文前缀；缺席即完整。text 缺席时本字段亦缺席。 */
+  textTruncated?: boolean;
 }
 
 export interface Snapshotter {
-  /** 重建 ref 映射并返回快照；旧 ref 全部作废。 */
-  collect(evidenceRules?: SnapshotEvidenceRule[]): PageSnapshot;
+  /** 重建 ref 映射并返回快照；旧 ref 全部作废。includeText 额外附页面正文。 */
+  collect(evidenceRules?: SnapshotEvidenceRule[], includeText?: boolean): PageSnapshot;
   /** 解引用最近一次快照的 ref；未知/已作废返回 null。 */
   resolve(ref: string): Element | null;
 }
@@ -225,23 +230,11 @@ function collectEvidence(
   return evidence;
 }
 
-/**
- * 同源 iframe 的子文档（ADR-013 批次④ 方案 A）：contentDocument 可达即同源、返回其 document；
- * 跨源浏览器返回 null 或抛安全错误——一律视为不可下钻、跳过。
- */
-function sameOriginDoc(iframe: Element): Document | null {
-  try {
-    return (iframe as HTMLIFrameElement).contentDocument;
-  } catch {
-    return null;
-  }
-}
-
 export function createSnapshotter(doc: Document = document): Snapshotter {
   let refs = new Map<string, Element>();
 
   return {
-    collect(evidenceRules = []) {
+    collect(evidenceRules = [], includeText = false) {
       refs = new Map();
       const elements: SnapshotElement[] = [];
       const taken = new Set<Element>();
@@ -283,12 +276,19 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
       };
       walk(doc, '');
       const notices = collectNotices(doc);
+      const pageText = includeText ? extractPageText(doc) : null;
       return {
         url: doc.location?.href ?? '',
         title: doc.title,
         elements,
         notices,
         evidence: collectEvidence(doc, evidenceRules),
+        ...(pageText !== null && pageText.text !== ''
+          ? {
+              text: pageText.text,
+              ...(pageText.truncated ? { textTruncated: true } : {}),
+            }
+          : {}),
       };
     },
     resolve(ref) {

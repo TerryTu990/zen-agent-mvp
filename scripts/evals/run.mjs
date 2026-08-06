@@ -322,6 +322,9 @@ async function driveTurn(sessionId, token, scenario, bus) {
           url: scenario.url ?? `${HOST_BASE}/${scenario.page}`,
           elements: snapshotFixture.snapshotElements ?? [{ ref: 'za-send', role: 'button', label: '发送' }],
           notices: snapshotFixture.snapshotNotices ?? [],
+          // 正文只在场景显式声明时回传：默认不带 text，与客户端"未请求 includeText 即不采集正文"同真。
+          ...(snapshotFixture.snapshotText !== undefined ? { text: snapshotFixture.snapshotText } : {}),
+          ...(snapshotFixture.snapshotTextTruncated === true ? { textTruncated: true } : {}),
           ...(snapshotFixture.snapshotEvidence !== undefined
             ? { evidence: snapshotFixture.snapshotEvidence }
             : {}),

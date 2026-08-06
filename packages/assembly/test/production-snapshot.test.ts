@@ -14,16 +14,17 @@ describe('Zen Commerce Agent 生产快照', () => {
       url: 'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage',
     });
     expect(resolved).toMatchObject({
-      snapshotVersion: '1.4.0',
+      snapshotVersion: '1.5.0',
       packId: 'xianyu-seller',
       featureId: 'xianyu-orders',
     });
     // 站点包恒优先于 generic 兜底：闲鱼页面不得被兜底包截胡。
     expect(resolved.generic).not.toBe(true);
 
-    // generic-web 无 site 围栏，不进站点索引——站点索引仍只有闲鱼一家。
+    // 站点索引 = registry 中带 site 围栏的 pack；generic-web 无围栏故不入索引。
+    // 索引是 site_navigate 的唯一目标闭集——漏登记 pack 在此处即失去跨站可达性。
     const sites = await port.listSites();
-    expect(sites.map((site) => site.packId)).toEqual(['xianyu-seller']);
+    expect(sites.map((site) => site.packId)).toEqual(['xianyu-seller', 'yinxiang']);
 
     const composed = await port.compose({
       sessionId: 'production-xianyu-orders',
@@ -33,6 +34,29 @@ describe('Zen Commerce Agent 生产快照', () => {
     expect(composed.tools.map((tool) => tool.id)).toEqual([
       'xianyu-orders.page-operate', 'xianyu-shipping.execute-intent',
     ]);
+  });
+
+  it('印象笔记站点已安装并装配写笔记工具（未登记进 registry 时本例即红）', async () => {
+    const resolved = await port.resolveFeature({ url: 'https://app.yinxiang.com/' });
+    expect(resolved).toMatchObject({
+      snapshotVersion: '1.5.0',
+      packId: 'yinxiang',
+      featureId: 'yinxiang-note',
+    });
+    expect(resolved.generic).not.toBe(true);
+
+    const composed = await port.compose({
+      sessionId: 'production-yinxiang-note',
+      packId: resolved.packId,
+      featureId: resolved.featureId,
+    });
+    expect(composed.tools.map((tool) => tool.id)).toEqual(['yinxiang-note.write-note']);
+    expect(composed.tools[0]).toMatchObject({ riskTier: 'hitl', hitlMode: 'per-task' });
+  });
+
+  it('印象笔记 origin 围栏不吃同前缀异域名（app.yinxiang.com.* 回落兜底）', async () => {
+    const resolved = await port.resolveFeature({ url: 'https://app.yinxiang.com.evil.example/' });
+    expect(resolved).toMatchObject({ packId: 'generic-web', generic: true });
   });
 
   it('非闲鱼页面回落 generic 兜底包（服务端仍按准入名单裁决是否真激活）', async () => {

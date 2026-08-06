@@ -1,0 +1,20 @@
+{
+  "packId": "yinxiang",
+  "version": "0.1.0",
+  "name": "印象笔记",
+  "summary": "印象笔记网页版：把外部网页读到的内容整理成一条笔记，留存标题、正文与源地址",
+  "site": {
+    "origin": "https://app.yinxiang.com",
+    "locations": ["/"]
+  },
+  "engines": {
+    "contract": "^1.0.0"
+  },
+  "featureIdRules": [
+    {
+      "urlPattern": "^https://app\\.yinxiang\\.com(?:[/?#]|$)",
+      "featureId": "yinxiang-note"
+    }
+  ],
+  "features": ["yinxiang-note"]
+}

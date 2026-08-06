@@ -31,6 +31,7 @@ const TOOL_XIANYU_INTENT = 'xianyu-fulfillment.execute-intent';
 const TOOL_XIANYU_PREPARE = 'prepare.xianyu-fulfillment.execute-intent';
 const TOOL_XIANYU_SHIPPING = 'xianyu-shipping.execute-intent';
 const TOOL_XIANYU_SHIPPING_PREPARE = 'prepare.xianyu-shipping.execute-intent';
+const TOOL_YINXIANG_WRITE = 'yinxiang-note.write-note';
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {
@@ -81,6 +82,10 @@ function pickToolCall(u, body) {
     return { id: 'call_snapshot', name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) };
   }
   if (u.includes('发送闲鱼测试消息') && hasTool(body, TOOL_XIANYU_SEND) && hasTool(body, TOOL_SNAPSHOT)) {
+    return { id: 'call_snapshot', name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) };
+  }
+  // 印象笔记写笔记：同样先观察快照取入口 ref，后续轮走 writeNoteCall。
+  if (u.includes('存成笔记') && hasTool(body, TOOL_YINXIANG_WRITE) && hasTool(body, TOOL_SNAPSHOT)) {
     return { id: 'call_snapshot', name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) };
   }
   return null;
@@ -197,6 +202,44 @@ function xianyuOrdersCall(obs) {
         { action: 'read', ref: result?.ref ?? 'za-empty', name: 'pendingResult' },
       ],
       summary: '筛选待发货订单并读取页面结果',
+    }),
+  };
+}
+
+/**
+ * 快照观察轮 → 印象笔记写笔记批次：refs 全取自本次快照，plan 覆盖整条笔记的写入过程
+ * （per-task 授权下 plan 即用户看到的全部范围）；task 固定，供判别同任务只弹一次确认卡。
+ */
+function writeNoteCall(obs) {
+  let snap;
+  try {
+    snap = JSON.parse(obs);
+  } catch {
+    snap = { elements: [] };
+  }
+  const elements = Array.isArray(snap.elements) ? snap.elements : [];
+  const labelled = (keyword) => elements.find((e) => String(e?.label ?? '').includes(keyword));
+  const create = labelled('新建') ?? elements[0];
+  const title = labelled('标题') ?? elements[0];
+  const save = labelled('保存') ?? elements[elements.length - 1];
+  return {
+    id: 'call_write_note',
+    name: TOOL_YINXIANG_WRITE,
+    arguments: JSON.stringify({
+      task: '把外部文章存成一条笔记',
+      plan: [
+        '点开新建笔记入口',
+        '填入标题「数字风险分析师」',
+        '填入正文并在末尾附来源地址',
+        '保存后重新读取页面回显自检',
+      ],
+      steps: [
+        { action: 'click', ref: create?.ref ?? 'za-0' },
+        { action: 'fill', ref: title?.ref ?? 'za-0', value: '数字风险分析师' },
+        { action: 'click', ref: save?.ref ?? 'za-0' },
+        { action: 'read', ref: title?.ref ?? 'za-0', name: 'noteTitle' },
+      ],
+      summary: '新建一条笔记并写入标题与正文（含来源地址），保存后读取回显自检',
     }),
   };
 }
@@ -510,6 +553,19 @@ function decide(sys, u, body) {
   const drill = driveDrill(u, body);
   if (drill !== null) return drill;
   const obs = lastToolObs(body);
+  // 正文阅读剧本：首轮取带正文的快照（includeText），回喂轮把 observation 原样回显，
+  // 让服务端测试能对回喂内容（正文本体与不可信数据标注）做机械断言。
+  if (u.includes('读一下这页正文') && hasTool(body, TOOL_SNAPSHOT)) {
+    return obs === null
+      ? {
+          toolCall: {
+            id: 'call_snapshot_text',
+            name: TOOL_SNAPSHOT,
+            arguments: JSON.stringify({ includeText: true }),
+          },
+        }
+      : { text: `MOCK-SNAPSHOT-OBS ${obs}` };
+  }
   // R7 无人值守只读底线剧本：'模拟越权写调用' 哨兵不看工具可见性即发起写工具调用（真实 LLM 幻觉
   // 调用工具面外写工具的确定性替身），驱动服务端结构强制拒绝路径——不依赖模型自觉。
   if (obs === null && u.includes('模拟越权写调用')) {
@@ -640,6 +696,12 @@ function decide(sys, u, body) {
       }
       return { toolCall: sendXianyuTestCall(obs) };
     }
+    // 印象笔记快照观察轮：有拦截提示即停（ZA-FEAT-05 失败即停、禁重复保存），否则产出写笔记批次。
+    if (obs.includes('"elements"') && hasTool(body, TOOL_YINXIANG_WRITE)) {
+      const notice = firstNotice(obs);
+      if (notice !== null) return { text: `页面提示：${notice}，已停止写入且不会重复保存。` };
+      return { toolCall: writeNoteCall(obs) };
+    }
     // generic browse 快照观察轮：有拦截提示即停，否则单步点击批次（每批单独确认）。
     if (obs.includes('"elements"') && hasTool(body, TOOL_BROWSE)) {
       const notice = firstNotice(obs);
@@ -648,6 +710,9 @@ function decide(sys, u, body) {
     }
     // dom 结果回喂轮：报告 read 采集值。
     if (obs.includes('"reads"')) {
+      if (calledTool(body, TOOL_YINXIANG_WRITE)) {
+        return { text: '写入步骤已执行；保存结果须重新取快照核对回显后才能回报，未核对前不称已保存。' };
+      }
       if (calledTool(body, TOOL_XIANYU_ORDERS)) {
         return { text: '已选择待发货；下一步必须重新读取页面快照，复核订单状态与空态结果。' };
       }
@@ -726,6 +791,18 @@ function pickReply(sys, u) {
   if (u.includes('报告当前站点身份')) {
     // 仅基座附注探针：断言无 pack 命中时 system 已注入"无专属配置、不得臆断站点身份"上下文。
     return sys.includes('无专属功能配置（仅基座）') ? 'MOCK-BASEONLY-NOTICE-HIT' : 'MOCK-BASEONLY-NOTICE-MISS';
+  }
+  if (u.includes('报告站点事实成色')) {
+    // 注入内容探针：⚠待核 事实须带"不得当作确定事实陈述"的约束一并入注入，缺一即视为该治理表述被改坏。
+    return sys.includes('⚠待核') && sys.includes('MUST NOT 当作确定事实')
+      ? 'MOCK-UNVERIFIED-FACTS-HIT'
+      : 'MOCK-UNVERIFIED-FACTS-MISS';
+  }
+  if (u.includes('报告个人规则优先级口径')) {
+    // 注入内容探针：ZA-SYS-08 两半须同时在场——偏好类取个人、治理类取更严；任一半被删即失配。
+    return sys.includes('以个人规则为准') && sys.includes('更严的一方')
+      ? 'MOCK-PERSONAL-PRECEDENCE-HIT'
+      : 'MOCK-PERSONAL-PRECEDENCE-MISS';
   }
   if (u.includes('为什么') && (u.includes('待发货') || u.includes('状态'))) {
     // 讲解正确之"不编造"：业务原因不在配置内，据 facts/feature 规则引导联系订单管理员（ZA-FEAT-01）。

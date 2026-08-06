@@ -93,6 +93,10 @@ export interface SnapshotReportFrame {
   title?: string;
   elements: SnapshotElement[];
   notices?: string[];
+  /** 页面正文纯文本，仅 includeText 请求时采集；未请求或页面无正文一律缺席（空串非法）。 */
+  text?: string;
+  /** true=text 仅为正文前缀（客户端已截断）；缺省/false=完整。text 缺席时本字段不得出现。 */
+  textTruncated?: boolean;
   evidence?: Record<string, SnapshotEvidence>;
 }
 
@@ -206,6 +210,8 @@ export interface SnapshotRequestFrame {
   type: 'snapshot-request';
   sessionId: string;
   requestId: string;
+  /** 缺省 false：正文体量大，只在需要阅读页面内容的那一轮开启；开启不改变任何治理判定。 */
+  includeText?: boolean;
   evidenceRules?: SnapshotEvidenceRule[];
 }
 

@@ -38,7 +38,8 @@ export function routeDownstreamFrame(frame: PageDownstreamFrame, deps: Downstrea
         .then((result) => deps.send({ kind: 'exec-result', result }));
       break;
     case 'snapshot-request': {
-      const { url, title, elements, notices, evidence } = deps.snapshot.collect(frame.evidenceRules);
+      const { url, title, elements, notices, evidence, text, textTruncated } =
+        deps.snapshot.collect(frame.evidenceRules, frame.includeText === true);
       deps.send({
         kind: 'snapshot-report',
         report: {
@@ -50,6 +51,8 @@ export function routeDownstreamFrame(frame: PageDownstreamFrame, deps: Downstrea
           ...(title !== '' ? { title } : {}),
           elements,
           ...(notices.length > 0 ? { notices } : {}),
+          ...(text !== undefined ? { text } : {}),
+          ...(textTruncated !== undefined ? { textTruncated } : {}),
           ...(Object.keys(evidence).length > 0 ? { evidence } : {}),
         },
       });

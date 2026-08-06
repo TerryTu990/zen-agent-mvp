@@ -1,0 +1,102 @@
+[
+  {
+    "id": "yinxiang-note.write-note",
+    "featureIds": [
+      "yinxiang-note"
+    ],
+    "description": "在印象笔记网页版上可见地代用户新建并写入一条笔记：打开新建入口、填标题、填正文（含源地址）、保存、读取页面回显自检。本站点的入口位置与控件文案均未经实地核实，因此只能操作当前页面已有元素——使用前必须先 page_snapshot，steps 中每个 ref 取自最近一次快照，MUST NOT 自拟 CSS 选择器或凭记忆假设入口位置。需要回报的页面信息（如保存后的笔记标题回显）用 read 步骤（带 name 键）采集。同一任务只在首批请一次确认（per-task 授权），批准后同任务后续批次自动执行、用户可随时停止——因此 plan 必须在首批就把整个任务将执行的操作逐条写清（新建哪条笔记、标题是什么、正文取自哪个页面、写进哪个笔记本/标签），plan 即用户授权的全部范围。写入笔记会在用户账号里产生真实内容，涉及覆盖已有笔记、删除、分享等不可撤回动作时必须在 plan 与 summary 中显著声明并建议用户核对后再批准。task 在同一任务期间保持同一标题；任务范围变化（要写计划之外的笔记或改动别的笔记）MUST 换用新 task 标题重新请求授权。每批执行后重新 page_snapshot 复核，保存结果不明确时停止回报，MUST NOT 重复保存以免产生重复笔记。",
+    "params": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task",
+        "plan",
+        "steps",
+        "summary"
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "任务标题，同一任务期间保持不变"
+        },
+        "plan": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "任务级执行计划：用人话逐条列出批准后本任务将执行的操作（新建/编辑哪条笔记、标题、正文来源、归入的笔记本与标签、是否涉及不可撤回动作）。确认卡只在任务首次弹一次，此清单即用户授权的全部范围——MUST 覆盖整个任务，不得只写当前这一批。"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "ref"
+            ],
+            "properties": {
+              "action": {
+                "enum": [
+                  "click",
+                  "fill",
+                  "select",
+                  "read",
+                  "scroll",
+                  "highlight"
+                ]
+              },
+              "ref": {
+                "type": "string",
+                "description": "取自最近一次 page_snapshot 的元素 ref（如 za-7；同源 iframe 内为 f1:za-3）"
+              },
+              "value": {
+                "type": "string",
+                "description": "fill/select 的写入值：笔记标题、正文或选项值"
+              },
+              "name": {
+                "type": "string",
+                "description": "read 步骤的结果键名，采集值按此键回传"
+              }
+            }
+          },
+          "description": "按序执行的操作步骤：先定位新建入口，再依次填标题与正文，最后保存并 read 回显自检"
+        },
+        "summary": {
+          "type": "string",
+          "description": "面向用户的操作摘要，将展示在确认卡上；写清将新建的笔记标题与内容来源，含不可撤回动作时须显著声明"
+        }
+      }
+    },
+    "execution": "client",
+    "riskTier": "hitl",
+    "hitlMode": "per-task",
+    "adapter": {
+      "kind": "dom",
+      "pathPrefixes": [
+        "/"
+      ]
+    },
+    "resultSchema": {
+      "type": "object",
+      "required": [
+        "reads",
+        "completedSteps"
+      ],
+      "properties": {
+        "reads": {
+          "type": "object"
+        },
+        "completedSteps": {
+          "type": "number"
+        },
+        "url": {
+          "type": "string"
+        }
+      }
+    }
+  }
+]

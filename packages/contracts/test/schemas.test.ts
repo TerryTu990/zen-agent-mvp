@@ -262,7 +262,7 @@ describe('C3 client-access-layer 消息帧', () => {
   });
 });
 
-describe('C3 snapshot-report 帧（含页面提示文本 notices）', () => {
+describe('C3 snapshot-report 帧（含页面提示文本 notices 与页面正文 text）', () => {
   const validate = compile(new Ajv2020({ strict: true }), 'client-access-layer.schema.json');
 
   const baseReport = {
@@ -295,6 +295,30 @@ describe('C3 snapshot-report 帧（含页面提示文本 notices）', () => {
         },
       ],
     },
+    'snapshot-request 缺省 includeText（向后兼容）': {
+      type: 'snapshot-request',
+      sessionId: 's-001',
+      requestId: 'r-03',
+    },
+    'snapshot-request 显式请求正文': {
+      type: 'snapshot-request',
+      sessionId: 's-001',
+      requestId: 'r-04',
+      includeText: true,
+    },
+    'snapshot-report 缺省 text（未请求正文）': baseReport,
+    'snapshot-report 含完整正文': { ...baseReport, text: '订单列表页正文内容。' },
+    'snapshot-report 含正文且显式标注未截断': {
+      ...baseReport,
+      text: '订单列表页正文内容。',
+      textTruncated: false,
+    },
+    'snapshot-report 含已截断正文': {
+      ...baseReport,
+      text: 'x'.repeat(4000),
+      textTruncated: true,
+    },
+    'snapshot-report 正文取契约上限长度': { ...baseReport, text: 'x'.repeat(40000) },
   };
 
   it.each(Object.keys(validFrames))('合法 %s 通过校验', (label) => {
@@ -312,6 +336,25 @@ describe('C3 snapshot-report 帧（含页面提示文本 notices）', () => {
     'evidence 含正文类额外字段': {
       ...baseReport,
       evidence: { 'message-receipts': { count: 3, latest: '未读', content: '禁止' } },
+    },
+    'text 非字符串': { ...baseReport, text: { body: '正文' } },
+    'text 为空串（无正文一律缺席而非空串）': { ...baseReport, text: '' },
+    'text 越 40000 字符契约硬顶': { ...baseReport, text: 'x'.repeat(40001) },
+    'textTruncated 非布尔': { ...baseReport, text: '正文', textTruncated: 'yes' },
+    'textTruncated 无 text 相伴（截断标记无所依附）': { ...baseReport, textTruncated: true },
+    'snapshot-report 含未声明的正文旁字段': { ...baseReport, text: '正文', textLength: 2 },
+    'snapshot-request includeText 非布尔': {
+      type: 'snapshot-request',
+      sessionId: 's-001',
+      requestId: 'r-05',
+      includeText: 'true',
+    },
+    'snapshot-request 含未声明字段': {
+      type: 'snapshot-request',
+      sessionId: 's-001',
+      requestId: 'r-06',
+      includeText: true,
+      maxTextLength: 4000,
     },
   };
 
