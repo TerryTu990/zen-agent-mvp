@@ -236,6 +236,40 @@ async function driveToHitl(
   return framesByType(sse.frames, 'hitl-request')[hitlCountBefore]!;
 }
 
+/**
+ * 已有任务级授权时的第二批：同样走「提问 → 快照回传」，但**不等 hitl-request**，
+ * 直接等新的 exec-instruction——若服务端仍要求确认，这里会等到超时而非静默放过。
+ */
+async function driveToExecWithoutHitl(
+  token: string,
+  sessionId: string,
+  sse: SseHandle,
+  snapshotUrl: string,
+): Promise<void> {
+  const snapshotCountBefore = framesByType(sse.frames, 'snapshot-request').length;
+  const instrCountBefore = framesByType(sse.frames, 'exec-instruction').length;
+  await postFrame(baseUrl, token, sessionId, {
+    type: 'user-message',
+    sessionId,
+    text: '请在页面上点一下那个按钮',
+  });
+  await sse.waitFor(
+    () => framesByType(sse.frames, 'snapshot-request').length > snapshotCountBefore,
+  );
+  const request = framesByType(sse.frames, 'snapshot-request')[snapshotCountBefore]!;
+  await postFrame(baseUrl, token, sessionId, {
+    type: 'snapshot-report',
+    sessionId,
+    requestId: String(request['requestId']),
+    url: snapshotUrl,
+    title: '通用页面',
+    elements: [{ ref: 'za-1', role: 'button', label: '目标按钮' }],
+  });
+  await sse.waitFor(
+    () => framesByType(sse.frames, 'exec-instruction').length > instrCountBefore,
+  );
+}
+
 /** 批准 hitl → 等 exec-instruction → 回传结果 → 等卡片收尾成功（返回签发的指令帧）。 */
 async function approveAndFinish(
   token: string,
@@ -516,7 +550,7 @@ describe('generic dom 代操作闭环（packOrigin=活跃页 origin 动态围栏
     expect(decision['reason']).toBe('origin-fence-violation');
   });
 
-  it('every-call：同任务两批操作触发两次独立确认（hitlId 不同、授权不复用）', async () => {
+  it('per-task：同任务第二批复用首批授权，不再弹卡但仍逐批签发指令', async () => {
     const token = await signToken();
     const sessionId = await createSession(baseUrl, token);
     const sse = await openSse(baseUrl, token, sessionId);
@@ -527,11 +561,19 @@ describe('generic dom 代操作闭环（packOrigin=活跃页 origin 动态围栏
         url: GENERIC_URL,
       });
       const firstHitl = await driveToHitl(token, sessionId, sse, GENERIC_URL);
+      expect(firstHitl['toolId']).toBe(TOOL_BROWSE);
+      // 首卡即授权范围：plan 必须随卡下发，否则用户批准的是一份看不见的计划。
+      const params = firstHitl['params'] as Record<string, unknown>;
+      expect(Array.isArray(params['plan'])).toBe(true);
+      expect((params['plan'] as unknown[]).length).toBeGreaterThan(0);
       await approveAndFinish(token, sessionId, sse, firstHitl);
-      const secondHitl = await driveToHitl(token, sessionId, sse, GENERIC_URL);
-      expect(secondHitl['toolId']).toBe(TOOL_BROWSE);
-      expect(secondHitl['hitlId']).not.toBe(firstHitl['hitlId']);
-      await approveAndFinish(token, sessionId, sse, secondHitl);
+
+      const instrBefore = framesByType(sse.frames, 'exec-instruction').length;
+      await driveToExecWithoutHitl(token, sessionId, sse, GENERIC_URL);
+
+      // 第二批：新签发一条指令，且全程只出现过一张确认卡（授权按 sessionId+task 复用）。
+      expect(framesByType(sse.frames, 'exec-instruction').length).toBe(instrBefore + 1);
+      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(1);
     } finally {
       sse.close();
     }

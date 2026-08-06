@@ -1,7 +1,7 @@
 /**
  * E2E-E 真实站点主案例（实施方案 §6 案例 E）驱动：goofish.com 搜索 AI 相关商品 → 提取商品清单 →
  * 经 HITL 确认后写入飞书云盘 `zen-agent-test` 文件夹下的文档正文。真实 LLM + 真实站点 + 真实用户会话，
- * 全链路只经既有 generic pack `browse.page-operate`（riskTier=hitl，hitlMode=every-call）代操作。
+ * 全链路只经既有 generic pack `browse.page-operate`（riskTier=hitl，hitlMode=per-task）代操作。
  *
  * 写入落点是**文档正文**而非表格：飞书表格与多维表格的网格为 canvas 渲染，DOM 内既无单元格节点、
  * innerText 也读不到格内文本，DOM 工具面对其既不可观察也不可操作（实测：canvas=1、gridcell=0、
@@ -233,7 +233,7 @@ async function startRealServer({ auditPath, sessionDir, userConfigDir }) {
   const { startServer } = await import(pathToFileURL(join(REPO_ROOT, 'apps/server/dist/index.js')).href);
   return startServer({
     port: SERVER_PORT, jwtSecret: JWT_SECRET, signingSecret: SIGNING_SECRET, issAllowlist: [JWT_ISS],
-    // generic 兜底 pack（browse.page-operate）居 examples/acceptance；assets/ 尚无 generic pack。
+    // 验收根含本例所需的多站点夹具 pack；generic 兜底包两根同源（对拍守卫锁一致）。
     snapshotRoot: join(REPO_ROOT, 'examples', 'acceptance'),
     systemPromptPath: join(REPO_ROOT, 'assets/system-prompt.md'),
     auditSinkPath: auditPath, sessionDir, userConfigDir, heartbeatMs: 60_000,

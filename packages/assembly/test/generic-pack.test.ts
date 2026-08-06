@@ -32,12 +32,12 @@ describe('generic-web pack 装配（examples/acceptance registry，通用站点�
     expect(sites.map((s) => s.packId)).not.toContain('generic-web');
   });
 
-  it('browse 工具面 = 仅 browse.page-operate（client/dom + hitl every-call）', async () => {
+  it('browse 工具面 = 仅 browse.page-operate（client/dom + hitl per-task）', async () => {
     const composed = await port.compose({ sessionId: 's1', packId: 'generic-web', featureId: 'browse' });
     expect(composed.tools.map((t) => t.id)).toEqual(['browse.page-operate']);
     const op = composed.tools[0]!;
     expect(op.riskTier).toBe('hitl');
-    expect(op.hitlMode).toBe('every-call');
+    expect(op.hitlMode).toBe('per-task');
     expect(op.execution).toBe('client');
     expect(op.adapter).toMatchObject({ kind: 'dom', pathPrefixes: ['/'] });
   });

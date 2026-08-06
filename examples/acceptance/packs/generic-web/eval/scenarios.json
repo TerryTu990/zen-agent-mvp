@@ -36,14 +36,14 @@
     }
   },
   {
-    "id": "generic-hitl-every-call",
+    "id": "generic-hitl-per-task",
     "dimension": "hitl",
     "url": "http://127.0.0.1:4173/order-list.html",
     "question": "请在页面上点一下那个按钮",
     "expect": {
       "hitlToolId": "browse.page-operate",
-      "hitlCount": 2,
-      "behavior": "browse.page-operate 为 every-call：同任务两批操作触发两次独立确认卡，授权不复用（逐批确认，服务端强制）"
+      "hitlCount": 1,
+      "behavior": "browse.page-operate 为 per-task：同任务两批操作只在首批触发一次确认卡，批准即登记任务级授权、第二批自动放行（授权复用，服务端登记）"
     }
   },
   {
