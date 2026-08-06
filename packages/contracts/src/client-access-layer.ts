@@ -231,8 +231,10 @@ export interface GuideActionFrame {
   type: 'guide-action';
   sessionId: string;
   action: GuideActionKind;
-  /** 未命中时客户端静默降级为文字说明，不中断会话。 */
-  selector: string;
+  /** CSS 选择器；与 ref 二选一。未命中时客户端静默降级为文字说明，不中断会话。 */
+  selector?: string;
+  /** 最近一次页面快照的元素 ref；无登记 selector 的站点走此路径，映射作废即降级。 */
+  ref?: string;
   message?: string;
 }
 

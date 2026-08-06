@@ -213,14 +213,15 @@ const GUIDE_TOOL_NAME = 'guide_highlight';
 const GUIDE_TOOL_SPEC: LlmToolSpec = {
   name: GUIDE_TOOL_NAME,
   description:
-    '当用户询问某操作/入口在页面哪里时，用它高亮或滚动到当前功能页面上 facts 已登记的元素，帮助用户定位。selector 必须取自本功能 facts 中登记的元素锚点（如 #btn-export）；action 用 highlight 高亮或 scroll-to 滚动。',
+    '当用户询问某操作/入口在页面哪里时，用它高亮或滚动到目标元素，帮助用户定位。定位目标二选一：selector 取自本功能 facts 中登记的元素锚点（如 #btn-export）；ref 取自最近一次 page_snapshot 的元素 ref（如 za-7），用于 facts 未登记锚点的站点——两者都给出时以 ref 为准。action 用 highlight 高亮或 scroll-to 滚动。',
   params: {
     type: 'object',
     additionalProperties: false,
-    required: ['action', 'selector'],
+    required: ['action'],
     properties: {
       action: { enum: ['highlight', 'scroll-to'] },
       selector: { type: 'string' },
+      ref: { type: 'string' },
       message: { type: 'string' },
     },
   },
@@ -503,6 +504,29 @@ export function canonicalizeOrigin(origin: string): string {
   }
 }
 
+/**
+ * generic 准入名单单条比对：`*` 放行任意 origin；`scheme://*.host` 放行该域及其子域（scheme 仍须精确）；
+ * 其余按 canonicalizeOrigin 精确比对。origin 解析失败一律不放行（fail-closed）。
+ */
+export function genericAllowlistAdmits(entry: string, origin: string): boolean {
+  if (entry === '*') return true;
+  const wildcard = entry.match(/^([a-z][a-z0-9+.-]*):\/\/\*\.(.+)$/i);
+  if (wildcard !== null) {
+    const [, scheme = '', suffix = ''] = wildcard;
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      return false;
+    }
+    if (parsed.protocol !== `${scheme.toLowerCase()}:`) return false;
+    const host = parsed.hostname.toLowerCase();
+    const domain = suffix.toLowerCase();
+    return host === domain || host.endsWith(`.${domain}`);
+  }
+  return canonicalizeOrigin(entry) === canonicalizeOrigin(origin);
+}
+
 /** 快照 URL → origin（dom origin 围栏比对用）；解析失败返回 ''（围栏必不匹配，fail-closed）。 */
 function originOf(url: string): string {
   try {
@@ -524,20 +548,24 @@ function trustedSnapshotElements(elements: SnapshotReportFrame['elements']): Sna
 
 /**
  * 把 guide_highlight tool-call 的实参规整为下行页面动作帧；message 缺省则省略（U1 纯数据）。
- * action 越 highlight|scroll-to 闭集或 selector 非非空串 → null：服务端不下发违反 C3 契约的帧
- * （LLM 幻觉出的非法引导参数在此被拦，改走文本降级）。
+ * action 越 highlight|scroll-to 闭集，或 selector/ref 皆非非空串 → null：服务端不下发违反 C3 契约
+ * 的帧（LLM 幻觉出的非法引导参数在此被拦，改走文本降级）。两者同时给出时以 ref 为准并丢弃 selector：
+ * 快照 ref 是当次页面实测所得，比模型自拟的选择器可靠。
  */
 function guideFrame(sessionId: string, params: Record<string, unknown>): GuideActionFrame | null {
   const action = params['action'];
-  const selector = params['selector'];
+  const rawSelector = params['selector'];
+  const rawRef = params['ref'];
   if (typeof action !== 'string' || !GUIDE_ACTIONS.has(action)) return null;
-  if (typeof selector !== 'string' || selector === '') return null;
+  const ref = typeof rawRef === 'string' && rawRef !== '' ? rawRef : undefined;
+  const selector = typeof rawSelector === 'string' && rawSelector !== '' ? rawSelector : undefined;
+  if (ref === undefined && selector === undefined) return null;
   const message = params['message'];
   return {
     type: 'guide-action',
     sessionId,
     action: action as GuideActionKind,
-    selector,
+    ...(ref !== undefined ? { ref } : { selector: selector as string }),
     ...(typeof message === 'string' ? { message } : {}),
   };
 }
@@ -671,7 +699,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const origin = originOf(url);
     const admitted =
       origin !== '' &&
-      deps.genericAllowlist.some((entry) => canonicalizeOrigin(entry) === canonicalizeOrigin(origin));
+      deps.genericAllowlist.some((entry) => genericAllowlistAdmits(entry, origin));
     if (!admitted) {
       return { packId: null, packVersion: null, featureId: null };
     }

@@ -26,10 +26,13 @@ function makeTarget(): TargetSpy {
   return spy;
 }
 
-function makePage(targets: Record<string, TargetSpy>): GuidePage {
+function makePage(targets: Record<string, TargetSpy>, refs: Record<string, TargetSpy> = {}): GuidePage {
   return {
     querySelector(selector) {
       return targets[selector] ?? null;
+    },
+    resolveRef(ref) {
+      return refs[ref] ?? null;
     },
   };
 }
@@ -110,4 +113,47 @@ describe('page-action 引导执行', () => {
 
     expect(el.unhighlightCount).toBe(0);
   });
+
+  it('快照 ref 定位：走 resolveRef 而非选择器，命中即高亮', () => {
+    const byRef = makeTarget();
+    const runner = createPageActionRunner(createPageActionRunnerPage(byRef));
+
+    const result = runner.run({ type: 'guide-action', sessionId: 's1', action: 'highlight', ref: 'za-7' });
+
+    expect(result.hit).toBe(true);
+    expect(byRef.highlightCount).toBe(1);
+  });
+
+  it('ref 已作废（快照重建后解引用不到）→ 与选择器未命中同一条降级，不指错元素', () => {
+    const other = makeTarget();
+    const runner = createPageActionRunner(makePage({ '#a': other }, {}));
+
+    const result = runner.run({ type: 'guide-action', sessionId: 's1', action: 'scroll-to', ref: 'za-9' });
+
+    expect(result.hit).toBe(false);
+    expect(result.status).toBe('未能在当前页面定位到该元素');
+    expect(other.highlightCount).toBe(0);
+    expect(other.scrollCount).toBe(0);
+  });
+
+  it('ref 与 selector 同时给出：以 ref 为准（快照实测优先于模型自拟选择器）', () => {
+    const byRef = makeTarget();
+    const bySelector = makeTarget();
+    const runner = createPageActionRunner(makePage({ '#a': bySelector }, { 'za-3': byRef }));
+
+    runner.run({
+      type: 'guide-action',
+      sessionId: 's1',
+      action: 'highlight',
+      ref: 'za-3',
+      selector: '#a',
+    });
+
+    expect(byRef.highlightCount).toBe(1);
+    expect(bySelector.highlightCount).toBe(0);
+  });
 });
+
+function createPageActionRunnerPage(target: TargetSpy): GuidePage {
+  return makePage({}, { 'za-7': target });
+}

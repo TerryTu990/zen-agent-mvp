@@ -19,8 +19,10 @@ function activate(): void {
   if (activated) return;
   activated = true;
 
-  const pageAction = createPageActionRunner(createDomGuidePage());
   const snapshot = createSnapshotter();
+  const pageAction = createPageActionRunner(
+    createDomGuidePage(document, (ref) => snapshot.resolve(ref)),
+  );
   let stopRequested = false;
   let port: chrome.runtime.Port | null = null;
   let reconnectTimer: number | null = null;

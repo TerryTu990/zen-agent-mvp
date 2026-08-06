@@ -195,7 +195,7 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
   {
     def: 'guideAction',
     keys: keysOf<GuideActionFrame>({
-      type: true, sessionId: true, action: true, selector: true, message: true,
+      type: true, sessionId: true, action: true, selector: true, ref: true, message: true,
     }),
   },
   {

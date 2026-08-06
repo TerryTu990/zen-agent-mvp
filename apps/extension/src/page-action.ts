@@ -12,6 +12,8 @@ export interface GuideTarget {
 /** 宿主页元素查询面，便于把命中/降级逻辑与真实 DOM 解耦测试。 */
 export interface GuidePage {
   querySelector(selector: string): GuideTarget | null;
+  /** 按最近一次快照的 ref 解引用；快照已重建或 ref 未知返回 null（走与选择器未命中同一条降级）。 */
+  resolveRef(ref: string): GuideTarget | null;
 }
 
 export interface PageActionResult {
@@ -34,7 +36,12 @@ export function createPageActionRunner(page: GuidePage): PageActionRunner {
 
   return {
     run(frame) {
-      const target = page.querySelector(frame.selector);
+      const target =
+        frame.ref !== undefined
+          ? page.resolveRef(frame.ref)
+          : frame.selector !== undefined
+            ? page.querySelector(frame.selector)
+            : null;
       if (target === null) {
         return { hit: false, status: frame.message ?? MISS_STATUS };
       }
@@ -62,24 +69,37 @@ function ensureHighlightStyle(doc: Document): void {
   (doc.head ?? doc.documentElement).append(style);
 }
 
-/** 宿主页 document 支撑的 GuidePage：高亮只切换 za- 前缀 class，不触碰元素其它属性/值（D9）。 */
-export function createDomGuidePage(doc: Document = document): GuidePage {
+/**
+ * 宿主页 document 支撑的 GuidePage：高亮只切换 za- 前缀 class，不触碰元素其它属性/值（D9）。
+ * resolveSnapshotRef 由 content 注入（快照采集器的 ref 映射）；缺省实现恒不命中，
+ * 使不带快照能力的调用方走与选择器未命中同一条降级，而非静默指错元素。
+ */
+export function createDomGuidePage(
+  doc: Document = document,
+  resolveSnapshotRef: (ref: string) => Element | null = () => null,
+): GuidePage {
+  const wrap = (el: Element | null): GuideTarget | null => {
+    if (el === null) return null;
+    return {
+      highlight() {
+        ensureHighlightStyle(doc);
+        el.classList.add(HIGHLIGHT_CLASS);
+      },
+      unhighlight() {
+        el.classList.remove(HIGHLIGHT_CLASS);
+      },
+      scrollIntoView() {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      },
+    };
+  };
+
   return {
     querySelector(selector) {
-      const el = doc.querySelector(selector);
-      if (el === null) return null;
-      return {
-        highlight() {
-          ensureHighlightStyle(doc);
-          el.classList.add(HIGHLIGHT_CLASS);
-        },
-        unhighlight() {
-          el.classList.remove(HIGHLIGHT_CLASS);
-        },
-        scrollIntoView() {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        },
-      };
+      return wrap(doc.querySelector(selector));
+    },
+    resolveRef(ref) {
+      return wrap(resolveSnapshotRef(ref));
     },
   };
 }

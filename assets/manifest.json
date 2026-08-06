@@ -1,6 +1,13 @@
 {
-  "version": "1.3.0",
+  "version": "1.4.0",
   "packs": [
-    { "packId": "xianyu-seller", "version": "0.9.0" }
+    {
+      "packId": "xianyu-seller",
+      "version": "0.9.0"
+    },
+    {
+      "packId": "generic-web",
+      "version": "0.1.0"
+    }
   ]
 }

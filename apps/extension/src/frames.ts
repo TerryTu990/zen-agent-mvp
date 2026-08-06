@@ -195,7 +195,10 @@ export interface GuideActionFrame {
   type: 'guide-action';
   sessionId: string;
   action: GuideActionKind;
-  selector: string;
+  /** 与 ref 二选一：CSS 选择器（pack 登记锚点）。 */
+  selector?: string;
+  /** 与 selector 二选一：最近一次快照的元素 ref（generic 兜底站点无登记锚点时用）。 */
+  ref?: string;
   message?: string;
 }
 

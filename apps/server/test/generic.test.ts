@@ -16,7 +16,7 @@ import {
   startServer,
   type RunningServer,
 } from '../src/index.js';
-import { canonicalizeOrigin } from '../src/gateway.js';
+import { canonicalizeOrigin, genericAllowlistAdmits } from '../src/gateway.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/acceptance');
@@ -281,6 +281,46 @@ describe('parseGenericAllowlist（ZA_GENERIC_ALLOWLIST 解析）', () => {
   it('非 origin 精确值（带路径/非 URL）→ 启动期抛错 fail-fast', () => {
     expect(() => parseGenericAllowlist('https://example.com/')).toThrow(/ZA_GENERIC_ALLOWLIST/);
     expect(() => parseGenericAllowlist('not-a-url')).toThrow(/ZA_GENERIC_ALLOWLIST/);
+  });
+
+  it('通配条目：`*` 与 scheme://*.host 均为合法值形', () => {
+    expect(parseGenericAllowlist('*')).toEqual(['*']);
+    expect(parseGenericAllowlist('https://*.example.com, https://exact.example')).toEqual([
+      'https://*.example.com',
+      'https://exact.example',
+    ]);
+  });
+
+  it('通配形似但非法（缺 scheme / 带路径 / 裸 *.host）→ 抛错', () => {
+    expect(() => parseGenericAllowlist('*.example.com')).toThrow(/ZA_GENERIC_ALLOWLIST/);
+    expect(() => parseGenericAllowlist('https://*.example.com/')).toThrow(/ZA_GENERIC_ALLOWLIST/);
+  });
+});
+
+describe('genericAllowlistAdmits（通配准入比对）', () => {
+  it('`*` 放行任意可解析 origin', () => {
+    expect(genericAllowlistAdmits('*', 'https://anything.example')).toBe(true);
+    expect(genericAllowlistAdmits('*', 'http://127.0.0.1:9999')).toBe(true);
+  });
+
+  it('scheme://*.host 放行该域与任意子域，scheme 仍须精确', () => {
+    expect(genericAllowlistAdmits('https://*.example.com', 'https://example.com')).toBe(true);
+    expect(genericAllowlistAdmits('https://*.example.com', 'https://app.example.com')).toBe(true);
+    expect(genericAllowlistAdmits('https://*.example.com', 'https://a.b.example.com')).toBe(true);
+    expect(genericAllowlistAdmits('https://*.example.com', 'http://app.example.com')).toBe(false);
+  });
+
+  it('子域通配不误放行同后缀的相邻域名', () => {
+    expect(genericAllowlistAdmits('https://*.example.com', 'https://notexample.com')).toBe(false);
+    expect(genericAllowlistAdmits('https://*.example.com', 'https://example.com.evil.test')).toBe(
+      false,
+    );
+  });
+
+  it('非通配条目沿用 canonicalizeOrigin 精确比对；origin 不可解析一律不放行', () => {
+    expect(genericAllowlistAdmits('https://www.example.com', 'https://example.com')).toBe(true);
+    expect(genericAllowlistAdmits('https://example.com', 'https://m.example.com')).toBe(false);
+    expect(genericAllowlistAdmits('https://*.example.com', 'not-a-url')).toBe(false);
   });
 });
 

@@ -1,6 +1,6 @@
 # Zen Commerce Agent Phase 2 评测报告 — 2026-07-22
 
-证据环境：评测输入 SHA-256 `f7ba405720b53799b0cc55a91caad93c99c6067bfb2b22536a2969d703210a9a`；Node `>=22`；`pnpm@10.32.1`；LLM=确定性 mock（非真实模型）。
+证据环境：评测输入 SHA-256 `c2d11f3b78c2b30de364791e63f9fa2af776d5dc83cc4db8fcd14ac072ef441e`；Node `>=22`；`pnpm@10.32.1`；LLM=确定性 mock（非真实模型）。
 runner：`scripts/evals/run.mjs`；每场景重复 3 次，需 3/3 全过才算该场景通过（ZA-C-EVAL-02）。
 
 ## 场景通过率
@@ -38,6 +38,11 @@ runner：`scripts/evals/run.mjs`；每场景重复 3 次，需 3/3 全过才算�
 | zhipin/zhipin-assembly-chat-inactive | assembly | 3/3 | PASS |
 | zhipin/zhipin-assembly-miss | assembly | 3/3 | PASS |
 | zhipin/zhipin-refusal | refusal | 3/3 | PASS |
+| generic-web/generic-assembly-activate | assembly | 3/3 | PASS |
+| generic-web/generic-assembly-allowlist-miss | assembly | 3/3 | PASS |
+| generic-web/generic-assembly-site-priority | assembly | 3/3 | PASS |
+| generic-web/generic-hitl-every-call | hitl | 3/3 | PASS |
+| generic-web/generic-refusal | refusal | 3/3 | PASS |
 | xianyu-seller/xianyu-assembly-data | assembly | 3/3 | PASS |
 | xianyu-seller/xianyu-assembly-orders | assembly | 3/3 | PASS |
 | xianyu-seller/xianyu-assembly-fulfillment-test-tools | assembly | 3/3 | PASS |
@@ -63,14 +68,14 @@ runner：`scripts/evals/run.mjs`；每场景重复 3 次，需 3/3 全过才算�
 |---|---|---|
 | explain | 5 | 5 |
 | assembly-swap | 1 | 1 |
-| refusal | 7 | 7 |
+| refusal | 8 | 8 |
 | guide | 3 | 3 |
 | tool | 11 | 11 |
-| hitl | 6 | 6 |
-| assembly | 16 | 16 |
+| hitl | 7 | 7 |
+| assembly | 19 | 19 |
 
 ## 审计完整性（Goal-f）
 
-- 事件行数：384
+- 事件行数：426
 - 观测到的事件类型：session-start, assembly, tool-decision, tool-execution, hitl-verdict
 - 结论：PASS（事件链完整、全过 schema、无 secret 样式）

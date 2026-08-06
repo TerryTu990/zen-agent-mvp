@@ -116,19 +116,26 @@ export function parseFulfillmentProductKeys(raw: string | undefined): Record<str
   return result;
 }
 
-/** ZA_GENERIC_ALLOWLIST 解析：逗号分隔 origin 精确值，空/未设 → []（generic 永不激活）；非法条目抛错（启动期 fail-fast）。www/裸域互认在比对点归一（canonicalizeOrigin），此处只验值形。 */
+/**
+ * ZA_GENERIC_ALLOWLIST 解析：逗号分隔，三种条目形态——`*`（任意站点）、`scheme://*.host`（该域及其子域）、
+ * origin 精确值。空/未设 → []（generic 永不激活）；非法条目抛错（启动期 fail-fast）。
+ * www/裸域互认在比对点归一（canonicalizeOrigin），此处只验值形。
+ */
 export function parseGenericAllowlist(raw: string | undefined): string[] {
   const entries = (raw ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
   for (const entry of entries) {
+    if (entry === '*') continue;
     let valid = false;
     try {
-      valid = new URL(entry).origin === entry;
+      // `scheme://*.host` 的 `*.` 不是合法 hostname，验值形时以占位 label 代入再校验其余部分。
+      const probe = entry.replace('://*.', '://wildcard-probe.');
+      valid = new URL(probe).origin === probe;
     } catch {
       valid = false;
     }
     if (!valid) {
       throw new Error(
-        `ZA_GENERIC_ALLOWLIST 含非法 origin：${entry}（须为 scheme://host[:port] 精确值，逗号分隔）`,
+        `ZA_GENERIC_ALLOWLIST 含非法条目：${entry}（须为 * / scheme://*.host / scheme://host[:port]，逗号分隔）`,
       );
     }
   }

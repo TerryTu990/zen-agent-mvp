@@ -190,6 +190,19 @@ describe('C3 client-access-layer 消息帧', () => {
       action: 'scroll-to',
       selector: '#btn-export',
     },
+    'guide-action 以快照 ref 定位（无登记锚点的站点）': {
+      type: 'guide-action',
+      sessionId: 's-001',
+      action: 'highlight',
+      ref: 'za-7',
+    },
+    'guide-action iframe 内快照 ref': {
+      type: 'guide-action',
+      sessionId: 's-001',
+      action: 'scroll-to',
+      ref: 'f1:za-3',
+      message: '目标在内嵌编辑器里',
+    },
   };
 
   it.each(Object.keys(validFrames))('合法 %s 帧通过校验', (frameType) => {
@@ -226,10 +239,16 @@ describe('C3 client-access-layer 消息帧', () => {
       action: 'click',
       selector: '#btn-export',
     },
-    'guide-action 缺 required selector': {
+    'guide-action selector 与 ref 皆缺（无定位目标）': {
       type: 'guide-action',
       sessionId: 's-001',
       action: 'highlight',
+    },
+    'guide-action ref 为空串': {
+      type: 'guide-action',
+      sessionId: 's-001',
+      action: 'highlight',
+      ref: '',
     },
     'guide-action 缺 required type': {
       sessionId: 's-001',
