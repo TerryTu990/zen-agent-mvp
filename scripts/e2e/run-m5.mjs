@@ -202,7 +202,7 @@ function readSessionHistory() {
     .join('\n');
 }
 
-async function runScenarios(context, packAPage, panelPage) {
+async function runScenarios(context, packAPage, panelPage, sw) {
   const pageCountBeforeFence = context.pages().length;
 
   // S1 越界：navigate 目标 origin 不属任何 pack → toolgate fence-violation 拒绝、无新 tab、agent 如实回报。
@@ -244,6 +244,23 @@ async function runScenarios(context, packAPage, panelPage) {
     { label: '组外页面提示', timeoutMs: 5000 },
   );
   assert((await outsidePage.locator('#za-root').count()) === 0, '任务组外页面不应注入或获得 Zen UI');
+  // 面板可见性由 chrome.sidePanel 按标签页记录：组外页面须被显式关掉，否则面板会一直挂着却不生效。
+  const panelEnablement = await sw.evaluate(async () => {
+    const tabs = await chrome.tabs.query({});
+    const rows = [];
+    for (const tab of tabs) {
+      if (tab.id === undefined) continue;
+      const options = await chrome.sidePanel.getOptions({ tabId: tab.id }).catch(() => ({}));
+      rows.push({ url: tab.url ?? '', groupId: tab.groupId ?? -1, enabled: options.enabled });
+    }
+    return rows;
+  });
+  const outsideRow = panelEnablement.find((row) => row.url.includes('outside=1'));
+  assert(outsideRow !== undefined, '未找到组外标签页的面板开关记录');
+  assert(outsideRow.enabled === false, `组外标签页面板未被关闭（enabled=${outsideRow.enabled}）`);
+  const insideRow = panelEnablement.find((row) => row.groupId !== -1);
+  assert(insideRow !== undefined, '未找到组内标签页的面板开关记录');
+  assert(insideRow.enabled !== false, `组内标签页面板被误关（enabled=${insideRow.enabled}）`);
   await outsidePage.close();
   await siteBPage.bringToFront();
   await waitFor(
@@ -251,7 +268,7 @@ async function runScenarios(context, packAPage, panelPage) {
     { label: '任务页重新成为权威执行页', timeoutMs: 5000 },
   );
   await new Promise((r) => setTimeout(r, 300));
-  console.log('  [pass] 任务组外页面：Side Panel 明示不可执行，页面无注入 UI');
+  console.log('  [pass] 任务组外页面：面板按标签页关闭、无注入 UI；回到组内页面自动恢复');
 
   await sendMessage(panelPage, '停止演练：执行两步页面操作');
   await approveOneCard(panelPage, '停止演练：等待任务授权');
@@ -371,7 +388,7 @@ async function main() {
     await panel.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
 
     console.log('场景断言：');
-    await runScenarios(context, packAPage, panel);
+    await runScenarios(context, packAPage, panel, sw);
 
     console.log('\nM5 E2E 全部场景通过 ✅');
   } catch (error) {

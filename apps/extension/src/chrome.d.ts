@@ -33,6 +33,8 @@ declare namespace chrome {
     /** 向指定标签页的内容脚本单发一次性消息（激活握手用）。 */
     function sendMessage(tabId: number, message: unknown): Promise<unknown>;
     function query(queryInfo: { active?: boolean; currentWindow?: boolean; windowId?: number }): Promise<Tab[]>;
+    /** 按 id 取标签页当前状态（含 groupId）：事件只给 tabId 时据此判定面板可见性。 */
+    function get(tabId: number): Promise<Tab>;
     interface TabChangeInfo {
       status?: string;
       url?: string;
@@ -50,6 +52,15 @@ declare namespace chrome {
   namespace sidePanel {
     /** 只能在用户手势（如 action 点击）内调用。 */
     function open(options: { tabId?: number; windowId?: number }): Promise<void>;
+    /**
+     * 按标签页开关面板：`enabled:false` 使该标签页不显示面板（面板正开着且该页被激活时即收起）。
+     * manifest 的 `side_panel.default_path` 让面板默认对全部标签页可用，故组外标签页须显式关掉。
+     */
+    function setOptions(options: {
+      tabId?: number;
+      path?: string;
+      enabled?: boolean;
+    }): Promise<void>;
   }
 
   namespace tabGroups {

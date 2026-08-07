@@ -44,8 +44,31 @@ export const sessionKeyForGroup = (groupId: number): string => 'za.' + 'sessionI
 export const autoGroupKey = (windowId: number, origin: string): string =>
   'za.' + 'autoGroup.' + windowId + '.' + origin;
 
-/** 当前窗口 Side Panel 绑定的任务组；切到组外标签页时不自动改绑。 */
+/** 当前窗口 Side Panel 绑定的任务组：恒等于当前活动标签页所属的 zen 组。 */
 export const panelGroupKey = (windowId: number): string => 'za.panelGroup.w' + windowId;
+
+/**
+ * 该标签组是否为 zen 会话组。区别于"组内已有会话"（sessionKeyForGroup）：
+ * 用户点图标建组到会话建立之间有空窗，此标记在建组当刻即写，面板不会在这段时间里被判为组外而消失。
+ */
+export const zenGroupKey = (groupId: number): string => 'za.zenGroup.g' + groupId;
+
+/** 面板可见性：只在 zen 会话组的标签页上显示，并绑定该组会话；组外与非 zen 分组一律不显示。 */
+export interface PanelVisibility {
+  enabled: boolean;
+  /** 面板应绑定的会话组；enabled=false 时为 null。 */
+  groupId: number | null;
+}
+
+export function decidePanelVisibility(input: {
+  tabGroupId: number;
+  isZenGroup: boolean;
+}): PanelVisibility {
+  if (input.tabGroupId === TAB_GROUP_ID_NONE || !input.isZenGroup) {
+    return { enabled: false, groupId: null };
+  }
+  return { enabled: true, groupId: input.tabGroupId };
+}
 
 /** Side Panel 可重放 UI 事件的 session-scoped 存根。 */
 export const panelHistoryKeyForGroup = (groupId: number): string => 'za.panelHistory.g' + groupId;

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   decideActivation,
+  decidePanelVisibility,
   sessionKeyForGroup,
   autoGroupKey,
   panelGroupKey,
+  zenGroupKey,
   panelHistoryKeyForGroup,
   autoScanRunKeyForGroup,
   TAB_GROUP_ID_NONE,
@@ -65,5 +67,41 @@ describe('会话组存根键', () => {
     expect(panelGroupKey(3)).toBe('za.panelGroup.w3');
     expect(panelHistoryKeyForGroup(42)).toBe('za.panelHistory.g42');
     expect(autoScanRunKeyForGroup(42)).toBe('za.autoScanRun.g42');
+    expect(zenGroupKey(42)).toBe('za.zenGroup.g42');
+  });
+});
+
+describe('面板可见性判定（面板只在 zen 组的标签页上显示）', () => {
+  it('zen 组内的标签页：显示并绑定该组', () => {
+    expect(decidePanelVisibility({ tabGroupId: 7, isZenGroup: true })).toEqual({
+      enabled: true,
+      groupId: 7,
+    });
+  });
+
+  it('未分组标签页：不显示、不绑定', () => {
+    expect(decidePanelVisibility({ tabGroupId: TAB_GROUP_ID_NONE, isZenGroup: false })).toEqual({
+      enabled: false,
+      groupId: null,
+    });
+  });
+
+  it('用户自建的非 zen 分组：同样不显示（分组本身不等于 zen 会话组）', () => {
+    expect(decidePanelVisibility({ tabGroupId: 9, isZenGroup: false })).toEqual({
+      enabled: false,
+      groupId: null,
+    });
+  });
+
+  it('未分组即便被误判为 zen 组也不显示（-1 不是可绑定的组）', () => {
+    expect(decidePanelVisibility({ tabGroupId: TAB_GROUP_ID_NONE, isZenGroup: true })).toEqual({
+      enabled: false,
+      groupId: null,
+    });
+  });
+
+  it('两个 zen 组各自绑定自己的组，互不串会话', () => {
+    expect(decidePanelVisibility({ tabGroupId: 1, isZenGroup: true }).groupId).toBe(1);
+    expect(decidePanelVisibility({ tabGroupId: 2, isZenGroup: true }).groupId).toBe(2);
   });
 });

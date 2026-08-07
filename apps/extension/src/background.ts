@@ -5,9 +5,11 @@ import { createSseParser } from './sse.js';
 import { createGroupMembers, routeForFrame, type FrameRoute } from './group-routing.js';
 import {
   decideActivation,
+  decidePanelVisibility,
   sessionKeyForGroup,
   autoGroupKey,
   panelGroupKey,
+  zenGroupKey,
   panelHistoryKeyForGroup,
   execNonceKeyForGroup,
   autoScanRunKeyForGroup,
@@ -96,7 +98,53 @@ async function readServerBaseUrl(): Promise<string> {
   return trusted;
 }
 
-/** groupId→sessionId 存根是否存在：判定某组是否已是 zen 会话组（激活决策与 onUpdated 复用）。 */
+/** 建组当刻登记，使面板在会话建立前的空窗期不被判为组外。 */
+async function markZenGroup(groupId: number): Promise<void> {
+  await chrome.storage.session.set({ [zenGroupKey(groupId)]: true }).catch(() => {});
+}
+
+async function isZenGroup(groupId: number): Promise<boolean> {
+  if (groupId === TAB_GROUP_ID_NONE) return false;
+  const key = zenGroupKey(groupId);
+  const items: Record<string, unknown> = await chrome.storage.session
+    .get(key)
+    .catch(() => ({}) as Record<string, unknown>);
+  return items[key] === true;
+}
+
+/**
+ * 面板可见性的唯一施加点：按当前标签页所属组开关面板并改绑会话组。
+ * manifest 的 default_path 让面板默认对所有标签页可用，故组外标签页必须显式 enabled:false，
+ * 否则面板会一直挂着、却绑在看不见的组上（既不消失也不生效）。
+ */
+async function applyPanelForTab(tab: {
+  id?: number | undefined;
+  windowId?: number | undefined;
+  groupId?: number | undefined;
+}): Promise<void> {
+  const tabId = tab.id;
+  if (tabId === undefined) return;
+  const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
+  const visibility = decidePanelVisibility({
+    tabGroupId,
+    isZenGroup: await isZenGroup(tabGroupId),
+  });
+  await chrome.sidePanel
+    .setOptions({ tabId, path: 'sidepanel.html', enabled: visibility.enabled })
+    .catch(() => {});
+  if (visibility.groupId !== null && tab.windowId !== undefined) {
+    await chrome.storage.session
+      .set({ [panelGroupKey(tab.windowId)]: visibility.groupId })
+      .catch(() => {});
+  }
+}
+
+async function applyPanelForTabId(tabId: number): Promise<void> {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (tab !== null) await applyPanelForTab(tab);
+}
+
+/** groupId→sessionId 存根是否存在：判定某组是否已建立会话（激活决策与 onUpdated 复用）。 */
 async function isGroupMapped(groupId: number): Promise<boolean> {
   const key = sessionKeyForGroup(groupId);
   const stored = (await chrome.storage.session.get(key))[key];
@@ -1159,9 +1207,11 @@ async function handleRequestActivate(
     }
   }
   await migrateLegacyGroupTitle(activeGroupId);
+  await markZenGroup(activeGroupId);
   if (tab.windowId !== undefined) {
     await chrome.storage.session.set({ [panelGroupKey(tab.windowId)]: activeGroupId });
   }
+  await applyPanelForTabId(tabId);
   await sendActivate(tabId);
 }
 
@@ -1171,9 +1221,11 @@ async function handleIconClick(tab: chrome.tabs.Tab): Promise<void> {
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
   const groupId = tabGroupId === TAB_GROUP_ID_NONE ? await createZenGroup(tab.id) : tabGroupId;
   await migrateLegacyGroupTitle(groupId);
+  await markZenGroup(groupId);
   if (tab.windowId !== undefined) {
     await chrome.storage.session.set({ [panelGroupKey(tab.windowId)]: groupId });
   }
+  await applyPanelForTab({ ...tab, groupId });
   await sendActivate(tab.id);
 }
 
@@ -1366,10 +1418,18 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (automationId !== null) void triggerAutomation(automationId);
 });
 
+// 切标签页即重判面板可见性：面板只在 zen 组的标签页上显示，并绑定该组会话。
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  void applyPanelForTabId(activeInfo.tabId);
+});
+
 // 拖 tab 入某 zen 会话组（groupId 变为已映射组）→ 通知该页激活并接入同一会话。
+// 进出分组同样改变面板可见性（离组 groupId=-1，此时须关掉面板），故先无条件重判。
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   const groupId = changeInfo.groupId;
-  if (groupId === undefined || groupId === TAB_GROUP_ID_NONE) return;
+  if (groupId === undefined) return;
+  void applyPanelForTabId(tabId);
+  if (groupId === TAB_GROUP_ID_NONE) return;
   void isGroupMapped(groupId).then((mapped) => {
     if (mapped) void sendActivate(tabId);
   });
@@ -1377,6 +1437,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 // 组关闭=关会话：清 groupId→sessionId 存根并关桥（storage.session 存根在此才清，区别于组内换页重连）。
 chrome.tabGroups.onRemoved.addListener((group) => {
+  void chrome.storage.session.remove(zenGroupKey(group.id)).catch(() => {});
   void chrome.storage.session.remove(sessionKeyForGroup(group.id)).catch(() => {});
   void chrome.storage.session.remove(execNonceKeyForGroup(group.id)).catch(() => {});
   const bridge = groups.get(group.id);
