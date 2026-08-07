@@ -1424,12 +1424,19 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 });
 
 // 拖 tab 入某 zen 会话组（groupId 变为已映射组）→ 通知该页激活并接入同一会话。
-// 进出分组同样改变面板可见性（离组 groupId=-1，此时须关掉面板），故先无条件重判。
+// 面板可见性：离组必关；入组只在该组确为 zen 组时开，**入组一律不关**——
+// 点图标建组时本事件先于"登记 zen 组"到达，此处若据尚未登记的状态去关，
+// 会把同一次点击正在打开的面板关掉（表现为要点两次才出面板）。
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   const groupId = changeInfo.groupId;
   if (groupId === undefined) return;
-  void applyPanelForTabId(tabId);
-  if (groupId === TAB_GROUP_ID_NONE) return;
+  if (groupId === TAB_GROUP_ID_NONE) {
+    void applyPanelForTabId(tabId);
+    return;
+  }
+  void isZenGroup(groupId).then((zen) => {
+    if (zen) void applyPanelForTabId(tabId);
+  });
   void isGroupMapped(groupId).then((mapped) => {
     if (mapped) void sendActivate(tabId);
   });

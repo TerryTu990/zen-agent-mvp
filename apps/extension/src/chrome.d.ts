@@ -35,6 +35,11 @@ declare namespace chrome {
     function query(queryInfo: { active?: boolean; currentWindow?: boolean; windowId?: number }): Promise<Tab[]>;
     /** 按 id 取标签页当前状态（含 groupId）：事件只给 tabId 时据此判定面板可见性。 */
     function get(tabId: number): Promise<Tab>;
+    /**
+     * 当前脚本所在的标签页。**Side Panel 中运行时返回 undefined**（面板不是标签页），
+     * 被当普通标签页打开时返回该标签页——面板据此区分运行形态（实测：标签页形态返回 {id, groupId:-1}）。
+     */
+    function getCurrent(): Promise<Tab | undefined>;
     interface TabChangeInfo {
       status?: string;
       url?: string;

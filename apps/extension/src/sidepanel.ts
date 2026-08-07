@@ -419,9 +419,25 @@ export function startSidePanel(elements: SidePanelElements): void {
     scrollMessagesToLatest();
   };
 
+  /**
+   * 面板页也可被当普通标签页打开（开发/E2E）。那种形态下自身就是未分组的活动页，
+   * 自我收起会把自己关掉，故先判形态：侧边栏中 getCurrent() 无当前标签页。
+   */
+  const runningAsSidePanel = chrome.tabs
+    .getCurrent()
+    .then((tab) => tab === undefined)
+    .catch(() => false);
+
   const announceBrowsingContext = async (): Promise<void> => {
     if (boundGroupId === null || windowId === null) return;
     const [tab] = await chrome.tabs.query({ active: true, windowId });
+    // 切到未分组标签页即收起：面板只属于任务组。
+    // 背景页按标签页关闭只能阻止面板在组外"被打开"，关不掉已经开着的面板——
+    // 已打开的面板只有它自己能关。切到另一个 zen 组不在此列：那由背景页改绑处理。
+    if ((tab?.groupId ?? TAB_GROUP_ID_NONE) === TAB_GROUP_ID_NONE && (await runningAsSidePanel)) {
+      window.close();
+      return;
+    }
     send({
       kind: 'browsing-context',
       groupId: tab?.groupId ?? TAB_GROUP_ID_NONE,
