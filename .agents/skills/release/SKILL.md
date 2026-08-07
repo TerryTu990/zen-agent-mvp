@@ -1,6 +1,6 @@
 ---
 name: release
-description: 发布 Zen Commerce Agent——构建服务端镜像/插件 zip，版本化部署到 lingm2（agent.flash-api.com），冒烟与成对回滚镜像和快照。用户说“发布、上线、部署到服务器、deploy”时使用。
+description: 发布 zen-agent——构建服务端镜像/插件 zip，部署到 lingm2（agent.flash-api.com），冒烟与回滚。用户说"发布/上线/部署到服务器/deploy"时使用。
 ---
 
 # release — 发布流程
@@ -12,13 +12,13 @@ description: 发布 Zen Commerce Agent——构建服务端镜像/插件 zip，�
 
 1. **预检**：工作区必须干净（发布构建自已提交代码，脏树 build 脚本会拒绝）；确认要发布的 HEAD 是否已含目标改动；全量验证已过（`pnpm -r build` + 串行测试）——未验证不发布。
 2. **构建**：`release/build-server-image.sh`（linux/amd64，tag=git short SHA + latest）。
-3. **部署**：`release/deploy-server.sh --snapshot assets`。脚本自含：镜像传输、目标镜像强制加载不可变快照、版本化 compose/env、服务器侧 `flock`、healthz/单副本/镜像/挂载/lark-cli 冒烟；启用卡密配置时还验证 profile `whoami`。失败恢复上一完整 release（compose+镜像+快照）并复验；首次失败停止新服务。不得直接覆盖活动快照目录。
+3. **部署**：`release/deploy-server.sh`（可选 `--snapshot <本地快照根>` 同步站点包）。脚本自含：镜像 ssh 传输、compose 同步、`.env` 的 `ZA_IMAGE_TAG` 置当次 SHA、`up -d`、healthz 冒烟（15×2s 重试）。
 4. **域名侧验证**：`curl -fsS https://agent.flash-api.com/healthz` 应返回 `{"ok":true}`。SSE 长连接验证（可选）：反代若缓冲响应会导致下行不流式——见下方 1panel 人工项。
 5. **汇报**：如实附冒烟输出与镜像 tag；冒烟失败按脚本提示看远端 `docker compose logs`，勿盲目重试（HOW-06）。
 
 ## 流程（Chrome 插件）
 
-1. `release/build-extension.sh` → `release/artifacts/zen-commerce-agent-extension-<version>.zip`（版本取 manifest.json；生产服务端地址经 esbuild define 烤入缺省值，可用 `ZA_SERVER_BASE_URL` env 覆盖）。
+1. `release/build-extension.sh` → `release/artifacts/zen-agent-extension-<version>.zip`（版本取 manifest.json；生产服务端地址经 esbuild define 烤入缺省值，可用 `ZA_SERVER_BASE_URL` env 覆盖）。
 2. 版本升级记得先改 `apps/extension/manifest.json` 的 `version` 并提交。
 
 ## 用户接入（身份零配置）
@@ -27,14 +27,38 @@ description: 发布 Zen Commerce Agent——构建服务端镜像/插件 zip，�
 2. 身份由插件首次运行自动匿名激活（adr-022），24h 过期与 401 自动重取，用户无需填写。
 3. 匿名激活的 iss 由服务端无条件并入验签白名单，发布时无需为此改服务器 `.env`；账号登录（Google）是正式投产前置条件，届时本节改写。
 
+## 重建容器：只走激活脚本，禁在 `/root/zen-agent` 下 `docker compose up -d`
+
+`/root/zen-agent/docker-compose.yml` 是迁移期遗留文件，按该目录 `.env` 里的旧 `ZA_IMAGE_TAG` 起容器。
+在该目录直接 `docker compose up -d` 会把已激活的版本化 release 顶掉换成老镜像——
+`current-release` 仍指向新 release，`docker inspect` 出来的镜像却是旧 tag；
+新增的 env 取值被老镜像判为非法即崩溃重启循环，对外 502。
+
+改完 `.env`（或任何需要重建容器的场合）一律重新激活当前 release：
+
+```bash
+R=$(ssh lingm2 readlink /root/zen-agent/current-release)
+ssh lingm2 "$R/activate-release.sh /root/zen-agent $R <TAG> /root/zen-agent/snapshots/<快照版本> /root/zen-agent/lark-cli"
+```
+
+排障锚点：日志报错文案与当前代码对不上（如报旧版校验措辞），即是跑着旧镜像的信号，
+先 `docker inspect --format '{{.Config.Image}}'` 核对 tag，别改代码。
+
 ## 回滚（服务端）
 
-优先重新运行上一目标提交的发布流程；自动回滚由 `activate-release.sh` 在同一远端锁内完成。人工紧急回滚时选择 `/root/zen-agent/releases/<old-id>`，用其中 compose 与 deployment.env 以固定项目名 `zen-agent` 启动，完成 health/单副本/镜像/快照挂载验证后，再原子更新 `current-release`。禁止只回滚镜像或快照一侧，也禁止改写旧快照内容。
+回滚 = 重新激活上一个 release 目录（镜像与快照成对回退，避免只退镜像留下新快照）：
 
-## 人工项（Codex 无法操作，须请 Terry 在 1panel/服务器做）
+```bash
+ssh lingm2 ls -1t /root/zen-agent/releases | head -5          # 挑目标 release 目录名
+ssh lingm2 "/root/zen-agent/releases/<旧RELEASE>/activate-release.sh /root/zen-agent \
+  /root/zen-agent/releases/<旧RELEASE> <旧SHA> /root/zen-agent/snapshots/<旧快照版本> /root/zen-agent/lark-cli"
+```
+旧镜像仍在服务器 docker 里（`ssh lingm2 docker images zen-agent-server` 可查历史 tag）；
+目标 release 用的快照版本记在该 release 目录的 `deployment.env` 里。审计事件的 snapshotVersion 可核对（U4）。
+
+## 人工项（Claude 无法操作，须请 Terry 在 1panel/服务器做）
 
 - **首次**：服务器 `/root/zen-agent/.env` 按 `release/remote/env.example` 填真值（secret 不经开发机传输）。
-- **飞书启用前**：在服务器受控 `/root/zen-agent/lark-cli` 卷完成 `general` profile 用户授权；不得把 profile/token 经开发机中转。
 - **1panel 反代**：`agent.flash-api.com:443 → 127.0.0.1:9010` 已配；若 SSE 不流式（对话卡顿到整段出现），需在 1panel 该站点关闭响应缓冲（proxy_buffering off）并放宽 read timeout（心跳 15s）。
 - secret 轮换、证书续期。
 

@@ -27,13 +27,34 @@ description: 发布 zen-agent——构建服务端镜像/插件 zip，部署到 
 2. 身份由插件首次运行自动匿名激活（adr-022），24h 过期与 401 自动重取，用户无需填写。
 3. 匿名激活的 iss 由服务端无条件并入验签白名单，发布时无需为此改服务器 `.env`；账号登录（Google）是正式投产前置条件，届时本节改写。
 
-## 回滚（服务端）
+## 重建容器：只走激活脚本，禁在 `/root/zen-agent` 下 `docker compose up -d`
+
+`/root/zen-agent/docker-compose.yml` 是迁移期遗留文件，按该目录 `.env` 里的旧 `ZA_IMAGE_TAG` 起容器。
+在该目录直接 `docker compose up -d` 会把已激活的版本化 release 顶掉换成老镜像——
+`current-release` 仍指向新 release，`docker inspect` 出来的镜像却是旧 tag；
+新增的 env 取值被老镜像判为非法即崩溃重启循环，对外 502。
+
+改完 `.env`（或任何需要重建容器的场合）一律重新激活当前 release：
 
 ```bash
-ssh lingm2 "cd /root/zen-agent && sed -i 's/^ZA_IMAGE_TAG=.*/ZA_IMAGE_TAG=<旧SHA>/' .env && docker compose up -d"
+R=$(ssh lingm2 readlink /root/zen-agent/current-release)
+ssh lingm2 "$R/activate-release.sh /root/zen-agent $R <TAG> /root/zen-agent/snapshots/<快照版本> /root/zen-agent/lark-cli"
 ```
-旧镜像仍在服务器 docker 里（历史 load 过的 tag 都可用 `ssh lingm2 docker images zen-agent-server` 查）。
-站点配置回滚 = 换回旧快照目录内容 + `docker compose restart`（U4：审计事件的 snapshotVersion 可核对）。
+
+排障锚点：日志报错文案与当前代码对不上（如报旧版校验措辞），即是跑着旧镜像的信号，
+先 `docker inspect --format '{{.Config.Image}}'` 核对 tag，别改代码。
+
+## 回滚（服务端）
+
+回滚 = 重新激活上一个 release 目录（镜像与快照成对回退，避免只退镜像留下新快照）：
+
+```bash
+ssh lingm2 ls -1t /root/zen-agent/releases | head -5          # 挑目标 release 目录名
+ssh lingm2 "/root/zen-agent/releases/<旧RELEASE>/activate-release.sh /root/zen-agent \
+  /root/zen-agent/releases/<旧RELEASE> <旧SHA> /root/zen-agent/snapshots/<旧快照版本> /root/zen-agent/lark-cli"
+```
+旧镜像仍在服务器 docker 里（`ssh lingm2 docker images zen-agent-server` 可查历史 tag）；
+目标 release 用的快照版本记在该 release 目录的 `deployment.env` 里。审计事件的 snapshotVersion 可核对（U4）。
 
 ## 人工项（Claude 无法操作，须请 Terry 在 1panel/服务器做）
 
