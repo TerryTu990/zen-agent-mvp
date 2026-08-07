@@ -9,12 +9,13 @@ export interface ToolbarSidePanelAction {
 }
 
 /**
- * 工具栏点击：启用 → 打开，顺序不可换；建组与之并行推进，不让它挡在打开前面
- * （`open()` 只能在用户手势内调用，链路越长越容易错过手势）。
+ * 工具栏点击：enable → open 在**同一任务内**依次发出，中间 MUST NOT await——
+ * `open()` 只能在用户手势内调用，任何 await 都会让手势失效、点击彻底无反应。
+ * 顺序仍有意义：启用请求先于打开请求发出；建组并行推进，不挡在打开前面。
  */
-export async function runToolbarSidePanelAction(action: ToolbarSidePanelAction): Promise<void> {
+export function runToolbarSidePanelAction(action: ToolbarSidePanelAction): Promise<void> {
+  const enabling = action.enablePanel();
+  const opening = action.openPanel();
   const activating = action.activatePage();
-  await action.enablePanel();
-  await action.openPanel();
-  await activating;
+  return Promise.all([enabling, opening, activating]).then(() => undefined);
 }

@@ -11,19 +11,20 @@ function recorder() {
 }
 
 describe('runToolbarSidePanelAction', () => {
-  it('启用先于打开：面板默认禁用，未启用时 open() 点不开（这是"要点两次"的成因）', async () => {
+  it('启用先于打开，且两者同步发出：中间若 await，用户手势失效、面板彻底打不开', () => {
     const { calls, step } = recorder();
 
-    await runToolbarSidePanelAction({
+    // 不 await：调用返回时两条请求必须都已发出（手势仍在）。
+    void runToolbarSidePanelAction({
       enablePanel: step('enable'),
       openPanel: step('open'),
       activatePage: step('activate'),
     });
 
-    expect(calls.indexOf('enable')).toBeLessThan(calls.indexOf('open'));
+    expect(calls).toEqual(['enable', 'open', 'activate']);
   });
 
-  it('建组不挡在打开前面：activatePage 先发起，open() 不等它完成', async () => {
+  it('建组不挡在打开前面：open() 不等 activatePage 完成', async () => {
     const calls: string[] = [];
     let releaseActivate = (): void => {};
     const activating = new Promise<void>((resolve) => {
@@ -48,8 +49,6 @@ describe('runToolbarSidePanelAction', () => {
       },
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
     expect(calls).toContain('open');
     expect(calls).not.toContain('activate-done');
 
@@ -57,7 +56,7 @@ describe('runToolbarSidePanelAction', () => {
     await expect(result).resolves.toBeUndefined();
   });
 
-  it('启用失败即不再打开（不在禁用的标签页上空点）', async () => {
+  it('启用失败仍照常发出打开：短路需要 await，而 await 会让手势失效', async () => {
     const calls: string[] = [];
     const result = runToolbarSidePanelAction({
       enablePanel: () => Promise.reject(new Error('enable failed')),
@@ -68,8 +67,9 @@ describe('runToolbarSidePanelAction', () => {
       activatePage: () => Promise.resolve(),
     });
 
+    // 有意取舍：宁可在已启用的标签页上多发一次 open，也不能为省这一次而牺牲手势。
+    expect(calls).toContain('open');
     await expect(result).rejects.toThrow('enable failed');
-    expect(calls).not.toContain('open');
   });
 
   it('打开失败时拒绝，由调用方统一报告', async () => {
