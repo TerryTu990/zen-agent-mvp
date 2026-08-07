@@ -435,7 +435,10 @@ export function startSidePanel(elements: SidePanelElements): void {
     // 背景页按标签页关闭只能阻止面板在组外"被打开"，关不掉已经开着的面板——
     // 已打开的面板只有它自己能关。切到另一个 zen 组不在此列：那由背景页改绑处理。
     if ((tab?.groupId ?? TAB_GROUP_ID_NONE) === TAB_GROUP_ID_NONE && (await runningAsSidePanel)) {
-      window.close();
+      // 正式关闭 API（Chrome 141+）；旧版本无此方法时回退 window.close()。
+      await (typeof chrome.sidePanel.close === 'function'
+        ? chrome.sidePanel.close({ windowId }).catch(() => window.close())
+        : Promise.resolve(window.close()));
       return;
     }
     send({

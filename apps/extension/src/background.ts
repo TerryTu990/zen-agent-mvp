@@ -98,6 +98,13 @@ async function readServerBaseUrl(): Promise<string> {
   return trusted;
 }
 
+/**
+ * 默认整体禁用面板：manifest 的 default_path 会让面板对所有标签页可用（全局实例），
+ * 而全局实例与按标签页设置的是不同实例，在其上做按页禁用关不掉已打开的面板。
+ * 故把默认置为禁用，仅对 zen 组标签页逐个启用——面板因此只存在于任务组里。
+ */
+void chrome.sidePanel.setOptions({ enabled: false }).catch(() => {});
+
 /** 建组当刻登记，使面板在会话建立前的空窗期不被判为组外。 */
 async function markZenGroup(groupId: number): Promise<void> {
   await chrome.storage.session.set({ [zenGroupKey(groupId)]: true }).catch(() => {});
@@ -130,7 +137,9 @@ async function applyPanelForTab(tab: {
     isZenGroup: await isZenGroup(tabGroupId),
   });
   await chrome.sidePanel
-    .setOptions({ tabId, path: 'sidepanel.html', enabled: visibility.enabled })
+    .setOptions(
+      visibility.enabled ? { tabId, path: 'sidepanel.html', enabled: true } : { tabId, enabled: false },
+    )
     .catch(() => {});
   if (visibility.groupId !== null && tab.windowId !== undefined) {
     await chrome.storage.session
@@ -1252,6 +1261,7 @@ chrome.action.onClicked.addListener((tab) => {
   if (tab.id === undefined) return;
   const tabId = tab.id;
   void runToolbarSidePanelAction({
+    enablePanel: () => chrome.sidePanel.setOptions({ tabId, path: 'sidepanel.html', enabled: true }),
     openPanel: () => chrome.sidePanel.open({ tabId }),
     activatePage: () => handleIconClick(tab),
   }).catch(() => {

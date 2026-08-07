@@ -62,10 +62,13 @@ declare namespace chrome {
      * manifest 的 `side_panel.default_path` 让面板默认对全部标签页可用，故组外标签页须显式关掉。
      */
     function setOptions(options: {
+      /** 省略 = 设置默认行为（对所有未单独设置的标签页生效）。 */
       tabId?: number;
       path?: string;
       enabled?: boolean;
     }): Promise<void>;
+    /** 关闭面板（Chrome 141+）；已关闭时为 no-op。旧版本无此方法，调用点须自行兜底。 */
+    function close(options: { tabId?: number; windowId?: number }): Promise<void>;
   }
 
   namespace tabGroups {
