@@ -360,6 +360,46 @@ async function main() {
     assert(observed.thinking, '发送后未即时显示思考中状态');
     await panel.setViewportSize({ width: 280, height: 720 });
     assert(await panel.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), '280px 窄屏出现横向溢出');
+
+    // 矮窗：各行最小高度之和一旦超过面板高度，shell 的 overflow:hidden 会把末行整条裁掉——
+    // 输入框是唯一入口，被裁即整个面板不可用，故它必须优先于消息区保住可视区。
+    await panel.setViewportSize({ width: 320, height: 300 });
+    const composerBox = await panel.locator('.za-composer').evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, height: rect.height, viewport: window.innerHeight };
+    });
+    assert(composerBox.height > 0, '矮窗下输入框被压成零高度');
+    assert(
+      composerBox.bottom <= composerBox.viewport + 1,
+      `矮窗下输入框被挤出可视区（bottom=${Math.round(composerBox.bottom)} > 视口 ${composerBox.viewport}）`,
+    );
+    assert(
+      await panel.getByLabel('给 Zen 发送消息').isVisible(),
+      '矮窗下输入框不可见',
+    );
+
+    // 贴边观感：输入框外壳与面板底边之间须留出可见留白，不可紧贴。
+    await panel.setViewportSize({ width: 360, height: 720 });
+    const bottomGap = await panel.locator('.za-composer-surface').evaluate(
+      (element) => window.innerHeight - element.getBoundingClientRect().bottom,
+    );
+    assert(bottomGap >= 10, `输入框离面板底边过近（仅 ${Math.round(bottomGap)}px，应 >= 10px）`);
+    assert(bottomGap <= 64, `输入框离面板底边过远（${Math.round(bottomGap)}px，底部留白失衡）`);
+
+    // 免责小字常驻在最底部：位置在输入框之下，且自身与底边同样留白。
+    const disclaimer = panel.locator('.za-composer-disclaimer');
+    assert(await disclaimer.isVisible(), '底部免责提示未显示');
+    assert(
+      (await disclaimer.textContent())?.includes('AI 也可能会犯错'),
+      '底部免责提示文案不符',
+    );
+    const disclaimerGap = await disclaimer.evaluate(
+      (element) => window.innerHeight - element.getBoundingClientRect().bottom,
+    );
+    assert(disclaimerGap >= 8, `免责提示贴底（仅 ${Math.round(disclaimerGap)}px）`);
+    const surfaceBottom = await panel.locator('.za-composer-surface').evaluate((element) => element.getBoundingClientRect().bottom);
+    const disclaimerTop = await disclaimer.evaluate((element) => element.getBoundingClientRect().top);
+    assert(disclaimerTop >= surfaceBottom, '免责提示未排在输入框下方');
     await panel.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
     console.log('Phase 1A Side Panel E2E 全部场景通过 ✅');
   } catch (error) {

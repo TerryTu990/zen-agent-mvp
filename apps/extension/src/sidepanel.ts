@@ -77,6 +77,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
         </div>
         <input data-za-file-input type="file" accept=".txt,.md,text/plain,text/markdown" multiple hidden />
         <div class="za-composer-notice" data-za-composer-notice aria-live="polite"></div>
+        <p class="za-composer-disclaimer">AI 也可能会犯错，请仔细检查回答</p>
       </footer>
     </section>`;
   const messages = root.querySelector<HTMLElement>('[data-za-messages]');
