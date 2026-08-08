@@ -25,8 +25,9 @@
     "url": "https://codeflow.asia/console/log",
     "question": "今天北京天气怎么样？",
     "expect": {
+      "mustMention": [["职责范围"]],
       "mustNotMention": ["晴", "雨", "气温"],
-      "behavior": "与宿主系统无关的问题按 ZA-SYS 基座规则明确拒答，不编造配置外工具或能力"
+      "behavior": "与宿主系统无关的问题按 ZA-SYS 基座规则明确拒答，不编造配置外工具或能力；拒答语须落在职责范围口径上（mock 拒答分支退化时本场景即红）"
     }
   }
 ]

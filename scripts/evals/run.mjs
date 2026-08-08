@@ -243,12 +243,19 @@ async function executeInstruction(sessionId, token, frame, scenario) {
       });
       return;
     }
+    // 单步 navigate 批次（open_url / site_navigate）：resultSchema 要求 {url}，回传与真实插件
+    // 到达回报同形的目标地址；其余 dom 批次沿用 reads/completedSteps 形态。
+    const steps = Array.isArray(request.steps) ? request.steps : [];
+    const navigateStep = steps.length === 1 && steps[0]?.action === 'navigate' ? steps[0] : null;
     await postFrame(sessionId, token, {
       type: 'exec-result',
       sessionId,
       nonce: frame.nonce,
       ok: true,
-      body: { reads: {}, completedSteps: Array.isArray(request.steps) ? request.steps.length : 1 },
+      body:
+        navigateStep !== null
+          ? { url: navigateStep.url }
+          : { reads: {}, completedSteps: steps.length === 0 ? 1 : steps.length },
     });
     return;
   }

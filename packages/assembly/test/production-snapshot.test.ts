@@ -14,7 +14,7 @@ describe('Zen Commerce Agent 生产快照', () => {
       url: 'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage',
     });
     expect(resolved).toMatchObject({
-      snapshotVersion: '1.5.0',
+      snapshotVersion: '1.6.0',
       packId: 'xianyu-seller',
       featureId: 'xianyu-orders',
     });
@@ -39,7 +39,7 @@ describe('Zen Commerce Agent 生产快照', () => {
   it('印象笔记站点已安装并装配写笔记工具（未登记进 registry 时本例即红）', async () => {
     const resolved = await port.resolveFeature({ url: 'https://app.yinxiang.com/' });
     expect(resolved).toMatchObject({
-      snapshotVersion: '1.5.0',
+      snapshotVersion: '1.6.0',
       packId: 'yinxiang',
       featureId: 'yinxiang-note',
     });

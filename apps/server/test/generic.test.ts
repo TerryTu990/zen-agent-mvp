@@ -5,6 +5,7 @@
  * every-call 工具逐批独立确认、授权不复用。用 acceptance 快照（含 generic-web pack）驱动。
  */
 import { mkdtempSync, readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -45,6 +46,8 @@ describe('parseFulfillmentProductKeys（服务端商品闭集）', () => {
 
 interface MockLlmHandle {
   port: number;
+  /** 原始请求体只留在测试进程内，供断言送达 LLM 的工具面；永不打印或写盘。 */
+  requests: string[];
   close(): Promise<void>;
 }
 
@@ -479,6 +482,198 @@ describe('generic 准入判定（服务端 fail-closed，U7）', () => {
     const sessionId = await createSession(baseUrl, token);
     const injection = await getInjection(baseUrl, token, sessionId);
     expect(injection['packId']).toBeNull();
+  });
+});
+
+/** 驱动一回合到 LLM 调用，返回送达 LLM 的工具名清单（wire 名，点已替换为 '__'；open_url 无点不受影响）。 */
+async function toolNamesSentToLlm(url: string): Promise<string[]> {
+  const token = await signToken();
+  const sessionId = await createSession(baseUrl, token);
+  await postFrame(baseUrl, token, sessionId, { type: 'context-report', sessionId, url });
+  const before = mock.requests.length;
+  await postFrame(baseUrl, token, sessionId, { type: 'user-message', sessionId, text: '你好' });
+  const deadline = Date.now() + 8000;
+  while (mock.requests.length <= before) {
+    if (Date.now() > deadline) throw new Error('等待 LLM 请求捕获超时');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const request = JSON.parse(mock.requests[mock.requests.length - 1]!) as {
+    tools?: Array<{ name?: string; function?: { name?: string } }>;
+  };
+  return (request.tools ?? []).map((tool) => tool.function?.name ?? tool.name ?? '');
+}
+
+describe('open_url 注入门（与 generic 准入同门）', () => {
+  it('generic 激活回合：送达 LLM 的工具面含 open_url', async () => {
+    const toolNames = await toolNamesSentToLlm(GENERIC_URL);
+    expect(toolNames).toContain('open_url');
+  });
+
+  it('活跃页 origin 不在准入名单 → 仅基座回合，工具面不含 open_url', async () => {
+    const toolNames = await toolNamesSentToLlm(OUTSIDE_URL);
+    expect(toolNames).not.toContain('open_url');
+  });
+});
+
+/**
+ * open_url 全链路专用脚本化 mock LLM：首轮（无 tool 观察）产出 open_url 调用；
+ * 回喂轮把 observation 原样回显（MOCK-OPEN-OBS 前缀），供机械断言回喂内容与落点受限附注。
+ */
+function startScriptedOpenUrlMock(targetUrl: string): Promise<{ port: number; close(): Promise<void> }> {
+  const httpServer = createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
+      res.writeHead(404).end();
+      return;
+    }
+    let raw = '';
+    req.on('data', (chunk) => {
+      raw += chunk;
+    });
+    req.on('end', () => {
+      let body: { messages?: Array<{ role?: string; content?: unknown }> };
+      try {
+        body = JSON.parse(raw) as typeof body;
+      } catch {
+        body = {};
+      }
+      const messages = body.messages ?? [];
+      const last = messages[messages.length - 1];
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+      });
+      const base = { id: 'x', object: 'chat.completion.chunk', created: 0, model: 'mock-model' };
+      const send = (choice: unknown): void => {
+        res.write(`data: ${JSON.stringify({ ...base, choices: [choice] })}\n\n`);
+      };
+      send({ index: 0, delta: { role: 'assistant' }, finish_reason: null });
+      if (last?.role === 'tool') {
+        send({
+          index: 0,
+          delta: { content: `MOCK-OPEN-OBS ${String(last.content ?? '')}` },
+          finish_reason: null,
+        });
+        send({ index: 0, delta: {}, finish_reason: 'stop' });
+      } else {
+        send({
+          index: 0,
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: 'call_open_url',
+                type: 'function',
+                function: {
+                  name: 'open_url',
+                  arguments: JSON.stringify({
+                    url: targetUrl,
+                    task: '打开外部文章',
+                    reason: '需要查看用户给出的外部页面',
+                  }),
+                },
+              },
+            ],
+          },
+          finish_reason: null,
+        });
+        send({ index: 0, delta: {}, finish_reason: 'tool_calls' });
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  return new Promise((resolve) => {
+    httpServer.listen(0, '127.0.0.1', () => {
+      const addr = httpServer.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      resolve({ port, close: () => new Promise((r) => httpServer.close(() => r())) });
+    });
+  });
+}
+
+describe('generic open_url 全链路（任意 http/https 开页，每次确认）', () => {
+  const OPEN_TARGET = 'https://opentarget.example/article?id=1';
+  let scripted: { port: number; close(): Promise<void> };
+  let openUrlServer: RunningServer;
+  let openUrlBase = '';
+  let prevBaseUrl: string | undefined;
+
+  beforeAll(async () => {
+    scripted = await startScriptedOpenUrlMock(OPEN_TARGET);
+    prevBaseUrl = process.env['ZA_LLM_BASE_URL'];
+    process.env['ZA_LLM_BASE_URL'] = `http://127.0.0.1:${scripted.port}/v1`;
+    openUrlServer = await startServer({
+      port: 0,
+      jwtSecret: JWT_SECRET,
+      signingSecret: SIGNING_SECRET,
+      issAllowlist: [ISS],
+      snapshotRoot,
+      systemPromptPath,
+      auditSinkPath: AUDIT_SINK,
+      allowedProviders: ['openai-compatible'],
+      heartbeatMs: 60_000,
+      genericAllowlist: [GENERIC_ORIGIN],
+    });
+    openUrlBase = `http://127.0.0.1:${openUrlServer.port}`;
+  });
+
+  afterAll(async () => {
+    await openUrlServer?.close();
+    await scripted?.close();
+    if (prevBaseUrl !== undefined) process.env['ZA_LLM_BASE_URL'] = prevBaseUrl;
+  });
+
+  it('调用 → hitl 确认 → 单步 navigate 签名指令 → {url} 结果回收 → observation 回喂（落点无 pack 附注受限提示）', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(openUrlBase, token);
+    const sse = await openSse(openUrlBase, token, sessionId);
+    try {
+      await postFrame(openUrlBase, token, sessionId, {
+        type: 'context-report',
+        sessionId,
+        url: GENERIC_URL,
+      });
+      await postFrame(openUrlBase, token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '帮我打开那篇外部文章',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      expect(hitl['toolId']).toBe('open_url');
+      expect((hitl['params'] as Record<string, unknown>)['url']).toBe(OPEN_TARGET);
+      await postFrame(openUrlBase, token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(hitl['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      const instr = framesByType(sse.frames, 'exec-instruction')[0]!;
+      expect(instr['request']).toEqual({
+        kind: 'dom',
+        steps: [{ action: 'navigate', url: OPEN_TARGET }],
+      });
+      expect(instr['signature']).toBeTruthy();
+      await postFrame(openUrlBase, token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instr['nonce']),
+        ok: true,
+        body: { url: OPEN_TARGET },
+      });
+      const joined = (): string =>
+        sse.frames
+          .filter((f) => f['type'] === 'text-delta')
+          .map((f) => String(f['delta']))
+          .join('');
+      await sse.waitFor(() => joined().includes('MOCK-OPEN-OBS'));
+      expect(joined()).toContain(OPEN_TARGET);
+      expect(joined()).toContain('落点站点未安装专属配置');
+    } finally {
+      sse.close();
+    }
   });
 });
 

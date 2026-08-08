@@ -16,7 +16,7 @@ export type ActivationDecision =
 export interface ActivationInput {
   /** 当前 tab 所在组；-1=未分组。 */
   tabGroupId: number;
-  /** tabGroupId 是否已映射到某会话（storage.session 有存根）——组内换页/SPA 刷新即命中。 */
+  /** tabGroupId 是否属既有 zen 会话（已映射会话或已登记 zen 组）——组内换页/SPA 刷新即命中。 */
   groupIsMapped: boolean;
   /** 该页 origin 是否命中 za.autoActivate 开关（配置级 dev/demo）。 */
   autoActivate: boolean;
@@ -35,6 +35,17 @@ export function decideActivation(input: ActivationInput): ActivationDecision {
   if (!input.autoActivate) return { kind: 'none' };
   if (input.autoJoinGroupId !== null) return { kind: 'join', groupId: input.autoJoinGroupId };
   return { kind: 'create' };
+}
+
+/** 可辅助页判定：仅 http/https 站点页；浏览器内部页（chrome:// 等）与非法/缺失 URL 一律不可辅助。 */
+export function isAssistableUrl(url: string | undefined): boolean {
+  if (url === undefined) return false;
+  try {
+    const protocol = new URL(url).protocol;
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 /** groupId→sessionId 存根键（storage.session）；键名拆写以免被开发期 secret 守卫误判。 */

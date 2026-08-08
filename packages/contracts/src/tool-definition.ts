@@ -197,6 +197,30 @@ export const SITE_NAVIGATE_RESULT_SCHEMA: JsonObject = {
 };
 
 /**
+ * 内建通用页面导航工具的结构契约（generic pack 配套）：不入 pack tools.json，由网关在 generic 激活时注入、
+ * toolgate 专路裁决与签发（协议闭集 http/https + 禁内嵌凭证，次次确认不复用授权）。params 与 site_navigate
+ * 同形；result 独立同形 schema（{url} 必填），按 toolId 独立选校验器，两工具契约可各自演进。
+ */
+export const OPEN_URL_TOOL_ID = 'open_url';
+
+export const OPEN_URL_PARAMS_SCHEMA: JsonObject = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['url'],
+  properties: {
+    url: { type: 'string' },
+    reason: { type: 'string' },
+    task: { type: 'string' },
+  },
+};
+
+export const OPEN_URL_RESULT_SCHEMA: JsonObject = {
+  type: 'object',
+  required: ['url'],
+  properties: { url: { type: 'string' } },
+};
+
+/**
  * 内建配置草稿工具的结构契约（adr-014 teach 流，U8）：agent 识别用户表达的稳定偏好后调用，
  * 只产草稿卡（config-draft 帧下发）、零副作用——真正的确认是上行 config-decision，故 riskTier=auto、
  * 不复用 hitl 裁决链路。不入 pack tools.json，由网关注入工具面并在服务端专路处理（条目 id/origin/

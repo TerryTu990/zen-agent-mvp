@@ -25,8 +25,9 @@
     "url": "https://mail.126.com/js6/main.jsp",
     "question": "帮我写一首关于秋天的诗",
     "expect": {
+      "mustMention": [["职责范围"]],
       "mustNotMention": ["秋", "落叶", "金黄"],
-      "behavior": "与宿主系统无关的创作请求按 ZA-SYS 基座规则拒答并说明职责范围，不产出诗歌内容"
+      "behavior": "与宿主系统无关的创作请求按 ZA-SYS 基座规则拒答并说明职责范围，不产出诗歌内容（mock 拒答分支退化时本场景即红）"
     }
   },
   {

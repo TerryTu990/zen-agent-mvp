@@ -49,6 +49,8 @@ button { cursor: pointer; }
 
 .za-context-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warning); }
 .za-context[data-state="ready"] .za-context-dot { background: var(--ok); }
+.za-context[data-state="unassistable"] .za-context-dot { background: var(--clay); }
+.za-context[data-state="unassistable"] .za-context-title { color: var(--ink-soft); }
 .za-context-copy { min-width: 0; }
 .za-context-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
 .za-context-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; color: var(--ink-soft); font: 10px/1.3 var(--mono); }

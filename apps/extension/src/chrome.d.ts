@@ -25,6 +25,11 @@ declare namespace chrome {
       title?: string;
       windowId?: number;
       groupId?: number;
+      active?: boolean;
+      /** 'loading' | 'complete' 等；URL 未 commit 的加载页据此暂缓 assistable 判定。 */
+      status?: string;
+      /** 导航已发起但 URL 尚未 commit 时的目标地址。 */
+      pendingUrl?: string;
     }
     /** 新开标签页；ADR-013 批次④ navigate 客户端据此在本组窗口开目标页。 */
     function create(createProperties: { url: string; windowId?: number; active?: boolean }): Promise<Tab>;
@@ -43,6 +48,7 @@ declare namespace chrome {
     interface TabChangeInfo {
       status?: string;
       url?: string;
+      title?: string;
       /** 标签页组成员变化（拖入/移出组）即以此字段上报；-1=离组。 */
       groupId?: number;
     }

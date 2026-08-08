@@ -2408,12 +2408,15 @@ describe('ADR-013 渐进披露：站点索引 + site_navigate 注入（≥2 site
     expect(system).toContain('codeflow.asia');
     expect(system).toContain('mail.126.com');
     expect(toolNames).toContain('site_navigate');
+    // open_url 只随 generic 准入注入：站点 pack 会话不给任意开页入口。
+    expect(toolNames).not.toContain('open_url');
   });
 
   it('单 site 根（host-demo 会话）：无站点索引、工具面无 site_navigate（<2 site 不注入）', async () => {
     const { system, toolNames } = await driveOnce(demoServer, ORDER_LIST_URL);
     expect(system).not.toContain(INDEX_BODY_MARKER);
     expect(toolNames).not.toContain('site_navigate');
+    expect(toolNames).not.toContain('open_url');
   });
 });
 

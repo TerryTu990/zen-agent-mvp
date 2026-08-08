@@ -55,7 +55,7 @@ export type BackgroundToContentMessage =
 
 export type SidePanelToBackgroundMessage =
   | { kind: 'panel-bind'; groupId: number }
-  | { kind: 'browsing-context'; groupId: number; url?: string; title?: string }
+  | { kind: 'browsing-context'; groupId: number; url?: string; title?: string; assistable?: boolean }
   | { kind: 'user-message'; messageId: string; text: string; displayText?: string; executionPreference: ExecutionPreference }
   | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
   // L2 草稿裁决（U8）：面板只回传 draftId+decision，change 不经客户端往返。
@@ -89,6 +89,8 @@ export type BackgroundToSidePanelMessage =
       authorized: boolean;
       url?: string;
       title?: string;
+      // 缺省视为可辅助：content 上报的 context-report 只来自站点页，无需带此标记。
+      assistable?: boolean;
     };
 
 /**

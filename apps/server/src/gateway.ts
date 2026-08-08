@@ -13,6 +13,9 @@ import {
   CONFIG_DRAFT_PARAMS_SCHEMA,
   CONFIG_DRAFT_TOOL_ID,
   isDomTool,
+  OPEN_URL_PARAMS_SCHEMA,
+  OPEN_URL_RESULT_SCHEMA,
+  OPEN_URL_TOOL_ID,
   SITE_NAVIGATE_PARAMS_SCHEMA,
   SITE_NAVIGATE_RESULT_SCHEMA,
   SITE_NAVIGATE_TOOL_ID,
@@ -339,6 +342,30 @@ const SITE_NAVIGATE_TOOL_SPEC: LlmToolSpec = {
   name: SITE_NAVIGATE_TOOL_DEF.id,
   description: SITE_NAVIGATE_TOOL_DEF.description,
   params: SITE_NAVIGATE_TOOL_DEF.params,
+};
+
+/**
+ * built-in 通用页面导航工具（generic pack 配套）：不入 pack tools.json，仅当 generic pack 激活
+ * （活跃页 origin 过服务端准入）且执行偏好允许 dom 时注入。经 toolgate 专路裁决
+ * （协议闭集 http/https + 禁内嵌凭证，每次必弹卡不复用授权）与一次性签名下发，
+ * 构造 navigate dom 指令复用客户端跨窗口开页入组（U7）。
+ */
+const OPEN_URL_TOOL_DEF: DomToolDefinition = {
+  id: OPEN_URL_TOOL_ID,
+  featureIds: [],
+  description:
+    '在通用页面上打开任意 http/https 页面以继续当前任务（如去搜索引擎检索、打开用户给出的网址）。已安装站点索引内的站点优先用 site_navigate。url 填目标绝对地址；task 可选，填本次导航所属的任务标题；reason 可选，用一句话向用户说明为何要打开该页面。每次导航都会经用户确认后才执行；到达后先 page_snapshot 观察新页面再继续。',
+  params: OPEN_URL_PARAMS_SCHEMA,
+  execution: 'client',
+  riskTier: 'hitl',
+  adapter: { kind: 'dom', pathPrefixes: ['/'] },
+  resultSchema: OPEN_URL_RESULT_SCHEMA,
+};
+
+const OPEN_URL_TOOL_SPEC: LlmToolSpec = {
+  name: OPEN_URL_TOOL_DEF.id,
+  description: OPEN_URL_TOOL_DEF.description,
+  params: OPEN_URL_TOOL_DEF.params,
 };
 
 /**
@@ -1005,10 +1032,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
       // 批准即任务级授权：登记 grant，同会话同任务的后续调用（跨工具，含 navigate）decide 直接放行。
       // 两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得顺带解锁同名任务）；
-      // site_navigate（导航卡只呈现目标 URL，用户未见任务计划，不构成任务级知情授权）。
+      // site_navigate / open_url（导航卡只呈现目标 URL，用户未见任务计划，不构成任务级知情授权）。
       if (
         tool.hitlMode !== 'every-call' &&
         tool.id !== SITE_NAVIGATE_TOOL_ID &&
+        tool.id !== OPEN_URL_TOOL_ID &&
         typeof params['task'] === 'string'
       ) {
         await deps.toolgate.grantHitl({ sessionId, task: params['task'] });
@@ -1259,6 +1287,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
         (executionPreference === 'auto' || executionPreference === 'dom-only')
           ? [SITE_NAVIGATE_TOOL_SPEC]
           : [];
+      // open_url 与 generic 准入同门：仅 generic pack 激活（活跃页 origin 过服务端准入）时给通用导航入口；
+      // 站点 pack / 仅基座会话不注入——任意网址开页只在通用兜底场景成立。
+      const openUrlTools: LlmToolSpec[] =
+        pack.genericOrigin !== undefined &&
+        (executionPreference === 'auto' || executionPreference === 'dom-only')
+          ? [OPEN_URL_TOOL_SPEC]
+          : [];
       // 投递记录（业务日志）：pack 激活即注入读写入口，供求职 agent 落盘/回溯投递。
       const appTools: LlmToolSpec[] =
         composed.packId !== null
@@ -1286,6 +1321,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...snapshotTools,
         ...docTools,
         ...navTools,
+        ...openUrlTools,
         ...appTools,
         ...configTools,
         ...fulfillmentPrepareTools,
@@ -1809,14 +1845,33 @@ export function createGateway(deps: GatewayDeps): Gateway {
         break;
       }
 
-      if (call.name === SITE_NAVIGATE_TOOL_ID) {
-        // 跨站导航（非终结）：经 toolgate 专路裁决 hitl + 一次性签名 navigate 指令，结果 {url} 过 resultSchema 回收后回喂本回合。
+      if (call.name === OPEN_URL_TOOL_ID) {
+        // open_url 准入门在服务端 fail-closed（U7）：与工具注入同一条件，仅 generic pack 激活且执行偏好
+        // 允许 dom 时可达。站点 pack / 仅基座 / 非 dom 偏好会话里模型幻觉或被页面注入诱导的硬调用，此处
+        // 拒绝而非降级——注入面收在工具面之外无兜底，唯一防线只剩 HITL 卡不足以守任意 URL 导航。
+        const openUrlAdmitted =
+          pack.genericOrigin !== undefined &&
+          (executionPreference === 'auto' || executionPreference === 'dom-only');
+        if (!openUrlAdmitted) {
+          const notice = '该操作暂未支持。';
+          tailText += roundText + notice;
+          notify(sessionId, notice);
+          automationFailed = true;
+          settled = true;
+          break;
+        }
+      }
+
+      if (call.name === SITE_NAVIGATE_TOOL_ID || call.name === OPEN_URL_TOOL_ID) {
+        // 内建导航（非终结，按名分派工具定义）：经 toolgate 专路裁决 hitl + 一次性签名 navigate 指令，
+        // 结果 {url} 过 resultSchema 回收后回喂本回合。
+        const navToolDef = call.name === OPEN_URL_TOOL_ID ? OPEN_URL_TOOL_DEF : SITE_NAVIGATE_TOOL_DEF;
         const observation = await runExecSubflow(
           session,
           claims,
           featureId,
           pack,
-          SITE_NAVIGATE_TOOL_DEF,
+          navToolDef,
           call,
           evidenceRules,
           userConfig,
@@ -1827,13 +1882,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
           content: roundText,
           toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
         };
-        const navObs: LlmMessage = {
-          role: 'tool',
-          toolCallId: call.toolCallId,
-          content: JSON.stringify(observation.ok ? observation.content : { error: observation.error }),
-        };
-        messages.push(navEcho, navObs);
-        turnMessages.push(navEcho, navObs);
+        let navObsContent = JSON.stringify(
+          observation.ok ? observation.content : { error: observation.error },
+        );
+        let navBoundary: LlmMessage | null = null;
         // 导航成功＝激活站点即刻切换：回合内按落点 URL 重新装配（规则/事实/工具面随站换出），
         // 系统注入整段覆写、边界标记入历史——LLM 下一轮就持有新站上下文，不必等用户再发言。
         if (observation.ok) {
@@ -1848,18 +1900,28 @@ export function createGateway(deps: GatewayDeps): Gateway {
               role: 'system',
               content: withPreference(systemContentFor(composed, pack, landedUrl)),
             };
-            const navBoundary = await boundaryFor(pack, previousPackId, previousGenericOrigin);
-            if (navBoundary !== null) {
-              messages.push(navBoundary);
-              turnMessages.push(navBoundary);
-            }
+            navBoundary = await boundaryFor(pack, previousPackId, previousGenericOrigin);
             if (
               pack.packId !== null &&
               (pack.packId !== previousPackId || (pack.genericOrigin ?? null) !== previousGenericOrigin)
             ) {
               deps.store.setLastPackId(sessionId, pack.packId, pack.genericOrigin);
             }
+            if (pack.packId === null) {
+              navObsContent += '\n落点站点未安装专属配置，辅助能力受限。';
+            }
           }
+        }
+        const navObs: LlmMessage = {
+          role: 'tool',
+          toolCallId: call.toolCallId,
+          content: navObsContent,
+        };
+        messages.push(navEcho, navObs);
+        turnMessages.push(navEcho, navObs);
+        if (navBoundary !== null) {
+          messages.push(navBoundary);
+          turnMessages.push(navBoundary);
         }
         continue;
       }

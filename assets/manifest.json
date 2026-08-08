@@ -1,5 +1,5 @@
 {
-  "version": "1.5.0",
+  "version": "1.6.0",
   "packs": [
     {
       "packId": "xianyu-seller",
@@ -7,7 +7,7 @@
     },
     {
       "packId": "generic-web",
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     {
       "packId": "yinxiang",

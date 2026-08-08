@@ -679,11 +679,20 @@ const USER_ENTRY_ORIGIN_LABELS: Record<UserOverlayEntry['origin'], string> = {
   teach: '对话确认',
 };
 
-/** L2 条目渲染（R4 逐条来源标注）：文本内嵌条目 id 与来源，供透明视图与审计定位。 */
+/**
+ * L2 条目文本的结构清洗：行首（≤3 缩进）的 ATX 标题符、```/~~~ 围栏与 ===/--- 整行
+ * 分隔线前置 `\` 中和，使单条目无法在最终 prompt 内伪造与平台注入（L1/L0）同构的
+ * 章节或围栏边界（放宽只能来自平台配置的前提）；换行与列表等其余 Markdown 原样保留。
+ */
+function neutralizeStructuralMarkers(text: string): string {
+  return text.replace(/^([ \t]{0,3})(?=#|`{3}|~{3}|={3,}[ \t]*$|-{3,}[ \t]*$)/gm, '$1\\');
+}
+
+/** L2 条目渲染（R4 逐条来源标注）：文本内嵌条目 id 与来源，供透明视图与审计定位；文本落 prompt 前经结构清洗。 */
 function renderUserEntry(entry: UserOverlayEntry): UserInjectionEntry {
   return {
     id: entry.id,
-    text: `[${entry.id}] ${entry.text}（来源：${USER_ENTRY_ORIGIN_LABELS[entry.origin]}）`,
+    text: `[${entry.id}] ${neutralizeStructuralMarkers(entry.text)}（来源：${USER_ENTRY_ORIGIN_LABELS[entry.origin]}）`,
   };
 }
 

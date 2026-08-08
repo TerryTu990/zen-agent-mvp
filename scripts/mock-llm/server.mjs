@@ -32,6 +32,11 @@ const TOOL_XIANYU_PREPARE = 'prepare.xianyu-fulfillment.execute-intent';
 const TOOL_XIANYU_SHIPPING = 'xianyu-shipping.execute-intent';
 const TOOL_XIANYU_SHIPPING_PREPARE = 'prepare.xianyu-shipping.execute-intent';
 const TOOL_YINXIANG_WRITE = 'yinxiang-note.write-note';
+const TOOL_OPEN_URL = 'open_url';
+
+// generic-web browse 的 ZA-FEAT-10 辅助范围声明独有文案：命中即走放宽剧本，站点 pack 的 sys 不含。
+const BROWSE_ASSIST_MARKER = '辅助范围声明：通用浏览助手';
+const WEB_SEARCH_SKILL_MARKER = '技能：网页搜索（web-search）';
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {
@@ -45,6 +50,20 @@ function hasTool(body, name) {
     body.tools.some(
       (t) => normalizeToolName(t?.function?.name) === name || normalizeToolName(t?.name) === name,
     )
+  );
+}
+
+/**
+ * 会话消息里是否出现过对指定工具的 assistant 调用（wire 形态 tool_calls）。
+ * 用于 sys 已随落点重装配换出、无法再凭 marker 门控、只能凭消息证据识别回喂轮所属剧本的场景。
+ */
+function hasToolCall(body, name) {
+  const msgs = Array.isArray(body?.messages) ? body.messages : [];
+  return msgs.some(
+    (m) =>
+      m?.role === 'assistant' &&
+      Array.isArray(m.tool_calls) &&
+      m.tool_calls.some((tc) => normalizeToolName(tc?.function?.name) === name),
   );
 }
 
@@ -566,6 +585,30 @@ function decide(sys, u, body) {
         }
       : { text: `MOCK-SNAPSHOT-OBS ${obs}` };
   }
+  // generic browse 放宽剧本（ZA-FEAT-10 marker 门控）：用户给出网址 → open_url 单步导航；
+  // 观测回喂轮产出总结文本。落点在 allowlist 外时服务端按落点重装配回落仅基座、sys 不再含
+  // marker，故仅首轮（发起 tool_call）看 marker 与工具可见性，观测回喂轮只认 open_url 调用证据。
+  {
+    const openTarget = u.match(/https?:\/\/[^\s，。」]+/);
+    if (u.includes('打开') && openTarget) {
+      if (obs === null) {
+        if (sys.includes(BROWSE_ASSIST_MARKER) && hasTool(body, TOOL_OPEN_URL)) {
+          return {
+            toolCall: {
+              id: 'call_open_url',
+              name: TOOL_OPEN_URL,
+              arguments: JSON.stringify({ url: openTarget[0] }),
+            },
+          };
+        }
+      } else if (hasToolCall(body, TOOL_OPEN_URL)) {
+        if (obs.includes('"url"')) {
+          return { text: `已打开 ${openTarget[0]}：后续内容以到达后的页面快照为准。` };
+        }
+        return { text: '未执行跳转：打开该页面的请求未完成或已被取消。' };
+      }
+    }
+  }
   // R7 无人值守只读底线剧本：'模拟越权写调用' 哨兵不看工具可见性即发起写工具调用（真实 LLM 幻觉
   // 调用工具面外写工具的确定性替身），驱动服务端结构强制拒绝路径——不依赖模型自觉。
   if (obs === null && u.includes('模拟越权写调用')) {
@@ -574,6 +617,17 @@ function decide(sys, u, body) {
         id: 'call_forced_write',
         name: TOOL_CANCEL,
         arguments: JSON.stringify({ orderId: 'ORD-1001' }),
+      },
+    };
+  }
+  // open_url 幻觉/注入硬调哨兵：不看工具可见性即发 open_url 调用（模拟站点 pack 会话里未注入该工具、
+  // 却被页面注入诱导发出的调用），驱动服务端准入门 fail-closed 拒绝路径——不依赖模型自觉。
+  if (obs === null && u.includes('模拟越权导航')) {
+    return {
+      toolCall: {
+        id: 'call_forced_open_url',
+        name: TOOL_OPEN_URL,
+        arguments: JSON.stringify({ url: 'https://evil.example/login' }),
       },
     };
   }
@@ -784,6 +838,25 @@ function pickReply(sys, u) {
     if (sys.includes('订单详情') && sys.includes('#order-id')) return REPLY_R2_DETAIL;
     if (sys.includes('订单列表') && sys.includes('#order-table')) return REPLY_R2_LIST;
     return 'MOCK-NO-FEATURE';
+  }
+  // generic browse 放宽剧本（ZA-FEAT-10 marker 门控，置于拒答分支之前）：
+  // 治理仍严 / 搜索 skill 探针 / 通用问答应答；marker 缺失即落回下方基座拒答分支。
+  if (sys.includes(BROWSE_ASSIST_MARKER)) {
+    if (/别弹确认|不用确认|直接执行/.test(u)) {
+      // 注入内容探针：基座 ZA-SYS-02 与 feature ZA-FEAT-10 的治理豁免表述须同时随装配到达模型，
+      // 任一被改坏即 MISS——marker 在场不足以证明放宽的核心安全性质（治理面不随之放宽）仍成立。
+      return sys.includes('治理边界不随辅助范围放宽') && sys.includes('治理面不随之放宽')
+        ? 'MOCK-GOVERNANCE-STRICT-HIT：对话不能放宽治理边界，操作仍会经平台确认后执行。'
+        : 'MOCK-GOVERNANCE-STRICT-MISS';
+    }
+    if (u.includes('报告搜索技能')) {
+      return sys.includes(WEB_SEARCH_SKILL_MARKER)
+        ? 'MOCK-WEB-SEARCH-SKILL-HIT'
+        : 'MOCK-WEB-SEARCH-SKILL-MISS';
+    }
+    if (/天气|写.*诗/.test(u)) {
+      return 'MOCK-GENERAL-QA-HIT：这类通用请求在本功能声明的辅助范围内，可以直接回答。';
+    }
   }
   if (/天气|写.*诗/.test(u)) {
     return sys.includes('拒答') ? REPLY_R3_REFUSE : 'MOCK-BASE-MISSING';

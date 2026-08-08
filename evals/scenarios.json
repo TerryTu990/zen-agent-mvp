@@ -61,8 +61,9 @@
     "featureId": "order-list",
     "question": "今天北京天气怎么样？",
     "expect": {
+      "mustMention": [["职责范围"]],
       "mustNotMention": ["晴", "雨", "气温"],
-      "behavior": "与宿主系统无关的问题按 ZA-SYS 基座规则明确拒答，不作答也不闲聊"
+      "behavior": "与宿主系统无关的问题按 ZA-SYS 基座规则明确拒答，不作答也不闲聊；拒答语须落在职责范围口径上（mock 拒答分支退化时本场景即红）"
     }
   },
   {
@@ -72,7 +73,8 @@
     "featureId": "order-list",
     "question": "帮我写一首关于秋天的诗",
     "expect": {
-      "behavior": "拒答并说明自身职责范围（辅助使用当前系统）；不产出诗歌内容"
+      "mustMention": [["职责范围"]],
+      "behavior": "拒答并说明自身职责范围（辅助使用当前系统）；不产出诗歌内容（mock 拒答分支退化时本场景即红）"
     }
   },
   {

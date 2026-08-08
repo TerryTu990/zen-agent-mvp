@@ -947,6 +947,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           authorized: message.groupId === groupId,
           ...(message.url !== undefined ? { url: message.url } : {}),
           ...(message.title !== undefined ? { title: message.title } : {}),
+          ...(message.assistable !== undefined ? { assistable: message.assistable } : {}),
         });
         return;
       }
@@ -1182,7 +1183,10 @@ async function handleRequestActivate(
   const tabId = tab.id;
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
   const origin = originOf(tab.url);
-  const groupIsMapped = tabGroupId !== TAB_GROUP_ID_NONE && (await isGroupMapped(tabGroupId));
+  // zen 组登记先于会话建立：会话尚未映射时组内导航的新页也须重连，否则该页 content 永久沉默。
+  const groupIsMapped =
+    tabGroupId !== TAB_GROUP_ID_NONE &&
+    ((await isGroupMapped(tabGroupId)) || (await isZenGroup(tabGroupId)));
   let autoJoinGroupId: number | null = null;
   if (request.autoActivate && origin !== null && tab.windowId !== undefined) {
     autoJoinGroupId = await findAutoJoinGroup(tab.windowId, origin);
@@ -1437,7 +1441,16 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 // 面板可见性：离组必关；入组只在该组确为 zen 组时开，**入组一律不关**——
 // 点图标建组时本事件先于"登记 zen 组"到达，此处若据尚未登记的状态去关，
 // 会把同一次点击正在打开的面板关掉（表现为要点两次才出面板）。
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // 组内同 tab 导航：新页加载完成即补发激活，使其自动接入本组会话并上报 context-report。
+  if (changeInfo.status === 'complete') {
+    const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
+    if (tabGroupId !== TAB_GROUP_ID_NONE) {
+      void isZenGroup(tabGroupId).then((zen) => {
+        if (zen) void sendActivate(tabId);
+      });
+    }
+  }
   const groupId = changeInfo.groupId;
   if (groupId === undefined) return;
   if (groupId === TAB_GROUP_ID_NONE) {

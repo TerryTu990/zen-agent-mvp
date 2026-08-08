@@ -1,7 +1,7 @@
 import { createPublicKey, verify as verifySignature } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { ExecResultFrame, IdentityClaims, ToolDefinition } from '@zen-agent/contracts';
-import { SITE_NAVIGATE_TOOL_ID } from '@zen-agent/contracts';
+import { OPEN_URL_TOOL_ID, SITE_NAVIGATE_TOOL_ID } from '@zen-agent/contracts';
 import {
   computeExecSignature,
   createToolGatePort,
@@ -1973,6 +1973,98 @@ describe('toolgate ADR-013 — 内建 site_navigate 跨站导航（渐进披露�
     expect(good.content).toEqual({ url: mailUrl });
 
     const badFrame = await port.issueExecInstruction({ ...navBase, params: { url: mailUrl } });
+    const bad = await port.acceptExecResult({
+      sessionId: 's',
+      result: { type: 'exec-result', sessionId: 's', nonce: badFrame.nonce, ok: true, body: {} },
+    });
+    expect(bad.ok).toBe(false);
+    expect(bad.error).toBe('invalid-result');
+  });
+});
+
+describe('toolgate — 内建 open_url 通用导航（generic 配套，每次必弹卡）', () => {
+  const openBase = { sessionId: 's', toolCallId: 'c', toolId: OPEN_URL_TOOL_ID, claims: validClaims };
+  const targetUrl = 'https://search.example/results?q=zen';
+
+  it('https 目标 → hitl（不要求落在已安装站点围栏内）', async () => {
+    const d = await makeSitePort().decide({ ...openBase, params: { url: targetUrl } });
+    expect(d.verdict).toBe('hitl');
+  });
+
+  it('http 目标 → hitl', async () => {
+    const d = await makeSitePort().decide({ ...openBase, params: { url: 'http://plain.example/page' } });
+    expect(d.verdict).toBe('hitl');
+  });
+
+  it('非 http/https 协议与不可解析目标 → deny unsafe-url', async () => {
+    const port = makeSitePort();
+    for (const url of [
+      'chrome://settings',
+      'javascript:alert(1)',
+      'file:///etc/hosts',
+      'data:text/html,<h1>x</h1>',
+      'not a url',
+    ]) {
+      const d = await port.decide({ ...openBase, params: { url } });
+      expect(d).toEqual({ verdict: 'deny', reason: 'unsafe-url' });
+    }
+  });
+
+  it('URL 带内嵌凭证 → deny unsafe-url', async () => {
+    const d = await makeSitePort().decide({
+      ...openBase,
+      params: { url: 'https://user:pass@example.com/' },
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'unsafe-url' });
+  });
+
+  it('参数不过 schema（缺 url）→ deny invalid-params', async () => {
+    const d = await makeSitePort().decide({ ...openBase, params: {} });
+    expect(d).toEqual({ verdict: 'deny', reason: 'invalid-params' });
+  });
+
+  it('已批 task 也不放行（every-call 语义：不消费任务级授权，仍 hitl）', async () => {
+    const port = makeSitePort();
+    await port.grantHitl({ sessionId: 's', task: '检索' });
+    const d = await port.decide({ ...openBase, params: { url: targetUrl, task: '检索' } });
+    expect(d.verdict).toBe('hitl');
+  });
+
+  it('签发：构造一次性签名单步 navigate dom 指令，签名可同 secret 复算', async () => {
+    const frame = await makeSitePort().issueExecInstruction({
+      ...openBase,
+      params: { url: targetUrl, reason: '去搜索引擎检索' },
+    });
+    expect(frame.request).toEqual({ kind: 'dom', steps: [{ action: 'navigate', url: targetUrl }] });
+    const expected = computeExecSignature(SIGN_FIXTURE, {
+      sessionId: frame.sessionId,
+      nonce: frame.nonce,
+      issuedAt: frame.issuedAt,
+      expiresAt: frame.expiresAt,
+      ttl: frame.ttl,
+      toolCallId: frame.toolCallId,
+      request: frame.request,
+    });
+    expect(frame.signature).toBe(expected);
+  });
+
+  it('签发非法 scheme → 抛错拒发（治理终点独立重校验，U7 fail-closed）', async () => {
+    await expect(
+      makeSitePort().issueExecInstruction({ ...openBase, params: { url: 'javascript:alert(1)' } }),
+    ).rejects.toThrow(/open_url/);
+  });
+
+  it('结果回收：{url} 过 resultSchema → ok；缺 url → invalid-result（U7）', async () => {
+    const port = makeSitePort();
+    const okFrame = await port.issueExecInstruction({ ...openBase, params: { url: targetUrl } });
+    const good = await port.acceptExecResult({
+      sessionId: 's',
+      result: { type: 'exec-result', sessionId: 's', nonce: okFrame.nonce, ok: true, body: { url: targetUrl } },
+    });
+    expect(good.ok).toBe(true);
+    expect(good.content).toEqual({ url: targetUrl });
+
+    const badFrame = await port.issueExecInstruction({ ...openBase, params: { url: targetUrl } });
     const bad = await port.acceptExecResult({
       sessionId: 's',
       result: { type: 'exec-result', sessionId: 's', nonce: badFrame.nonce, ok: true, body: {} },

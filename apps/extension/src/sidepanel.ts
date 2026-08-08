@@ -1,4 +1,4 @@
-import { panelGroupKey, TAB_GROUP_ID_NONE } from './activation.js';
+import { isAssistableUrl, panelGroupKey, TAB_GROUP_ID_NONE } from './activation.js';
 import {
   appendAttachmentsToPrompt,
   MAX_ATTACHMENT_COUNT,
@@ -18,6 +18,51 @@ import {
 
 const EXECUTION_PREFERENCE_KEY = 'za.executionPreference';
 type PendingUserMessage = Extract<SidePanelToBackgroundMessage, { kind: 'user-message' }>;
+type TaskContextMessage = Extract<BackgroundToSidePanelMessage, { kind: 'task-context' }>;
+
+export interface ContextHeaderView {
+  state: 'waiting' | 'ready' | 'unassistable' | 'outside';
+  title: string;
+  detail: string;
+}
+
+/** 面板头部四态视图：message 为 null 表示已绑组但尚未收到上下文（waiting）。 */
+export function contextHeaderView(message: TaskContextMessage | null, groupId: number): ContextHeaderView {
+  if (message === null) {
+    return { state: 'waiting', title: '正在连接任务页面', detail: `任务组 ${groupId}` };
+  }
+  if (!message.authorized) {
+    return {
+      state: 'outside',
+      title: '当前页面不在任务组内',
+      detail: message.url ?? `任务组 ${message.groupId}`,
+    };
+  }
+  if (message.assistable === false) {
+    return {
+      state: 'unassistable',
+      title: '此页面无法辅助',
+      detail: '切换到站点页面，或让 Zen 导航后继续',
+    };
+  }
+  return {
+    state: 'ready',
+    title: message.title ?? '任务页面已连接',
+    detail: message.url ?? `任务组 ${message.groupId}`,
+  };
+}
+
+/**
+ * navigate 代执行开新页的瞬间 tab.url 尚未 commit（空值 + loading/pendingUrl）：
+ * 此时不能据空 URL 判为不可辅助，应省略 assistable（缺省视为可辅助），等 URL commit 后 onUpdated 重报定态。
+ */
+export function urlPendingCommit(
+  tab: { url?: string; status?: string; pendingUrl?: string } | undefined,
+): boolean {
+  if (tab === undefined) return false;
+  const urlMissing = tab.url === undefined || tab.url === '';
+  return urlMissing && (tab.status === 'loading' || tab.pendingUrl !== undefined);
+}
 
 export interface SidePanelElements {
   messages: HTMLElement;
@@ -258,10 +303,14 @@ export function startSidePanel(elements: SidePanelElements): void {
     elements.injectionToggle.setAttribute('aria-expanded', 'false');
   };
 
-  const updateContext = (message: Extract<BackgroundToSidePanelMessage, { kind: 'task-context' }>): void => {
-    elements.context.dataset['state'] = message.authorized ? 'ready' : 'outside';
-    elements.contextTitle.textContent = message.authorized ? message.title ?? '任务页面已连接' : '当前页面不在任务组内';
-    elements.contextDetail.textContent = message.url ?? `任务组 ${message.groupId}`;
+  const applyContextHeader = (view: ContextHeaderView): void => {
+    elements.context.dataset['state'] = view.state;
+    elements.contextTitle.textContent = view.title;
+    elements.contextDetail.textContent = view.detail;
+  };
+
+  const updateContext = (message: TaskContextMessage): void => {
+    applyContextHeader(contextHeaderView(message, message.groupId));
   };
 
   const renderUiEvent = (event: SidePanelUiEvent): void => {
@@ -446,6 +495,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       groupId: tab?.groupId ?? TAB_GROUP_ID_NONE,
       ...(tab?.url !== undefined ? { url: tab.url } : {}),
       ...(tab?.title !== undefined ? { title: tab.title } : {}),
+      ...(urlPendingCommit(tab) ? {} : { assistable: isAssistableUrl(tab?.url) }),
     });
   };
 
@@ -485,9 +535,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     previous?.disconnect();
     boundGroupId = groupId;
     elements.context.dataset['groupId'] = String(groupId);
-    elements.context.dataset['state'] = 'waiting';
-    elements.contextTitle.textContent = '正在连接任务页面';
-    elements.contextDetail.textContent = `任务组 ${groupId}`;
+    applyContextHeader(contextHeaderView(null, groupId));
     elements.messages.textContent = '';
     ui = createConversationUi(elements.messages);
     closeInjection();
@@ -628,6 +676,12 @@ export function startSidePanel(elements: SidePanelElements): void {
   });
   chrome.tabs.onActivated.addListener((activeInfo) => {
     if (activeInfo.windowId === windowId) void announceBrowsingContext();
+  });
+  // 同 tab 地址栏导航/标题晚到也要跟随；按 changeInfo 键过滤，避免高频变更触发无谓的 tabs.query。
+  chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+    if (windowId === null || tab.windowId !== windowId || !tab.active) return;
+    if (changeInfo.url === undefined && changeInfo.title === undefined && changeInfo.status === undefined) return;
+    void announceBrowsingContext();
   });
   window.setInterval(() => send({ kind: 'ping' }), 20000);
 

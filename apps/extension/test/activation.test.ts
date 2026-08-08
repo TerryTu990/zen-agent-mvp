@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   decideActivation,
   decidePanelVisibility,
+  isAssistableUrl,
   sessionKeyForGroup,
   autoGroupKey,
   panelGroupKey,
@@ -57,6 +60,39 @@ describe('decideActivation：显式会话组激活决策', () => {
     expect(
       decideActivation({ tabGroupId: 9, groupIsMapped: false, autoActivate: false, autoJoinGroupId: null }),
     ).toEqual({ kind: 'none' });
+  });
+});
+
+describe('isAssistableUrl：可辅助页判定', () => {
+  it('http/https 站点页可辅助', () => {
+    expect(isAssistableUrl('http://example.com/path')).toBe(true);
+    expect(isAssistableUrl('https://www.baidu.com/')).toBe(true);
+  });
+
+  it('浏览器内部页一律不可辅助', () => {
+    expect(isAssistableUrl('chrome://newtab/')).toBe(false);
+    expect(isAssistableUrl('chrome-extension://abcdefg/sidepanel.html')).toBe(false);
+    expect(isAssistableUrl('about:blank')).toBe(false);
+    expect(isAssistableUrl('edge://settings/')).toBe(false);
+    expect(isAssistableUrl('devtools://devtools/bundled/inspector.html')).toBe(false);
+  });
+
+  it('非法/缺失 URL 不可辅助', () => {
+    expect(isAssistableUrl('not-a-url')).toBe(false);
+    expect(isAssistableUrl('')).toBe(false);
+    expect(isAssistableUrl(undefined)).toBe(false);
+  });
+});
+
+describe('组内导航激活（接线回归）', () => {
+  it('background 的激活判定把"已登记 zen 组"视同已映射：会话建立前组内导航的新页也能重连', () => {
+    const source = readFileSync(fileURLToPath(new URL('../src/background.ts', import.meta.url)), 'utf8');
+    expect(source).toContain('(await isGroupMapped(tabGroupId)) || (await isZenGroup(tabGroupId))');
+  });
+
+  it('background 对 zen 组内 status=complete 的 tab 补发激活（组内同 tab 导航自动接入）', () => {
+    const source = readFileSync(fileURLToPath(new URL('../src/background.ts', import.meta.url)), 'utf8');
+    expect(source).toContain("changeInfo.status === 'complete'");
   });
 });
 

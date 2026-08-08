@@ -98,9 +98,10 @@ function activate(): void {
     }
   };
 
+  // 经 send 上报：bfcache 恢复时端口已断而 onDisconnect 尚未派发，直接 postMessage 会抛异常
+  // 且不触发重连；send 失败即断线重连，重连后 connect() 对可见页补报。
   const announce = (): void => {
-    if (port === null) return;
-    port.postMessage({ kind: 'context-report', ...createContextReporter().collect() });
+    send({ kind: 'context-report', ...createContextReporter().collect() });
   };
 
   function connect(): void {
@@ -111,7 +112,8 @@ function activate(): void {
       if (port === connected) port = null;
       scheduleReconnect();
     });
-    announce();
+    // 仅用户视线所在页上报上下文（后台页/预渲染页不抢活跃页路由）；转入可见时由 visibilitychange 补报。
+    if (document.visibilityState === 'visible') announce();
   }
 
   connect();

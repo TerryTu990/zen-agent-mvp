@@ -2,6 +2,9 @@ import { createHash, createPrivateKey, createPublicKey, randomUUID, sign as sign
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import {
   isDomTool,
+  OPEN_URL_PARAMS_SCHEMA,
+  OPEN_URL_RESULT_SCHEMA,
+  OPEN_URL_TOOL_ID,
   SITE_NAVIGATE_PARAMS_SCHEMA,
   SITE_NAVIGATE_RESULT_SCHEMA,
   SITE_NAVIGATE_TOOL_ID,
@@ -523,6 +526,9 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   // 内建跨站导航工具（ADR-013 渐进披露）：不在 options.tools 闭集内，专路裁决/签发；此处只备其入/出参校验器。
   const siteNavigateParamsValidator = ajv.compile(SITE_NAVIGATE_PARAMS_SCHEMA);
   const siteNavigateResultValidator = ajv.compile(SITE_NAVIGATE_RESULT_SCHEMA);
+  // 内建通用导航工具（generic 配套）：同为专路裁决/签发，结果校验器按 toolId 独立选取。
+  const openUrlParamsValidator = ajv.compile(OPEN_URL_PARAMS_SCHEMA);
+  const openUrlResultValidator = ajv.compile(OPEN_URL_RESULT_SCHEMA);
 
   // 命名空间纪律（ADR-013 批次②遗留）：跨 pack 同名 toolId 载入期即 fail-closed 拒启——
   // 同一 toolId 归属两个不同 pack 会使门禁/审计的工具归属含糊，MVP 直接拒绝启动而非静默择一。
@@ -559,6 +565,24 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       return false;
     }
     return sites.some((site) => site.origin === origin && site.locations.some((loc) => locationMatches(path, loc)));
+  };
+
+  /**
+   * open_url 目标治理（U7 fail-closed）：协议闭集 http/https，URL 不可解析或携带内嵌凭证
+   * （username/password 非空）一律不可导航；不限制 localhost/内网地址。
+   */
+  const httpNavigableUrl = (url: string): boolean => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return false;
+    }
+    return (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      parsed.username === '' &&
+      parsed.password === ''
+    );
   };
 
   /**
@@ -929,6 +953,14 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         }
         return { verdict: 'hitl' };
       }
+      // 内建通用导航（generic 配套）：专路裁决——参数不过即 deny；目标须为无内嵌凭证的 http/https
+      // 绝对 URL，否则 unsafe-url；每次必弹卡（every-call 语义），不消费/不复用任务级授权。
+      if (input.toolId === OPEN_URL_TOOL_ID) {
+        if (!openUrlParamsValidator(input.params)) return deny('invalid-params');
+        const url = input.params['url'];
+        if (typeof url !== 'string' || !httpNavigableUrl(url)) return deny('unsafe-url');
+        return { verdict: 'hitl' };
+      }
       // fail-closed 判定链：任一前置不过即 deny，reason 只述依据、不含实参值（U7 / SEC-04）。
       const tool = toolsById.get(input.toolId);
       if (!tool) return deny('unknown-tool');
@@ -988,6 +1020,17 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         }
         const url = String(input.params['url'] ?? '');
         if (!urlInFence(url)) throw new Error('site_navigate 签发拒绝：目标 URL 越出已安装站点围栏');
+        return signInstruction(input, { kind: 'dom', steps: [{ action: 'navigate', url }] });
+      }
+      // 内建通用导航：签发是治理终点，签名前独立重校验（参数 + 协议闭集/无内嵌凭证），封 TOCTOU。
+      if (input.toolId === OPEN_URL_TOOL_ID) {
+        if (!openUrlParamsValidator(input.params)) {
+          throw new Error('open_url 签发前提破坏：参数校验未过');
+        }
+        const url = String(input.params['url'] ?? '');
+        if (!httpNavigableUrl(url)) {
+          throw new Error('open_url 签发拒绝：目标 URL 非 http/https 或携带内嵌凭证');
+        }
         return signInstruction(input, { kind: 'dom', steps: [{ action: 'navigate', url }] });
       }
       const tool = toolsById.get(input.toolId);
@@ -1112,11 +1155,13 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
           error: result.error ?? 'exec-failed',
         };
       }
-      // 不采信客户端上报原文：唯有过服务端 resultSchema 校验才回喂 agent（U7）。内建 site_navigate 用其专属结果校验器。
+      // 不采信客户端上报原文：唯有过服务端 resultSchema 校验才回喂 agent（U7）。内建导航工具用各自专属结果校验器。
       const validateResult =
         record.toolId === SITE_NAVIGATE_TOOL_ID
           ? siteNavigateResultValidator
-          : resultValidators.get(record.toolId);
+          : record.toolId === OPEN_URL_TOOL_ID
+            ? openUrlResultValidator
+            : resultValidators.get(record.toolId);
       const body = result.body ?? null;
       if (!validateResult || !validateResult(body)) {
         if (record.fulfillmentReservationKey !== undefined) {

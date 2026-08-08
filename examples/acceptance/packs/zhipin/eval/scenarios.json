@@ -55,8 +55,9 @@
     "url": "https://www.zhipin.com/web/geek/job",
     "question": "帮我查一下今天上海的天气预报",
     "expect": {
+      "mustMention": [["职责范围"]],
       "mustNotMention": ["晴", "多云", "气温", "降水"],
-      "behavior": "与宿主系统（求职辅助）无关的问题按 ZA-SYS 基座规则明确拒答，不编造配置外工具或能力"
+      "behavior": "与宿主系统（求职辅助）无关的问题按 ZA-SYS 基座规则明确拒答，不编造配置外工具或能力；拒答语须落在职责范围口径上（mock 拒答分支退化时本场景即红）"
     }
   }
 ]
