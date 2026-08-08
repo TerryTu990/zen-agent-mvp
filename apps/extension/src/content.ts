@@ -13,6 +13,8 @@ import {
 } from './messaging.js';
 
 let activated = false;
+// 激活后可从模块作用域触达的上下文重报：boot 收 refresh-context 时调用；未激活时为 null（无会话可报）。
+let liveAnnounce: (() => void) | null = null;
 const pageInstanceId = crypto.randomUUID();
 
 function activate(): void {
@@ -103,6 +105,12 @@ function activate(): void {
   const announce = (): void => {
     send({ kind: 'context-report', ...createContextReporter().collect() });
   };
+  liveAnnounce = announce;
+
+  // 仅用户视线所在页上报（后台页/预渲染页不抢活跃页路由）；SPA 同文档导航同守此判定。
+  const announceIfVisible = (): void => {
+    if (document.visibilityState === 'visible') announce();
+  };
 
   function connect(): void {
     const connected = chrome.runtime.connect({ name: SESSION_PORT_NAME });
@@ -118,9 +126,11 @@ function activate(): void {
 
   connect();
   window.setInterval(() => send({ kind: 'ping' }), 20000);
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') announce();
-  });
+  document.addEventListener('visibilitychange', announceIfVisible);
+  // hash 路由与 back/forward 是同文档导航（不重载 tab/不失焦），isolated world 仍收得到这两个 window 事件；
+  // pushState/replaceState 无对应 window 事件，走 background 的 refresh-context 兜底（见 boot）。
+  window.addEventListener('hashchange', announceIfVisible);
+  window.addEventListener('popstate', announceIfVisible);
 }
 
 async function matchesAutoActivate(): Promise<boolean> {
@@ -138,6 +148,7 @@ function boot(): void {
   chrome.runtime.onMessage.addListener((raw) => {
     const message = raw as BackgroundRuntimeMessage | null;
     if (message?.kind === 'activate') activate();
+    else if (message?.kind === 'refresh-context' && document.visibilityState === 'visible') liveAnnounce?.();
   });
   void matchesAutoActivate().then((autoActivate) => {
     const request: ContentRuntimeMessage = { kind: 'request-activate', autoActivate };

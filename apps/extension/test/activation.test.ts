@@ -96,6 +96,28 @@ describe('组内导航激活（接线回归）', () => {
   });
 });
 
+describe('SPA 同文档导航后重装配（接线回归）', () => {
+  it('background 对 url 变而无 status 的同文档导航向该页转发 refresh-context', () => {
+    const source = readFileSync(fileURLToPath(new URL('../src/background.ts', import.meta.url)), 'utf8');
+    // url-only（无 status）专指 SPA 子路由切换，整页加载会带 status，故此判定不误触发全量重载路。
+    expect(source).toContain('changeInfo.status === undefined && changeInfo.url !== undefined');
+    expect(source).toContain('sendRefreshContext(tabId)');
+    expect(source).toContain("kind: 'refresh-context'");
+  });
+
+  it('content 挂 hashchange/popstate 监听在可见时重报上下文（hash 路由与 back/forward）', () => {
+    const source = readFileSync(fileURLToPath(new URL('../src/content.ts', import.meta.url)), 'utf8');
+    expect(source).toContain("window.addEventListener('hashchange', announceIfVisible)");
+    expect(source).toContain("window.addEventListener('popstate', announceIfVisible)");
+  });
+
+  it('content 收 refresh-context 时仅在可见页触发既有 announce（pushState 兜底）', () => {
+    const source = readFileSync(fileURLToPath(new URL('../src/content.ts', import.meta.url)), 'utf8');
+    expect(source).toContain("message?.kind === 'refresh-context'");
+    expect(source).toContain('liveAnnounce');
+  });
+});
+
 describe('会话组存根键', () => {
   it('会话、自动组和 Side Panel 绑定键均按其作用域命名', () => {
     expect(sessionKeyForGroup(42)).toBe('za.sessionId.g42');

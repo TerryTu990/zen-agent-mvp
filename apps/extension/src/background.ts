@@ -1147,6 +1147,12 @@ async function sendActivate(tabId: number): Promise<void> {
   await chrome.tabs.sendMessage(tabId, message).catch(() => {});
 }
 
+// SPA 同文档导航（pushState/replaceState 无 window 事件）后促已激活页重报上下文，使服务端装配跟随新子路由。
+async function sendRefreshContext(tabId: number): Promise<void> {
+  const message: BackgroundRuntimeMessage = { kind: 'refresh-context' };
+  await chrome.tabs.sendMessage(tabId, message).catch(() => {});
+}
+
 /** 新建 zen 标签页组并命名（同 origin 多组各自独立）；返回新组 id。 */
 async function createZenGroup(tabId: number): Promise<number> {
   const groupId = await chrome.tabs.group({ tabIds: tabId });
@@ -1448,6 +1454,17 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (tabGroupId !== TAB_GROUP_ID_NONE) {
       void isZenGroup(tabGroupId).then((zen) => {
         if (zen) void sendActivate(tabId);
+      });
+    }
+  }
+  // 同文档导航（url 变而无 status）：整页加载会带 status，故 url-only 专指 SPA 子路由切换；
+  // 促已激活页重报上下文让服务端重新装配。hash/back-forward 另有 content 侧 window 监听即时补报，
+  // 此路对其为幂等重报（同 url 的 context-report 无副作用），主要覆盖 pushState/replaceState。
+  if (changeInfo.status === undefined && changeInfo.url !== undefined) {
+    const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
+    if (tabGroupId !== TAB_GROUP_ID_NONE) {
+      void isZenGroup(tabGroupId).then((zen) => {
+        if (zen) void sendRefreshContext(tabId);
       });
     }
   }

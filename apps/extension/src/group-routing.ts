@@ -27,7 +27,11 @@ export interface GroupMembers<T> {
   remove(member: T): void;
   /** 标记活跃页（用户视线所在）：由该成员的 context-report / user-message 触发。 */
   markActive(member: T): void;
-  /** route=active 时无显式活跃者则回退最近加入者（活跃页刚关闭的兜底），组空返回 []。 */
+  /**
+   * route=active 时无显式活跃者则回退到「仍在组内且曾活跃过」的最近成员；
+   * 若无任何曾活跃成员则返回 []（fail-safe：宁可本轮不投递，也不把带副作用的帧
+   * 投到端口入组却从未进入用户视线的静默后台页）。route=panel 恒全员镜像。
+   */
   targets(route: FrameRoute): T[];
   others(member: T): T[];
   members(): T[];
@@ -36,6 +40,7 @@ export interface GroupMembers<T> {
 
 export function createGroupMembers<T>(): GroupMembers<T> {
   const members: T[] = [];
+  const everActive = new Set<T>();
   let active: T | null = null;
   return {
     add(member) {
@@ -44,15 +49,23 @@ export function createGroupMembers<T>(): GroupMembers<T> {
     remove(member) {
       const index = members.indexOf(member);
       if (index !== -1) members.splice(index, 1);
+      everActive.delete(member);
       if (active === member) active = null;
     },
     markActive(member) {
-      if (members.includes(member)) active = member;
+      if (members.includes(member)) {
+        active = member;
+        everActive.add(member);
+      }
     },
     targets(route) {
       if (route === 'panel') return [...members];
-      const target = active ?? members[members.length - 1];
-      return target === undefined ? [] : [target];
+      if (active !== null) return [active];
+      for (let index = members.length - 1; index >= 0; index -= 1) {
+        const candidate = members[index];
+        if (candidate !== undefined && everActive.has(candidate)) return [candidate];
+      }
+      return [];
     },
     others(member) {
       return members.filter((candidate) => candidate !== member);

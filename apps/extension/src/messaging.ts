@@ -103,4 +103,7 @@ export type ContentRuntimeMessage =
 
 export type BackgroundRuntimeMessage =
   // background 决定激活：content 据此挂面板并连接会话端口。
-  | { kind: 'activate' };
+  | { kind: 'activate' }
+  // 同文档导航（pushState/replaceState 无对应 window 事件）后促使已激活页重报上下文：
+  // content 隔离世界拦不到页面 history API，由 background 从 tabs.onUpdated 的 url 变更转发。
+  | { kind: 'refresh-context' };
