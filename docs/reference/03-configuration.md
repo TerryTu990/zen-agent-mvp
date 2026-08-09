@@ -141,6 +141,8 @@
 | `riskTier` | `auto` 直执 / `hitl` 须授权 / `forbidden` 恒拒 | 只读→auto；有副作用→hitl；危险动作→forbidden |
 | `hitlMode` | 缺省（任务级：一任务一确认，跨工具复用）/ `every-call`（次次确认） | **对外不可撤回动作（发送/发布/删除）必须 every-call** |
 
+**平台保留入参 `page`**：dom 工具的 `params` MUST NOT 声明 `page`——该键由平台在载入期统一增广为可选的任务组页面句柄（定向到组内其他页执行，adr-023），pack 自声明即语义劫持，启动期拒载。
+
 ### 3.3 feature.md / facts.md 要点
 
 - `feature.md`（规则·守）：编号 `ZA-FEAT-NN`；讲清"该功能内 agent 怎么讲、什么必经工具、什么不做"。操作类功能记得写"先 `page_snapshot` 后动作、以页面证据复核成败"与 task 标题保持纪律。
@@ -167,6 +169,7 @@
 | `ZA_CORS_ORIGIN` | `*` | `Access-Control-Allow-Origin` 响应头 |
 | `ZA_JWT_ISS_ALLOWLIST` | `zen-agent-anon` | 外部签发方的 iss 白名单（逗号分隔）；匿名激活签发的 `zen-agent-anon` 由服务端在组装时无条件并入，覆盖或漏填此项都不会让服务端拒绝自己签发的令牌 |
 | `ZA_MAX_TURN_ROUNDS` | `12` | agent loop 单回合轮数上限（跨站任务建议 40） |
+| `ZA_GENERIC_ALLOWLIST` | 空（generic 兜底永不激活） | 通用兜底 pack 的准入名单（逗号分隔），条目三形态：`*`（任意站点）/ `scheme://*.host`（该域及其子域）/ origin 精确值；非法条目启动期拒启。活跃页 origin 命中才激活 generic pack（无 http/https origin 的静默页一律不激活，`*` 也不例外）。名单含 `*` 时另放行**静默页冷启动**的 `open_url` 内建工具：会话保持仅基座装配，只多一个通用开页入口 |
 
 ### LLM 上游（openai 兼容；调用时惰性读取）
 

@@ -23,13 +23,13 @@
 - `description` / `params`：面向 LLM 的说明与入参 JSON Schema，装配期原样进 tool spec；执行前服务端按 `params` 校验实参。
 - `execution`：通道闭集 `client | server`；**adapter 三形**按通道分形（schema if/then）：
   - `ClientAdapter`（http 代执行）：宿主请求模板（`{{param}}` 占位、服务端代入实参后签名下发，插件以用户 cookie 发请求）；
-  - `DomAdapter`（`kind:'dom'` 可见页面代操作，adr-011）：`pathPrefixes` 页路径围栏；实参约定 `task`（任务级授权作用域标识，必填）+ `steps`（闭集动作批次，ref 须出自最近快照）+ `summary`/`plan`（授权卡呈现）；
+  - `DomAdapter`（`kind:'dom'` 可见页面代操作，adr-011）：`pathPrefixes` 页路径围栏；实参约定 `task`（任务级授权作用域标识，必填）+ `steps`（闭集动作批次，ref 须出自最近快照）+ `summary`/`plan`（授权卡呈现）；**`page` 是平台保留入参**（adr-023 定向操作）——toolgate 载入期给 dom 工具 params 统一增广可选 `page`（bounded-fulfillment 工具不增广），pack 制品不写它，任一 dom 工具自声明即载入期拒启（含不获增广的 bounded-fulfillment 工具）；
   - `ServerAdapter`（服务端直调，adr-010）：API 映射 + `credentialRef` 凭证引用名（真值运行时注入，禁入配置）。
 - `riskTier`：操作分级矩阵落点，闭集 `auto | hitl | forbidden`；判定永远在服务端工具执行层，未知/缺失一律 deny。
 - `hitlMode`（可选，仅 riskTier=hitl 有意义）：`per-task`（缺省）——同会话同任务首批确认后跨工具自动放行；`every-call`——对外不可撤回动作（发信/删除等）次次挂起单独确认、不复用授权。
 - `resultSchema`：结果契约；回传 body 校验不过即 `invalid-result`、不回喂 agent。
 
-**平台内建工具（不入 tools.json）**：`guide_highlight`（UI 引导）、`page_snapshot`（dom 观察半程）、`pack_doc`（站点文档按需读）、`site_navigate`（跨站导航，结构契约在 `tool-definition.ts` 的 `SITE_NAVIGATE_*`）——由网关按装配条件注入（渐进披露），治理各有专路（snapshot/pack_doc 只读不经 toolgate；navigate 专路裁决）。
+**平台内建工具（不入 tools.json）**：`guide_highlight`（UI 引导）、`page_snapshot`（dom 观察半程；`includeText` 分支取页面正文，无独立正文工具）、`pack_doc`（站点文档按需读）、`site_navigate`（跨站导航，结构契约在 `tool-definition.ts` 的 `SITE_NAVIGATE_*`）、`open_url`（通用开页，`OPEN_URL_*`；注入门＝调用准入门：generic pack 已激活，或静默页冷启动且 `ZA_GENERIC_ALLOWLIST` 含 `*`）——由网关按装配条件注入（渐进披露），治理各有专路（snapshot/pack_doc 只读不经 toolgate；navigate 类专路裁决）。`page_snapshot` 与两个 navigate 内建工具同样接受可选 `page`（定向到组内其他页，adr-023）。
 
 **升级不变量关联**：U3（execution 闭集；双通道已实现，通道仍是配置维度）、U7（riskTier/dom 校验/围栏判定服务端 fail-closed；结果回传经 schema 校验才回喂）、U1。
 
@@ -56,9 +56,10 @@
 **职责**：客户端与会话网关之间的全部交互形态——五能力接口 + 消息帧闭集。schema 校验任一单帧。
 
 **关键字段语义**：
-- 五能力闭集（`$defs/capability`）：`identity`（身份获取）/ `context-report`（上下文上报）/ `conversation-hitl`（会话 UI+HITL 卡片）/ `page-action`（页面动作）/ `delegated-execution`（代执行）。**adr-011/013 后五能力未变**（U5 守住）——dom 观察与跨站导航都归入既有能力的帧扩展。
-- 上行 5 帧（HTTP）：`context-report`（url 必填，featureId 判定权威在服务端）、`user-message`、`hitl-decision`（客户端只采集意愿、不做放行判定）、`exec-result`（携 nonce 回传，服务端核销+ttl+resultSchema 三重校验后才回喂）、`snapshot-report`（页面可交互元素快照，dom 观察半程回传；按不可信观察对待）。
-- 下行 7 帧（SSE，D6 单向下行）：`text-delta`、`turn-complete`（服务端权威回合终止信号，客户端据此解除输入锁）、`tool-card`（纯展示，只下发脱敏摘要）、`hitl-request`（展示真实实参供裁决；dom 任务卡以 task/plan/摘要功能级呈现）、`exec-instruction`（**必含 nonce/ttl/signature**；request 为服务端已定值的最终请求——http 形态或 `DomExecRequest{kind:'dom',steps}` dom 批次形态）、`guide-action`（action 闭集仅 highlight/scroll-to）、`snapshot-request`（请活跃页回传快照）。
+- 五能力闭集（`$defs/capability`）：`identity`（身份获取）/ `context-report`（上下文上报）/ `conversation-hitl`（会话 UI+HITL 卡片）/ `page-action`（页面动作）/ `delegated-execution`（代执行）。**adr-011/013/023 后五能力未变**（U5 守住）——dom 观察、跨站导航、任务组页面清单与定向落点都归入既有能力的帧扩展。
+- 上行帧（HTTP）：`context-report`（url 必填，featureId 判定权威在服务端）、`user-message`、`hitl-decision`（客户端只采集意愿、不做放行判定）、`exec-result`（携 nonce 回传，服务端核销+ttl+resultSchema 三重校验后才回喂）、`snapshot-report`（页面可交互元素快照，dom 观察半程回传；按不可信观察对待）、`group-pages`（任务组成员页全量清单 `{handle,url,title?,status}`，服务端每帧整体重建组页面状态表；adr-023 D1）。
+- 下行 7 帧（SSE，D6 单向下行）：`text-delta`、`turn-complete`（服务端权威回合终止信号，客户端据此解除输入锁）、`tool-card`（纯展示，只下发脱敏摘要）、`hitl-request`（展示真实实参供裁决；dom 任务卡以 task/plan/摘要功能级呈现；`targetPage`/`targetUrl` 由服务端组装消毒后呈现副作用落点）、`exec-instruction`（**必含 nonce/ttl/signature**；request 为服务端已定值的最终请求——http 形态或 `DomExecRequest{kind:'dom',steps}` dom 批次形态）、`guide-action`（action 闭集仅 highlight/scroll-to）、`snapshot-request`（请页面回传快照，缺省为活跃页）。
+- **定向落点（adr-023）**：`exec-instruction` / `guide-action` / `snapshot-request` 均含可选 `page`（服务端当前只在 `exec-instruction` / `snapshot-request` 上产出该字段；`guide-action.page` 是契约与客户端路由均已就位的预留位，服务端不产出带 `page` 的引导帧，引导恒落活跃页）——会话作用域**不透明**页面句柄（schema 只约束 1..64 长度，无 pattern；Chrome tabId 等形态标识 MUST NOT 进契约，U5）。缺省 = 现活跃页路由语义逐字节不变；有值时按句柄单播目标成员，成员不可达即不投递、MUST NOT 改投。句柄解析与准入（未命中状态表 / 越目标页围栏 / silent 页通道不满足）一律在下发前于服务端完成，拒绝即回喂 error observation，MUST NOT 回退活跃页。`exec-instruction.page` 一并进签名序列 `{sessionId,nonce,issuedAt,expiresAt,ttl,toolCallId,page?,request}`——篡改落点即验签失败。
 
 **升级不变量关联**：U5（五能力与帧闭集不随形态变——插件/SDK/浏览器壳同一契约）、U7（决策服务端；代执行指令一次性签名）、U1。
 
@@ -90,6 +91,7 @@
 **关键字段语义**：
 - 公共信封：`eventId / type / ts / sessionId` 必填，`userId(=hostUserId) / tenant / featureId` 可选；`data` 按 type 分形（schema allOf if/then 强制）。
 - 脱敏前置：工具实参/响应体/页面内容不入事件，只记 id、结局（`verdict`、`outcome` 闭集）与摘要（`rulesDigest`）；secret/凭证值任何字段禁入。
+- 落点页标注（adr-023，additive）：顶层可选 `page{handle, origin?}`——`tool-decision` / `hitl-verdict` / `tool-execution` 三类事件填写（缺省调用记活跃页，定向调用记目标页；状态表无句柄时整体省略）。句柄不透明，消费方只作等值比对；旧事件不带该字段依旧合法。
 - 旁路铁律：审计生产与落盘永远在控制流旁路，审计故障不影响会话与执行。
 
 **升级不变量关联**：U6（schema 独立于落点：MVP `.za/events.jsonl` → 标准版观测审计服务 DB，只换 sink 不换 schema）、U7（决策与执行事件即门禁行为的可核查记录）、U1。
@@ -102,7 +104,7 @@
 
 **端口语义**（方法闭集以 `ports.ts` 为准，此处为语义导览）：
 - `AssemblyPort`（②网关 ← ⑤配置中心）：`resolveFeature`（url → pack 激活 + featureId，返回含 packId/packVersion/snapshotVersion）、`compose`（每轮换出：基座 + 站点索引 + feature.md + facts.md + skills + 工具白名单 + docs 索引）、`describeInjection`（注入自省，与 compose 同源，喂审计 assembly 事件）、`readPackDoc`（pack_doc 渐进披露正文，路径穿越 fail-closed）、`allTools`/`listSites`/`listToolOwnership`（启动期汇总：toolgate 判定闭集 / site 围栏 / 命名空间纪律）。
-- `ToolGatePort`（③工具执行层）：`decide`（唯一决策点：分级矩阵 + 身份/实参/dom 步骤/围栏校验 + 任务级授权复用，fail-closed；入参含 packOrigin/claimsForOrigin/domContext）、`grantHitl`（HITL 批准后登记 `(sessionId,task)` 授权）、`getExecVerificationKey`（只读 Ed25519 公钥）、`issueExecInstruction`（签发带绝对时限的一次性指令，前提 = decide 放行）、`acceptExecResult`（核销 nonce + 验 ttl + resultSchema 校验 → 规整 observation）、`confirmFulfillmentReceipt`（发送后结构化回执确认 `completed/uncertain`）、`executeServer`（server 通道直调：渲染 + credentialRef 凭证注入 + 结果校验）。
+- `ToolGatePort`（③工具执行层）：`decide`（唯一决策点：分级矩阵 + 身份/实参/dom 步骤/围栏校验 + 任务级授权复用，fail-closed；入参含 packOrigin/claimsForOrigin/domContext，及 `groupPages` 组页面状态表快照——定向调用的目标解析基准，带 `page` 而表内未命中一律拒、禁回退活跃页）、`grantHitl`（HITL 批准后登记 `(sessionId,task)` 授权）、`getExecVerificationKey`（只读 Ed25519 公钥）、`issueExecInstruction`（签发带绝对时限的一次性指令，前提 = decide 放行；同收 `groupPages`，签名前独立重解析定向目标，不依赖 decide 已通过的假设）、`acceptExecResult`（核销 nonce + 验 ttl + resultSchema 校验 → 规整 observation）、`confirmFulfillmentReceipt`（发送后结构化回执确认 `completed/uncertain`）、`executeServer`（server 通道直调：渲染 + credentialRef 凭证注入 + 结果校验）。
 - `CardInventoryPort`（飞书库存边界）：`reserve` 先按订单复用，否则领取一条 available 并写 reserved；`settle` 只允许 reserved → sent/manual 或同终态幂等。卡密值虽为 JSON 字符串，但仅在服务端端口内流转，禁止进入模型/审计/日志。
 - `FulfillmentCoordinatorPort`（履约编排）：`prepare` 先预占库存，再把固定通知登记为 toolgate opaque intent；`settle` 按网关的最终页面回执回填库存，失败进入阻断状态。
 - `LlmPort`（④LLM 接入层）：`chat` 返回 `AsyncIterable<LlmStreamEvent>`——流式 RPC 的进程内投影，逐事件 JSON 可序列化，仍满足 U1；done 事件携 `usage`（历史压缩触发依据）与 `errorKind`（invalid-tool-args 自愈信号）；provider 白名单与密钥托管在实现侧，不进契约。

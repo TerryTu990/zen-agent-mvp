@@ -45,7 +45,7 @@ S3 多形态客户端 → S4 七系统拆分+状态外置）。关键维度的�
 | 用户层 | L2 用户覆盖层契约已裁决（adr-014），P2.5 落地 | 同契约，存储按触发条件外置 |
 | 身份 | C2 短期 JWT；匿名自动登录（安装 id → 激活端点签发，adr-022）；渐进绑定：匿名 → P4 平台账号（Google 首发，正式投产前置条件） | 完整身份联邦（匿名 + 平台账号两签发形态并存，iss 区分） |
 | 部署/多租户 | 模块化单体、单租户；多租户模型已裁决（共享内容+租户指针，adr-020） | 三级扩展：垂直 → 会话亲和水平复制 → S4 七系统拆分 |
-| 会话 | 标签组会话、可跨站点（adr-012/013）；上下文治理 P0-P2 | 状态外置、SSE 集群 |
+| 会话 | 标签组会话、可跨站点（adr-012/013）；上下文治理 P0-P2；组级视野与定向操作（adr-023） | 状态外置、SSE 集群 |
 | HITL | 分级挂起 + 卡片确认 + 任务级授权（adr-016） | 同左 + pending 持久化跨端恢复 |
 | 评测 | 六维度纪律（ZA-EVAL：讲解/引导/工具/HITL/拒答/自动化），官方 pack 强制 | 评测门内置发布流程 |
 
@@ -85,9 +85,9 @@ S3 多形态客户端 → S4 七系统拆分+状态外置）。关键维度的�
 
 - **C1 工具定义**（`tool-definition`）：`{id, featureIds[], description, params, execution 闭集, riskTier('auto'|'hitl'|'forbidden'), adapter, resultSchema, authorization(含 preparation, adr-019)}`；pack v2 字段见 adr-020。
 - **C2 身份契约**（`identity-claims`）：claims 闭集 `{sub, tenant, roles[], hostUserId, iss, exp}`；`iss` 区分签发形态（adr-022 后为匿名 / P4 平台账号两种）；平台零特权。
-- **C3 客户端接入层**（`client-access-layer`）：五能力 + 消息帧闭集（上行 context-report / user-message / hitl-decision / exec-result；下行 text-delta / tool-card / hitl-request / exec-instruction / guide-action / dom 步进帧族）；P2.5-c 增 `config-draft`/`config-decision`（加法）。
+- **C3 客户端接入层**（`client-access-layer`）：五能力 + 消息帧闭集（上行 context-report / user-message / hitl-decision / exec-result；下行 text-delta / tool-card / hitl-request / exec-instruction / guide-action / dom 步进帧族）；P2.5-c 增 `config-draft`/`config-decision`（加法）；adr-023 增上行 `group-pages`（任务组页面清单上报）与下行定向落点 `page`（会话作用域不透明句柄，加法）。
 - **C4 配置快照**（`config-snapshot`）：registry（`manifest.json{version, packs[]}`，演进含 source/hash/租户清单）+ `packs/<packId>/{pack.json, features/<id>/{feature.md, facts.md, tools.json}, skills/, docs/, eval/}`；纯数据（ZA-C-AGENT-03）。
-- **C5 审计事件**（`audit-event`）：全链路事件结构，落盘前脱敏；P2.5-a 增 `user-config-write` 类型与 `userConfigRevision` 字段。
+- **C5 审计事件**（`audit-event`）：全链路事件结构，落盘前脱敏；P2.5-a 增 `user-config-write` 类型与 `userConfigRevision` 字段；adr-023 增 `page{handle, origin?}` 落点页字段（additive）。
 - **C6 模块端口**（TS 类型）：`AssemblyPort / ToolGatePort / LlmPort / AuditPort`（+P2.5-b `UserConfigStore`），全部满足 U1。
 - **C7 用户覆盖层**（`user-overlay`，adr-014，P2.5-a 落地）：subject 键控、`"*"` 全局作用域、rules/facts/restrictions/packConfig/preferences；只收紧表达力（ZA-C-AGENT-04）。
 
@@ -102,7 +102,8 @@ D15（adr-015）Chrome side panel · D16（adr-016）有界履约授权 · D17�
 D18（adr-018）周期履约触发 · D19（adr-019）pack 声明式 preparation 与自动化 ·
 **D20（adr-020）pack 契约 v2**：三来源、capabilities/configSchema、registry 指针、多租户共享内容模型、存储矩阵 ·
 D21（adr-021）用户自建自动化触发器 ·
-**D22（adr-022）匿名自动登录**：安装 id → 短期 JWT、hostUserId 哈希派生、删手填令牌与 demo-token、Google 登录为投产前置条件。
+**D22（adr-022）匿名自动登录**：安装 id → 短期 JWT、hostUserId 哈希派生、删手填令牌与 demo-token、Google 登录为投产前置条件 ·
+**D23（adr-023）任务组多 tab 工作区**：组级视野（页面清单作为渐进披露第二层注入）与定向操作（不透明页面句柄、围栏按目标页校验、silent 页通道分级、签名覆盖落点）。
 
 ## 7. 治理体系（两层，速查入口 `CLAUDE.md`）
 

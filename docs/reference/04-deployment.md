@@ -51,7 +51,7 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 | LLM 上游 | `ZA_LLM_BASE_URL` `ZA_LLM_API_KEY` `ZA_LLM_MODEL` | openai 兼容端点 |
 | 快照 | `ZA_SNAPSHOT_ROOT=/app/snapshot` | 指向只读卷挂载点 |
 | 已在镜像固化（可覆盖） | `ZA_HOST=0.0.0.0` `ZA_PORT=8787` `ZA_AUDIT_SINK=/data/za/events.jsonl` `ZA_SESSION_DIR=/data/za/sessions` `ZA_SYSTEM_PROMPT_PATH=/app/snapshot/system-prompt.md` | prompt 与 registry/pack 成为同一不可变快照；绝对路径规避 cwd 陷阱 |
-| 按需 | `ZA_CORS_ORIGIN` `ZA_JWT_ISS_ALLOWLIST` `ZA_MAX_TURN_ROUNDS` `ZA_CRED_*` | 见配置参考；`ZA_JWT_ISS_ALLOWLIST` 只管外部签发方——匿名激活的 iss 由服务端无条件并入白名单，既有 `.env` 留旧值也不会让服务端拒绝自己签发的令牌 |
+| 按需 | `ZA_CORS_ORIGIN` `ZA_JWT_ISS_ALLOWLIST` `ZA_MAX_TURN_ROUNDS` `ZA_GENERIC_ALLOWLIST` `ZA_CRED_*` | 见配置参考；`ZA_GENERIC_ALLOWLIST` 决定通用兜底 pack 在哪些站点激活（缺省不激活，`*` 另放行静默页冷启动开页）；`ZA_JWT_ISS_ALLOWLIST` 只管外部签发方——匿名激活的 iss 由服务端无条件并入白名单，既有 `.env` 留旧值也不会让服务端拒绝自己签发的令牌 |
 
 ## 5. 站点配置的发布与回滚
 

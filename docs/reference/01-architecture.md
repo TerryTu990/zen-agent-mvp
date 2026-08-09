@@ -2,7 +2,7 @@
 
 > 人读层参考文档。事实权威：契约细节见 `02-contracts.md` 与各 `.schema.json`、`ports.ts`；配置面见 `03-configuration.md`；部署见 `04-deployment.md`；本文负责解释结构、边界、流程与权衡。
 > 决策"为什么"见 `../adr/`（adr-001..013），分期计划见 `../roadmap.md`。
-> 本文已吸收 adr-010..013 演进（server/dom 通道、会话组、站点包、任务级授权、上下文治理）。
+> 本文已吸收 adr-010..013 演进（server/dom 通道、会话组、站点包、任务级授权、上下文治理）与 adr-023（任务组多 tab 工作区：组级视野与定向操作）。
 
 ## 1. 目标与范围
 
@@ -58,7 +58,7 @@
         HTTP 上行：                       SSE 下行：
         context-report / user-message    text-delta / tool-card /
         hitl-decision / exec-result      hitl-request / guide-action /
-        snapshot-report                  exec-instruction(签名+nonce+ttl)
+        snapshot-report / group-pages    exec-instruction(签名+nonce+ttl)
                   │                      snapshot-request
 ┌─────────────────▼──────────────────────────────┴───────────────────┐
 │ apps/server（模块化单体：一个 Node 进程，唯一组装点）                    │
@@ -67,7 +67,7 @@
 │     会话持久化 / compress 历史压缩 / history 观测瘦身 / activation）    │
 │     验 token → 会话生命周期 → 装配 → agent loop → SSE 下发            │
 │     内建工具注入：guide_highlight / page_snapshot / pack_doc /        │
-│     site_navigate（渐进披露，随装配条件注入，不入 pack tools.json）     │
+│     site_navigate / open_url（渐进披露，随装配条件注入，不入 tools.json）│
 │      │              │               │              │               │
 │  ────┴── 端口注入（C6：Assembly/ToolGate/CardInventory/Fulfillment/ │
 │          Llm/Audit Port，                                           │
@@ -229,10 +229,25 @@ agent 下一轮即持有新站上下文，直接续作任务（先 page_snapshot
 
 ### 4.6 会话上下文治理（adr-013 P0-P2）
 
-- **P0 旧观测瘦身**：历史里仅最近一次 page_snapshot 留全文，更早的替换为带元素数的存根（观测是易失数据，不值长期占窗）。
-- **P1 历史压缩**：token 用量（上游 usage 透传，缺省字符近似）达 `窗口 × 阈值` 时，较早回合压滚动摘要、最近 K 轮留原文；站点边界标记与任务级授权的 task 标题受保护不被摘要糊掉；摘要失败 fail-open 原样落盘。
+- **P0 旧观测瘦身**：历史里仅最近一次 page_snapshot 留全文，更早的替换为带元素数的存根（观测是易失数据，不值长期占窗）；定向观测的来源页标注行随存根保留（过期存根仍知来源页）。
+- **P1 历史压缩**：token 用量（上游 usage 透传，缺省字符近似）达 `窗口 × 阈值` 时，较早回合压滚动摘要、最近 K 轮留原文；站点边界标记、任务级授权的 task 标题与定向观测的来源页标注受保护不被摘要糊掉；摘要失败 fail-open 原样落盘。
 - **P2 会话持久化**：`.za/sessions/<id>.jsonl` append-only 事件流，重启重放恢复；闲置 TTL 清理；存储故障 fail-open 转纯内存，不进控制流。
 - **实参截断自愈**：模型产出的工具实参 JSON 非法/截断（`errorKind: invalid-tool-args`）时，网关不终结回合——回喂修正提示重试（上限 2 次），用户无感。
+
+### 4.7 任务组多 tab 工作区（adr-023：组级视野 → 定向操作）
+
+```
+①插件 background 为每个入组成员生成会话作用域页面句柄（p1/p2…），tabId 不出插件
+①插件 ─group-pages(组内全部成员页 handle/url/title/status)─► ②网关 整体重建组页面状态表
+②网关 每回合在系统注入尾部追加「# 任务组页面清单」（≥2 页才注入 / 列截断 / 20 行上限）
+agent ─page_snapshot(page=p3) / dom 工具(page=p2) / navigate(page=p4)─► ③toolgate
+   目标解析（句柄等值比对，未命中即拒）→ 围栏按目标页 URL 校验（pack dom：origin+pathPrefixes）
+   → 通道分级（silent 页只许单步 navigate）→ 分级/HITL 判定不变 → 一次性签名覆盖 page
+②网关 ─帧带目标句柄─► ①插件 按句柄反查成员单播；不可达即丢帧，禁改投活跃页
+①插件 ─snapshot-report / exec-result─► ②网关：定向观测以 `[来自 pN · origin]` 首行标注回喂
+```
+
+要点：渐进披露由此定型为三层——已安装站点索引（"可以去哪"）→ 任务组页面清单（"现在开着哪"）→ pack docs 索引（"细节去哪查"）。**工具白名单仍按活跃页装配，定向只改副作用落点、不扩权**：pack dom 工具只能定向到落在本 pack 围栏内的组内页；平台内建导航（site_navigate/open_url）可定向组内任意页（含 silent 页——导航即其激活通路），定向快照则要求目标页在场内容脚本通道（silent 页拒并引导先激活）。定向不改变活跃页，故不触发站点边界标记，代之以观测页标注；HITL 卡的目标页/目标地址由服务端组装消毒后呈现，用户裁决时知道副作用落在哪一页；定向单步 navigate 的落点由签名帧句柄钉死（background 直执行，不跑同源复用判定）。
 
 ## 5. 升级路径（U1-U7 逐条展开）
 
@@ -265,6 +280,7 @@ agent 下一轮即持有新站上下文，直接续作任务（先 page_snapshot
 ### U5 客户端接入层契约五能力不随形态变
 
 - 约束：C3 的五能力（身份获取 / 上下文上报 / 会话 UI+HITL / 页面动作 / 代执行）与消息帧 MUST 对三形态一致；形态差异 MUST 封装在各形态实现内部，不外泄进契约。
+- adr-023 后的延伸面：多 tab 工作区的定向落点以**会话作用域不透明页面句柄**表达（插件映射到 tab、SDK 映射到 iframe/视图、浏览器壳映射到自有页对象），Chrome tabId 等形态原生标识 MUST NOT 进入契约、服务端状态与审计事件；句柄的不透明性由契约测试钉死（schema 只约束长度、无 pattern；服务端只作等值比对）。
 - 如何保平滑：S3 增加嵌入 SDK / 浏览器壳时，服务端一行不改；新形态只需通过同一套契约验收（同一组接入层契约测试 SHOULD 作为三形态共同验收门）。
 - 违反代价：契约随形态分叉后，网关被迫按客户端类型分支，三形态变三套后端。
 
@@ -278,6 +294,7 @@ agent 下一轮即持有新站上下文，直接续作任务（先 page_snapshot
 
 - 约束：分级矩阵 / HITL 判定 MUST 永远在服务端且 fail-closed（矩阵未命中、身份不明、通道未实现均拒绝）；代执行指令 MUST 一次性签名（nonce+ttl）；执行结果 MUST 经服务端 resultSchema 校验后才回喂 agent。
 - adr-011/013 后的延伸面（同一不变量的新落点）：dom 批次步骤校验（动作闭集 / ref 出自最近快照 / 路径围栏）、site 围栏（http/server 请求 URL 与 navigate 目标的 origin+location 围栏）、per-origin 身份（site pack 工具要求该 origin 宿主 claims）、任务级授权复用永远在步骤校验**之后**（grant 不绕过 fail-closed）。
+- adr-023 后的延伸面（定向操作）：目标句柄 MUST 命中服务端自持的组页面状态表；pack dom 工具的围栏 MUST 按**目标页 URL**（origin + pathPrefixes）校验；silent 页（无 content script 通道）除单步 navigate 外 MUST 拒签；一次性签名 MUST 覆盖 `page`。全部判定在签发前完成，MUST NOT 回退到活跃页执行、MUST NOT 静默降级；投递侧仍保持每帧至多一个成员且不可达时不改投。
 - 如何保平滑：安全模型从 MVP 第一天就是标准版形态——拆 ③ 为独立服务时，信任边界不移动、不需要重新安全评审整个链路。
 - 违反代价：任何"客户端先判一下"的捷径都会在拆分时变成不可信边界上的治理漏洞（另见 adr-002 对该模型残余风险的权衡）。
 
@@ -302,13 +319,13 @@ agent 下一轮即持有新站上下文，直接续作任务（先 page_snapshot
 |---|---|---|---|
 | `packages/contracts` | C1-C6 全部 schema + TS 类型 | 零依赖底座：schema、端口类型、内建工具结构契约 | 任何实现逻辑 |
 | `packages/assembly` | C4 消费端（AssemblyPort） | 快照载入（registry/legacy 二形态）、pack 激活解析、注入组合、docs 渐进披露、site/工具归属枚举 | 运行时改写快照（U4）；治理判定 |
-| `packages/toolgate` | C1/C2 消费端（ToolGatePort） | 唯一决策点（分级/身份/围栏/dom 校验/任务级授权）、一次性签名签发/核销、server 直调执行器 | 产生对话内容；持 LLM 密钥 |
+| `packages/toolgate` | C1/C2 消费端（ToolGatePort） | 唯一决策点（分级/身份/围栏/dom 校验/任务级授权/定向目标页解析与通道分级）、一次性签名签发/核销、server 直调执行器 | 产生对话内容；持 LLM 密钥 |
 | `packages/card-inventory` | C6 CardInventoryPort | 飞书 Base 同订单查重、单卡预占与 sent/manual 回填；CLI 错误脱敏 | 模型调用；页面操作；并发事务伪装 |
 | `packages/fulfillment` | C6 FulfillmentCoordinatorPort | 先预占库存、生成固定通知、登记 opaque intent、按回执回填 | DOM 执行；toolgate 决策；记录卡密 |
 | `packages/llm-port` | C6 LlmPort | openai 兼容流式对接、provider 白名单、密钥 env 托管、toolId 出网净化、实参非法诊断 | 感知业务语义与装配内容 |
 | `packages/audit` | C5 生产端（AuditPort） | record-only 旁路落盘、落盘前脱敏 | 进入控制流（故障吞掉） |
-| `apps/server` | 唯一组装点（U2） | 内部六模块：gateway（回合循环/内建工具/HITL 挂起恢复/自愈重试）、auth（验签）、sessions（持久化）、compress（P1 压缩）、history（P0 瘦身）、activation（匿名身份签发，adr-022） | 第二组装点；横向 import |
-| `apps/extension` | C3 实现（五能力） | 会话组管理、dom 步进器、HITL 卡片、快照采集、身份透传 | 零治理判定（U7） |
+| `apps/server` | 唯一组装点（U2） | 内部六模块：gateway（回合循环/内建工具/HITL 挂起恢复/自愈重试/任务组页面清单注入）、auth（验签）、sessions（持久化 + 组页面状态表）、compress（P1 压缩）、history（P0 瘦身）、activation（匿名身份签发，adr-022） | 第二组装点；横向 import |
+| `apps/extension` | C3 实现（五能力） | 会话组管理、dom 步进器、HITL 卡片、快照采集、身份透传、页面句柄映射与组页面上报（tabId 不出插件） | 零治理判定（U7） |
 
 ### 7.2 扩展点清单（怎么扩、动哪里）
 
