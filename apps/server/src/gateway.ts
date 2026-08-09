@@ -576,6 +576,19 @@ function originOf(url: string): string {
   }
 }
 
+/**
+ * 静默页判定：活跃页 URL 取不到 http/https origin 即静默——空串（无上报）、不可解析、
+ * chrome://newtab、about:blank 等非 http/https scheme（其 origin 为字面 'null'）一律算入。
+ */
+export function isSilentPageUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol !== 'http:' && protocol !== 'https:';
+  } catch {
+    return true;
+  }
+}
+
 /** 模型安全投影：输入值与链接都不进入 LLM/history；href 只留给服务端可信连接器机械派生。 */
 export function redactSnapshotValues(elements: SnapshotReportFrame['elements']): SnapshotReportFrame['elements'] {
   return elements.map(({ value: _value, href: _href, ...element }) => element);
@@ -723,7 +736,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
   const watchBaselines = new Map<string, WatchSnapshot>();
 
   /**
-   * generic 兜底的服务端准入（U7 fail-closed）：活跃页 origin 不在名单内（含取不到 origin）即回落仅基座。
+   * generic 兜底的服务端准入（U7 fail-closed）：活跃页无 http/https origin（静默页）或 origin
+   * 不在名单内即回落仅基座——`*` 名单也不把 generic pack 绑到非 http/https origin 上。
    */
   function gateGeneric(
     resolved: ResolveFeatureResult,
@@ -738,12 +752,29 @@ export function createGateway(deps: GatewayDeps): Gateway {
     if (resolved.generic !== true) return { packId, packVersion, featureId };
     const origin = originOf(url);
     const admitted =
-      origin !== '' &&
+      !isSilentPageUrl(url) &&
       deps.genericAllowlist.some((entry) => genericAllowlistAdmits(entry, origin));
     if (!admitted) {
       return { packId: null, packVersion: null, featureId: null };
     }
     return { packId, packVersion, featureId, genericOrigin: origin };
+  }
+
+  /**
+   * open_url 的注入门与调用准入门共用本谓词（单一判定点，防两门漂移）：
+   * generic pack 激活（genericOrigin 已绑定）即可用；静默页冷启动仅当会话仍是仅基座且名单含
+   * 字面 '*' 条目时可用——保持仅基座装配，只放通用开页；执行偏好不容 dom 时一律不可用。
+   */
+  function openUrlAdmittedFor(
+    pack: PackRef,
+    activeUrl: string,
+    executionPreference: ExecutionPreference,
+  ): boolean {
+    if (executionPreference !== 'auto' && executionPreference !== 'dom-only') return false;
+    if (pack.genericOrigin !== undefined) return true;
+    return (
+      pack.packId === null && isSilentPageUrl(activeUrl) && deps.genericAllowlist.includes('*')
+    );
   }
 
   /**
@@ -1287,13 +1318,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
         (executionPreference === 'auto' || executionPreference === 'dom-only')
           ? [SITE_NAVIGATE_TOOL_SPEC]
           : [];
-      // open_url 与 generic 准入同门：仅 generic pack 激活（活跃页 origin 过服务端准入）时给通用导航入口；
-      // 站点 pack / 仅基座会话不注入——任意网址开页只在通用兜底场景成立。
-      const openUrlTools: LlmToolSpec[] =
-        pack.genericOrigin !== undefined &&
-        (executionPreference === 'auto' || executionPreference === 'dom-only')
-          ? [OPEN_URL_TOOL_SPEC]
-          : [];
+      // open_url 注入门＝调用准入门（openUrlAdmittedFor）：generic pack 激活或静默页冷启动
+      // （名单含 '*'）才给通用导航入口；站点 pack / 其余仅基座会话不注入。
+      const openUrlOk = openUrlAdmittedFor(pack, url, executionPreference);
+      const openUrlTools: LlmToolSpec[] = openUrlOk ? [OPEN_URL_TOOL_SPEC] : [];
       // 投递记录（业务日志）：pack 激活即注入读写入口，供求职 agent 落盘/回溯投递。
       const appTools: LlmToolSpec[] =
         composed.packId !== null
@@ -1327,7 +1355,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...fulfillmentPrepareTools,
         ...selectedHostTools.map(toLlmToolSpec),
       ];
-      return { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig };
+      return { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk };
     };
     // 站点边界标记（ADR-013）：激活 pack 或 generic 绑定 origin 变更时向历史注入一行标记，
     // 防跨站历史误导（generic pack 多 origin 间切换 packId 恒定，须并比 genericOrigin）；
@@ -1348,7 +1376,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       return { role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` };
     };
 
-    let { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig } =
+    let { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk } =
       await assembleFor(session.currentUrl ?? '');
     const prevPackId = session.lastPackId;
     const prevGenericOrigin = session.lastGenericOrigin;
@@ -1846,13 +1874,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
 
       if (call.name === OPEN_URL_TOOL_ID) {
-        // open_url 准入门在服务端 fail-closed（U7）：与工具注入同一条件，仅 generic pack 激活且执行偏好
-        // 允许 dom 时可达。站点 pack / 仅基座 / 非 dom 偏好会话里模型幻觉或被页面注入诱导的硬调用，此处
+        // open_url 准入门在服务端 fail-closed（U7）：与工具注入共用 openUrlAdmittedFor 同一判定
+        // （本轮装配时定格的 openUrlOk）。注入门外会话里模型幻觉或被页面注入诱导的硬调用，此处
         // 拒绝而非降级——注入面收在工具面之外无兜底，唯一防线只剩 HITL 卡不足以守任意 URL 导航。
-        const openUrlAdmitted =
-          pack.genericOrigin !== undefined &&
-          (executionPreference === 'auto' || executionPreference === 'dom-only');
-        if (!openUrlAdmitted) {
+        if (!openUrlOk) {
           const notice = '该操作暂未支持。';
           tailText += roundText + notice;
           notify(sessionId, notice);
@@ -1894,7 +1919,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             deps.store.setContext(sessionId, landedUrl);
             const previousPackId = pack.packId;
             const previousGenericOrigin = pack.genericOrigin ?? null;
-            ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig } =
+            ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk } =
               await assembleFor(landedUrl));
             messages[0] = {
               role: 'system',

@@ -17,7 +17,7 @@ import {
   startServer,
   type RunningServer,
 } from '../src/index.js';
-import { canonicalizeOrigin, genericAllowlistAdmits } from '../src/gateway.js';
+import { canonicalizeOrigin, genericAllowlistAdmits, isSilentPageUrl } from '../src/gateway.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/acceptance');
@@ -374,6 +374,22 @@ describe('canonicalizeOrigin（准入比对 www/裸域互认）', () => {
   });
 });
 
+describe('isSilentPageUrl（静默页判定）', () => {
+  it('空串 / 不可解析 / 非 http-https scheme 一律静默', () => {
+    expect(isSilentPageUrl('')).toBe(true);
+    expect(isSilentPageUrl('not-a-url')).toBe(true);
+    expect(isSilentPageUrl('chrome://newtab/')).toBe(true);
+    expect(isSilentPageUrl('chrome://extensions')).toBe(true);
+    expect(isSilentPageUrl('about:blank')).toBe(true);
+    expect(isSilentPageUrl('file:///tmp/a.html')).toBe(true);
+  });
+
+  it('http/https 页非静默', () => {
+    expect(isSilentPageUrl('https://example.com/page')).toBe(false);
+    expect(isSilentPageUrl('http://127.0.0.1:4173/order-list.html')).toBe(false);
+  });
+});
+
 describe('generic 准入判定（服务端 fail-closed，U7）', () => {
   it('活跃页 origin 在名单内 → 激活 generic-web/browse，工具面含 browse.page-operate', async () => {
     const token = await signToken();
@@ -485,13 +501,18 @@ describe('generic 准入判定（服务端 fail-closed，U7）', () => {
   });
 });
 
-/** 驱动一回合到 LLM 调用，返回送达 LLM 的工具名清单（wire 名，点已替换为 '__'；open_url 无点不受影响）。 */
-async function toolNamesSentToLlm(url: string): Promise<string[]> {
+/**
+ * 驱动一回合到 LLM 调用，返回送达 LLM 的工具名清单（wire 名，点已替换为 '__'；open_url 无点不受影响）。
+ * url=null 模拟静默页冷启动（会话从未上报 context）。
+ */
+async function toolNamesSentToLlm(url: string | null, base = baseUrl): Promise<string[]> {
   const token = await signToken();
-  const sessionId = await createSession(baseUrl, token);
-  await postFrame(baseUrl, token, sessionId, { type: 'context-report', sessionId, url });
+  const sessionId = await createSession(base, token);
+  if (url !== null) {
+    await postFrame(base, token, sessionId, { type: 'context-report', sessionId, url });
+  }
   const before = mock.requests.length;
-  await postFrame(baseUrl, token, sessionId, { type: 'user-message', sessionId, text: '你好' });
+  await postFrame(base, token, sessionId, { type: 'user-message', sessionId, text: '你好' });
   const deadline = Date.now() + 8000;
   while (mock.requests.length <= before) {
     if (Date.now() > deadline) throw new Error('等待 LLM 请求捕获超时');
@@ -512,6 +533,69 @@ describe('open_url 注入门（与 generic 准入同门）', () => {
   it('活跃页 origin 不在准入名单 → 仅基座回合，工具面不含 open_url', async () => {
     const toolNames = await toolNamesSentToLlm(OUTSIDE_URL);
     expect(toolNames).not.toContain('open_url');
+  });
+
+  it('静默页（无 context / chrome://newtab）+ 名单不含 `*` → 工具面不含 open_url', async () => {
+    expect(await toolNamesSentToLlm(null)).not.toContain('open_url');
+    expect(await toolNamesSentToLlm('chrome://newtab/')).not.toContain('open_url');
+  });
+});
+
+describe('静默页冷启动 open_url 注入门（名单含字面 `*`）', () => {
+  let starServer: RunningServer;
+  let starBase = '';
+
+  beforeAll(async () => {
+    starServer = await startServer({
+      port: 0,
+      jwtSecret: JWT_SECRET,
+      signingSecret: SIGNING_SECRET,
+      issAllowlist: [ISS],
+      snapshotRoot,
+      systemPromptPath,
+      auditSinkPath: AUDIT_SINK,
+      allowedProviders: ['openai-compatible'],
+      heartbeatMs: 60_000,
+      genericAllowlist: ['*'],
+    });
+    starBase = `http://127.0.0.1:${starServer.port}`;
+  });
+
+  afterAll(async () => {
+    await starServer?.close();
+  });
+
+  it('静默页（未上报 context）：保持仅基座装配（packId=null、无 pack 工具），但工具面含 open_url', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(starBase, token);
+    const injection = await getInjection(starBase, token, sessionId);
+    expect(injection['packId']).toBeNull();
+    expect(injection['toolIds']).toEqual([]);
+    const toolNames = await toolNamesSentToLlm(null, starBase);
+    expect(toolNames).toContain('open_url');
+    expect(toolNames).not.toContain('browse__page-operate');
+  });
+
+  it('静默页（chrome://newtab 上报）：不把 generic pack 绑到非 http/https origin，仍只注入 open_url', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(starBase, token);
+    await postFrame(starBase, token, sessionId, {
+      type: 'context-report',
+      sessionId,
+      url: 'chrome://newtab/',
+    });
+    const injection = await getInjection(starBase, token, sessionId);
+    expect(injection['packId']).toBeNull();
+    expect(injection['toolIds']).toEqual([]);
+    const toolNames = await toolNamesSentToLlm('chrome://newtab/', starBase);
+    expect(toolNames).toContain('open_url');
+    expect(toolNames).not.toContain('browse__page-operate');
+  });
+
+  it('http 页既有路径回归：`*` 名单下照常激活 generic pack，open_url 与 pack 工具同在', async () => {
+    const toolNames = await toolNamesSentToLlm(GENERIC_URL, starBase);
+    expect(toolNames).toContain('open_url');
+    expect(toolNames).toContain('browse__page-operate');
   });
 });
 
@@ -671,6 +755,99 @@ describe('generic open_url 全链路（任意 http/https 开页，每次确认�
       await sse.waitFor(() => joined().includes('MOCK-OPEN-OBS'));
       expect(joined()).toContain(OPEN_TARGET);
       expect(joined()).toContain('落点站点未安装专属配置');
+    } finally {
+      sse.close();
+    }
+  });
+});
+
+describe('静默页冷启动 open_url 调用门（与注入门共用同一谓词）', () => {
+  const OPEN_TARGET = 'https://coldstart.example/article?id=1';
+  let scripted: { port: number; close(): Promise<void> };
+  let starServer: RunningServer;
+  let noStarServer: RunningServer;
+  let starBase = '';
+  let noStarBase = '';
+  let prevBaseUrl: string | undefined;
+
+  beforeAll(async () => {
+    scripted = await startScriptedOpenUrlMock(OPEN_TARGET);
+    prevBaseUrl = process.env['ZA_LLM_BASE_URL'];
+    process.env['ZA_LLM_BASE_URL'] = `http://127.0.0.1:${scripted.port}/v1`;
+    const options = {
+      port: 0,
+      jwtSecret: JWT_SECRET,
+      signingSecret: SIGNING_SECRET,
+      issAllowlist: [ISS],
+      snapshotRoot,
+      systemPromptPath,
+      auditSinkPath: AUDIT_SINK,
+      allowedProviders: ['openai-compatible'],
+      heartbeatMs: 60_000,
+    };
+    starServer = await startServer({ ...options, genericAllowlist: ['*'] });
+    noStarServer = await startServer({ ...options, genericAllowlist: [GENERIC_ORIGIN] });
+    starBase = `http://127.0.0.1:${starServer.port}`;
+    noStarBase = `http://127.0.0.1:${noStarServer.port}`;
+  });
+
+  afterAll(async () => {
+    await starServer?.close();
+    await noStarServer?.close();
+    await scripted?.close();
+    if (prevBaseUrl !== undefined) process.env['ZA_LLM_BASE_URL'] = prevBaseUrl;
+  });
+
+  it('名单含 `*`：静默页调用过门直到 HITL，批准后签发单步 navigate 指令', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(starBase, token);
+    const sse = await openSse(starBase, token, sessionId);
+    try {
+      await postFrame(starBase, token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '帮我打开那篇外部文章',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      expect(hitl['toolId']).toBe('open_url');
+      expect((hitl['params'] as Record<string, unknown>)['url']).toBe(OPEN_TARGET);
+      await postFrame(starBase, token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(hitl['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      const instr = framesByType(sse.frames, 'exec-instruction')[0]!;
+      expect(instr['request']).toEqual({
+        kind: 'dom',
+        steps: [{ action: 'navigate', url: OPEN_TARGET }],
+      });
+      expect(instr['signature']).toBeTruthy();
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('名单不含 `*`：静默页调用被拒（无 HITL、无签发），回「该操作暂未支持」', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(noStarBase, token);
+    const sse = await openSse(noStarBase, token, sessionId);
+    try {
+      await postFrame(noStarBase, token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '帮我打开那篇外部文章',
+      });
+      const joined = (): string =>
+        sse.frames
+          .filter((f) => f['type'] === 'text-delta')
+          .map((f) => String(f['delta']))
+          .join('');
+      await sse.waitFor(() => joined().includes('该操作暂未支持'));
+      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
     } finally {
       sse.close();
     }
