@@ -37,7 +37,15 @@ declare namespace chrome {
     function group(options: { tabIds: number | number[]; groupId?: number }): Promise<number>;
     /** 向指定标签页的内容脚本单发一次性消息（激活握手用）。 */
     function sendMessage(tabId: number, message: unknown): Promise<unknown>;
-    function query(queryInfo: { active?: boolean; currentWindow?: boolean; windowId?: number }): Promise<Tab[]>;
+    function query(queryInfo: {
+      active?: boolean;
+      currentWindow?: boolean;
+      windowId?: number;
+      /** 按标签组过滤（navigate 复用决策查组内成员）。 */
+      groupId?: number;
+    }): Promise<Tab[]>;
+    /** 更新标签页：换 URL（同源复用导航）/ 置为活动页。 */
+    function update(tabId: number, updateProperties: { url?: string; active?: boolean }): Promise<Tab>;
     /** 按 id 取标签页当前状态（含 groupId）：事件只给 tabId 时据此判定面板可见性。 */
     function get(tabId: number): Promise<Tab>;
     /**

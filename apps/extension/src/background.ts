@@ -1,8 +1,9 @@
-import type { DownstreamFrame, UpstreamFrame } from './frames.js';
+import type { DownstreamFrame, ExecInstructionFrame, ExecResultFrame, UpstreamFrame } from './frames.js';
 import { createIdentityProvider } from './identity.js';
 import type { InjectionDescriptionView } from './injection-view.js';
 import { createSseParser } from './sse.js';
 import { createGroupMembers, routeForFrame, type FrameRoute } from './group-routing.js';
+import { decideBackgroundNavigate, decideNavigateTarget } from './navigate-target.js';
 import {
   decideActivation,
   decidePanelVisibility,
@@ -345,7 +346,13 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
       return;
     }
-    for (const member of contentMembers.targets('active-page')) {
+    const targets = contentMembers.targets('active-page');
+    const direct = decideBackgroundNavigate(frame, targets.length);
+    if (direct.execute) {
+      void executeNavigateWithoutPage(direct.frame, direct.url);
+      return;
+    }
+    for (const member of targets) {
       postContent(member, { kind: 'frame', frame });
     }
   };
@@ -796,36 +803,90 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   }
 
   /**
-   * navigate 代执行（ADR-013 批次④）：在本组窗口开目标页并入本组，标其为待激活的活跃页。
-   * 入组触发 tabs.onUpdated → 新页收 activate 后接入同一会话（组内换站会话延续）。
+   * navigate 代执行（ADR-013 批次④）：组内已有同源页则复用（decideNavigateTarget），
+   * 否则在本组窗口开目标页并入本组；目标页标为待激活的活跃页，
+   * 入组/加载完成触发 tabs.onUpdated → 该页收 activate 后接入同一会话（组内换站会话延续）。
    * 客户端零治理：url 已由服务端签发前校验落在某已安装 pack site 围栏内（U7），此处只执行。
    */
-  async function handleNavigate(
-    port: chrome.runtime.Port,
-    request: Extract<ContentToBackgroundMessage, { kind: 'navigate-request' }>,
-  ): Promise<void> {
-    const windowId = port.sender?.tab?.windowId;
+  async function performNavigate(
+    url: string,
+    windowId?: number,
+    initiatorTabId?: number,
+  ): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
     try {
+      const groupTabs = await chrome.tabs.query({ groupId }).catch(() => []);
+      const target = decideNavigateTarget(url, groupTabs, initiatorTabId);
+      if (target.kind !== 'create') {
+        await chrome.tabs.update(
+          target.tabId,
+          target.kind === 'update' ? { url, active: true } : { active: true },
+        );
+        // 同 URL 复用不重载、端口不重连：已连成员就地标活跃；换 URL 重载的经 expectedActiveTabId 在重连时接管。
+        if (target.kind === 'activate') {
+          const member = contentMembers
+            .members()
+            .find((candidate) => candidate.sender?.tab?.id === target.tabId);
+          if (member !== undefined) contentMembers.markActive(member);
+        }
+        expectedActiveTabId = target.tabId;
+        void sendActivate(target.tabId);
+        return { ok: true, url };
+      }
+      // 先入组再激活：active:true 的瞬间新页尚未入组，onActivated/面板会按组外把面板关掉（竞态）。
       const created = await chrome.tabs.create({
-        url: request.url,
+        url,
         ...(windowId !== undefined ? { windowId } : {}),
-        active: true,
+        active: false,
       });
       if (created.id !== undefined) {
         await chrome.tabs.group({ tabIds: created.id, groupId });
+        await chrome.tabs.update(created.id, { active: true });
         expectedActiveTabId = created.id;
         // 主动通知新页激活（content 已加载时即接入）；未加载时其自身 request-activate 走 reconnect 兜底。
         void sendActivate(created.id);
       }
-      postContent(port, { kind: 'navigate-result', requestId: request.requestId, ok: true, url: request.url });
+      return { ok: true, url };
     } catch {
-      postContent(port, {
-        kind: 'navigate-result',
-        requestId: request.requestId,
-        ok: false,
-        error: 'navigate-open-failed',
-      });
+      return { ok: false, error: 'navigate-open-failed' };
     }
+  }
+
+  async function handleNavigate(
+    port: chrome.runtime.Port,
+    request: Extract<ContentToBackgroundMessage, { kind: 'navigate-request' }>,
+  ): Promise<void> {
+    const outcome = await performNavigate(
+      request.url,
+      port.sender?.tab?.windowId,
+      port.sender?.tab?.id,
+    );
+    postContent(
+      port,
+      outcome.ok
+        ? { kind: 'navigate-result', requestId: request.requestId, ok: true, url: outcome.url }
+        : { kind: 'navigate-result', requestId: request.requestId, ok: false, error: outcome.error },
+    );
+  }
+
+  /**
+   * 静默页冷启动的 open_url 通路：组内无 content 成员可代执行时，由 background 直执行单步
+   * navigate（decideBackgroundNavigate 已限定唯一放行形态）。结果按 content 侧同一 exec-result
+   * 契约回喂上行管线：成功 body={url}、失败错误串比照 dom-steps 口径、过期比照 delegated-execution。
+   */
+  async function executeNavigateWithoutPage(frame: ExecInstructionFrame, url: string): Promise<void> {
+    const base = { type: 'exec-result' as const, sessionId: frame.sessionId, nonce: frame.nonce };
+    let result: ExecResultFrame;
+    if (Date.now() > frame.expiresAt) {
+      result = { ...base, ok: false, error: 'instruction-expired' };
+    } else {
+      const outcome = await performNavigate(url);
+      result = outcome.ok
+        ? { ...base, ok: true, body: { url: outcome.url } }
+        : { ...base, ok: false, error: `step-1-navigate:${outcome.error}` };
+    }
+    pipeline = pipeline.then(async () => {
+      await forward({ kind: 'exec-result', result });
+    });
   }
 
   // 串行转发保证 context-report 先于后续 user-message 到达服务端（组内共用一条管线）。
