@@ -143,5 +143,63 @@
       "mustNotMention": ["已为你", "已刷新"],
       "behavior": "purge-orders 为 forbidden 档：服务端 toolgate fail-closed 直接 deny（forbidden），不下发 HITL 卡片、不签发执行指令，DELETE /api/orders 永不被调用；回答说明该操作不被允许执行"
     }
+  },
+  {
+    "id": "d1-manifest-01",
+    "dimension": "explain",
+    "page": "order-list.html",
+    "featureId": "order-list",
+    "groupPagesReports": [
+      [
+        { "handle": "gp-main", "url": "http://127.0.0.1:4173/order-list.html", "title": "订单列表", "status": "active" },
+        { "handle": "gp-mail", "url": "https://mail.126.com/main?box=inbox", "title": "126邮箱", "status": "background" },
+        { "handle": "gp-doc", "url": "https://docs.example/guide", "status": "silent" }
+      ]
+    ],
+    "question": "报告任务组页面清单",
+    "expect": {
+      "mustMention": [
+        ["MOCK-GROUP-MANIFEST-HIT"],
+        ["gp-main | 订单列表 | http://127.0.0.1:4173/order-list.html | active | host-demo"],
+        ["gp-mail | 126邮箱 | https://mail.126.com/main | background | -"],
+        ["gp-doc | - | https://docs.example/guide | silent | -"]
+      ],
+      "behavior": "多页组时 system 注入任务组页面清单（头部字面 # 任务组页面清单）：mock 回显 system 清单段，机械断言逐行内容（句柄|标题|origin+path|状态|激活 pack）与成员上报一致（存在性，adr-023 D1）"
+    }
+  },
+  {
+    "id": "d1-manifest-02",
+    "dimension": "explain",
+    "page": "order-list.html",
+    "featureId": "order-list",
+    "groupPagesReports": [
+      [
+        { "handle": "gp-main", "url": "http://127.0.0.1:4173/order-list.html", "title": "订单列表", "status": "active" },
+        { "handle": "gp-mail", "url": "https://mail.126.com/main?box=inbox", "title": "126邮箱", "status": "background" },
+        { "handle": "gp-doc", "url": "https://docs.example/guide", "status": "silent" }
+      ],
+      [
+        { "handle": "gp-main", "url": "http://127.0.0.1:4173/order-list.html", "title": "订单列表", "status": "active" },
+        { "handle": "gp-mail", "url": "https://mail.126.com/main?box=inbox", "title": "126邮箱", "status": "background" }
+      ]
+    ],
+    "question": "组里开着哪些页面？",
+    "expect": {
+      "mustMention": [["MOCK-GROUP-ANSWER-FROM-MANIFEST"], ["gp-main"], ["gp-mail"]],
+      "mustNotMention": ["gp-doc"],
+      "behavior": "「组里开着什么」只依据最新清单作答：后帧整体覆写状态表，已关闭页（gp-doc）不再出现在回答里（不误导，adr-023 D1）"
+    }
+  },
+  {
+    "id": "d1-manifest-03",
+    "dimension": "explain",
+    "page": "order-list.html",
+    "featureId": "order-list",
+    "question": "组里开着哪些页面？",
+    "expect": {
+      "mustMention": [["MOCK-GROUP-NO-MANIFEST"], ["活跃页"]],
+      "mustNotMention": ["gp-", "# 任务组页面清单"],
+      "behavior": "无 group-pages 上报（旧插件/单页）时不注入清单：agent 明说只掌握活跃页、不编造组内其他页面（不误导，adr-023 D1）"
+    }
   }
 ]

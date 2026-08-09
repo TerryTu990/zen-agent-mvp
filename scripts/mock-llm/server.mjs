@@ -37,6 +37,19 @@ const TOOL_OPEN_URL = 'open_url';
 // generic-web browse 的 ZA-FEAT-10 辅助范围声明独有文案：命中即走放宽剧本，站点 pack 的 sys 不含。
 const BROWSE_ASSIST_MARKER = '辅助范围声明：通用浏览助手';
 const WEB_SEARCH_SKILL_MARKER = '技能：网页搜索（web-search）';
+// adr-023 D1 任务组页面清单头部稳定字面（服务端注入契约，定死不改）；清单是 system 注入的最后一个块。
+const GROUP_MANIFEST_HEADER = '# 任务组页面清单';
+
+/** 清单行首列（句柄）序列；system 无清单返回 null——探针据此区分「有清单」与「无上报不注入」。 */
+function groupManifestHandles(sys) {
+  const start = sys.indexOf(GROUP_MANIFEST_HEADER);
+  if (start < 0) return null;
+  return sys
+    .slice(start)
+    .split('\n')
+    .filter((line) => line.includes(' | '))
+    .map((line) => line.split(' | ')[0]);
+}
 
 /** llm-port 出网把点分 toolId 的点替换为 '__'（OpenAI 函数名不含点）；比对前归一还原。 */
 function normalizeToolName(name) {
@@ -860,6 +873,19 @@ function pickReply(sys, u) {
   }
   if (/天气|写.*诗/.test(u)) {
     return sys.includes('拒答') ? REPLY_R3_REFUSE : 'MOCK-BASE-MISSING';
+  }
+  if (u.includes('报告任务组页面清单')) {
+    // 注入内容探针：回显 system 清单段全文，供评测机械断言行内容与成员上报一致（adr-023 D1）。
+    const start = sys.indexOf(GROUP_MANIFEST_HEADER);
+    return start < 0 ? 'MOCK-GROUP-MANIFEST-MISS' : `MOCK-GROUP-MANIFEST-HIT\n${sys.slice(start)}`;
+  }
+  if (u.includes('组里开着哪些页面')) {
+    // 不误导剧本：回答只从清单取句柄（确定性替身）；无清单即明说只掌握活跃页、不猜测。
+    const handles = groupManifestHandles(sys);
+    if (handles === null || handles.length === 0) {
+      return 'MOCK-GROUP-NO-MANIFEST：任务组内没有上报的其他页面，我只掌握当前活跃页，不作猜测。';
+    }
+    return `MOCK-GROUP-ANSWER-FROM-MANIFEST：根据任务组页面清单，组里开着 ${handles.join('、')}。`;
   }
   if (u.includes('报告当前站点身份')) {
     // 仅基座附注探针：断言无 pack 命中时 system 已注入"无专属配置、不得臆断站点身份"上下文。

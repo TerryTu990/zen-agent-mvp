@@ -25,7 +25,12 @@ const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
 const COMMERCE_ROOT = join(REPO_ROOT, 'assets');
 const AUDIT_SCHEMA_PATH = join(REPO_ROOT, 'packages', 'contracts', 'schemas', 'audit-event.schema.json');
 const AUDIT_SINK_PATH = join(REPO_ROOT, '.za', 'eval-events.jsonl');
-const REPORT_PATH = join(REPO_ROOT, 'evals', 'runs', '2026-07-22-commerce-phase2.md');
+const RUN_DATE = (() => {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+})();
+const REPORT_PATH = join(REPO_ROOT, 'evals', 'runs', `${RUN_DATE}-commerce-phase2.md`);
 
 const JWT_SECRET = 'za-test-secret';
 const SIGNING_SECRET = 'za-test-signing-secret';
@@ -594,6 +599,11 @@ async function runScenarioOnce(scenario, token) {
       url: scenario.url ?? `${HOST_BASE}/${scenario.page}`,
     });
     await sleep(80); // 让 context-report 落地先于 user-message（与既有 e2e 脚本一致的时序假设）
+    // adr-023 D1：场景可声明组页面上报序列（每帧全量覆写状态表），按序落在 user-message 之前，
+    // 驱动任务组页面清单注入；帧受理同步返回 204，顺序 await 即保证先后序。
+    for (const pages of scenario.groupPagesReports ?? []) {
+      await postFrame(sessionId, token, { type: 'group-pages', sessionId, pages });
+    }
     await postFrame(sessionId, token, { type: 'user-message', sessionId, text: scenario.question });
     const outcome = await driveTurn(sessionId, token, scenario, bus);
     return evaluateOutcome(scenario, outcome);
@@ -679,7 +689,7 @@ function renderReport({ results, auditReport, dimensionSummary }) {
   addTree(COMMERCE_ROOT);
   const project = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
   const lines = [];
-  lines.push('# Zen Commerce Agent Phase 2 评测报告 — 2026-07-22');
+  lines.push(`# Zen Commerce Agent Phase 2 评测报告 — ${RUN_DATE}`);
   lines.push('');
   lines.push(`证据环境：评测输入 SHA-256 \`${sourceHash.digest('hex')}\`；Node \`${project.engines.node}\`；\`${project.packageManager}\`；LLM=确定性 mock（非真实模型）。`);
   lines.push(`runner：\`scripts/evals/run.mjs\`；每场景重复 ${RUNS} 次，需 ${RUNS}/${RUNS} 全过才算该场景通过（ZA-C-EVAL-02）。`);

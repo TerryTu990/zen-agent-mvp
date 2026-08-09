@@ -129,6 +129,13 @@ async function main() {
         let body = '';
         for await (const chunk of req) body += chunk;
         const frame = JSON.parse(body);
+        // 状态注入与位置断言只锚定 user-message；group-pages 等背景簿记帧无回合语义，
+        // 比照真实服务端以 204 无内容受理，不消耗注入、不进断言序列。
+        if (frame.type !== 'user-message') {
+          res.writeHead(204, headers);
+          res.end();
+          return;
+        }
         frameRequests.push({ sessionId: match[1], authorization: req.headers.authorization, messageId: frame.messageId });
         const status = nextFrameStatus;
         nextFrameStatus = 202;
