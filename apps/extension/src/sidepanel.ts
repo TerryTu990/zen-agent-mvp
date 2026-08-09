@@ -5,7 +5,7 @@ import {
   prepareAttachments,
 } from './composer-attachments.js';
 import { renderConfigDraftCard } from './config-draft-card.js';
-import { createConversationUi } from './conversation-hitl.js';
+import { createConversationUi, type UserMessageHandle } from './conversation-hitl.js';
 import type { ExecutionPreference } from './frames.js';
 import { renderInjectionView } from './injection-view.js';
 import {
@@ -18,6 +18,18 @@ import {
 
 const EXECUTION_PREFERENCE_KEY = 'za.executionPreference';
 type PendingUserMessage = Extract<SidePanelToBackgroundMessage, { kind: 'user-message' }>;
+
+/**
+ * 提交瞬间落地的本地回显：气泡先出、输入框即刻清空，不等服务端回声。
+ * draft/files 是撤下时还原输入框所需的草稿；handle 为 null 表示气泡已随历史重放被清掉，须重建。
+ */
+interface LocalEcho {
+  messageId: string;
+  text: string;
+  draft: string;
+  files: File[];
+  handle: UserMessageHandle | null;
+}
 type TaskContextMessage = Extract<BackgroundToSidePanelMessage, { kind: 'task-context' }>;
 
 export interface ContextHeaderView {
@@ -191,6 +203,7 @@ export function startSidePanel(elements: SidePanelElements): void {
   let pendingMessageId: string | null = null;
   let pendingMessage: PendingUserMessage | null = null;
   let deliveryAwaiting = false;
+  let localEcho: LocalEcho | null = null;
   let activeMessageId: string | null = null;
   const completedMessageIds = new Set<string>();
   const stoppedMessageIds = new Set<string>();
@@ -249,6 +262,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     pendingMessageId = null;
     pendingMessage = null;
     deliveryAwaiting = false;
+    localEcho = null;
     activeMessageId = null;
     completedMessageIds.clear();
     stoppedMessageIds.clear();
@@ -284,6 +298,33 @@ export function startSidePanel(elements: SidePanelElements): void {
   };
 
   const clearEmpty = (): void => elements.messages.querySelector('.za-empty')?.remove();
+
+  const autosizeInput = (): void => {
+    elements.input.style.height = 'auto';
+    elements.input.style.height = `${Math.min(elements.input.scrollHeight, 144)}px`;
+  };
+
+  /** 提交即回显：气泡先出、草稿离开输入框，界面不再停在"内容还在输入框但已开始思考"的中间态。 */
+  const showLocalEcho = (messageId: string, text: string): void => {
+    clearEmpty();
+    localEcho = { messageId, text, draft: elements.input.value, files: selectedFiles, handle: ui.appendUserMessage(text) };
+    elements.input.value = '';
+    autosizeInput();
+    selectedFiles = [];
+    renderAttachments();
+  };
+
+  /** 投递失败时撤下回显并还原草稿；程序化赋值不触发 input 事件，pendingMessage 得以保留供原样重试。 */
+  const revertLocalEcho = (): void => {
+    if (localEcho === null) return;
+    localEcho.handle?.remove();
+    elements.input.value = localEcho.draft;
+    autosizeInput();
+    selectedFiles = localEcho.files;
+    localEcho = null;
+    renderAttachments();
+  };
+
   const send = (message: SidePanelToBackgroundMessage): boolean => {
     if (port === null) return false;
     try {
@@ -325,13 +366,14 @@ export function startSidePanel(elements: SidePanelElements): void {
         deliveryAwaiting = false;
         pendingMessageId = null;
         pendingMessage = null;
-        elements.input.value = '';
-        selectedFiles = [];
-        renderAttachments();
       }
       activeMessageId = stopped ? null : (event.messageId ?? null);
       turnInProgress = !stopped && (event.messageId === undefined || !completedMessageIds.has(event.messageId));
-      ui.appendUserMessage(event.text);
+      // 本条已本地回显过：以服务端文本落定同一个气泡，不再追加第二个。
+      const echoed = localEcho !== null && localEcho.messageId === event.messageId ? localEcho : null;
+      if (echoed?.handle != null) echoed.handle.settle(event.text);
+      else ui.appendUserMessage(event.text);
+      if (echoed !== null) localEcho = null;
       if (turnInProgress) ui.showThinking();
       updateComposer();
     } else if (event.frame.type === 'text-delta') {
@@ -382,7 +424,10 @@ export function startSidePanel(elements: SidePanelElements): void {
     } else if (message.kind === 'history-replay') {
       elements.messages.textContent = '';
       ui = createConversationUi(elements.messages);
+      if (localEcho !== null) localEcho.handle = null;
       for (const event of message.events) renderUiEvent(event);
+      // 重放不含这条（服务端尚未确认）时重建气泡，避免待投递的消息在重连后凭空消失。
+      if (localEcho !== null) localEcho.handle = ui.appendUserMessage(localEcho.text);
     } else if (message.kind === 'panel-ready') {
       ready = true;
       if (deliveryAwaiting && pendingMessage !== null) {
@@ -391,6 +436,7 @@ export function startSidePanel(elements: SidePanelElements): void {
         if (!send(pendingMessage)) {
           submitting = false;
           deliveryAwaiting = false;
+          revertLocalEcho();
           ui.hideThinking();
           elements.composerNotice.textContent = '连接仍未恢复，草稿已保留，请稍后重试';
         }
@@ -400,6 +446,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       submitting = false;
       deliveryAwaiting = false;
       turnInProgress = false;
+      revertLocalEcho();
       ui.hideThinking();
       elements.composerNotice.textContent = pendingMessage === null
         ? deliveryFailureMessage(message.failure, undefined)
@@ -410,14 +457,12 @@ export function startSidePanel(elements: SidePanelElements): void {
       submitting = false;
       deliveryAwaiting = false;
       if (message.accepted) {
-        elements.input.value = '';
-        selectedFiles = [];
-        renderAttachments();
         pendingMessage = null;
         pendingMessageId = null;
         activeMessageId = message.messageId;
         turnInProgress = !completedMessageIds.has(message.messageId);
       } else {
+        revertLocalEcho();
         ui.hideThinking();
         if (message.failure === 'session-interrupted') {
           pendingMessage = null;
@@ -552,12 +597,14 @@ export function startSidePanel(elements: SidePanelElements): void {
       pendingMessageId = pendingMessage.messageId;
       deliveryAwaiting = true;
       elements.composerNotice.textContent = '';
+      showLocalEcho(pendingMessage.messageId, pendingMessage.displayText ?? pendingMessage.text);
       ui.showThinking();
       scrollMessagesToLatest();
       if (!send(pendingMessage)) {
         submitting = false;
         deliveryAwaiting = false;
         pendingMessageId = null;
+        revertLocalEcho();
         ui.hideThinking();
         elements.composerNotice.textContent = '连接已中断，草稿仍保留；重连后请重新发送';
       }
@@ -591,20 +638,23 @@ export function startSidePanel(elements: SidePanelElements): void {
     preparingMessageId = null;
     const displayText = text === '' ? `请查看附件：${prepared.map((file) => file.name).join('、')}` : text;
     const prompt = appendAttachmentsToPrompt(displayText, prepared);
+    const echoText = prepared.length === 0 ? displayText : `${displayText}\n附件：${prepared.map((file) => file.name).join('、')}`;
     deliveryAwaiting = true;
     pendingMessage = {
       kind: 'user-message',
       messageId,
       text: prompt,
-      ...(prepared.length > 0 ? { displayText: `${displayText}\n附件：${prepared.map((file) => file.name).join('、')}` } : {}),
+      ...(prepared.length > 0 ? { displayText: echoText } : {}),
       executionPreference: elements.preference.value as ExecutionPreference,
     };
+    showLocalEcho(messageId, echoText);
     const sent = send(pendingMessage);
     if (!sent) {
       submitting = false;
       deliveryAwaiting = false;
       pendingMessageId = null;
       pendingMessage = null;
+      revertLocalEcho();
       ui.hideThinking();
       elements.composerNotice.textContent = '连接已中断，草稿仍保留；重连后请重新发送';
       updateComposer();
@@ -658,8 +708,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     pendingMessage = null;
     pendingMessageId = null;
     deliveryAwaiting = false;
-    elements.input.style.height = 'auto';
-    elements.input.style.height = `${Math.min(elements.input.scrollHeight, 144)}px`;
+    autosizeInput();
     updateComposer();
   });
   elements.input.addEventListener('keydown', (event) => {

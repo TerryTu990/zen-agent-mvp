@@ -8,8 +8,14 @@ const MODE_LABEL: Record<ToolMode, string> = {
   server: '服务端发起',
 };
 
+/** 本地即时回显的气泡句柄：服务端回声到达即以权威文本落定，投递失败则撤下。 */
+export interface UserMessageHandle {
+  settle(text: string): void;
+  remove(): void;
+}
+
 export interface ConversationUi {
-  appendUserMessage(text: string): void;
+  appendUserMessage(text: string): UserMessageHandle;
   /** 回合首个 delta 开新 assistant 气泡并增量追加；用户再次发言即关闭当前回合。 */
   appendTextDelta(frame: TextDeltaFrame): void;
   /** 呈现可定位、不含 token/密钥值的错误或状态说明（SEC-04）。 */
@@ -99,7 +105,9 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
     const bub = document.createElement('div');
     bub.className = 'za-bub';
     wrap.append(who, bub);
-    messages.append(wrap);
+    // 思考指示器已在列表末尾时，新消息插到它前面，保证"用户消息 → 思考中"的时序阅读顺序。
+    if (thinking !== null) messages.insertBefore(wrap, thinking);
+    else messages.append(wrap);
     return bub;
   };
 
@@ -129,6 +137,14 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
       scrollToEnd();
       assistantBody = null;
       assistantRaw = '';
+      return {
+        settle(next) {
+          bubble.textContent = next;
+        },
+        remove() {
+          bubble.parentElement?.remove();
+        },
+      };
     },
     appendTextDelta(frame) {
       if (assistantBody === null) {
