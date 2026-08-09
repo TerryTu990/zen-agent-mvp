@@ -1,9 +1,15 @@
-import type { DownstreamFrame, ExecInstructionFrame, ExecResultFrame, UpstreamFrame } from './frames.js';
+import type { DownstreamFrame, GroupPageEntry, UpstreamFrame } from './frames.js';
 import { createIdentityProvider } from './identity.js';
 import type { InjectionDescriptionView } from './injection-view.js';
 import { createSseParser } from './sse.js';
-import { createGroupMembers, routeForFrame, type FrameRoute } from './group-routing.js';
-import { decideBackgroundNavigate, decideNavigateTarget } from './navigate-target.js';
+import {
+  createGroupMembers,
+  resolveTargetPageMembers,
+  routeForFrame,
+  type FrameRoute,
+} from './group-routing.js';
+import { decideBackgroundNavigate, decideTargetedNavigate } from './navigate-target.js';
+import { createNavigateExecutor } from './navigate-execution.js';
 import {
   decideActivation,
   decidePanelVisibility,
@@ -14,8 +20,17 @@ import {
   panelHistoryKeyForGroup,
   execNonceKeyForGroup,
   autoScanRunKeyForGroup,
+  pageHandlesKeyForGroup,
   TAB_GROUP_ID_NONE,
 } from './activation.js';
+import {
+  createPageHandleTable,
+  createTrailingDebounce,
+  deriveGroupPages,
+  parsePageHandleTable,
+  reconcilePageHandles,
+  type MemberPageInfo,
+} from './page-handles.js';
 import {
   SESSION_PORT_NAME,
   SIDE_PANEL_PORT_NAME,
@@ -191,9 +206,18 @@ interface AutoScanMessage {
   automationId: string;
 }
 
+// group-pages 由 background 直接组帧（它持有 tabs API 与句柄映射），无 content↔background Port 消息对应。
+interface GroupPagesMessage {
+  kind: 'group-pages';
+  pages: GroupPageEntry[];
+}
+
+type BridgeUpstreamMessage = UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage | GroupPagesMessage;
+
 /**
  * 一个 zen 标签页组的会话桥（ADR-013 批次④：键=tabGroup id，组内共享一个服务端会话、一条 SSE）；
- * 下行帧按 routeForFrame 路由（叙事/HITL → Side Panel；exec/guide/snapshot → 活跃执行页）。
+ * 下行帧按 routeForFrame 路由（叙事/HITL → Side Panel；exec/guide/snapshot 缺省 → 活跃执行页；
+ * 带 page 句柄时 → 目标成员页单播，adr-023 D2/D3）。
  */
 function createGroupBridge(groupId: number, onEmpty: () => void) {
   const abort = new AbortController();
@@ -249,6 +273,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   let lastSessionFailure: Omit<MessageDeliveryResult, 'accepted'> = { failure: 'session-unavailable' };
   const autoScanRunReady = chrome.storage.session.get(autoScanRunKey).then((items) => {
     autoScanRun = parseAutoScanRun(items[autoScanRunKey]);
+  });
+  const pageHandlesKey = pageHandlesKeyForGroup(groupId);
+  let pageHandles = createPageHandleTable();
+  const pageHandlesReady = chrome.storage.session.get(pageHandlesKey).then((items) => {
+    pageHandles = parsePageHandleTable(items[pageHandlesKey]);
   });
 
   const postContent = (target: chrome.runtime.Port, message: BackgroundToContentMessage): void => {
@@ -344,6 +373,25 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       ) {
         emitUi({ kind: 'frame', frame });
       }
+      return;
+    }
+    if (route === 'target-page') {
+      // 定向单步 navigate 的落点由签名帧句柄钉死：不论目标成员有无 content 端口，一律由
+      // background 对该 tab 直执行——经 content 委托会走 performNavigate 复用判定（排除发起页、
+      // 可改投同源他页并夺焦），违反「批准的目标页＝被导航的那一页」。
+      const direct = decideTargetedNavigate(frame, pageHandles);
+      if (direct.execute) {
+        void executeNavigateToTab(direct.frame, direct.url, direct.tabId);
+        return;
+      }
+      const members = resolveTargetPageMembers(
+        frame,
+        pageHandles,
+        contentMembers.members(),
+        (candidate) => candidate.sender?.tab?.id,
+      );
+      // 目标成员不可达或形状不获准（silent 页非 navigate 批次、guide-action 无端口）：丢帧，禁改投。
+      for (const member of members) postContent(member, { kind: 'frame', frame });
       return;
     }
     const targets = contentMembers.targets('active-page');
@@ -654,7 +702,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
                 continue;
               }
             }
-            postFrame(routeForFrame(frame), frame);
+            const route = routeForFrame(frame);
+            // target-page 反查依赖 storage.session 读回的句柄表：SW 重启窗口内表未就绪时
+            // 空表会把合法定向帧误判为句柄退役而丢帧（同 exec-instruction 等 nonceHistoryReady）。
+            if (route === 'target-page') await pageHandlesReady;
+            postFrame(route, frame);
           } catch {
             postStatus('收到无法解析的下行帧，已丢弃');
           }
@@ -673,12 +725,14 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   }
 
   function toUpstreamFrame(
-    message: UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage,
+    message: BridgeUpstreamMessage,
     sessionId: string,
   ): UpstreamFrame {
     switch (message.kind) {
       case 'context-report':
         return { type: 'context-report', sessionId, url: message.url, title: message.title };
+      case 'group-pages':
+        return { type: 'group-pages', sessionId, pages: message.pages };
       case 'user-message':
         return {
           type: 'user-message',
@@ -701,7 +755,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  async function forward(message: UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage): Promise<boolean> {
+  async function forward(message: BridgeUpstreamMessage): Promise<boolean> {
     return (await deliver(message)).accepted;
   }
 
@@ -721,7 +775,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  async function deliver(message: UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage): Promise<MessageDeliveryResult> {
+  async function deliver(message: BridgeUpstreamMessage): Promise<MessageDeliveryResult> {
     const session = await ensureSession();
     if (session === null) return { accepted: false, ...lastSessionFailure };
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
@@ -802,54 +856,26 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  /**
-   * navigate 代执行（ADR-013 批次④）：组内已有同源页则复用（decideNavigateTarget），
-   * 否则在本组窗口开目标页并入本组；目标页标为待激活的活跃页，
-   * 入组/加载完成触发 tabs.onUpdated → 该页收 activate 后接入同一会话（组内换站会话延续）。
-   * 客户端零治理：url 已由服务端签发前校验落在某已安装 pack site 围栏内（U7），此处只执行。
-   */
-  async function performNavigate(
-    url: string,
-    windowId?: number,
-    initiatorTabId?: number,
-  ): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
-    try {
-      const groupTabs = await chrome.tabs.query({ groupId }).catch(() => []);
-      const target = decideNavigateTarget(url, groupTabs, initiatorTabId);
-      if (target.kind !== 'create') {
-        await chrome.tabs.update(
-          target.tabId,
-          target.kind === 'update' ? { url, active: true } : { active: true },
-        );
-        // 同 URL 复用不重载、端口不重连：已连成员就地标活跃；换 URL 重载的经 expectedActiveTabId 在重连时接管。
-        if (target.kind === 'activate') {
-          const member = contentMembers
-            .members()
-            .find((candidate) => candidate.sender?.tab?.id === target.tabId);
-          if (member !== undefined) contentMembers.markActive(member);
-        }
-        expectedActiveTabId = target.tabId;
-        void sendActivate(target.tabId);
-        return { ok: true, url };
+  const { performNavigate, executeNavigateWithoutPage, executeNavigateToTab } = createNavigateExecutor({
+    groupId,
+    tabs: chrome.tabs,
+    markMemberActive: (tabId) => {
+      const member = contentMembers.members().find((candidate) => candidate.sender?.tab?.id === tabId);
+      if (member !== undefined) {
+        contentMembers.markActive(member);
+        scheduleGroupPagesReport();
       }
-      // 先入组再激活：active:true 的瞬间新页尚未入组，onActivated/面板会按组外把面板关掉（竞态）。
-      const created = await chrome.tabs.create({
-        url,
-        ...(windowId !== undefined ? { windowId } : {}),
-        active: false,
+    },
+    noteExpectedActiveTab: (tabId) => {
+      expectedActiveTabId = tabId;
+    },
+    sendActivate: (tabId) => sendActivate(tabId),
+    forwardExecResult: (result) => {
+      pipeline = pipeline.then(async () => {
+        await forward({ kind: 'exec-result', result });
       });
-      if (created.id !== undefined) {
-        await chrome.tabs.group({ tabIds: created.id, groupId });
-        await chrome.tabs.update(created.id, { active: true });
-        expectedActiveTabId = created.id;
-        // 主动通知新页激活（content 已加载时即接入）；未加载时其自身 request-activate 走 reconnect 兜底。
-        void sendActivate(created.id);
-      }
-      return { ok: true, url };
-    } catch {
-      return { ok: false, error: 'navigate-open-failed' };
-    }
-  }
+    },
+  });
 
   async function handleNavigate(
     port: chrome.runtime.Port,
@@ -868,27 +894,6 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     );
   }
 
-  /**
-   * 静默页冷启动的 open_url 通路：组内无 content 成员可代执行时，由 background 直执行单步
-   * navigate（decideBackgroundNavigate 已限定唯一放行形态）。结果按 content 侧同一 exec-result
-   * 契约回喂上行管线：成功 body={url}、失败错误串比照 dom-steps 口径、过期比照 delegated-execution。
-   */
-  async function executeNavigateWithoutPage(frame: ExecInstructionFrame, url: string): Promise<void> {
-    const base = { type: 'exec-result' as const, sessionId: frame.sessionId, nonce: frame.nonce };
-    let result: ExecResultFrame;
-    if (Date.now() > frame.expiresAt) {
-      result = { ...base, ok: false, error: 'instruction-expired' };
-    } else {
-      const outcome = await performNavigate(url);
-      result = outcome.ok
-        ? { ...base, ok: true, body: { url: outcome.url } }
-        : { ...base, ok: false, error: `step-1-navigate:${outcome.error}` };
-    }
-    pipeline = pipeline.then(async () => {
-      await forward({ kind: 'exec-result', result });
-    });
-  }
-
   // 串行转发保证 context-report 先于后续 user-message 到达服务端（组内共用一条管线）。
   const UPSTREAM_KINDS: ReadonlySet<ContentToBackgroundMessage['kind']> = new Set([
     'context-report',
@@ -897,12 +902,66 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   ]);
   let pipeline: Promise<void> = Promise.resolve();
 
+  /**
+   * 采集本组全量成员页快照（经 tabs API，含无 content 端口的 silent 页）并对齐句柄表。
+   * 隔离负数组键（groupIdOf 合成）无法经 tabs.query 枚举 → 不上报；
+   * URL 尚不可得的成员先入句柄表（保持句柄稳定）、本帧暂缺行（空 url 帧不合法）。
+   */
+  async function collectGroupPages(): Promise<GroupPageEntry[] | null> {
+    if (groupId < 0) return null;
+    const tabs = await chrome.tabs.query({ groupId }).catch(() => null);
+    if (tabs === null) return null;
+    await pageHandlesReady;
+    const reconciled = reconcilePageHandles(
+      pageHandles,
+      tabs.map((tab) => tab.id).filter((id): id is number => id !== undefined),
+    );
+    pageHandles = reconciled.table;
+    if (reconciled.changed) {
+      await chrome.storage.session.set({ [pageHandlesKey]: pageHandles }).catch(() => {});
+    }
+    const members: MemberPageInfo[] = [];
+    for (const tab of tabs) {
+      const url = tab.url !== undefined && tab.url !== '' ? tab.url : tab.pendingUrl;
+      if (tab.id === undefined || url === undefined || url === '') continue;
+      members.push({
+        tabId: tab.id,
+        url,
+        ...(tab.title !== undefined && tab.title !== '' ? { title: tab.title } : {}),
+      });
+    }
+    const portTabIds = new Set<number>();
+    for (const member of contentMembers.members()) {
+      const tabId = member.sender?.tab?.id;
+      if (tabId !== undefined) portTabIds.add(tabId);
+    }
+    const activeTabId = contentMembers.targets('active-page')[0]?.sender?.tab?.id ?? null;
+    return deriveGroupPages(pageHandles, members, portTabIds, activeTabId);
+  }
+
+  // 防抖 300ms 合并突发（开组/批量导航），到期才采集最终全量快照组帧；单页也上报（≥2 页
+  // 门槛是服务端注入门槛，审计活跃页标注仍需状态表）。投递走既有串行管线保证与 context-report
+  // 的先后序；失败不重试不阻塞——下个触发点自然带来新全量帧。
+  const scheduleGroupPagesReport = createTrailingDebounce(300, () => {
+    if (abort.signal.aborted) return;
+    void collectGroupPages().then((pages) => {
+      if (pages === null || abort.signal.aborted) return;
+      pipeline = pipeline.then(async () => {
+        await forward({ kind: 'group-pages', pages });
+      });
+    });
+  });
+  // 桥建立（含 SW 重启重建、面板先于 content 接入）即补一帧全量：
+  // 服务端状态表不滞留桥空窗期间已关闭/离组的旧页。
+  scheduleGroupPagesReport();
+
   function maybeClose(): void {
     if (contentMembers.size() === 0 && panels.size === 0) close();
   }
 
   function detachContent(port: chrome.runtime.Port): void {
     contentMembers.remove(port);
+    scheduleGroupPagesReport();
     maybeClose();
   }
 
@@ -925,6 +984,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       contentMembers.markActive(port);
       expectedActiveTabId = null;
     }
+    scheduleGroupPagesReport();
     port.onMessage.addListener((raw) => {
       const message = raw as ContentToBackgroundMessage | null;
       if (message === null) return;
@@ -947,6 +1007,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       // 上下文上报/用户发言都来自用户视线所在页：即组内活跃页（HITL/exec/guide 的路由目标）。
       if (message.kind === 'context-report') {
         contentMembers.markActive(port);
+        scheduleGroupPagesReport();
         postToPanels({
           kind: 'task-context',
           groupId,
@@ -1131,6 +1192,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     const target = contentMembers.members().find((member) => member.sender?.tab?.id === tabId);
     if (target === undefined) return 'unavailable';
     contentMembers.markActive(target);
+    scheduleGroupPagesReport();
     const run: AutoScanRun = { runId: crypto.randomUUID(), automationId: descriptor.automation.id };
     autoScanRun = run;
     await chrome.storage.session.set({ [autoScanRunKey]: run });
@@ -1176,7 +1238,10 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     return 'started';
   }
 
-  return { attachContent, attachPanel, triggerAutoScan, configurationChanged, close };
+  /** 本组 tab 集/URL 可能变化（tabs.onUpdated/onRemoved）→ 防抖后重报全量清单。 */
+  const notifyGroupTabsChanged = (): void => scheduleGroupPagesReport();
+
+  return { attachContent, attachPanel, triggerAutoScan, configurationChanged, notifyGroupTabsChanged, close };
 }
 
 type GroupBridge = ReturnType<typeof createGroupBridge>;
@@ -1529,6 +1594,13 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       });
     }
   }
+  // group-pages 触发（adr-023 D1）：本组 tab 的 url 变更/加载完成 → 该组重报；
+  // 入组/离组（groupId 变化）时事件不带旧组号，广播全部在场桥各自重查（防抖合并，代价可忽略）。
+  if (changeInfo.groupId !== undefined) {
+    for (const bridge of groups.values()) bridge.notifyGroupTabsChanged();
+  } else if (changeInfo.url !== undefined || changeInfo.status === 'complete') {
+    groups.get(tab.groupId ?? TAB_GROUP_ID_NONE)?.notifyGroupTabsChanged();
+  }
   const groupId = changeInfo.groupId;
   if (groupId === undefined) return;
   if (groupId === TAB_GROUP_ID_NONE) {
@@ -1543,11 +1615,17 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   });
 });
 
+// 关闭的 tab 可能是某组成员（事件不带组号）：广播全部在场桥重报清单。
+chrome.tabs.onRemoved.addListener(() => {
+  for (const bridge of groups.values()) bridge.notifyGroupTabsChanged();
+});
+
 // 组关闭=关会话：清 groupId→sessionId 存根并关桥（storage.session 存根在此才清，区别于组内换页重连）。
 chrome.tabGroups.onRemoved.addListener((group) => {
   void chrome.storage.session.remove(zenGroupKey(group.id)).catch(() => {});
   void chrome.storage.session.remove(sessionKeyForGroup(group.id)).catch(() => {});
   void chrome.storage.session.remove(execNonceKeyForGroup(group.id)).catch(() => {});
+  void chrome.storage.session.remove(pageHandlesKeyForGroup(group.id)).catch(() => {});
   const bridge = groups.get(group.id);
   if (bridge !== undefined) {
     bridge.close();

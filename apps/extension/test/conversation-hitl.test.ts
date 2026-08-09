@@ -211,3 +211,66 @@ describe('promptHitl HITL 卡片裁决', () => {
     expect(messages.querySelector('[data-za-hitl]')).toBeNull();
   });
 });
+
+describe('promptHitl 目标页标注与目标 URL（adr-023 D3：服务端给什么渲染什么）', () => {
+  it('targetUrl 有值：卡正文含「目标地址」行（T0 navigate 卡缺口修复）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(hitlRequest({ targetUrl: 'https://mail.126.com/main' }));
+
+    const line = messages.querySelector('.za-hitl-target-url');
+    expect(line?.textContent).toBe('目标地址：https://mail.126.com/main');
+  });
+
+  it('targetPage 有值：卡含「目标页」行，title 与 origin 均来自服务端组装字段', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(
+      hitlRequest({ targetPage: { title: '工单 #4521', origin: 'https://desk.example' } }),
+    );
+
+    const line = messages.querySelector('.za-hitl-target-page');
+    expect(line?.textContent).toBe('目标页：工单 #4521（https://desk.example）');
+  });
+
+  it('targetPage 缺 title / 缺 origin：按缺省文案与省略括号渲染', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(hitlRequest({ targetPage: { origin: 'https://desk.example' } }));
+    expect(messages.querySelector('.za-hitl-target-page')?.textContent).toBe(
+      '目标页：（无标题）（https://desk.example）',
+    );
+    ui.cancelHitl();
+
+    void ui.promptHitl(hitlRequest({ targetPage: { title: '工单 #4521' } }));
+    expect(messages.querySelector('.za-hitl-target-page')?.textContent).toBe('目标页：工单 #4521');
+  });
+
+  it('缺省帧（无 targetPage/targetUrl）：零渲染变化，不本地拼装治理语义', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(hitlRequest());
+
+    expect(messages.querySelector('.za-hitl-target-url')).toBeNull();
+    expect(messages.querySelector('.za-hitl-target-page')).toBeNull();
+  });
+
+  it('dom 任务授权卡带 targetPage 时 hint 措辞不变（授权范围是任务不是页）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(
+      hitlRequest({
+        params: { task: '提交表单', steps: [], summary: '' },
+        targetPage: { title: '工单 #4521', origin: 'https://desk.example' },
+      }),
+    );
+
+    expect(messages.querySelector('.za-hitl-hint')?.textContent).toContain('本任务内的后续操作');
+    expect(messages.querySelector('.za-hitl-target-page')?.textContent).toContain('工单 #4521');
+  });
+});

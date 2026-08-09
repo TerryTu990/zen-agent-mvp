@@ -52,6 +52,22 @@
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]{0,63}$"
     },
+    "page": {
+      "$comment": "事件落点页标注（adr-023，additive 扩展——旧消费方可忽略）：handle=会话作用域不透明页面句柄（消费方 MUST NOT 解析内部结构，U5：Chrome tabId 等形态标识禁入）；origin=该页 origin，URL 不可解析时省略。D1 于 tool-decision/hitl-verdict/tool-execution 以活跃页填充；定向落地（D2/D3）后为目标页。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handle"],
+      "properties": {
+        "handle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "origin": {
+          "type": "string"
+        }
+      }
+    },
     "data": {
       "$comment": "类型专有载荷，形状由 type 决定（见 allOf 分形）。",
       "type": "object"

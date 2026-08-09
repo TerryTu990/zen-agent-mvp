@@ -6,6 +6,7 @@
  */
 
 import type { DownstreamFrame, ExecInstructionFrame } from './frames.js';
+import { tabIdForHandle, type PageHandleTable } from './page-handles.js';
 
 export type NavigateTarget =
   | { kind: 'activate'; tabId: number }
@@ -52,24 +53,50 @@ export type BackgroundNavigateDecision =
   | { execute: false };
 
 /**
- * 组内无可投递 content 成员时，仅「单步 navigate 的 dom 批次」允许改由 background 直接执行
- * （静默页冷启动 open_url 的唯一通路）。带页面上下文校验字段的批次无页可核对，
- * 与其余帧一同维持 fail-safe 不投递，不扩大直执行面。
+ * background 直执行的唯一放行形态：单步 navigate 的 dom 批次、且不带页面上下文校验字段
+ * （无页可核对）。其余形状一律 null，不扩大直执行面。
+ */
+export function backgroundNavigableUrl(frame: ExecInstructionFrame): string | null {
+  const request = frame.request;
+  if (!('kind' in request)) return null;
+  if (request.expectedPageUrl !== undefined || request.expectedPageInstanceId !== undefined) {
+    return null;
+  }
+  if (request.steps.length !== 1) return null;
+  const step = request.steps[0];
+  if (step?.action !== 'navigate' || step.url === undefined || step.url === '') return null;
+  return step.url;
+}
+
+/**
+ * 组内无可投递 content 成员时，仅 backgroundNavigableUrl 放行的形态允许改由 background
+ * 直接执行（静默页冷启动 open_url 的唯一通路）；其余帧维持 fail-safe 不投递。
  */
 export function decideBackgroundNavigate(
   frame: DownstreamFrame,
   activeTargetCount: number,
 ): BackgroundNavigateDecision {
   if (activeTargetCount !== 0 || frame.type !== 'exec-instruction') return { execute: false };
-  const request = frame.request;
-  if (!('kind' in request)) return { execute: false };
-  if (request.expectedPageUrl !== undefined || request.expectedPageInstanceId !== undefined) {
-    return { execute: false };
-  }
-  if (request.steps.length !== 1) return { execute: false };
-  const step = request.steps[0];
-  if (step?.action !== 'navigate' || step.url === undefined || step.url === '') {
-    return { execute: false };
-  }
-  return { execute: true, frame, url: step.url };
+  const url = backgroundNavigableUrl(frame);
+  return url === null ? { execute: false } : { execute: true, frame, url };
+}
+
+export type TargetedNavigateDecision =
+  | { execute: true; frame: ExecInstructionFrame; url: string; tabId: number }
+  | { execute: false };
+
+/**
+ * 定向帧的 background 直执行判定：仅获签的单步 navigate 批次且句柄仍在表内才放行，
+ * 落点即帧上句柄解析出的那一个 tab——不经 content 委托、不跑复用判定，禁改投（U7 粘合面）。
+ */
+export function decideTargetedNavigate(
+  frame: DownstreamFrame,
+  table: PageHandleTable,
+): TargetedNavigateDecision {
+  if (frame.type !== 'exec-instruction' || frame.page === undefined) return { execute: false };
+  const url = backgroundNavigableUrl(frame);
+  if (url === null) return { execute: false };
+  const tabId = tabIdForHandle(table, frame.page);
+  if (tabId === null) return { execute: false };
+  return { execute: true, frame, url, tabId };
 }

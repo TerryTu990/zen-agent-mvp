@@ -51,6 +51,8 @@ export interface ServerOptions {
   maxTurnRounds?: number;
   /** 代执行指令/等待客户端结果 TTL；缺省 60000ms。测试可缩短以验证主动超时。 */
   execInstructionTtlMs?: number;
+  /** 等待客户端 snapshot-report 的上限毫秒；缺省 15000ms。测试可缩短以验证快照超时路径。 */
+  snapshotTimeoutMs?: number;
   /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW），默认 200000。 */
   compressContextWindow?: number;
   /** 历史压缩触发阈值比例（ZA_LLM_COMPRESS_THRESHOLD），默认 0.6。 */
@@ -278,6 +280,9 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     store,
     heartbeatMs: options.heartbeatMs ?? 15_000,
     maxTurnRounds: options.maxTurnRounds ?? 12,
+    ...(options.snapshotTimeoutMs !== undefined
+      ? { snapshotTimeoutMs: options.snapshotTimeoutMs }
+      : {}),
     compressContextWindow: options.compressContextWindow ?? 200_000,
     compressThreshold: options.compressThreshold ?? 0.6,
     corsOrigin: options.corsOrigin ?? '*',

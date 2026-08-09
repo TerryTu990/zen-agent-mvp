@@ -19,6 +19,7 @@ import type {
   GateDecision,
   GateDecisionInput,
   GateUserConfigInput,
+  GroupPageEntry,
   RiskTier,
   HitlGrantInput,
   IdentityClaims,
@@ -199,6 +200,51 @@ const RESERVED_DOM_ACTIONS = new Set(['waitFor']);
 const MAX_DOM_STEPS = 20;
 const READ_NAME_PATTERN = /^[\w-]{1,64}$/;
 
+/** 平台级定向参数 page 的形状约束（adr-023 D3）：与 C3 句柄同界（1..64），刻意无 pattern——句柄不透明（U5）。 */
+const PAGE_PARAM_SCHEMA: JsonObject = { type: 'string', minLength: 1, maxLength: 64 };
+
+/**
+ * silent 页定向非 navigate 操作的拒签理由（ADR-023 §6 通道分级）：直接回喂 agent 作引导，
+ * 不含实参值（SEC-04）——目标句柄可从调用回声获知。
+ */
+const TARGET_PAGE_NOT_INTERACTIVE_REASON =
+  '目标页不可交互（silent，无内容脚本通道），需先导航激活：可对该页定向单步 navigate，或由用户切换到该页后重试';
+
+/**
+ * dom 工具入参平台级增广（adr-023 D3）：统一注入可选 page，pack 制品零改动；
+ * bounded-fulfillment 工具不增（固定步骤绑定活跃页意图，定向不支持）。
+ * page 是全体 dom 工具的平台保留参数——pack 自声明它即语义被定向解析劫持，
+ * 载入期 fail-fast 拒启（含不增广的 bounded-fulfillment 工具）。
+ */
+function withPageParam(tool: ToolDefinition): JsonObject {
+  if (!isDomTool(tool)) return tool.params;
+  const properties = tool.params['properties'];
+  if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) {
+    return tool.params;
+  }
+  if ('page' in properties) {
+    throw new Error(`dom 工具 ${tool.id} 的 params 声明平台保留参数 page，拒绝启动`);
+  }
+  if (tool.authorization !== undefined) return tool.params;
+  return { ...tool.params, properties: { ...properties, page: PAGE_PARAM_SCHEMA } };
+}
+
+/**
+ * 定向目标解析（adr-023 D3，U7 fail-closed）：params.page 只对状态表句柄作等值比对（不解析结构，U5）；
+ * 带 page 而状态表缺省/未命中一律拒（禁回退活跃页）。缺省 page 返回空对象=现活跃页语义零变化。
+ */
+function resolveTargetPage(
+  params: JsonObject,
+  groupPages: GroupPageEntry[] | undefined,
+): { target?: GroupPageEntry } | { reason: string } {
+  const page = params['page'];
+  if (page === undefined) return {};
+  if (typeof page !== 'string') return { reason: 'invalid-params' };
+  const entry = groupPages?.find((candidate) => candidate.handle === page);
+  if (entry === undefined) return { reason: 'page-not-in-group' };
+  return { target: entry };
+}
+
 /** 路径段前缀匹配（与装配层围栏语义一致）：'/' 匹配一切；'/console' 匹配 '/console' 与 '/console/...'。 */
 function locationMatches(path: string, loc: string): boolean {
   if (loc === '/') return true;
@@ -207,15 +253,15 @@ function locationMatches(path: string, loc: string): boolean {
 
 /**
  * dom 批次 fail-closed 校验（U7）：动作闭集、ref 出自最近快照、fill/select 有值、read 有键名、
- * 快照页路径在围栏内。通过则返回只含已知字段的净化步骤（剥离 LLM 幻觉出的多余键，签名精确覆盖将执行内容）；
- * 任一不过返回 reason 字符串（不含实参值，SEC-04）。
- */
-/**
- * dom 批次 fail-closed 校验（U7）：动作闭集、ref 出自最近快照、fill/select 有值、read 有键名、
  * 快照页路径在围栏内。ADR-013 批次④补两项：
  *  1. navigate 步单步专走——含其他步即 invalid-params，免 ref、须带 url 且 url 落在某已安装 pack site 围栏内；
  *  2. site pack（packOrigin 有值）的非 navigate 批次，快照 origin 须 === 工具所属 pack origin（越界 origin-fence-violation）。
- * 通过则返回只含已知字段的净化步骤；任一不过返回 reason 字符串（不含实参值，SEC-04）。
+ * adr-023 D3 定向（target 有值）：围栏基准=状态表目标页 URL（origin+pathPrefixes，越界即拒、禁回退活跃页）；
+ * 无 packOrigin 的 pack 无 origin 围栏基准，定向一律拒（缺省路径不受影响）；
+ * silent 页仅单步 navigate 可签（通道分级）；ref 批次仍须 domContext（此时它是目标页定向快照的上下文），
+ * 定向单步 navigate 免 domContext（silent 页无快照可取）。
+ * 通过则返回只含已知字段的净化步骤（剥离 LLM 幻觉出的多余键，签名精确覆盖将执行内容）；
+ * 任一不过返回 reason 字符串（不含实参值，SEC-04）。
  */
 function validateDomSteps(
   tool: DomToolDefinition,
@@ -223,13 +269,21 @@ function validateDomSteps(
   domContext: DomGateContext | undefined,
   packOrigin: string | undefined,
   urlInFence: (url: string) => boolean,
+  target?: GroupPageEntry,
 ): { steps: DomStep[] } | { reason: string } {
   // 任务标题必填：它是任务级 HITL 授权的作用域标识（用户批准的就是它），也是审计可读锚点。
   const task = params['task'];
   if (typeof task !== 'string' || task.trim() === '') return { reason: 'missing-task' };
-  if (domContext === undefined) return { reason: 'dom-context-missing' };
-  if (!tool.adapter.pathPrefixes.some((prefix) => domContext.path.startsWith(prefix))) {
-    return { reason: 'fence-violation' };
+  const domContextFence = (): string | null => {
+    if (domContext === undefined) return 'dom-context-missing';
+    if (!tool.adapter.pathPrefixes.some((prefix) => domContext.path.startsWith(prefix))) {
+      return 'fence-violation';
+    }
+    return null;
+  };
+  if (target === undefined) {
+    const contextFence = domContextFence();
+    if (contextFence !== null) return { reason: contextFence };
   }
   const raw = params['steps'];
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_DOM_STEPS) {
@@ -240,10 +294,41 @@ function validateDomSteps(
   );
   // navigate 语义即开新页：与其他步混批无意义，单步强制；也因此免除"快照 origin=pack origin"围栏。
   if (hasNavigate && raw.length !== 1) return { reason: 'invalid-params' };
-  if (packOrigin !== undefined && !hasNavigate && domContext.origin !== packOrigin) {
+  if (target !== undefined) {
+    // 定向围栏（U7 fail-closed）：pack dom 工具只能定向到落在本 pack site 围栏内的组内页（ADR-023 §3 不变量）。
+    // 无 packOrigin（legacy 无 site pack）即无 origin 围栏基准，无从证明目标页在围栏内 → 一律拒签；
+    // generic pack 的 packOrigin 绑定激活时的活跃页 origin，故其定向被约束在同源组内页。
+    if (packOrigin === undefined) return { reason: 'target-page-fence-violation' };
+    let targetOrigin: string;
+    let targetPath: string;
+    try {
+      const parsed = new URL(target.url);
+      targetOrigin = parsed.origin;
+      targetPath = parsed.pathname;
+    } catch {
+      return { reason: 'target-page-fence-violation' };
+    }
+    if (!tool.adapter.pathPrefixes.some((prefix) => targetPath.startsWith(prefix))) {
+      return { reason: 'target-page-fence-violation' };
+    }
+    if (targetOrigin !== packOrigin) {
+      return { reason: 'target-page-fence-violation' };
+    }
+    // 通道分级（ADR-023 §6）：silent 页仅 background 可直执行步（现即单步 navigate）可获签。
+    if (target.status === 'silent' && !hasNavigate) {
+      return { reason: TARGET_PAGE_NOT_INTERACTIVE_REASON };
+    }
+    if (!hasNavigate) {
+      const contextFence = domContextFence();
+      if (contextFence !== null) return { reason: contextFence };
+      if (domContext?.origin !== packOrigin) {
+        return { reason: 'origin-fence-violation' };
+      }
+    }
+  } else if (packOrigin !== undefined && !hasNavigate && domContext?.origin !== packOrigin) {
     return { reason: 'origin-fence-violation' };
   }
-  const refs = new Set(domContext.refs);
+  const refs = new Set(domContext?.refs ?? []);
   const steps: DomStep[] = [];
   for (const item of raw) {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) {
@@ -491,7 +576,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   const ajv = new Ajv2020({ strict: true });
   for (const tool of options.tools) {
     toolsById.set(tool.id, tool);
-    paramsValidators.set(tool.id, ajv.compile(tool.params));
+    // dom 工具入参按平台级增广 schema 校验（可选 page，adr-023 D3）；pack 制品与其余通道不变。
+    paramsValidators.set(tool.id, ajv.compile(withPageParam(tool)));
     resultValidators.set(tool.id, ajv.compile(tool.resultSchema));
   }
   // 策略、工具和参数 schema 联合校验：不支持的组合在启动期 fail-fast，不能等到一次真实发货才暴露。
@@ -639,10 +725,14 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     return { verdict: 'deny', reason };
   }
 
-  /** 一次性签名并登记 nonce（U7）：Ed25519 精确覆盖绝对时限与最终请求，插件副作用前验签。 */
+  /**
+   * 一次性签名并登记 nonce（U7）：Ed25519 精确覆盖绝对时限与最终请求，插件副作用前验签。
+   * 定向签发（page 有值，adr-023 D3）时 page 一并入签名 payload——篡改落点即验签失败；缺省 payload 与现状逐字节一致。
+   */
   function signInstruction(
     input: IssueExecInstructionInput,
     request: ExecRequest | DomExecRequest,
+    page?: string,
   ): ExecInstructionFrame {
     const nonce = randomUUID();
     const issuedAt = now();
@@ -654,6 +744,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       expiresAt,
       ttl: ttlMs,
       toolCallId: input.toolCallId,
+      ...(page !== undefined ? { page } : {}),
       request: request as unknown as JsonValue,
     });
     const keyForCall = callKey(input.sessionId, input.toolCallId);
@@ -676,6 +767,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       ttl: ttlMs,
       signature,
       toolCallId: input.toolCallId,
+      ...(page !== undefined ? { page } : {}),
       request,
     };
   }
@@ -945,6 +1037,9 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       // 带 task 且该任务已获批 → 放行（导航是任务的一步，共享任务级授权）；无 task 或未获批仍 hitl。
       if (input.toolId === SITE_NAVIGATE_TOOL_ID) {
         if (!siteNavigateParamsValidator(input.params)) return deny('invalid-params');
+        // 内建 navigate 可定向任意组内页（含 silent——导航即其激活通路，adr-023 D3）：仅要求句柄命中状态表。
+        const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
+        if ('reason' in resolvedTarget) return deny(resolvedTarget.reason);
         const url = input.params['url'];
         if (typeof url !== 'string' || !urlInFence(url)) return deny('fence-violation');
         const navTask = input.params['task'];
@@ -957,6 +1052,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       // 绝对 URL，否则 unsafe-url；每次必弹卡（every-call 语义），不消费/不复用任务级授权。
       if (input.toolId === OPEN_URL_TOOL_ID) {
         if (!openUrlParamsValidator(input.params)) return deny('invalid-params');
+        const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
+        if ('reason' in resolvedTarget) return deny(resolvedTarget.reason);
         const url = input.params['url'];
         if (typeof url !== 'string' || !httpNavigableUrl(url)) return deny('unsafe-url');
         return { verdict: 'hitl' };
@@ -982,8 +1079,21 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
             : 'forbidden',
         );
       }
+      // bounded-fulfillment 固定步骤绑定活跃页意图，不支持定向（fail-closed：带 page 即拒）。
+      if (tool.authorization?.kind === 'bounded-fulfillment' && input.params['page'] !== undefined) {
+        return deny('invalid-params');
+      }
       if (isDomTool(tool) && tool.authorization?.kind !== 'bounded-fulfillment') {
-        const validated = validateDomSteps(tool, input.params, input.domContext, input.packOrigin, urlInFence);
+        const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
+        if ('reason' in resolvedTarget) return deny(resolvedTarget.reason);
+        const validated = validateDomSteps(
+          tool,
+          input.params,
+          input.domContext,
+          input.packOrigin,
+          urlInFence,
+          resolvedTarget.target,
+        );
         if ('reason' in validated) return deny(validated.reason);
       }
       // 任务级授权（跨工具共享）：带 task 且同会话该任务已获批未闲置过期 → 放行（一任务一确认）。
@@ -1018,20 +1128,36 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         if (!siteNavigateParamsValidator(input.params)) {
           throw new Error('site_navigate 签发前提破坏：参数校验未过');
         }
+        const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
+        if ('reason' in resolvedTarget) {
+          throw new Error(`site_navigate 签发拒绝：定向目标解析未过（${resolvedTarget.reason}）`);
+        }
         const url = String(input.params['url'] ?? '');
         if (!urlInFence(url)) throw new Error('site_navigate 签发拒绝：目标 URL 越出已安装站点围栏');
-        return signInstruction(input, { kind: 'dom', steps: [{ action: 'navigate', url }] });
+        return signInstruction(
+          input,
+          { kind: 'dom', steps: [{ action: 'navigate', url }] },
+          resolvedTarget.target?.handle,
+        );
       }
       // 内建通用导航：签发是治理终点，签名前独立重校验（参数 + 协议闭集/无内嵌凭证），封 TOCTOU。
       if (input.toolId === OPEN_URL_TOOL_ID) {
         if (!openUrlParamsValidator(input.params)) {
           throw new Error('open_url 签发前提破坏：参数校验未过');
         }
+        const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
+        if ('reason' in resolvedTarget) {
+          throw new Error(`open_url 签发拒绝：定向目标解析未过（${resolvedTarget.reason}）`);
+        }
         const url = String(input.params['url'] ?? '');
         if (!httpNavigableUrl(url)) {
           throw new Error('open_url 签发拒绝：目标 URL 非 http/https 或携带内嵌凭证');
         }
-        return signInstruction(input, { kind: 'dom', steps: [{ action: 'navigate', url }] });
+        return signInstruction(
+          input,
+          { kind: 'dom', steps: [{ action: 'navigate', url }] },
+          resolvedTarget.target?.handle,
+        );
       }
       const tool = toolsById.get(input.toolId);
       if (!tool) throw new Error(`issueExecInstruction 前提破坏：未知 toolId`);
@@ -1047,6 +1173,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         throw new Error('有界履约签发拒绝：调用未预占或已签发');
       }
       let request: ExecRequest | DomExecRequest;
+      let targetPageHandle: string | undefined;
       if (isDomTool(tool)) {
         // 有界工具只执行可信连接器登记的固定步骤；模型参数中的业务键或 steps 均不参与签发。
         const intentId = intentByCall.get(callKey(input.sessionId, input.toolCallId));
@@ -1074,9 +1201,38 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         ) {
           throw new Error('有界履约签发拒绝：账号或页面已变化');
         }
-        // 签发是治理终点：签名前独立重校验，不依赖 decide 已通过的假设（U7 fail-closed）。
-        const validated = validateDomSteps(tool, domParams, input.domContext, input.packOrigin, urlInFence);
+        // 有界履约固定步骤绑定活跃页意图，定向不支持：与 decide 的 deny('invalid-params') 同口径显式拒签，
+        // 不静默忽略 page（签发是治理终点，U7 fail-closed）。
+        if (tool.authorization?.kind === 'bounded-fulfillment' && input.params['page'] !== undefined) {
+          throw new Error('有界履约签发拒绝：不支持定向到组内其他页（invalid-params）');
+        }
+        // 签发是治理终点：签名前独立重校验（含定向目标解析），不依赖 decide 已通过的假设（U7 fail-closed）。
+        const resolvedTarget: { target?: GroupPageEntry } | { reason: string } =
+          tool.authorization?.kind === 'bounded-fulfillment'
+            ? {}
+            : resolveTargetPage(input.params, input.groupPages);
+        if ('reason' in resolvedTarget) {
+          throw new Error(`dom 定向拒签：${resolvedTarget.reason}`);
+        }
+        targetPageHandle = resolvedTarget.target?.handle;
+        const validated = validateDomSteps(
+          tool,
+          domParams,
+          input.domContext,
+          input.packOrigin,
+          urlInFence,
+          resolvedTarget.target,
+        );
         if ('reason' in validated) throw new Error(`dom 批次校验未过：${validated.reason}`);
+        // 定向批次的执行侧就地校验基准：与围栏同基准=状态表目标页 URL，签发到执行之间页走样即 context-mismatch。
+        // 状态表无页面实例概念，故只钉 URL；单步 navigate 不钉——silent 页由 background 直执行、无页可核对。
+        // 覆盖边界：基准取状态表 URL 而非产出这批 refs 的定向快照 URL——状态表落后于目标页真实 URL 时，
+        // 对该快照仍合法的批次也会被执行侧判 context-mismatch（方向 fail-safe，代价是可用性抖动）。
+        const targetPageUrl =
+          resolvedTarget.target !== undefined &&
+          !validated.steps.some((step) => step.action === 'navigate')
+            ? resolvedTarget.target.url
+            : undefined;
         request = {
           kind: 'dom',
           steps: validated.steps,
@@ -1086,6 +1242,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
                 expectedPageInstanceId: intent.pageInstanceId,
               }
             : {}),
+          ...(targetPageUrl !== undefined ? { expectedPageUrl: targetPageUrl } : {}),
         };
       } else {
         const adapter = tool.adapter;
@@ -1111,7 +1268,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
             : {}),
         };
       }
-      const instruction = signInstruction(input, request);
+      const instruction = signInstruction(input, request, targetPageHandle);
       if (tool.authorization?.kind === 'bounded-fulfillment') {
         fulfillmentCallStates.set(keyForCall, 'issued');
       }

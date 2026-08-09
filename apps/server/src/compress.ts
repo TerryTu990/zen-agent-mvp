@@ -9,6 +9,8 @@ import type { LlmMessage, LlmPort } from '@zen-agent/contracts';
 export const SUMMARY_MARKER = '【对话摘要】';
 /** 站点边界标记前缀（批次④注入 role:user/system 侧）：入摘要须整句保留，本模块预留识别。 */
 export const BOUNDARY_MARKER = '【站点边界】';
+/** 观测页标注前缀（adr-023 D2）：定向快照 observation 首行 `[来自 p<N> · origin]`，入摘要须整行保留。 */
+export const PAGE_OBS_MARKER = '[来自 ';
 
 const DEFAULT_KEEP_ROUNDS = 4;
 
@@ -96,6 +98,22 @@ function extractTaskPlans(messages: LlmMessage[]): string[] {
   return plans;
 }
 
+/** 观测页标注（定向快照 observation 首行）：入摘要须整行保留，按出现顺序去重。 */
+function extractPageObsTags(messages: LlmMessage[]): string[] {
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== 'tool' || !message.content.startsWith(PAGE_OBS_MARKER)) continue;
+    const newlineIdx = message.content.indexOf('\n');
+    const tag = newlineIdx === -1 ? message.content : message.content.slice(0, newlineIdx);
+    if (!seen.has(tag)) {
+      seen.add(tag);
+      tags.push(tag);
+    }
+  }
+  return tags;
+}
+
 function serializeHead(messages: LlmMessage[]): string {
   return messages
     .map((message) => {
@@ -141,7 +159,7 @@ export interface CompressOptions {
 
 /**
  * 压缩历史：把最近 K 个用户回合之前的较早回合压为一条滚动摘要消息（头部），最近 K 回合原文保留。
- * 既有摘要（前缀识别）落在待压缩头部、随新摘要一并折叠；站点边界标记与任务授权计划整句保留进摘要。
+ * 既有摘要（前缀识别）落在待压缩头部、随新摘要一并折叠；站点边界标记、任务授权计划与观测页标注整句保留进摘要。
  * 回合数不足 K、无可压缩头部、或摘要生成失败 → 原样返回入参引用（fail-open，下回合再试）。
  */
 export async function compressHistory(
@@ -162,6 +180,7 @@ export async function compressHistory(
 
   const preservedBoundaries = head.filter(isBoundaryMarker).map((message) => message.content);
   const preservedTasks = extractTaskPlans(head);
+  const preservedPageTags = extractPageObsTags(head);
 
   const summaryText = await summarize(options.llm, head, options.requestId);
   if (summaryText === null) return history;
@@ -169,6 +188,9 @@ export async function compressHistory(
   const parts = [SUMMARY_MARKER, summaryText];
   if (preservedBoundaries.length > 0) parts.push('保留的站点边界标记：', ...preservedBoundaries);
   if (preservedTasks.length > 0) parts.push('保留的任务授权计划：', ...preservedTasks);
+  if (preservedPageTags.length > 0) {
+    parts.push('保留的观测页标注（较早回合定向读取过的页面）：', ...preservedPageTags);
+  }
   const summaryMessage: LlmMessage = { role: 'user', content: parts.join('\n') };
   return [summaryMessage, ...tail];
 }

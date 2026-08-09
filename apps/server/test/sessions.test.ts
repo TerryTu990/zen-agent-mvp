@@ -172,6 +172,70 @@ describe('createPersistentSessionStore（P2 会话持久化）', () => {
     expect(restored!.lastPackId).toBe('codeflow-console');
   });
 
+  it('adr-023 D1：setGroupPages 每帧全量覆写，重放恢复，异形句柄原样保存（不解析结构）', () => {
+    const dir = freshDir();
+    const first = persistent(dir);
+    const { sessionId } = first.create(CLAIMS);
+    first.setGroupPages(sessionId, [
+      { handle: 'workspace-view-00c3', url: 'https://a.example/x?q=1', title: 'A 页', status: 'active' },
+      { handle: 'p2', url: 'https://b.example/y', status: 'silent' },
+    ]);
+    first.setGroupPages(sessionId, [
+      { handle: 'p2', url: 'https://b.example/y', status: 'active' },
+    ]);
+    // 整体覆写：前帧条目不残留。
+    expect(first.get(sessionId)!.groupPages).toEqual([
+      { handle: 'p2', url: 'https://b.example/y', status: 'active' },
+    ]);
+
+    const revived = persistent(dir);
+    expect(revived.get(sessionId)!.groupPages).toEqual([
+      { handle: 'p2', url: 'https://b.example/y', status: 'active' },
+    ]);
+
+    // 空帧（全员离组）同为合法覆写。
+    revived.setGroupPages(sessionId, []);
+    const again = persistent(dir);
+    expect(again.get(sessionId)!.groupPages).toEqual([]);
+  });
+
+  it('adr-023 D1：setGroupPages 内容未变不重复落盘，变化照常落盘', () => {
+    const dir = freshDir();
+    const store = persistent(dir);
+    const { sessionId } = store.create(CLAIMS);
+    const file = join(dir, `${sessionId}.jsonl`);
+    store.setGroupPages(sessionId, [
+      { handle: 'p1', url: 'https://a.example/x', status: 'active' },
+    ]);
+    const linesAfter1 = readFileSync(file, 'utf8').split('\n').filter(Boolean).length;
+    // 桥重建的兜底补帧：同内容不再追加事件。
+    store.setGroupPages(sessionId, [
+      { handle: 'p1', url: 'https://a.example/x', status: 'active' },
+    ]);
+    expect(readFileSync(file, 'utf8').split('\n').filter(Boolean).length).toBe(linesAfter1);
+    expect(store.get(sessionId)!.groupPages).toEqual([
+      { handle: 'p1', url: 'https://a.example/x', status: 'active' },
+    ]);
+    store.setGroupPages(sessionId, [
+      { handle: 'p1', url: 'https://a.example/x', status: 'background' },
+    ]);
+    expect(readFileSync(file, 'utf8').split('\n').filter(Boolean).length).toBe(linesAfter1 + 1);
+
+    const revived = persistent(dir);
+    expect(revived.get(sessionId)!.groupPages).toEqual([
+      { handle: 'p1', url: 'https://a.example/x', status: 'background' },
+    ]);
+  });
+
+  it('adr-023 D1：旧落盘文件（无 group-pages 事件）重放为初始空表', () => {
+    const dir = freshDir();
+    const first = persistent(dir);
+    const { sessionId } = first.create(CLAIMS);
+    first.setContext(sessionId, 'https://a.example/x');
+    const revived = persistent(dir);
+    expect(revived.get(sessionId)!.groupPages).toEqual([]);
+  });
+
   it('generic 绑定 origin：同 packId+origin 不重复落盘，origin 变化落盘并重放恢复', () => {
     const dir = freshDir();
     const first = persistent(dir);

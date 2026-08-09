@@ -12,7 +12,7 @@ import {
   statSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import type { IdentityClaims, LlmMessage } from '@zen-agent/contracts';
+import type { GroupPageEntry, IdentityClaims, LlmMessage } from '@zen-agent/contracts';
 
 export interface SessionState {
   sessionId: string;
@@ -31,6 +31,8 @@ export interface SessionState {
   lastPackId: string | null;
   /** 上一回合 generic pack 绑定的活跃页 origin：与 lastPackId 共同构成边界标记判据（generic 多 origin 切换可检测）；非 generic 为 null。 */
   lastGenericOrigin: string | null;
+  /** 组页面状态表（adr-023 D1）：group-pages 上报全量重建；句柄不透明，只作等值比对。 */
+  groupPages: GroupPageEntry[];
   /** 用户/助手文本轮 + 工具轮（assistant toolCalls 回声 + role:tool 观测）；system 注入每轮整段重建，不进历史。 */
   history: LlmMessage[];
   /** 客户端消息幂等状态；随会话持久化，服务重启后相同 messageId 不会重复启动回合。 */
@@ -43,6 +45,8 @@ export interface SessionStore {
   create(claims: IdentityClaims): SessionState;
   get(sessionId: string): SessionState | undefined;
   setContext(sessionId: string, url: string): void;
+  /** 整体覆写组页面状态表（group-pages 帧每帧全量重建，无增量语义）。 */
+  setGroupPages(sessionId: string, pages: GroupPageEntry[]): void;
   appendHistory(sessionId: string, message: LlmMessage): void;
   /** 整段替换会话历史（P0 瘦身在回合落盘边界产出的新历史经此写回）。 */
   setHistory(sessionId: string, history: LlmMessage[]): void;
@@ -79,6 +83,7 @@ export function createMemorySessionStore(): SessionStore {
         currentUrl: null,
         lastPackId: null,
         lastGenericOrigin: null,
+        groupPages: [],
         history: [],
         messageTurns: Object.create(null) as Record<string, 'pending' | 'complete'>,
       };
@@ -90,6 +95,9 @@ export function createMemorySessionStore(): SessionStore {
     },
     setContext(sessionId, url) {
       mustGet(sessionId).currentUrl = url;
+    },
+    setGroupPages(sessionId, pages) {
+      mustGet(sessionId).groupPages = pages;
     },
     appendHistory(sessionId, message) {
       mustGet(sessionId).history.push(message);
@@ -125,6 +133,7 @@ export function createMemorySessionStore(): SessionStore {
     restore(state) {
       sessions.set(state.sessionId, {
         ...state,
+        groupPages: state.groupPages ?? [],
         messageTurns: Object.assign(
           Object.create(null) as Record<string, 'pending' | 'complete'>,
           state.messageTurns ?? {},
@@ -138,6 +147,7 @@ export function createMemorySessionStore(): SessionStore {
 type SessionEvent =
   | { t: 'create'; sessionId: string; ownerSub: string; claims: IdentityClaims }
   | { t: 'context'; url: string }
+  | { t: 'group-pages'; pages: GroupPageEntry[] }
   | { t: 'history'; history: LlmMessage[] }
   | { t: 'claims'; claims: IdentityClaims }
   | { t: 'origin-claims'; origin: string; claims: IdentityClaims }
@@ -227,6 +237,7 @@ export function createPersistentSessionStore(
             currentUrl: null,
             lastPackId: null,
             lastGenericOrigin: null,
+            groupPages: [],
             history: [],
             messageTurns: Object.create(null) as Record<string, 'pending' | 'complete'>,
           };
@@ -234,6 +245,8 @@ export function createPersistentSessionStore(
           continue;
         } else if (event.t === 'context') {
           state.currentUrl = event.url;
+        } else if (event.t === 'group-pages') {
+          state.groupPages = event.pages;
         } else if (event.t === 'history') {
           state.history = event.history;
         } else if (event.t === 'claims') {
@@ -315,6 +328,15 @@ export function createPersistentSessionStore(
       inner.setContext(sessionId, url);
       touch(sessionId);
       append(sessionId, { t: 'context', url });
+    },
+    setGroupPages(sessionId, pages) {
+      const before = inner.get(sessionId)?.groupPages;
+      inner.setGroupPages(sessionId, pages);
+      touch(sessionId);
+      // 桥重建的兜底补帧可与现状态同内容；未变即不落盘，避免 jsonl 无谓膨胀。
+      if (before === undefined || JSON.stringify(before) !== JSON.stringify(pages)) {
+        append(sessionId, { t: 'group-pages', pages });
+      }
     },
     appendHistory(sessionId, message) {
       inner.appendHistory(sessionId, message);

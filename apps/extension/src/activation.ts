@@ -89,3 +89,6 @@ export const execNonceKeyForGroup = (groupId: number): string => 'za.execNonces.
 
 /** 自动扫描正在执行的轮次（{runId, automationId}）；storage.session 使 service worker 回收后仍保持单飞。 */
 export const autoScanRunKeyForGroup = (groupId: number): string => 'za.autoScanRun.g' + groupId;
+
+/** 组内页面句柄表（adr-023 D1）：tabId↔句柄映射的插件私有存根，任何字段不得进上行帧（U5）。 */
+export const pageHandlesKeyForGroup = (groupId: number): string => 'za.pageHandles.g' + groupId;

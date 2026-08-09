@@ -14,7 +14,10 @@ function base64Url(bytes: ArrayBuffer): string {
   return Buffer.from(bytes).toString('base64url');
 }
 
-async function signedFrame(now = 1_000): Promise<{ frame: ExecInstructionFrame; publicKey: string }> {
+async function signedFrame(
+  now = 1_000,
+  page?: string,
+): Promise<{ frame: ExecInstructionFrame; publicKey: string }> {
   const pair = (await webcrypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as unknown as CryptoKeyPair;
   const frame: ExecInstructionFrame = {
     type: 'exec-instruction',
@@ -25,6 +28,7 @@ async function signedFrame(now = 1_000): Promise<{ frame: ExecInstructionFrame; 
     ttl: 60_000,
     signature: '',
     toolCallId: 'call-1',
+    ...(page !== undefined ? { page } : {}),
     request: {
       kind: 'dom',
       expectedPageUrl: 'https://seller.example/chat/order-1',
@@ -42,6 +46,7 @@ async function signedFrame(now = 1_000): Promise<{ frame: ExecInstructionFrame; 
     expiresAt: frame.expiresAt,
     ttl: frame.ttl,
     toolCallId: frame.toolCallId,
+    ...(page !== undefined ? { page } : {}),
     request: frame.request,
   } as unknown as JsonValue);
   frame.signature = base64Url(
@@ -88,6 +93,31 @@ describe('exec-instruction 副作用前验证', () => {
     const { frame, publicKey } = await signedFrame();
     await expect(
       verifyExecInstruction(frame, publicKey, new Set(), 'current-sse-session', 2_000),
+    ).resolves.toEqual({ ok: false, error: 'instruction-invalid' });
+  });
+
+  it('带 page 的定向帧：page 入签名 payload 后验签通过（adr-023 D3）', async () => {
+    const { frame, publicKey } = await signedFrame(1_000, 'p2');
+    await expect(verifyExecInstruction(frame, publicKey, new Set(), 's1', 2_000)).resolves.toEqual({
+      ok: true,
+    });
+  });
+
+  it('篡改或剥除帧上 page（改投落点）：验签失败（负锚）', async () => {
+    const { frame, publicKey } = await signedFrame(1_000, 'p2');
+    await expect(
+      verifyExecInstruction({ ...frame, page: 'p9' }, publicKey, new Set(), 's1', 2_000),
+    ).resolves.toEqual({ ok: false, error: 'instruction-invalid' });
+    const { page: _stripped, ...rest } = frame;
+    await expect(
+      verifyExecInstruction(rest as ExecInstructionFrame, publicKey, new Set(), 's1', 2_000),
+    ).resolves.toEqual({ ok: false, error: 'instruction-invalid' });
+  });
+
+  it('给缺省帧塞 page（伪造定向）：验签失败（负锚）', async () => {
+    const { frame, publicKey } = await signedFrame();
+    await expect(
+      verifyExecInstruction({ ...frame, page: 'p2' }, publicKey, new Set(), 's1', 2_000),
     ).resolves.toEqual({ ok: false, error: 'instruction-invalid' });
   });
 });

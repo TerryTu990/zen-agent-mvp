@@ -11,6 +11,7 @@ import type { IdentityClaims } from './identity-claims.js';
 import type {
   ExecInstructionFrame,
   ExecResultFrame,
+  GroupPageEntry,
   SnapshotElement,
   SnapshotEvidence,
 } from './client-access-layer.js';
@@ -409,10 +410,18 @@ export interface GateDecisionInput extends PackScopeInput {
   toolId: string;
   params: JsonObject;
   claims: IdentityClaims;
-  /** dom 工具必需（缺失即 deny：未观察不操作）；http/server 工具忽略。 */
+  /**
+   * dom 工具的判定上下文（未观察不操作）；http/server 工具忽略。
+   * 定向调用（params.page 有值，adr-023 D3）时须为目标页定向快照的上下文；定向单步 navigate 批次免缺省即 deny 语义。
+   */
   domContext?: DomGateContext;
   /** 本轮定格的 L2 生效面；缺省 = 无 L2 参与（纯静态分级判定）。 */
   userConfig?: GateUserConfigInput;
+  /**
+   * 会话组页面状态表快照（adr-023 D3 定向目标解析基准）：句柄只作等值比对（U5）。
+   * params.page 有值而本表缺省/未命中一律拒签（U7 fail-closed，禁回退活跃页）；无 page 的调用不消费本表。
+   */
+  groupPages?: GroupPageEntry[];
 }
 
 /** 判定结果：分级矩阵 + 身份/实参校验，任一不过即 deny（fail-closed，U7）。 */
@@ -428,10 +437,12 @@ export interface IssueExecInstructionInput extends PackScopeInput {
   params: JsonObject;
   /** 已验签身份：adapter 模板可经 {{hostUserId}} 等占位注入身份到请求头/URL/体（身份优先于 params，防工具冒充）。 */
   claims: IdentityClaims;
-  /** dom 工具必需：签发是治理终点，签名前独立重校验（不依赖 decide 已通过的假设，U7）。 */
+  /** dom 工具必需：签发是治理终点，签名前独立重校验（不依赖 decide 已通过的假设，U7）；定向语义同 GateDecisionInput.domContext。 */
   domContext?: DomGateContext;
   /** 本轮定格的 L2 生效面（与 decide 同一冻结值）；缺省 = 无 L2 参与。 */
   userConfig?: GateUserConfigInput;
+  /** 会话组页面状态表快照：签发前独立重解析定向目标（语义同 GateDecisionInput.groupPages，U7 封 TOCTOU）。 */
+  groupPages?: GroupPageEntry[];
 }
 
 export interface AcceptExecResultInput {

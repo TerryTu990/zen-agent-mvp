@@ -54,6 +54,7 @@ export async function verifyExecInstruction(
       expiresAt: frame.expiresAt,
       ttl: frame.ttl,
       toolCallId: frame.toolCallId,
+      ...(frame.page !== undefined ? { page: frame.page } : {}),
       request: frame.request,
     } as unknown as JsonValue);
     const valid = await crypto.subtle.verify(

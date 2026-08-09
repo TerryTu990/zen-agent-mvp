@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { decideBackgroundNavigate, decideNavigateTarget } from '../src/navigate-target.js';
+import {
+  decideBackgroundNavigate,
+  decideNavigateTarget,
+  decideTargetedNavigate,
+} from '../src/navigate-target.js';
 import type { DownstreamFrame, ExecInstructionFrame } from '../src/frames.js';
+import type { PageHandleTable } from '../src/page-handles.js';
 
 describe('decideNavigateTarget：navigate 目标页复用决策', () => {
   it('组内已有完全相同 URL 的页：仅激活，不新开也不重载', () => {
@@ -81,7 +86,7 @@ describe('decideNavigateTarget：navigate 目标页复用决策', () => {
   });
 });
 
-function execFrame(request: ExecInstructionFrame['request']): ExecInstructionFrame {
+function execFrame(request: ExecInstructionFrame['request'], page?: string): ExecInstructionFrame {
   return {
     type: 'exec-instruction',
     sessionId: 's-1',
@@ -91,6 +96,7 @@ function execFrame(request: ExecInstructionFrame['request']): ExecInstructionFra
     ttl: 60_000,
     signature: 'sig',
     toolCallId: 'call-1',
+    ...(page !== undefined ? { page } : {}),
     request,
   };
 }
@@ -178,5 +184,66 @@ describe('decideBackgroundNavigate：无 content 成员时的 background 直执�
       selector: '#a',
     };
     expect(decideBackgroundNavigate(guide, 0)).toEqual({ execute: false });
+  });
+});
+
+describe('decideTargetedNavigate：silent 页定向 navigate 的直执行判定（adr-023 D3）', () => {
+  const table: PageHandleTable = { nextSeq: 3, byTab: { '101': 'p1', '102': 'p2' } };
+  const navigateRequest: ExecInstructionFrame['request'] = {
+    kind: 'dom',
+    steps: [{ action: 'navigate', url: 'https://example.com/a' }],
+  };
+
+  it('获签的单步 navigate 且句柄命中：落点即句柄解析出的那一个 tab', () => {
+    const frame = execFrame(navigateRequest, 'p2');
+    expect(decideTargetedNavigate(frame, table)).toEqual({
+      execute: true,
+      frame,
+      url: 'https://example.com/a',
+      tabId: 102,
+    });
+  });
+
+  it('无 page 的帧不走定向直执行（缺省路径归 decideBackgroundNavigate）', () => {
+    expect(decideTargetedNavigate(execFrame(navigateRequest), table)).toEqual({ execute: false });
+  });
+
+  it('句柄未命中（退役/从未存在）：拒绝，丢帧由服务端超时回喂', () => {
+    expect(decideTargetedNavigate(execFrame(navigateRequest, 'p9'), table)).toEqual({
+      execute: false,
+    });
+  });
+
+  it('非单步 navigate 形状拒绝：不扩大直执行面', () => {
+    expect(
+      decideTargetedNavigate(
+        execFrame({ kind: 'dom', steps: [{ action: 'click', ref: 'e1' }] }, 'p2'),
+        table,
+      ),
+    ).toEqual({ execute: false });
+    expect(
+      decideTargetedNavigate(
+        execFrame(
+          {
+            kind: 'dom',
+            steps: [{ action: 'navigate', url: 'https://example.com/a' }],
+            expectedPageUrl: 'https://example.com/list',
+          },
+          'p2',
+        ),
+        table,
+      ),
+    ).toEqual({ execute: false });
+  });
+
+  it('guide-action 定向到无端口成员：拒绝（纯引导静默降级）', () => {
+    const guide: DownstreamFrame = {
+      type: 'guide-action',
+      sessionId: 's-1',
+      action: 'highlight',
+      selector: '#a',
+      page: 'p2',
+    };
+    expect(decideTargetedNavigate(guide, table)).toEqual({ execute: false });
   });
 });

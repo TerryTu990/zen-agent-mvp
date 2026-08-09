@@ -9,6 +9,9 @@ import type {
   DownstreamFrame,
   ExecInstructionFrame,
   ExecResultFrame,
+  GroupPageEntry,
+  GroupPagesFrame,
+  GroupPageStatus,
   GuideActionFrame,
   GuideActionKind,
   HitlDecisionFrame,
@@ -72,6 +75,7 @@ const upstreamMirror: Record<UpstreamFrame['type'], true> = {
   'hitl-decision': true,
   'exec-result': true,
   'snapshot-report': true,
+  'group-pages': true,
   'config-decision': true,
 };
 
@@ -161,6 +165,10 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
     }),
   },
   {
+    def: 'groupPages',
+    keys: keysOf<GroupPagesFrame>({ type: true, sessionId: true, pages: true }),
+  },
+  {
     def: 'configDecision',
     keys: keysOf<ConfigDecisionFrame>({
       type: true, sessionId: true, draftId: true, decision: true,
@@ -184,25 +192,26 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
     def: 'hitlRequest',
     keys: keysOf<HitlRequestFrame>({
       type: true, sessionId: true, hitlId: true, toolCallId: true, toolId: true, reason: true, params: true,
+      targetPage: true, targetUrl: true,
     }),
   },
   {
     def: 'execInstruction',
     keys: keysOf<ExecInstructionFrame>({
       type: true, sessionId: true, toolCallId: true, nonce: true, issuedAt: true,
-      expiresAt: true, ttl: true, signature: true, request: true,
+      expiresAt: true, ttl: true, signature: true, page: true, request: true,
     }),
   },
   {
     def: 'guideAction',
     keys: keysOf<GuideActionFrame>({
-      type: true, sessionId: true, action: true, selector: true, ref: true, message: true,
+      type: true, sessionId: true, action: true, selector: true, ref: true, message: true, page: true,
     }),
   },
   {
     def: 'snapshotRequest',
     keys: keysOf<SnapshotRequestFrame>({
-      type: true, sessionId: true, requestId: true, evidenceRules: true, includeText: true,
+      type: true, sessionId: true, requestId: true, page: true, evidenceRules: true, includeText: true,
     }),
   },
   {
@@ -253,6 +262,19 @@ describe('frames.ts 与 C3 schema 的闭集同构', () => {
   it('dom 步骤动作闭集一致', () => {
     expect(Object.keys(domStepActionMirror).sort()).toEqual(
       [...(defOf('domStep').properties.action?.enum ?? [])].sort(),
+    );
+  });
+
+  // group-pages 条目是嵌套 items 定义，不在逐帧顶层属性对账内，单独钉死属性集与状态闭集。
+  it('group-pages 条目属性集与状态闭集一致', () => {
+    const pagesDef = (defOf('groupPages').properties as Record<string, unknown>).pages as {
+      items: { properties: Record<string, { enum?: string[] }> };
+    };
+    const entryKeys = keysOf<GroupPageEntry>({ handle: true, url: true, title: true, status: true });
+    expect([...entryKeys].sort()).toEqual(Object.keys(pagesDef.items.properties).sort());
+    const statusMirror: Record<GroupPageStatus, true> = { active: true, background: true, silent: true };
+    expect(Object.keys(statusMirror).sort()).toEqual(
+      [...(pagesDef.items.properties['status']?.enum ?? [])].sort(),
     );
   });
 

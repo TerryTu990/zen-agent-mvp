@@ -5,19 +5,35 @@
  * toolCall.name 为快照工具（非快照工具观测如 page-operate 据此原样保留）。
  */
 import type { LlmMessage } from '@zen-agent/contracts';
+import { PAGE_OBS_MARKER } from './compress.js';
 
 export const SNAPSHOT_TOOL_NAME = 'page_snapshot';
 
-/** 存根内容：N=该快照元素数（解析本模块自建的观测 JSON 得出，非启发式猜测）。 */
+const STALE_STUB_PREFIX = '[快照已过期：';
+
+/**
+ * 存根内容：N=该快照元素数（解析本模块自建的观测 JSON 得出，非启发式猜测）。
+ * 定向快照观测首行是页标注（`[来自 …]`），存根保留该行——过期存根仍知来源页。
+ * 已是存根的观测原样返回（幂等）：存根体非 JSON，重走解析会把元素计数冲成 0。
+ */
 function snapshotStub(content: string): string {
+  let tag: string | null = null;
+  let body = content;
+  if (content.startsWith(PAGE_OBS_MARKER)) {
+    const newlineIdx = content.indexOf('\n');
+    tag = newlineIdx === -1 ? content : content.slice(0, newlineIdx);
+    body = newlineIdx === -1 ? '' : content.slice(newlineIdx + 1);
+  }
+  if (body.startsWith(STALE_STUB_PREFIX)) return content;
   let count = 0;
   try {
-    const parsed = JSON.parse(content) as { elements?: unknown };
+    const parsed = JSON.parse(body) as { elements?: unknown };
     if (Array.isArray(parsed.elements)) count = parsed.elements.length;
   } catch {
     count = 0;
   }
-  return `[快照已过期：${count} 元素，refs 失效]`;
+  const stub = `[快照已过期：${count} 元素，refs 失效]`;
+  return tag === null ? stub : `${tag}\n${stub}`;
 }
 
 /**

@@ -232,6 +232,24 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         detail.className = 'za-hitl-detail';
         detail.textContent = domTask === null ? summarizeParams(frame.params) : domTask.detail;
 
+        // 目标页/目标 URL 只信服务端组装字段，不从 params 做任何展示推断（U7/U8：客户端零判定）。
+        let targetUrlLine: HTMLElement | null = null;
+        if (frame.targetUrl !== undefined) {
+          targetUrlLine = document.createElement('div');
+          targetUrlLine.className = 'za-hitl-target-url';
+          targetUrlLine.textContent = `目标地址：${frame.targetUrl}`;
+        }
+        let targetPageLine: HTMLElement | null = null;
+        if (frame.targetPage !== undefined) {
+          targetPageLine = document.createElement('div');
+          targetPageLine.className = 'za-hitl-target-page';
+          const pageTitle = frame.targetPage.title ?? '（无标题）';
+          targetPageLine.textContent =
+            frame.targetPage.origin === undefined
+              ? `目标页：${pageTitle}`
+              : `目标页：${pageTitle}（${frame.targetPage.origin}）`;
+        }
+
         const planList = domTask !== null && domTask.plan.length > 0 ? document.createElement('ol') : null;
         if (planList !== null && domTask !== null) {
           planList.className = 'za-hitl-plan';
@@ -261,6 +279,8 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         actions.append(approve, reject);
 
         card.append(title, detail);
+        if (targetUrlLine !== null) card.append(targetUrlLine);
+        if (targetPageLine !== null) card.append(targetPageLine);
         if (planList !== null) card.append(planList);
         if (hint !== null) card.append(hint);
         if (frame.reason !== undefined) {

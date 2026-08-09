@@ -1,6 +1,6 @@
 import { createPublicKey, verify as verifySignature } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { ExecResultFrame, IdentityClaims, ToolDefinition } from '@zen-agent/contracts';
+import type { ExecResultFrame, GroupPageEntry, IdentityClaims, ToolDefinition } from '@zen-agent/contracts';
 import { OPEN_URL_TOOL_ID, SITE_NAVIGATE_TOOL_ID } from '@zen-agent/contracts';
 import {
   computeExecSignature,
@@ -2071,6 +2071,390 @@ describe('toolgate — 内建 open_url 通用导航（generic 配套，每次必
     });
     expect(bad.ok).toBe(false);
     expect(bad.error).toBe('invalid-result');
+  });
+});
+
+describe('toolgate adr-023 D3 — 定向副作用（目标页解析/围栏/通道分级/签名覆盖 page）', () => {
+  /** 组页面状态表夹具：active/background/silent 三态 + 越围栏页 + 异形句柄页。 */
+  const groupPages: GroupPageEntry[] = [
+    { handle: 'p1', url: 'https://seller.example/console/orders', status: 'active' },
+    { handle: 'p2', url: 'https://seller.example/console/token', status: 'background' },
+    { handle: 'p4', url: 'https://seller.example/console/inbox', status: 'silent' },
+    { handle: 'p7', url: 'https://seller.example/account/settings', status: 'background' },
+    { handle: 'p9', url: 'https://other.example/console/x', status: 'background' },
+    { handle: 'workspace-view-00c3', url: 'https://seller.example/console/alt', status: 'background' },
+  ];
+  const refBatch = {
+    task: '同站后台页提交',
+    steps: [{ action: 'click', ref: 'za-2' }],
+    summary: '点击发送',
+  };
+  const navigateBatch = {
+    task: '激活静默页',
+    steps: [{ action: 'navigate', url: 'https://seller.example/console/orders' }],
+    summary: '导航激活',
+  };
+  const domBase = {
+    sessionId: 's-d3',
+    toolCallId: 'c-d3',
+    toolId: domTool.id,
+    claims: validClaims,
+    packOrigin: 'https://seller.example',
+    domContext,
+    groupPages,
+  };
+
+  it('定向 background 同围栏页 ref 批次 → allow；签发帧带 page 且签名覆盖 page', async () => {
+    const port = makePort();
+    const decision = await port.decide({ ...domBase, params: { ...refBatch, page: 'p2' } });
+    expect(decision).toEqual({ verdict: 'allow' });
+    const frame = await port.issueExecInstruction({ ...domBase, params: { ...refBatch, page: 'p2' } });
+    expect(frame.page).toBe('p2');
+    const signedPayload = {
+      sessionId: frame.sessionId,
+      nonce: frame.nonce,
+      issuedAt: frame.issuedAt,
+      expiresAt: frame.expiresAt,
+      ttl: frame.ttl,
+      toolCallId: frame.toolCallId,
+      page: 'p2',
+      request: frame.request,
+    };
+    expect(frame.signature).toBe(computeExecSignature(SIGN_FIXTURE, signedPayload));
+    // 剥掉 page 复算得不同签名：落点受签名保护，降级/篡改即验签失败。
+    const { page: _page, ...withoutPage } = signedPayload;
+    expect(frame.signature).not.toBe(computeExecSignature(SIGN_FIXTURE, withoutPage));
+  });
+
+  it('缺省无 page：签发帧不含 page 键，签名 payload 与现状逐字节一致', async () => {
+    const frame = await makePort().issueExecInstruction({ ...domBase, params: refBatch });
+    expect('page' in frame).toBe(false);
+    expect(frame.signature).toBe(
+      computeExecSignature(SIGN_FIXTURE, {
+        sessionId: frame.sessionId,
+        nonce: frame.nonce,
+        issuedAt: frame.issuedAt,
+        expiresAt: frame.expiresAt,
+        ttl: frame.ttl,
+        toolCallId: frame.toolCallId,
+        request: frame.request,
+      }),
+    );
+  });
+
+  it('定向 ref 批次签发：request 钉状态表目标页 URL（执行侧副作用前就地校验的时间窗防线）', async () => {
+    const port = makePort();
+    const frame = await port.issueExecInstruction({ ...domBase, params: { ...refBatch, page: 'p2' } });
+    expect(frame.request).toEqual({
+      kind: 'dom',
+      expectedPageUrl: 'https://seller.example/console/token',
+      steps: [{ action: 'click', ref: 'za-2' }],
+    });
+    // 缺省（无 page）路径逐字节不变：不钉任何页面上下文字段。
+    const plain = await port.issueExecInstruction({
+      ...domBase,
+      toolCallId: 'c-d3-plain',
+      params: refBatch,
+    });
+    expect(plain.request).toEqual({ kind: 'dom', steps: [{ action: 'click', ref: 'za-2' }] });
+  });
+
+  it('bounded-fulfillment 已预占调用在签发时带 page → 显式拒签（签发终点与 decide 同口径，不静默忽略）', async () => {
+    const port = makePort({
+      now: () => 1_000_000,
+      fulfillmentPolicies: [
+        {
+          id: 'seller-d3-bounded',
+          accountId: 'host-1',
+          toolId: boundedFulfillmentTool.id,
+          siteOrigin: 'https://seller.example',
+          productIds: ['product-a'],
+          validUntil: 2_000_000,
+          maxCodesPerOrder: 1,
+          dailyOrderLimit: 1,
+          dayBoundaryOffsetMinutes: 480,
+        },
+      ],
+    });
+    const { authorizationId } = await port.preauthorizeFulfillment({
+      accountId: 'host-1',
+      toolId: boundedFulfillmentTool.id,
+      productId: 'product-a',
+      orderId: 'order-1',
+      quantity: 1,
+      pageUrl: domContext.url,
+      expiresAt: 1_500_000,
+    });
+    const { intentId } = await port.prepareFulfillmentIntent({
+      authorizationId,
+      accountId: 'host-1',
+      toolId: boundedFulfillmentTool.id,
+      productId: 'product-a',
+      orderId: 'order-1',
+      quantity: 1,
+      pageUrl: domContext.url,
+      pageInstanceId: 'page-instance-1',
+      messageRef: 'za-1',
+      sendRef: 'za-2',
+      message: '固定履约内容',
+      receiptEvidenceId: 'message-receipts',
+      receiptBaselineCount: 1,
+      receiptSuccessStatuses: ['未读'],
+      expiresAt: 1_500_000,
+    });
+    const call = {
+      sessionId: 's-d3',
+      toolCallId: 'c-d3-bounded-issue',
+      toolId: boundedFulfillmentTool.id,
+      params: { intentId },
+      claims: validClaims,
+      domContext,
+      groupPages,
+    };
+    await expect(port.decide(call)).resolves.toEqual({ verdict: 'allow' });
+    await expect(
+      port.issueExecInstruction({ ...call, params: { intentId, page: 'p2' } }),
+    ).rejects.toThrow(/不支持定向/);
+    // 拒的是定向不是这次调用：预占未被消耗，缺省参数仍按可信意图签发。
+    const frame = await port.issueExecInstruction(call);
+    expect('page' in frame).toBe(false);
+    expect(frame.request).toEqual({
+      kind: 'dom',
+      expectedPageUrl: domContext.url,
+      expectedPageInstanceId: 'page-instance-1',
+      steps: [
+        { action: 'fill', ref: 'za-1', value: '固定履约内容' },
+        { action: 'click', ref: 'za-2' },
+      ],
+    });
+  });
+
+  it('句柄未命中状态表 → deny page-not-in-group；未传 groupPages 而带 page → 同拒（fail-closed 禁回退活跃页）', async () => {
+    const port = makePort();
+    const miss = await port.decide({ ...domBase, params: { ...refBatch, page: 'p404' } });
+    expect(miss).toEqual({ verdict: 'deny', reason: 'page-not-in-group' });
+    const { groupPages: _table, ...noTable } = domBase;
+    const noTableDecision = await port.decide({ ...noTable, params: { ...refBatch, page: 'p2' } });
+    expect(noTableDecision).toEqual({ verdict: 'deny', reason: 'page-not-in-group' });
+    await expect(
+      port.issueExecInstruction({ ...domBase, params: { ...refBatch, page: 'p404' } }),
+    ).rejects.toThrow(/page-not-in-group/);
+  });
+
+  it('目标页 origin 越出 pack 围栏 → deny target-page-fence-violation（定向不扩白名单）', async () => {
+    const decision = await makePort().decide({ ...domBase, params: { ...refBatch, page: 'p9' } });
+    expect(decision).toEqual({ verdict: 'deny', reason: 'target-page-fence-violation' });
+  });
+
+  it('目标页路径越出 pathPrefixes 围栏 → deny target-page-fence-violation', async () => {
+    const decision = await makePort().decide({ ...domBase, params: { ...refBatch, page: 'p7' } });
+    expect(decision).toEqual({ verdict: 'deny', reason: 'target-page-fence-violation' });
+  });
+
+  it('无 packOrigin（无 site 围栏的 pack）定向 → deny target-page-fence-violation；缺省调用不受影响', async () => {
+    const port = makePort();
+    const { packOrigin: _origin, ...noPackOrigin } = domBase;
+    expect(await port.decide({ ...noPackOrigin, params: { ...refBatch, page: 'p2' } })).toEqual({
+      verdict: 'deny',
+      reason: 'target-page-fence-violation',
+    });
+    await expect(
+      port.issueExecInstruction({ ...noPackOrigin, params: { ...refBatch, page: 'p2' } }),
+    ).rejects.toThrow(/target-page-fence-violation/);
+    expect(await port.decide({ ...noPackOrigin, params: refBatch })).toEqual({ verdict: 'allow' });
+  });
+
+  it('generic pack 定向：同绑定 origin 的组内页可签，他源页 deny（围栏基准=激活时绑定的活跃页 origin）', async () => {
+    const genericDomTool: ToolDefinition = {
+      ...domTool,
+      id: 'browse.page-operate',
+      adapter: { kind: 'dom', pathPrefixes: ['/'] },
+    };
+    const port = createToolGatePort({ tools: [genericDomTool], signingSecret: SIGN_FIXTURE });
+    const genericPages: GroupPageEntry[] = [
+      { handle: 'p1', url: 'https://blog.example/posts/1', status: 'active' },
+      { handle: 'p2', url: 'https://blog.example/posts/2', status: 'background' },
+      { handle: 'p3', url: 'https://other.example/posts/9', status: 'background' },
+    ];
+    const base = {
+      sessionId: 's-generic',
+      toolCallId: 'c-generic',
+      toolId: genericDomTool.id,
+      claims: validClaims,
+      packOrigin: 'https://blog.example',
+      domContext: {
+        refs: ['za-2'],
+        path: '/posts/2',
+        origin: 'https://blog.example',
+        url: 'https://blog.example/posts/2',
+        pageInstanceId: 'page-instance-2',
+      },
+      groupPages: genericPages,
+    };
+    expect(await port.decide({ ...base, params: { ...refBatch, page: 'p2' } })).toEqual({
+      verdict: 'allow',
+    });
+    const frame = await port.issueExecInstruction({ ...base, params: { ...refBatch, page: 'p2' } });
+    expect(frame.page).toBe('p2');
+    expect(await port.decide({ ...base, params: { ...refBatch, page: 'p3' } })).toEqual({
+      verdict: 'deny',
+      reason: 'target-page-fence-violation',
+    });
+    await expect(
+      port.issueExecInstruction({ ...base, params: { ...refBatch, page: 'p3' } }),
+    ).rejects.toThrow(/target-page-fence-violation/);
+  });
+
+  it('silent 页定向 ref 批次 → 签发前拒签并回喂导航激活引导（通道分级）', async () => {
+    const port = makePort();
+    const decision = await port.decide({ ...domBase, params: { ...refBatch, page: 'p4' } });
+    expect(decision.verdict).toBe('deny');
+    expect(decision.reason).toContain('目标页不可交互');
+    expect(decision.reason).toContain('导航激活');
+    await expect(
+      port.issueExecInstruction({ ...domBase, params: { ...refBatch, page: 'p4' } }),
+    ).rejects.toThrow(/目标页不可交互/);
+  });
+
+  it('silent 页定向单步 navigate → 免 domContext 可签，帧带 page（P1 background 直执行通道）', async () => {
+    const port = makePort();
+    const { domContext: _ctx, ...noContext } = domBase;
+    const decision = await port.decide({ ...noContext, params: { ...navigateBatch, page: 'p4' } });
+    expect(decision).toEqual({ verdict: 'allow' });
+    const frame = await port.issueExecInstruction({ ...noContext, params: { ...navigateBatch, page: 'p4' } });
+    expect(frame.page).toBe('p4');
+    expect(frame.request).toEqual({
+      kind: 'dom',
+      steps: [{ action: 'navigate', url: 'https://seller.example/console/orders' }],
+    });
+  });
+
+  it('定向 ref 批次缺 domContext → deny dom-context-missing（未观察不操作，定向不豁免）', async () => {
+    const { domContext: _ctx, ...noContext } = domBase;
+    const decision = await makePort().decide({ ...noContext, params: { ...refBatch, page: 'p2' } });
+    expect(decision).toEqual({ verdict: 'deny', reason: 'dom-context-missing' });
+  });
+
+  it('page 形状非法（非字符串/空串）→ deny invalid-params（平台增广 schema 拦截）', async () => {
+    const port = makePort();
+    expect(await port.decide({ ...domBase, params: { ...refBatch, page: 7 } })).toEqual({
+      verdict: 'deny',
+      reason: 'invalid-params',
+    });
+    expect(await port.decide({ ...domBase, params: { ...refBatch, page: '' } })).toEqual({
+      verdict: 'deny',
+      reason: 'invalid-params',
+    });
+  });
+
+  it('bounded-fulfillment 工具带 page → deny（固定步骤绑定活跃页意图，定向不支持）', async () => {
+    const decision = await makePort().decide({
+      sessionId: 's-d3',
+      toolCallId: 'c-d3-bounded',
+      toolId: boundedFulfillmentTool.id,
+      params: { intentId: 'i-1', page: 'p2' },
+      claims: validClaims,
+      domContext,
+      groupPages,
+    });
+    expect(decision.verdict).toBe('deny');
+  });
+
+  it('异形句柄等值命中即可定向（服务端不解析句柄结构，U5）', async () => {
+    const decision = await makePort().decide({
+      ...domBase,
+      params: { ...refBatch, page: 'workspace-view-00c3' },
+    });
+    // 状态表命中 + 围栏通过；ref 校验仍按 domContext（活跃页快照 URL 与该页不同不影响本断言目标）。
+    expect(decision).toEqual({ verdict: 'allow' });
+  });
+
+  it('内建 site_navigate 带 page：命中任意组内页（含 silent/他 origin 页）→ hitl；未命中 → deny', async () => {
+    const port = makePort();
+    const base = {
+      sessionId: 's-d3',
+      toolCallId: 'c-nav',
+      toolId: SITE_NAVIGATE_TOOL_ID,
+      claims: validClaims,
+      groupPages,
+    };
+    const url = 'https://seller.example/console/orders';
+    expect(await port.decide({ ...base, params: { url, page: 'p4' } })).toEqual({ verdict: 'hitl' });
+    expect(await port.decide({ ...base, params: { url, page: 'p9' } })).toEqual({ verdict: 'hitl' });
+    expect(await port.decide({ ...base, params: { url, page: 'p404' } })).toEqual({
+      verdict: 'deny',
+      reason: 'page-not-in-group',
+    });
+    const frame = await port.issueExecInstruction({ ...base, params: { url, page: 'p4' } });
+    expect(frame.page).toBe('p4');
+    await expect(
+      port.issueExecInstruction({ ...base, params: { url, page: 'p404' } }),
+    ).rejects.toThrow(/page-not-in-group/);
+  });
+
+  it('内建 open_url 带 page：命中组内页 → hitl；未命中 → deny；签发帧带 page', async () => {
+    const port = makePort();
+    const base = {
+      sessionId: 's-d3',
+      toolCallId: 'c-open',
+      toolId: OPEN_URL_TOOL_ID,
+      claims: validClaims,
+      groupPages,
+    };
+    const url = 'https://anywhere.example/landing';
+    expect(await port.decide({ ...base, params: { url, page: 'p4' } })).toEqual({ verdict: 'hitl' });
+    expect(await port.decide({ ...base, params: { url, page: 'p404' } })).toEqual({
+      verdict: 'deny',
+      reason: 'page-not-in-group',
+    });
+    const frame = await port.issueExecInstruction({ ...base, params: { url, page: 'p4' } });
+    expect(frame.page).toBe('p4');
+  });
+
+  it('pack dom 工具 params 自声明 page（平台保留参数）→ 载入期拒启', () => {
+    const conflictingTool: ToolDefinition = {
+      ...domTool,
+      id: 'order-list.page-conflict',
+      params: {
+        type: 'object',
+        required: ['task', 'steps'],
+        properties: { task: { type: 'string' }, steps: { type: 'array' }, page: { type: 'string' } },
+        additionalProperties: false,
+      },
+    };
+    expect(() =>
+      createToolGatePort({ tools: [conflictingTool], signingSecret: SIGN_FIXTURE }),
+    ).toThrow(/保留参数 page/);
+  });
+
+  it('bounded-fulfillment dom 工具自声明 page → 同样载入期拒启（该类不增广 page，仍是平台保留参数）', () => {
+    const conflictingBounded: ToolDefinition = {
+      ...boundedFulfillmentTool,
+      id: 'xianyu.send-delivery-page-conflict',
+      params: {
+        type: 'object',
+        required: ['intentId'],
+        properties: { intentId: { type: 'string' }, page: { type: 'string' } },
+        additionalProperties: false,
+      },
+    };
+    expect(() =>
+      createToolGatePort({ tools: [conflictingBounded], signingSecret: SIGN_FIXTURE }),
+    ).toThrow(/保留参数 page/);
+    // 不声明 page 的 bounded 工具照旧可启动：增广面不变（params 仍不含 page，带 page 调用由 schema 拦）。
+    expect(() =>
+      createToolGatePort({ tools: [boundedFulfillmentTool], signingSecret: SIGN_FIXTURE }),
+    ).not.toThrow();
+  });
+
+  it('缺省调用回归：不带 page 的 decide 判定与围栏语义不变', async () => {
+    const port = makePort();
+    expect(await port.decide({ ...domBase, params: refBatch })).toEqual({ verdict: 'allow' });
+    const { domContext: _ctx, ...noContext } = domBase;
+    expect(await port.decide({ ...noContext, params: refBatch })).toEqual({
+      verdict: 'deny',
+      reason: 'dom-context-missing',
+    });
   });
 });
 

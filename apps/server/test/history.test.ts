@@ -64,6 +64,65 @@ describe('pruneStaleSnapshots（P0 旧观测瘦身）', () => {
     expect(snap1.content).toBe('[快照已过期：2 元素，refs 失效]');
   });
 
+  it('定向快照观测（首行页标注）：存根保留标注行且元素计数正确', () => {
+    const tag = '[来自 workspace-view-00c3 · https://mail.126.com]';
+    const elements = Array.from({ length: 3 }, (_, i) => ({ ref: `za-${i}`, role: 'button', label: `el-${i}` }));
+    const history: LlmMessage[] = [
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call_directed', name: SNAPSHOT_TOOL_NAME, params: { page: 'workspace-view-00c3' } }],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_directed',
+        content: `${tag}\n${JSON.stringify({ url: 'u', title: 't', elements })}`,
+      },
+      ...snapshotTurn('call_snap_latest', 1),
+    ];
+    const pruned = pruneStaleSnapshots(history);
+    const stale = pruned.find((m) => m.role === 'tool' && m.toolCallId === 'call_directed')!;
+    expect(stale.content).toBe(`${tag}\n[快照已过期：3 元素，refs 失效]`);
+  });
+
+  it('逐回合重复瘦身幂等：已存根观测原样保留，元素计数不被冲成 0（含页标注存根）', () => {
+    const tag = '[来自 workspace-view-00c3 · https://mail.126.com]';
+    const directedElements = Array.from({ length: 4 }, (_, i) => ({
+      ref: `za-${i}`,
+      role: 'link',
+      label: `el-${i}`,
+    }));
+    const directed: LlmMessage[] = [
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'call_directed', name: SNAPSHOT_TOOL_NAME, params: { page: 'workspace-view-00c3' } },
+        ],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_directed',
+        content: `${tag}\n${JSON.stringify({ url: 'u', title: 't', elements: directedElements })}`,
+      },
+    ];
+    const first = pruneStaleSnapshots([
+      ...snapshotTurn('call_snap_1', 3),
+      ...directed,
+      ...snapshotTurn('call_snap_2', 5),
+    ]);
+    // 落盘边界每回合都执行：新回合追加快照后再瘦身，前轮存根须原样通过
+    const second = pruneStaleSnapshots([...first, ...snapshotTurn('call_snap_3', 7)]);
+    const contentOf = (id: string): string =>
+      second.find((m) => m.role === 'tool' && m.toolCallId === id)!.content;
+    expect(contentOf('call_snap_1')).toBe('[快照已过期：3 元素，refs 失效]');
+    expect(contentOf('call_directed')).toBe(`${tag}\n[快照已过期：4 元素，refs 失效]`);
+    expect(contentOf('call_snap_2')).toBe('[快照已过期：5 元素，refs 失效]');
+    expect(
+      (JSON.parse(contentOf('call_snap_3')) as { elements: unknown[] }).elements,
+    ).toHaveLength(7);
+  });
+
   it('回合内不回改：不 mutate 入参，只在返回的新数组里替换', () => {
     const turn1 = snapshotTurn('call_snap_1', 3);
     const history: LlmMessage[] = [...turn1, ...snapshotTurn('call_snap_2', 1)];

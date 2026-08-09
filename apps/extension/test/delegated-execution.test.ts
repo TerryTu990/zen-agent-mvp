@@ -56,6 +56,54 @@ describe('delegated-execution 页面环境代执行', () => {
     expect(runs).toBe(0);
   });
 
+  it('只钉 URL 的定向指令：当前页 URL 一致即执行（未钉的页面实例维度不参与判定）', async () => {
+    let runs = 0;
+    const exec = createDelegatedExecutor(
+      fetch,
+      {
+        run: async () => {
+          runs += 1;
+          return { ok: true, body: { completedSteps: 1 } };
+        },
+      },
+      () => ({ url: 'https://seller.example/console/token', pageInstanceId: 'page-x' }),
+      () => 2_000,
+    );
+    const result = await exec.execute(
+      instruction({
+        kind: 'dom',
+        expectedPageUrl: 'https://seller.example/console/token',
+        steps: [{ action: 'click', ref: 'za-2' }],
+      }),
+    );
+    expect(result).toMatchObject({ ok: true });
+    expect(runs).toBe(1);
+  });
+
+  it('只钉 URL 的定向指令：签发后本页已导航走样 → 副作用前拒绝', async () => {
+    let runs = 0;
+    const exec = createDelegatedExecutor(
+      fetch,
+      {
+        run: async () => {
+          runs += 1;
+          return { ok: true, body: { completedSteps: 1 } };
+        },
+      },
+      () => ({ url: 'https://seller.example/console/other', pageInstanceId: 'page-x' }),
+      () => 2_000,
+    );
+    const result = await exec.execute(
+      instruction({
+        kind: 'dom',
+        expectedPageUrl: 'https://seller.example/console/token',
+        steps: [{ action: 'click', ref: 'za-2' }],
+      }),
+    );
+    expect(result).toMatchObject({ ok: false, error: 'context-mismatch' });
+    expect(runs).toBe(0);
+  });
+
   it('成功：以用户会话 fetch，解析 JSON body，回传 ok/status/body（无 error）', async () => {
     const capture: Capture = { url: undefined, init: undefined };
     const fetchImpl = ((url: unknown, init?: RequestInit) => {

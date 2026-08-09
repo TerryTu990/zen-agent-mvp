@@ -43,6 +43,9 @@ export type {
   ToolCardStatus,
   GuideActionKind,
   ContextReportFrame,
+  GroupPageStatus,
+  GroupPageEntry,
+  GroupPagesFrame,
   UserMessageFrame,
   ExecutionPreference,
   HitlDecisionFrame,
@@ -57,6 +60,7 @@ export type {
   TextDeltaFrame,
   TurnCompleteFrame,
   ToolCardFrame,
+  HitlPageDisplay,
   HitlRequestFrame,
   ExecRequest,
   DomStepAction,
@@ -83,6 +87,7 @@ export type {
 } from './config-snapshot.js';
 export type {
   AuditEventType,
+  AuditPageRef,
   GateVerdict,
   ExecutionOutcome,
   ClientKind,

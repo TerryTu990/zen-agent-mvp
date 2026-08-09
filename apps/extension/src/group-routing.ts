@@ -1,11 +1,13 @@
 /**
  * 标签页组的下行帧路由策略（插件私有，纯逻辑无 chrome 依赖）。
- * 会话叙事帧全员镜像；带交互/副作用的帧只落在活跃页——exec 指令单成员送达，
- * 从结构上排除"同一签名指令被多页重复执行"（副作用重复）。
+ * 会话叙事帧全员镜像；带交互/副作用的帧至多送达一个成员——缺省落活跃页，
+ * snapshot-request / exec-instruction / guide-action 带 page 句柄时单播目标成员页
+ * （adr-023 D2/D3），从结构上排除"同一签名指令被多页重复执行"（副作用重复）。
  */
 import type { DownstreamFrame } from './frames.js';
+import { tabIdForHandle, type PageHandleTable } from './page-handles.js';
 
-export type FrameRoute = 'panel' | 'active-page';
+export type FrameRoute = 'panel' | 'active-page' | 'target-page';
 
 export function routeForFrame(frame: DownstreamFrame): FrameRoute {
   switch (frame.type) {
@@ -18,8 +20,43 @@ export function routeForFrame(frame: DownstreamFrame): FrameRoute {
     case 'exec-instruction':
     case 'guide-action':
     case 'snapshot-request':
-      return 'active-page';
+      return frame.page !== undefined ? 'target-page' : 'active-page';
   }
+}
+
+/**
+ * target-page 单播的成员解析（纯函数）：tabId 逐成员等值比对，命中即单播该成员。
+ * 任一级未命中（句柄已退役传入 null / 成员端口不在）一律空投递——这是竞态 fail-safe，
+ * 不是判定面（判定只在服务端签发前，U7）；禁回退活跃页，带副作用的帧落错页比不落更糟。
+ */
+export function targetPageMembers<T>(
+  members: readonly T[],
+  tabIdOf: (member: T) => number | undefined,
+  tabId: number | null,
+): T[] {
+  if (tabId === null) return [];
+  const member = members.find((candidate) => tabIdOf(candidate) === tabId);
+  return member === undefined ? [] : [member];
+}
+
+/**
+ * target-page 帧的投递解析粘合（纯函数）：帧上目标句柄 → 句柄表反查 tabId → 成员端口
+ * 等值匹配，至多命中一个成员。不载句柄的帧或任一级未命中一律空投递（fail-safe 同上，禁回退活跃页）。
+ */
+export function resolveTargetPageMembers<T>(
+  frame: DownstreamFrame,
+  table: PageHandleTable,
+  members: readonly T[],
+  tabIdOf: (member: T) => number | undefined,
+): T[] {
+  const handle =
+    frame.type === 'snapshot-request' ||
+    frame.type === 'exec-instruction' ||
+    frame.type === 'guide-action'
+      ? frame.page
+      : undefined;
+  const tabId = handle === undefined ? null : tabIdForHandle(table, handle);
+  return targetPageMembers(members, tabIdOf, tabId);
 }
 
 export interface GroupMembers<T> {

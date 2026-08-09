@@ -262,6 +262,153 @@ describe('C3 client-access-layer 消息帧', () => {
   });
 });
 
+describe('C3 group-pages 帧（adr-023 D1 任务组页面清单上报）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'client-access-layer.schema.json');
+
+  const page = {
+    handle: 'p1',
+    url: 'https://host.example/orders/order-list.html',
+    title: '订单列表',
+    status: 'active',
+  };
+
+  const validFrames: Record<string, unknown> = {
+    '三态成员页全量清单': {
+      type: 'group-pages',
+      sessionId: 's-001',
+      pages: [
+        page,
+        { handle: 'p2', url: 'https://mail.example/main', title: '邮箱', status: 'background' },
+        { handle: 'p4', url: 'https://docs.example/guide', status: 'silent' },
+      ],
+    },
+    '空组清单（全员离组后全量重建为空）': { type: 'group-pages', sessionId: 's-001', pages: [] },
+    '句柄不透明：任意无结构字符串同样合法': {
+      type: 'group-pages',
+      sessionId: 's-001',
+      pages: [{ ...page, handle: 'workspace-view-00c3' }],
+    },
+  };
+
+  it.each(Object.keys(validFrames))('合法 %s 通过校验', (label) => {
+    expect(validate(validFrames[label]), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  const invalidFrames: Record<string, unknown> = {
+    '缺 required pages': { type: 'group-pages', sessionId: 's-001' },
+    'status 越 active|background|silent 闭集': {
+      type: 'group-pages',
+      sessionId: 's-001',
+      pages: [{ ...page, status: 'idle' }],
+    },
+    '句柄空串': {
+      type: 'group-pages',
+      sessionId: 's-001',
+      pages: [{ ...page, handle: '' }],
+    },
+    '成员页缺 url': {
+      type: 'group-pages',
+      sessionId: 's-001',
+      pages: [{ handle: 'p1', title: '订单列表', status: 'active' }],
+    },
+    '未截断标题（超 120 字符）被拒': {
+      type: 'group-pages',
+      sessionId: 's-001',
+      pages: [{ ...page, title: '订'.repeat(121) }],
+    },
+    '形态私有字段（如 tabId）被 additionalProperties 拒绝': {
+      type: 'group-pages',
+      sessionId: 's-001',
+      pages: [{ ...page, tabId: 1207 }],
+    },
+  };
+
+  it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {
+    expect(validate(invalidFrames[label])).toBe(false);
+  });
+});
+
+describe('C3 snapshot-request 定向观察 page（adr-023 D2）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'client-access-layer.schema.json');
+
+  const baseRequest = { type: 'snapshot-request', sessionId: 's-001', requestId: 'r-01' };
+
+  const validFrames: Record<string, unknown> = {
+    '缺省无 page（现活跃页语义）': baseRequest,
+    '带目标句柄定向': { ...baseRequest, page: 'p3' },
+    '句柄不透明：任意无结构字符串同样合法': { ...baseRequest, page: 'workspace-view-00c3' },
+    '定向 + includeText 组合': { ...baseRequest, page: 'p3', includeText: true },
+  };
+
+  it.each(Object.keys(validFrames))('合法 %s 通过校验', (label) => {
+    expect(validate(validFrames[label]), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  const invalidFrames: Record<string, unknown> = {
+    'page 空串': { ...baseRequest, page: '' },
+    'page 超 64 字符': { ...baseRequest, page: 'a'.repeat(65) },
+    'page 非字符串': { ...baseRequest, page: 3 },
+  };
+
+  it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {
+    expect(validate(invalidFrames[label])).toBe(false);
+  });
+});
+
+describe('C3 定向副作用 page 与 HITL 目标页展示（adr-023 D3）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'client-access-layer.schema.json');
+
+  const execBase = {
+    type: 'exec-instruction',
+    sessionId: 's-001',
+    nonce: 'n-01',
+    issuedAt: 1000,
+    expiresAt: 61000,
+    ttl: 60000,
+    signature: 'sig-01',
+    toolCallId: 'c-01',
+    request: { kind: 'dom', steps: [{ action: 'navigate', url: 'https://host.example/console' }] },
+  };
+  const guideBase = { type: 'guide-action', sessionId: 's-001', action: 'highlight', selector: '#submit' };
+  const hitlBase = {
+    type: 'hitl-request',
+    sessionId: 's-001',
+    hitlId: 'h-01',
+    toolId: 'order-list.page-operate',
+    params: { task: '提交工单', steps: [] },
+  };
+
+  const validFrames: Record<string, unknown> = {
+    'exec-instruction 缺省无 page（现活跃页语义）': execBase,
+    'exec-instruction 带目标句柄定向': { ...execBase, page: 'p2' },
+    'exec-instruction 句柄不透明：任意无结构字符串合法': { ...execBase, page: 'workspace-view-00c3' },
+    'guide-action 带目标句柄定向': { ...guideBase, page: 'p2' },
+    'hitl-request 目标页展示（标题+origin）': {
+      ...hitlBase,
+      targetPage: { title: '工单 #4521', origin: 'https://seller.example' },
+    },
+    'hitl-request navigate 目标 URL 呈现': { ...hitlBase, targetUrl: 'https://seller.example/console' },
+    'hitl-request 缺省（活跃页，不加措辞）': hitlBase,
+  };
+
+  it.each(Object.keys(validFrames))('合法 %s 通过校验', (label) => {
+    expect(validate(validFrames[label]), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  const invalidFrames: Record<string, unknown> = {
+    'exec-instruction page 空串': { ...execBase, page: '' },
+    'exec-instruction page 超 64 字符': { ...execBase, page: 'a'.repeat(65) },
+    'exec-instruction page 非字符串': { ...execBase, page: 7 },
+    'guide-action page 空串': { ...guideBase, page: '' },
+    'hitl-request targetPage 带越界键': { ...hitlBase, targetPage: { title: 't', handle: 'p2' } },
+    'hitl-request targetUrl 空串': { ...hitlBase, targetUrl: '' },
+  };
+
+  it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {
+    expect(validate(invalidFrames[label])).toBe(false);
+  });
+});
+
 describe('C3 snapshot-report 帧（含页面提示文本 notices 与页面正文 text）', () => {
   const validate = compile(new Ajv2020({ strict: true }), 'client-access-layer.schema.json');
 
@@ -827,6 +974,48 @@ describe('C5 audit-event M3 门禁/裁决/执行事件', () => {
       ...base,
       type: 'tool-invoke',
       data: {},
+    },
+  };
+
+  it.each(Object.keys(invalidEvents))('非法事件被拒：%s', (label) => {
+    expect(validate(invalidEvents[label])).toBe(false);
+  });
+});
+
+describe('C5 audit 事件页标注 page（adr-023，additive）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'audit-event.schema.json');
+
+  const base = {
+    eventId: 'e-0003',
+    ts: '2026-08-09T08:00:00.000Z',
+    sessionId: 's-001',
+    type: 'tool-execution',
+    data: { toolCallId: 'tc-01', toolId: 'order-list.cancel-order', execution: 'client', outcome: 'ok' },
+  };
+
+  const validEvents: Record<string, unknown> = {
+    '带 handle+origin 的页标注': {
+      ...base,
+      page: { handle: 'p2', origin: 'https://host.example' },
+    },
+    'origin 不可解析时仅 handle': { ...base, page: { handle: 'p2' } },
+    '缺省 page 依旧合法（additive 回归锚）': base,
+    '句柄不透明：任意无结构字符串同样合法': {
+      ...base,
+      page: { handle: 'workspace-view-00c3', origin: 'https://host.example' },
+    },
+  };
+
+  it.each(Object.keys(validEvents))('合法事件 %s 通过校验', (label) => {
+    expect(validate(validEvents[label]), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  const invalidEvents: Record<string, unknown> = {
+    'page 缺 required handle 被拒': { ...base, page: { origin: 'https://host.example' } },
+    'page.handle 空串被拒': { ...base, page: { handle: '', origin: 'https://host.example' } },
+    '形态私有字段（如 tabId）被 additionalProperties 拒绝': {
+      ...base,
+      page: { handle: 'p2', tabId: 1207 },
     },
   };
 

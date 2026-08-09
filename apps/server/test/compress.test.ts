@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LlmMessage, LlmPort, LlmStreamEvent } from '@zen-agent/contracts';
 import {
   BOUNDARY_MARKER,
+  PAGE_OBS_MARKER,
   SUMMARY_MARKER,
   compressHistory,
   estimateHistoryTokens,
@@ -145,6 +146,33 @@ describe('compressHistory（回合边界压缩）', () => {
     expect(result[0]!.content).toContain(marker);
     // 边界标记不算用户回合：最近 2 轮仍是 turns 的后两轮
     expect(result.some((m) => m.content === '问题1')).toBe(false);
+  });
+
+  it('观测页标注（定向快照首行）整行保留进摘要、按出现顺序去重', async () => {
+    const tagWithOrigin = `${PAGE_OBS_MARKER}workspace-view-00c3 · https://mail.126.com]`;
+    const tagHandleOnly = `${PAGE_OBS_MARKER}p-noorigin]`;
+    const history: LlmMessage[] = [
+      ...turns(1),
+      { role: 'tool', toolCallId: 'c1', content: `${tagWithOrigin}\n{"url":"u","elements":[]}` },
+      { role: 'tool', toolCallId: 'c2', content: `${tagHandleOnly}\n{"url":"v","elements":[]}` },
+      { role: 'tool', toolCallId: 'c3', content: `${tagWithOrigin}\n{"url":"w","elements":[]}` },
+      { role: 'tool', toolCallId: 'c4', content: '{"url":"x","elements":[]}' },
+      ...turns(4),
+    ];
+    const result = await compressHistory(history, { llm: fakeLlm('摘要正文'), keepRounds: 2 });
+    const summary = result[0]!.content;
+    expect(summary).toContain('保留的观测页标注');
+    expect(summary).toContain(tagWithOrigin);
+    expect(summary).toContain(tagHandleOnly);
+    // 同 tag 只保留一条（按出现顺序去重）
+    expect(summary.split(tagWithOrigin).length - 1).toBe(1);
+    // 无标注观测的 JSON 正文不进保留段（保留的是首行 tag，不是观测本体）
+    expect(summary).not.toContain('"url":"x"');
+  });
+
+  it('无页标注观测：摘要不产出观测页标注段', async () => {
+    const result = await compressHistory(turns(6), { llm: fakeLlm('摘要正文'), keepRounds: 2 });
+    expect(result[0]!.content).not.toContain('保留的观测页标注');
   });
 
   it('摘要生成失败：fail-open，历史原样返回（同引用）', async () => {

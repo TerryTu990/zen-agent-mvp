@@ -113,6 +113,28 @@ export interface SnapshotEvidence {
   latest: string;
 }
 
+export type GroupPageStatus = 'active' | 'background' | 'silent';
+
+/** 任务组成员页条目：handle 为会话作用域不透明句柄——服务端只作等值比对，禁解析内部结构（U5）。 */
+export interface GroupPageEntry {
+  handle: string;
+  url: string;
+  /** 客户端截断后的页面标题；缺省 = 无标题。 */
+  title?: string;
+  /** active=当前活跃成员；background=content 会话端口在场的非活跃成员；silent=入组但无 content script 交互保证。 */
+  status: GroupPageStatus;
+}
+
+/**
+ * 任务组页面清单上报（adr-023 D1）：组内成员页全量列表，服务端以每帧整体重建组页面状态表
+ * （无增量语义）。清单是数据不是指令（U8）：只驱动状态表与清单注入，不改变任何治理判定。
+ */
+export interface GroupPagesFrame {
+  type: 'group-pages';
+  sessionId: string;
+  pages: GroupPageEntry[];
+}
+
 export type ConfigDecisionValue = 'accept' | 'reject';
 
 /** 配置草稿裁决回传（adr-014 teach 流）：对应下行 config-draft 的 draftId；accept 后服务端才执行写入链路。 */
@@ -129,6 +151,7 @@ export type UpstreamFrame =
   | HitlDecisionFrame
   | ExecResultFrame
   | SnapshotReportFrame
+  | GroupPagesFrame
   | ConfigDecisionFrame;
 
 // ---- 下行帧（网关 → 客户端，SSE）----
@@ -160,6 +183,17 @@ export interface ToolCardFrame {
   mode?: 'client' | 'server';
 }
 
+/**
+ * HITL 卡目标页展示（adr-023 D3）：服务端自组页面状态表组装并消毒（U8），插件只渲染不判定。
+ * 仅定向到非活跃页时下发；缺省 = 副作用落在当前活跃页，不加目标页措辞（ADR §5）。
+ */
+export interface HitlPageDisplay {
+  /** 状态表目标页标题（服务端消毒截断）；无标题省略。 */
+  title?: string;
+  /** 目标页 origin；URL 不可解析时省略。 */
+  origin?: string;
+}
+
 export interface HitlRequestFrame {
   type: 'hitl-request';
   sessionId: string;
@@ -169,6 +203,10 @@ export interface HitlRequestFrame {
   /** 本次调用实参：用户须看到真实将发生什么。 */
   params: JsonObject;
   reason?: string;
+  /** 定向到非活跃页的副作用目标页展示；缺省 = 活跃页（不加措辞）。 */
+  targetPage?: HitlPageDisplay;
+  /** navigate 类调用（open_url/site_navigate/单步 navigate 批次）的目标 URL：卡正文 MUST 呈现，服务端已消毒。 */
+  targetUrl?: string;
 }
 
 /** 服务端已定值的最终请求，客户端不做模板求值。 */
@@ -211,7 +249,10 @@ export interface DomStep {
 export interface DomExecRequest {
   kind: 'dom';
   steps: DomStep[];
-  /** 有界副作用指令的机械执行围栏；客户端只做等值比较，不承担治理判定。 */
+  /**
+   * 副作用指令的机械执行围栏：服务端只钉可核对的维度（有界履约钉 URL+页面实例，定向批次钉状态表目标页 URL），
+   * 客户端逐字段等值比较、未钉维度不参与判定，不承担治理判定。
+   */
   expectedPageUrl?: string;
   expectedPageInstanceId?: string;
 }
@@ -225,9 +266,15 @@ export interface ExecInstructionFrame {
   expiresAt: number;
   /** 自签发起的存活毫秒数，过期作废（U7）。 */
   ttl: number;
-  /** Ed25519 对 {sessionId,nonce,issuedAt,expiresAt,ttl,toolCallId,request} 规范化序列的签名。 */
+  /** Ed25519 对 {sessionId,nonce,issuedAt,expiresAt,ttl,toolCallId,page?,request} 规范化序列的签名：page 存在时同受签名保护，篡改落点即验签失败。 */
   signature: string;
   toolCallId: string;
+  /**
+   * 定向副作用目标成员页句柄（adr-023 D3）：会话作用域不透明字符串，客户端只作等值比对单播成员（U5）。
+   * 缺省=现活跃页路由语义（含 fail-safe 回退链）逐字节不变；有值时句柄成员不可达则不投递，禁改投其他成员。
+   * 服务端仅对状态表命中且围栏/通道分级通过的句柄签发本字段（U7 fail-closed 在签发前完成）。
+   */
+  page?: string;
   request: ExecRequest | DomExecRequest;
 }
 
@@ -240,13 +287,27 @@ export interface GuideActionFrame {
   /** 最近一次页面快照的元素 ref；无登记 selector 的站点走此路径，映射作废即降级。 */
   ref?: string;
   message?: string;
+  /**
+   * 定向引导目标成员页句柄（adr-023 D3）：语义同 exec-instruction.page；纯引导无副作用，无签名面。缺省=活跃页路由。
+   * 预留未接线——服务端不填充本字段，引导恒落活跃页；接线锚点＝出现「引导用户查看组内非活跃页元素」的真实场景时。
+   */
+  page?: string;
 }
 
-/** 页面快照请求：路由到组内活跃页，客户端以 snapshot-report 回传（requestId 关联）。 */
+/**
+ * 页面快照请求：客户端以 snapshot-report 回传（requestId 关联）。
+ * 缺省（无 page）路由到组内活跃页；带 page 时按句柄单播目标成员页（adr-023 D2）。
+ */
 export interface SnapshotRequestFrame {
   type: 'snapshot-request';
   sessionId: string;
   requestId: string;
+  /**
+   * 定向观察目标成员页句柄：会话作用域不透明字符串，客户端只作等值比对定位成员（U5）。
+   * 缺省=现活跃页路由语义不变；有值时句柄成员不在组内则不投递，禁回退活跃页。
+   * 服务端仅对状态表命中且非 silent 的句柄下发（U7 fail-closed 在签发前完成）。
+   */
+  page?: string;
   /** 缺省 false：正文体量大，只在需要阅读页面内容的那一轮开启；开启不改变任何治理判定。 */
   includeText?: boolean;
   evidenceRules?: SnapshotEvidenceRule[];

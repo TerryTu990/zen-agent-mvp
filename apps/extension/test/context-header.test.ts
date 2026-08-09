@@ -56,7 +56,7 @@ describe('contextHeaderView：面板头部四态', () => {
     ).toEqual({
       state: 'unassistable',
       title: '此页面无法辅助',
-      detail: '切换到站点页面，或让 Zen 导航后继续',
+      detail: '切换到站点页面，或直接让 Zen 打开目标网站',
     });
   });
 

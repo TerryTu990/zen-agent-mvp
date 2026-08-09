@@ -22,6 +22,15 @@ export type ExecutionOutcome = 'ok' | 'error' | 'timeout' | 'invalid-result' | '
 
 export type ClientKind = 'extension' | 'sdk' | 'shell';
 
+/**
+ * 事件落点页标注（adr-023）：handle 为会话作用域不透明页面句柄（消费方禁解析内部结构，U5）；
+ * origin 为该页 origin，URL 不可解析时省略。additive 扩展（U6），旧消费方可忽略。
+ */
+export interface AuditPageRef {
+  handle: string;
+  origin?: string;
+}
+
 interface AuditEventBase {
   eventId: string;
   /** ISO 8601 date-time。 */
@@ -39,6 +48,8 @@ interface AuditEventBase {
   automationRunId?: string;
   /** 发起该自动回合的自动化标识：pack 声明的 automation id（adr-019）或用户自建 watch id（adr-021）；人工回合缺省。 */
   automationId?: string;
+  /** 本事件涉及的工作区页面（adr-023）：D1 于 tool-decision/hitl-verdict/tool-execution 以活跃页填充；定向落地（D2/D3）后为目标页。状态表无句柄时省略。 */
+  page?: AuditPageRef;
 }
 
 export interface SessionStartEvent extends AuditEventBase {
