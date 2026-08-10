@@ -71,7 +71,7 @@ describe('pruneStaleSnapshots（P0 旧观测瘦身）', () => {
       {
         role: 'assistant',
         content: '',
-        toolCalls: [{ id: 'call_directed', name: SNAPSHOT_TOOL_NAME, params: { page: 'workspace-view-00c3' } }],
+        toolCalls: [{ id: 'call_directed', name: SNAPSHOT_TOOL_NAME, params: { targetPage: 'workspace-view-00c3' } }],
       },
       {
         role: 'tool',
@@ -97,7 +97,7 @@ describe('pruneStaleSnapshots（P0 旧观测瘦身）', () => {
         role: 'assistant',
         content: '',
         toolCalls: [
-          { id: 'call_directed', name: SNAPSHOT_TOOL_NAME, params: { page: 'workspace-view-00c3' } },
+          { id: 'call_directed', name: SNAPSHOT_TOOL_NAME, params: { targetPage: 'workspace-view-00c3' } },
         ],
       },
       {

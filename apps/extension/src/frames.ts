@@ -225,7 +225,7 @@ export interface ExecInstructionFrame {
   issuedAt: number;
   expiresAt: number;
   ttl: number;
-  /** Ed25519 对 {sessionId,nonce,issuedAt,expiresAt,ttl,toolCallId,page?,request} 规范化序列的签名：page 存在时同受签名保护，篡改落点即验签失败。 */
+  /** Ed25519 对 {sessionId,nonce,issuedAt,expiresAt,ttl,toolCallId,targetPage?,request} 规范化序列的签名（targetPage 取本帧 page 值）：定向落点同受签名保护，篡改即验签失败。 */
   signature: string;
   toolCallId: string;
   /**

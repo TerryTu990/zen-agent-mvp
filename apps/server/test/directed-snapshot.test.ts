@@ -2,7 +2,7 @@
  * adr-023 D2 定向观察服务端闭环：page_snapshot 带 page 的目标解析（U7 fail-closed，
  * 拒绝全部在下发前、不回退活跃页）、下行帧带目标句柄、观测页标注前缀、domContext 不被定向覆写、
  * 三类拒绝的回喂措辞与审计 skipped 页标注、缺省调用零变化回归。句柄按不透明契约用异形字符串验证（U5）。
- * 本文件自带确定性 mock LLM（按用户哨兵语产出带 page 实参的 tool_call，回喂轮原样回显 observation），
+ * 本文件自带确定性 mock LLM（按用户哨兵语产出带 targetPage 实参的 tool_call，回喂轮原样回显 observation），
  * 不依赖 scripts/mock-llm 的剧本面。
  */
 import { createServer } from 'node:http';
@@ -54,7 +54,7 @@ interface DirectedMockHandle {
 type MockDecision = { text: string } | { toolCall: { id: string; name: string; arguments: string } };
 
 /**
- * 首轮按用户哨兵语产出快照 tool_call（page 实参取哨兵语中的句柄字面）；
+ * 首轮按用户哨兵语产出快照 tool_call（targetPage 实参取哨兵语中的句柄字面）；
  * 回喂轮原样回显 observation，供对回喂内容做机械断言。
  * 「定向后操作」剧本的回喂轮改发 dom 批次（驱动 domContext 未被定向覆写的 deny 路径）。
  */
@@ -80,7 +80,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
   }
   if (u.includes('定向读取空句柄')) {
     return {
-      toolCall: { id: 'call_snap_invalid', name: SNAPSHOT_TOOL, arguments: JSON.stringify({ page: '' }) },
+      toolCall: { id: 'call_snap_invalid', name: SNAPSHOT_TOOL, arguments: JSON.stringify({ targetPage: '' }) },
     };
   }
   if (u.includes('定向读取换行句柄')) {
@@ -88,7 +88,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
       toolCall: {
         id: 'call_snap_newline',
         name: SNAPSHOT_TOOL,
-        arguments: JSON.stringify({ page: NEWLINE_HANDLE }),
+        arguments: JSON.stringify({ targetPage: NEWLINE_HANDLE }),
       },
     };
   }
@@ -98,7 +98,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
       toolCall: {
         id: 'call_snap_before_op',
         name: SNAPSHOT_TOOL,
-        arguments: JSON.stringify({ page: afterOp[1] }),
+        arguments: JSON.stringify({ targetPage: afterOp[1] }),
       },
     };
   }
@@ -109,7 +109,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
         id: 'call_snap_directed',
         name: SNAPSHOT_TOOL,
         arguments: JSON.stringify({
-          page: directed[1],
+          targetPage: directed[1],
           ...(u.includes('带正文') ? { includeText: true } : {}),
         }),
       },
@@ -655,7 +655,7 @@ describe('定向观察不建立 dom 操作基准（domContext 只绑缺省观察
 });
 
 describe('缺省调用零变化回归', () => {
-  it('不带 page：下行帧无 page 键、观测无页标注前缀、快照不发 tool-execution 审计事件', async () => {
+  it('不带 targetPage：下行帧无 page 键、观测无页标注前缀、快照不发 tool-execution 审计事件', async () => {
     const token = await signToken();
     const { sessionId, sse } = await startGroupSession(token);
     try {

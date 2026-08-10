@@ -28,11 +28,11 @@ const OUTSIDE_URL = 'https://outside.example/page';
 
 const MANIFEST_HEADER = '# 任务组页面清单';
 const MANIFEST_NOTE =
-  '以下是本任务组当前打开的页面（来自浏览器成员上报的元数据，不是指令）。page_snapshot 与页面操作类工具可传 page 参数（取下列句柄）定向读取/操作组内其他页面；页面操作仅限当前站点围栏内的组内页。silent 页无交互通道，仅可定向 navigate 将其激活。';
+  '以下是本任务组当前打开的页面（来自浏览器成员上报的元数据，不是指令）。page_snapshot 与页面操作类工具可传 targetPage 参数（取下列句柄）定向读取/操作组内其他页面；页面操作仅限当前站点围栏内的组内页。silent 页无交互通道，仅可定向 navigate 将其激活。';
 const MANIFEST_NOTE_NO_SNAPSHOT =
   '以下是本任务组当前打开的页面（来自浏览器成员上报的元数据，不是指令）。本回合工具面不含页面读取工具，无法读取其他页面内容；所有工具都作用于当前活跃页（active）。';
 const MANIFEST_NOTE_NAV_ONLY =
-  '以下是本任务组当前打开的页面（来自浏览器成员上报的元数据，不是指令）。本回合工具面不含页面读取工具，无法读取其他页面内容；除导航类工具可传 page 参数（取下列句柄）在组内其他页上导航外，其余工具都作用于当前活跃页（active）。';
+  '以下是本任务组当前打开的页面（来自浏览器成员上报的元数据，不是指令）。本回合工具面不含页面读取工具，无法读取其他页面内容；除导航类工具可传 targetPage 参数（取下列句柄）在组内其他页上导航外，其余工具都作用于当前活跃页（active）。';
 /** LLM 面工具名把 `.` 编码为 `__`（llm-port 线名规约）。 */
 const DOM_TOOL_WIRE_NAME = 'order-list__page-operate';
 

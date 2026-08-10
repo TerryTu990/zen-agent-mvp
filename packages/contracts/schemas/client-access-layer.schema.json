@@ -392,7 +392,7 @@
           "type": "string"
         },
         "targetPage": {
-          "$comment": "定向到非活跃页的副作用目标页展示（adr-023 D3）：服务端自组页面状态表组装并消毒（U8），插件只渲染不判定。缺省=副作用落在当前活跃页，不加目标页措辞（ADR §5）。",
+          "$comment": "定向到非活跃页的副作用目标页展示（adr-023 D3）：服务端自组页面状态表组装并消毒（U8），插件只渲染不判定。缺省=副作用落在当前活跃页，不加目标页措辞（ADR §5）。与 dom 工具入参保留名 targetPage（页面句柄字符串）同名不同型：此处是展示对象，只出现在本帧。",
           "type": "object",
           "additionalProperties": false,
           "properties": {
@@ -414,7 +414,7 @@
       }
     },
     "execInstruction": {
-      "$comment": "代执行指令（能力⑤上半程，U7）：服务端已完成门禁判定与模板实参代入，request 为最终定值请求。nonce 一次性；issuedAt/expiresAt 为绝对时限；signature 为服务端 Ed25519 私钥对 {sessionId,nonce,issuedAt,expiresAt,ttl,toolCallId,page?,request} 规范化序列的签名（page 存在时同受签名保护，篡改落点即验签失败）。插件从已鉴权 HTTPS SSE 响应取得公钥，在任何副作用前验签、验过期并持久化 nonce 防重放。",
+      "$comment": "代执行指令（能力⑤上半程，U7）：服务端已完成门禁判定与模板实参代入，request 为最终定值请求。nonce 一次性；issuedAt/expiresAt 为绝对时限；signature 为服务端 Ed25519 私钥对 {sessionId,nonce,issuedAt,expiresAt,ttl,toolCallId,targetPage?,request} 规范化序列的签名（targetPage 取本帧 page 值，定向落点同受签名保护，篡改即验签失败）。插件从已鉴权 HTTPS SSE 响应取得公钥，在任何副作用前验签、验过期并持久化 nonce 防重放。",
       "type": "object",
       "additionalProperties": false,
       "required": [

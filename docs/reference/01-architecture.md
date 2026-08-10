@@ -240,9 +240,9 @@ agent 下一轮即持有新站上下文，直接续作任务（先 page_snapshot
 ①插件 background 为每个入组成员生成会话作用域页面句柄（p1/p2…），tabId 不出插件
 ①插件 ─group-pages(组内全部成员页 handle/url/title/status)─► ②网关 整体重建组页面状态表
 ②网关 每回合在系统注入尾部追加「# 任务组页面清单」（≥2 页才注入 / 列截断 / 20 行上限）
-agent ─page_snapshot(page=p3) / dom 工具(page=p2) / navigate(page=p4)─► ③toolgate
+agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(targetPage=p4)─► ③toolgate
    目标解析（句柄等值比对，未命中即拒）→ 围栏按目标页 URL 校验（pack dom：origin+pathPrefixes）
-   → 通道分级（silent 页只许单步 navigate）→ 分级/HITL 判定不变 → 一次性签名覆盖 page
+   → 通道分级（silent 页只许单步 navigate）→ 分级/HITL 判定不变 → 一次性签名覆盖 targetPage
 ②网关 ─帧带目标句柄─► ①插件 按句柄反查成员单播；不可达即丢帧，禁改投活跃页
 ①插件 ─snapshot-report / exec-result─► ②网关：定向观测以 `[来自 pN · origin]` 首行标注回喂
 ```
@@ -294,7 +294,7 @@ agent ─page_snapshot(page=p3) / dom 工具(page=p2) / navigate(page=p4)─► 
 
 - 约束：分级矩阵 / HITL 判定 MUST 永远在服务端且 fail-closed（矩阵未命中、身份不明、通道未实现均拒绝）；代执行指令 MUST 一次性签名（nonce+ttl）；执行结果 MUST 经服务端 resultSchema 校验后才回喂 agent。
 - adr-011/013 后的延伸面（同一不变量的新落点）：dom 批次步骤校验（动作闭集 / ref 出自最近快照 / 路径围栏）、site 围栏（http/server 请求 URL 与 navigate 目标的 origin+location 围栏）、per-origin 身份（site pack 工具要求该 origin 宿主 claims）、任务级授权复用永远在步骤校验**之后**（grant 不绕过 fail-closed）。
-- adr-023 后的延伸面（定向操作）：目标句柄 MUST 命中服务端自持的组页面状态表；pack dom 工具的围栏 MUST 按**目标页 URL**（origin + pathPrefixes）校验；silent 页（无 content script 通道）除单步 navigate 外 MUST 拒签；一次性签名 MUST 覆盖 `page`。全部判定在签发前完成，MUST NOT 回退到活跃页执行、MUST NOT 静默降级；投递侧仍保持每帧至多一个成员且不可达时不改投。
+- adr-023 后的延伸面（定向操作）：目标句柄 MUST 命中服务端自持的组页面状态表；pack dom 工具的围栏 MUST 按**目标页 URL**（origin + pathPrefixes）校验；silent 页（无 content script 通道）除单步 navigate 外 MUST 拒签；一次性签名 MUST 覆盖定向落点（签名序列以 `targetPage` 键承载本帧 `page` 值）。全部判定在签发前完成，MUST NOT 回退到活跃页执行、MUST NOT 静默降级；投递侧仍保持每帧至多一个成员且不可达时不改投。
 - 如何保平滑：安全模型从 MVP 第一天就是标准版形态——拆 ③ 为独立服务时，信任边界不移动、不需要重新安全评审整个链路。
 - 违反代价：任何"客户端先判一下"的捷径都会在拆分时变成不可信边界上的治理漏洞（另见 adr-002 对该模型残余风险的权衡）。
 

@@ -141,7 +141,7 @@
 | `riskTier` | `auto` 直执 / `hitl` 须授权 / `forbidden` 恒拒 | 只读→auto；有副作用→hitl；危险动作→forbidden |
 | `hitlMode` | 缺省（任务级：一任务一确认，跨工具复用）/ `every-call`（次次确认） | **对外不可撤回动作（发送/发布/删除）必须 every-call** |
 
-**平台保留入参 `page`**：dom 工具的 `params` MUST NOT 声明 `page`——该键由平台在载入期统一增广为可选的任务组页面句柄（定向到组内其他页执行，adr-023），pack 自声明即语义劫持，启动期拒载。
+**平台保留入参 `targetPage`**：dom 工具的 `params` MUST NOT 声明 `targetPage`——该键由平台在载入期统一增广为可选的任务组页面句柄（定向到组内其他页执行，adr-023），pack 自声明即语义劫持，启动期拒载。保留面仅此一名，其余参数名（含 `page`，如列表工具的页码）pack 自由使用。
 
 ### 3.3 feature.md / facts.md 要点
 

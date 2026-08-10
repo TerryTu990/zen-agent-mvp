@@ -17,7 +17,7 @@
  *  流程 C（silent 页定向的拒签与引导）：
  *   ⑥ 对 silent 页定向 dom → 签发前拒签，回喂引导文案（目标页不可交互），无新增 HITL 卡、无执行事件、
  *      silent 页 URL 未变；
- *   ⑦ agent 改为定向 navigate（open_url 带 page）→ HITL 卡带目标地址+目标页标注 → 批准后
+ *   ⑦ agent 改为定向 navigate（open_url 带 targetPage）→ HITL 卡带目标地址+目标页标注 → 批准后
  *      background 对句柄钉死的那一个 tab 直执行换 URL（不新开、不夺焦），结果回喂成功。
  *  流程 D（定向失败不改道）：
  *   ⑧ HITL 卡弹出后关闭目标页（状态表退役句柄）→ 批准 → 签发时刻重校验拒签（page-not-in-group）
@@ -199,7 +199,7 @@ function startScriptedLlm(siteOrigin) {
               plan: ['再次点击工单页的提交处理按钮'],
               steps: [{ action: 'click', ref: state.ticketRefs.click }],
               summary: '再次在后台工单页点击提交处理',
-              page: row.handle,
+              targetPage: row.handle,
             }),
           },
         };
@@ -217,7 +217,7 @@ function startScriptedLlm(siteOrigin) {
               plan: ['点击静默页上的按钮'],
               steps: [{ action: 'click', ref: 'za-1' }],
               summary: '在静默页点击按钮',
-              page: row.handle,
+              targetPage: row.handle,
             }),
           },
         };
@@ -234,7 +234,7 @@ function startScriptedLlm(siteOrigin) {
               url: `${siteOrigin}/ticket.html`,
               task: '把落点页导航到工单页',
               reason: '在组内落点页上直接打开工单页',
-              page: row.handle,
+              targetPage: row.handle,
             }),
           },
         };
@@ -247,7 +247,7 @@ function startScriptedLlm(siteOrigin) {
           toolCall: {
             id: 'call_b_snapshot',
             name: 'page_snapshot',
-            arguments: JSON.stringify({ page: row.handle }),
+            arguments: JSON.stringify({ targetPage: row.handle }),
           },
         };
       }
@@ -281,7 +281,7 @@ function startScriptedLlm(siteOrigin) {
               { action: 'click', ref: click.ref },
             ],
             summary: '在后台工单页填写处理意见并提交',
-            page: state.ticketHandle,
+            targetPage: state.ticketHandle,
           }),
         },
       };
@@ -299,7 +299,7 @@ function startScriptedLlm(siteOrigin) {
             url: `${siteOrigin}/landing.html`,
             task: '激活静默页',
             reason: '目标页不可交互，先定向导航激活',
-            page: handle,
+            targetPage: handle,
           }),
         },
       };

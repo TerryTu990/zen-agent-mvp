@@ -89,22 +89,23 @@ pack」列只引 packId，不重复索引里的用途描述。
   tabId 永不出现在契约与服务端。
 - 句柄语义是「本会话工作区内的一个页面实例」——嵌入 SDK 的多 iframe、浏览器壳的多视图
   同样能实现这一语义，故句柄是形态中立的接入层概念，不触犯 U5（详细论证见「风险与权衡」）。
-- 工具入参增加可选 `page` 字段（取值 = 清单句柄）；**缺省即活跃页**，现有全部行为不变
+- 工具入参增加可选 `targetPage` 字段（取值 = 清单句柄）；**缺省即活跃页**，现有全部行为不变
   （additive，不破坏既有 pack 与评测）。该字段由平台统一增广：toolgate 载入期给 dom 工具的
-  params schema 加可选 `page`（bounded-fulfillment 工具不增广），内建 navigate 的结构契约自带，
-  **pack 制品（tools.json）零改动**；`page` 因此是平台保留参数——pack dom 工具自声明它即语义
-  劫持，载入期 fail-fast 拒启。
+  params schema 加可选 `targetPage`（bounded-fulfillment 工具不增广），内建 navigate 的结构契约自带，
+  **pack 制品（tools.json）零改动**；`targetPage` 因此是平台保留参数——pack dom 工具自声明它即语义
+  劫持，载入期 fail-fast 拒启；其余参数名（含 `page`）pack 自由使用。入参保留名与下行帧、审计
+  事件的落点字段名 `page`（§4/§5）分属两层命名面，各自独立。
 
 ### 3. 服务端裁决与签发：围栏按目标页计算，fail-closed 不动
 
 服务端（gateway/toolgate）维护组页面状态表：由成员 context-report 与清单上报驱动，
 记录每个句柄的 URL 与状态。裁决链新增「目标页解析」一步，其余不变：
 
-- 调用带 `page` → 以状态表中该句柄的 URL 作为围栏与装配判定的基准 URL：dom 工具的
+- 调用带 `targetPage` → 以状态表中该句柄的 URL 作为围栏与装配判定的基准 URL：dom 工具的
   site 围栏（origin+path，adr-013 §5）按**目标页 URL** 校验；句柄不在状态表、状态表 URL
   越出签发工具所属 pack 的围栏，一律拒签。
-- 调用不带 `page` → 一切按活跃页，与现状完全一致。
-- 分级矩阵/HITL 判定、一次性签名（nonce+ttl+Ed25519 覆盖含 `page` 的完整 request）、
+- 调用不带 `targetPage` → 一切按活跃页，与现状完全一致。
+- 分级矩阵/HITL 判定、一次性签名（nonce+ttl+Ed25519 覆盖落点 `targetPage` 与完整 request）、
   结果 resultSchema 校验——全部不变。定向只改「副作用落在哪一页」，不改「谁批准副作用」。
 
 **工具白名单仍按活跃页装配，定向不扩白名单**。这是本 ADR 刻意保持的边界：每回合可用
@@ -147,14 +148,14 @@ pack」列只引 packId，不重复索引里的用途描述。
   页），代之以**观测级页标注**——定向快照的观测回喂前缀标注来源页（如
   `[来自 p3 · https://mail.126.com]`，origin 不可解析时退化为 `[来自 p3]`），防止 agent 把
   后台页内容误当活跃页状态；定向代执行的结果 observation 不加标注（落点已由同轮 tool_call
-  回声里的 `page` 实参自明，且结果本身不是页面内容）。标注独占观测首行；P1 历史压缩的摘要保留集（compress.ts 已保留
+  回声里的 `targetPage` 实参自明，且结果本身不是页面内容）。标注独占观测首行；P1 历史压缩的摘要保留集（compress.ts 已保留
   边界标记）与 P0 快照瘦身存根同步保留该标注行。
 
 ### 6. 与本轮 P0/P1 navigate 演进的衔接
 
 - **P0 同源 tab 复用**：清单正是复用判定的显性化——服务端与 agent 都看得见「组内已有
   同源页」。清单就位后，复用从插件内隐式行为升级为 agent 可显式表达的意图
-  （navigate 带 `page` 定向 = 「在那一页上导航」，而非新开）。
+  （navigate 带 `targetPage` 定向 = 「在那一页上导航」，而非新开）。
 - **P1 静默页直执行**：静默页无 content script 交互保证，故按**通道分级**衔接定向：
   - `active`/`background` 页：全部 dom 步可执行（content script 在场）；
   - `silent` 页：仅 background 可直执行的步（本轮即单步 navigate）可获签发——此为 pack dom
@@ -165,7 +166,7 @@ pack」列只引 packId，不重复索引里的用途描述。
 
 ### 契约要点（规范性）
 
-- 工具调用的 `page` 字段 MUST 为可选；缺省语义 MUST 等价于现活跃页行为。
+- 工具调用的 `targetPage` 字段 MUST 为可选；缺省语义 MUST 等价于现活跃页行为。
 - 服务端 MUST 以自身维护的组页面状态表解析句柄；句柄未命中、URL 越围栏、通道/状态不满足，
   MUST 拒签（fail-closed），MUST NOT 回退到活跃页执行。
 - 下行副作用帧 MUST 保持单成员投递；目标成员不可达时 MUST NOT 改投其他成员。
@@ -181,12 +182,12 @@ pack」列只引 packId，不重复索引里的用途描述。
 **流程 A：组级视野（只读）**
 用户在 A 站活跃页提问「邮箱那个 tab 里验证码是多少」→ 装配按活跃页注入 A 站 pack +
 清单（含 `p3 | 126邮箱 | mail.126.com/... | background`）→ agent 定向
-`page_snapshot(page=p3)` → toolgate：内建工具、句柄命中、按矩阵放行 → 帧带目标句柄单播
+`page_snapshot(targetPage=p3)` → toolgate：内建工具、句柄命中、按矩阵放行 → 帧带目标句柄单播
 p3 → 快照结果带 `[来自 p3]` 页标注回喂 → agent 作答。全程活跃页不动、用户视线不被打断。
 
 **流程 B：定向副作用（同围栏多 tab）**
 同站开两个工单页，用户令 agent 在后台那页提交表单 → agent 以活跃页 pack 的 dom 工具
-定向 `page=p2` → toolgate 按 p2 的 URL 校验 pack site 围栏（命中）→ HITL 卡标注
+定向 `targetPage=p2` → toolgate 按 p2 的 URL 校验 pack site 围栏（命中）→ HITL 卡标注
 「目标页：工单 #4521（同站后台页）」→ 用户批准 → 一次性签名指令单播 p2 执行 →
 结果过 resultSchema 回喂，审计事件带 `{page:{handle:'p2',origin:...}}`。
 
@@ -208,6 +209,13 @@ agent 对 silent 页 p4 定向点击操作 → toolgate 读状态表：p4=silent
   映射到自有页对象），映射封装在形态内部。判据是「换一种形态，契约字段是否仍有自然语义」
   ——句柄有，tabId 没有。风险在于实现时的纪律滑坡（图省事直接把 tabId 当句柄传），须以
   契约测试钉死句柄的不透明性（服务端不得解析句柄结构）。
+- **保留入参占用 pack 的参数名空间**。平台一旦保留某个入参名，全体 dom 工具的该名字即被
+  定向语义占据，pack 用同名业务参数会被定向解析劫持，只能靠载入期 fail-fast 拒启暴露；而
+  `page` 正是站点工具最自然的分页参数名（列表类工具的页码），保留它等于向全生态收一笔命名税。
+  故保留名取 `targetPage`：语义直述「落点页」，与业务语域几乎不相交，保留面收敛为唯一一个
+  名字，`page` 归还 pack 自由使用。下行帧与审计事件的落点字段不进 pack 声明面，故沿用 `page`
+  不构成冲突。残余风险是保留名仍是全局约定，冲突只在载入期而非编写期可见——拒启报错点名
+  该保留名，使冲突可自解释。
 - **清单/状态表源于客户端上报的信任边界**。围栏按上报 URL 计算，理论上恶意客户端可谎报
   URL 骗过围栏。这与现状 context-report 驱动装配是**同一信任级**，定向不扩大信任面：
   执行发生在同一客户端的用户浏览器里，谎报者只能骗自己的执行环境；服务端继续不采信执行
@@ -254,8 +262,8 @@ agent 对 silent 页 p4 定向点击操作 → toolgate 读状态表：p4=silent
 |---|---|---|---|
 | D0（本轮既定，非本 ADR 交付） | P0 navigate 同源 tab 复用；P1 静默页 background 直执行单步 navigate | 已排期；本 ADR 只约定衔接语义（通道分级） | 已落地 |
 | D1 组级视野 | 句柄生成与上报（C3 上行 `group-pages` 帧）、服务端组页面状态表、清单注入（≥2 页门槛/截断/尾部位置）、审计事件补目标页字段 | 无副作用、纯 additive；评测补「清单存在性与不误导」场景 | 已落地（含句柄不透明性契约测试） |
-| D2 定向观察 | 内建只读观察（`page_snapshot` 带 `page`；正文读取是其 `includeText` 分支，无独立 page_text 工具）、`target-page` 路由、观测页标注、压缩与快照瘦身保留页标注 | D1；group-routing 纯函数单测覆盖目标单播与 fail-safe | 已落地 |
-| D3 定向副作用 | dom 工具带 `page`（平台级增广）、围栏按目标页校验、HITL 目标页与目标地址标注、silent 页通道分级拒签、签名覆盖 `page` | D2 + P1 就位；E2E 覆盖流程 B/C/D；ZA-EVAL 评测集全跑（现有场景覆盖讲解/引导/工具/HITL/拒答五维度＋装配，自动化维度尚无场景，其建集锚点随 adr-019 泛化机制验证） | 已落地 |
+| D2 定向观察 | 内建只读观察（`page_snapshot` 带 `targetPage`；正文读取是其 `includeText` 分支，无独立 page_text 工具）、`target-page` 路由、观测页标注、压缩与快照瘦身保留页标注 | D1；group-routing 纯函数单测覆盖目标单播与 fail-safe | 已落地 |
+| D3 定向副作用 | dom 工具带 `targetPage`（平台级增广）、围栏按目标页校验、HITL 目标页与目标地址标注、silent 页通道分级拒签、签名覆盖 `targetPage` | D2 + P1 就位；E2E 覆盖流程 B/C/D；ZA-EVAL 评测集全跑（现有场景覆盖讲解/引导/工具/HITL/拒答五维度＋装配，自动化维度尚无场景，其建集锚点随 adr-019 泛化机制验证） | 已落地 |
 
 锚点登记：
 

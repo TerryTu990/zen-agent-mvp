@@ -189,7 +189,7 @@ export const SITE_NAVIGATE_PARAMS_SCHEMA: JsonObject = {
     task: { type: 'string' },
     // 定向目标成员页句柄（adr-023 D3）：内建 navigate 可定向任意组内页（含 silent，导航即其激活通路）；
     // 约束与 C3 句柄同界（1..64，无 pattern——不透明，U5），解析/拒签在 toolgate 签发前完成。
-    page: { type: 'string', minLength: 1, maxLength: 64 },
+    targetPage: { type: 'string', minLength: 1, maxLength: 64 },
   },
 };
 
@@ -214,8 +214,8 @@ export const OPEN_URL_PARAMS_SCHEMA: JsonObject = {
     url: { type: 'string' },
     reason: { type: 'string' },
     task: { type: 'string' },
-    // 语义同 SITE_NAVIGATE_PARAMS_SCHEMA.page（adr-023 D3 定向）。
-    page: { type: 'string', minLength: 1, maxLength: 64 },
+    // 语义同 SITE_NAVIGATE_PARAMS_SCHEMA.targetPage（adr-023 D3 定向）。
+    targetPage: { type: 'string', minLength: 1, maxLength: 64 },
   },
 };
 

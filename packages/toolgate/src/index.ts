@@ -200,8 +200,8 @@ const RESERVED_DOM_ACTIONS = new Set(['waitFor']);
 const MAX_DOM_STEPS = 20;
 const READ_NAME_PATTERN = /^[\w-]{1,64}$/;
 
-/** 平台级定向参数 page 的形状约束（adr-023 D3）：与 C3 句柄同界（1..64），刻意无 pattern——句柄不透明（U5）。 */
-const PAGE_PARAM_SCHEMA: JsonObject = { type: 'string', minLength: 1, maxLength: 64 };
+/** 平台级定向参数 targetPage 的形状约束（adr-023 D3）：与 C3 句柄同界（1..64），刻意无 pattern——句柄不透明（U5）。 */
+const TARGET_PAGE_PARAM_SCHEMA: JsonObject = { type: 'string', minLength: 1, maxLength: 64 };
 
 /**
  * silent 页定向非 navigate 操作的拒签理由（ADR-023 §6 通道分级）：直接回喂 agent 作引导，
@@ -211,36 +211,36 @@ const TARGET_PAGE_NOT_INTERACTIVE_REASON =
   '目标页不可交互（silent，无内容脚本通道），需先导航激活：可对该页定向单步 navigate，或由用户切换到该页后重试';
 
 /**
- * dom 工具入参平台级增广（adr-023 D3）：统一注入可选 page，pack 制品零改动；
+ * dom 工具入参平台级增广（adr-023 D3）：统一注入可选 targetPage，pack 制品零改动；
  * bounded-fulfillment 工具不增（固定步骤绑定活跃页意图，定向不支持）。
- * page 是全体 dom 工具的平台保留参数——pack 自声明它即语义被定向解析劫持，
- * 载入期 fail-fast 拒启（含不增广的 bounded-fulfillment 工具）。
+ * targetPage 是全体 dom 工具的平台保留参数——pack 自声明它即语义被定向解析劫持，
+ * 载入期 fail-fast 拒启（含不增广的 bounded-fulfillment 工具）；其余参数名（含 page）pack 自由使用。
  */
-function withPageParam(tool: ToolDefinition): JsonObject {
+function withTargetPageParam(tool: ToolDefinition): JsonObject {
   if (!isDomTool(tool)) return tool.params;
   const properties = tool.params['properties'];
   if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) {
     return tool.params;
   }
-  if ('page' in properties) {
-    throw new Error(`dom 工具 ${tool.id} 的 params 声明平台保留参数 page，拒绝启动`);
+  if ('targetPage' in properties) {
+    throw new Error(`dom 工具 ${tool.id} 的 params 声明平台保留参数 targetPage，拒绝启动`);
   }
   if (tool.authorization !== undefined) return tool.params;
-  return { ...tool.params, properties: { ...properties, page: PAGE_PARAM_SCHEMA } };
+  return { ...tool.params, properties: { ...properties, targetPage: TARGET_PAGE_PARAM_SCHEMA } };
 }
 
 /**
- * 定向目标解析（adr-023 D3，U7 fail-closed）：params.page 只对状态表句柄作等值比对（不解析结构，U5）；
- * 带 page 而状态表缺省/未命中一律拒（禁回退活跃页）。缺省 page 返回空对象=现活跃页语义零变化。
+ * 定向目标解析（adr-023 D3，U7 fail-closed）：params.targetPage 只对状态表句柄作等值比对（不解析结构，U5）；
+ * 带 targetPage 而状态表缺省/未命中一律拒（禁回退活跃页）。缺省返回空对象=现活跃页语义零变化。
  */
 function resolveTargetPage(
   params: JsonObject,
   groupPages: GroupPageEntry[] | undefined,
 ): { target?: GroupPageEntry } | { reason: string } {
-  const page = params['page'];
-  if (page === undefined) return {};
-  if (typeof page !== 'string') return { reason: 'invalid-params' };
-  const entry = groupPages?.find((candidate) => candidate.handle === page);
+  const targetPage = params['targetPage'];
+  if (targetPage === undefined) return {};
+  if (typeof targetPage !== 'string') return { reason: 'invalid-params' };
+  const entry = groupPages?.find((candidate) => candidate.handle === targetPage);
   if (entry === undefined) return { reason: 'page-not-in-group' };
   return { target: entry };
 }
@@ -576,8 +576,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   const ajv = new Ajv2020({ strict: true });
   for (const tool of options.tools) {
     toolsById.set(tool.id, tool);
-    // dom 工具入参按平台级增广 schema 校验（可选 page，adr-023 D3）；pack 制品与其余通道不变。
-    paramsValidators.set(tool.id, ajv.compile(withPageParam(tool)));
+    // dom 工具入参按平台级增广 schema 校验（可选 targetPage，adr-023 D3）；pack 制品与其余通道不变。
+    paramsValidators.set(tool.id, ajv.compile(withTargetPageParam(tool)));
     resultValidators.set(tool.id, ajv.compile(tool.resultSchema));
   }
   // 策略、工具和参数 schema 联合校验：不支持的组合在启动期 fail-fast，不能等到一次真实发货才暴露。
@@ -727,12 +727,12 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
 
   /**
    * 一次性签名并登记 nonce（U7）：Ed25519 精确覆盖绝对时限与最终请求，插件副作用前验签。
-   * 定向签发（page 有值，adr-023 D3）时 page 一并入签名 payload——篡改落点即验签失败；缺省 payload 与现状逐字节一致。
+   * 定向签发（targetPage 有值，adr-023 D3）时目标句柄以 targetPage 键入签名 payload——篡改落点即验签失败。
    */
   function signInstruction(
     input: IssueExecInstructionInput,
     request: ExecRequest | DomExecRequest,
-    page?: string,
+    targetPage?: string,
   ): ExecInstructionFrame {
     const nonce = randomUUID();
     const issuedAt = now();
@@ -744,7 +744,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       expiresAt,
       ttl: ttlMs,
       toolCallId: input.toolCallId,
-      ...(page !== undefined ? { page } : {}),
+      ...(targetPage !== undefined ? { targetPage } : {}),
       request: request as unknown as JsonValue,
     });
     const keyForCall = callKey(input.sessionId, input.toolCallId);
@@ -767,7 +767,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       ttl: ttlMs,
       signature,
       toolCallId: input.toolCallId,
-      ...(page !== undefined ? { page } : {}),
+      ...(targetPage !== undefined ? { page: targetPage } : {}),
       request,
     };
   }
@@ -1079,8 +1079,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
             : 'forbidden',
         );
       }
-      // bounded-fulfillment 固定步骤绑定活跃页意图，不支持定向（fail-closed：带 page 即拒）。
-      if (tool.authorization?.kind === 'bounded-fulfillment' && input.params['page'] !== undefined) {
+      // bounded-fulfillment 固定步骤绑定活跃页意图，不支持定向（fail-closed：带 targetPage 即拒）。
+      if (tool.authorization?.kind === 'bounded-fulfillment' && input.params['targetPage'] !== undefined) {
         return deny('invalid-params');
       }
       if (isDomTool(tool) && tool.authorization?.kind !== 'bounded-fulfillment') {
@@ -1202,8 +1202,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
           throw new Error('有界履约签发拒绝：账号或页面已变化');
         }
         // 有界履约固定步骤绑定活跃页意图，定向不支持：与 decide 的 deny('invalid-params') 同口径显式拒签，
-        // 不静默忽略 page（签发是治理终点，U7 fail-closed）。
-        if (tool.authorization?.kind === 'bounded-fulfillment' && input.params['page'] !== undefined) {
+        // 不静默忽略 targetPage（签发是治理终点，U7 fail-closed）。
+        if (tool.authorization?.kind === 'bounded-fulfillment' && input.params['targetPage'] !== undefined) {
           throw new Error('有界履约签发拒绝：不支持定向到组内其他页（invalid-params）');
         }
         // 签发是治理终点：签名前独立重校验（含定向目标解析），不依赖 decide 已通过的假设（U7 fail-closed）。

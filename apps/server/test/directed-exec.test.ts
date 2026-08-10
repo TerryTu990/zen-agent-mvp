@@ -61,7 +61,7 @@ const LONG_NAV_URL = `${SITE_ORIGIN}/box?q=${RLO}${'a'.repeat(300)}`;
 /** 另一已安装 pack（zhipin）围栏内 URL：定向跨站导航不得把活跃站点上下文切过去。 */
 const CROSS_SITE_URL = 'https://www.zhipin.com/web/geek/job';
 
-/** 有界履约工具（authorization.kind=bounded-fulfillment）：契约上不支持定向，page 是被忽略的无效实参。 */
+/** 有界履约工具（authorization.kind=bounded-fulfillment）：契约上不支持定向，targetPage 是被忽略的无效实参。 */
 const BOUNDED_TOOL = 'xianyu-fulfillment.execute-intent';
 const BOUNDED_ORIGIN = 'https://seller.goofish.com';
 const BOUNDED_ACTIVE_URL = `${BOUNDED_ORIGIN}/#/im`;
@@ -94,7 +94,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
         plan: ['在目标页点击目标按钮'],
         steps: [{ action: 'click', ref: 'za-9' }],
         summary: '点击目标页按钮',
-        page: directedOp[1],
+        targetPage: directedOp[1],
       });
     }
     if (obs.startsWith('{"url"') && u.includes('缺省快照后操作')) {
@@ -109,7 +109,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
         task: '隔离定向任务',
         steps: [{ action: 'click', ref: 'za-9' }],
         summary: '定向点击目标页',
-        page: BG_HANDLE,
+        targetPage: BG_HANDLE,
       });
     }
     return { text: `${OBS_ECHO_PREFIX} ${obs}` };
@@ -120,7 +120,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
       toolCall: {
         id: 'call_snap_directed',
         name: SNAPSHOT_TOOL,
-        arguments: JSON.stringify({ page: directedOp[1] }),
+        arguments: JSON.stringify({ targetPage: directedOp[1] }),
       },
     };
   }
@@ -130,7 +130,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
       toolCall: {
         id: 'call_snap_only',
         name: SNAPSHOT_TOOL,
-        arguments: JSON.stringify({ page: directedSnap[1] }),
+        arguments: JSON.stringify({ targetPage: directedSnap[1] }),
       },
     };
   }
@@ -140,7 +140,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
       toolCall: {
         id: 'call_bounded_page',
         name: BOUNDED_TOOL,
-        arguments: JSON.stringify({ intentId: 'intent-not-prepared', page: boundedDirected[1] }),
+        arguments: JSON.stringify({ intentId: 'intent-not-prepared', targetPage: boundedDirected[1] }),
       },
     };
   }
@@ -150,7 +150,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
       task: '直接定向任务',
       steps: [{ action: 'click', ref: 'za-9' }],
       summary: '定向点击目标页',
-      page: directClick[1],
+      targetPage: directClick[1],
     });
   }
   const directedSiteNav = u.match(/定向跨站导航\s+(\S+)/);
@@ -162,7 +162,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
         arguments: JSON.stringify({
           url: CROSS_SITE_URL,
           task: '定向跨站任务',
-          page: directedSiteNav[1],
+          targetPage: directedSiteNav[1],
         }),
       },
     };
@@ -173,7 +173,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
       task: '导航激活任务',
       steps: [{ action: 'navigate', url: BIDI_NAV_URL }],
       summary: '导航激活目标页',
-      page: bidiNav[1],
+      targetPage: bidiNav[1],
     });
   }
   const longNav = u.match(/定向导航超长\s+(\S+)/);
@@ -182,7 +182,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
       task: '导航激活任务',
       steps: [{ action: 'navigate', url: LONG_NAV_URL }],
       summary: '导航激活目标页',
-      page: longNav[1],
+      targetPage: longNav[1],
     });
   }
   const directedNav = u.match(/定向导航\s+(\S+)/);
@@ -191,7 +191,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
       task: '导航激活任务',
       steps: [{ action: 'navigate', url: NAV_TARGET_URL }],
       summary: '导航激活目标页',
-      page: directedNav[1],
+      targetPage: directedNav[1],
     });
   }
   if (u.includes('缺省快照后')) {
@@ -473,7 +473,7 @@ function eventsOf(sessionId: string, type: string, toolKey: string, toolId: stri
   );
 }
 
-/** 与 toolgate 同一签名 payload 形状（page 在 toolCallId 与 request 之间的可选键）复算签名。 */
+/** 与 toolgate 同一签名 payload 形状（定向落点以 targetPage 键取本帧 page 值）复算签名。 */
 function recomputeSignature(
   sessionId: string,
   frame: Record<string, unknown>,
@@ -486,7 +486,7 @@ function recomputeSignature(
     expiresAt: frame['expiresAt'],
     ttl: frame['ttl'],
     toolCallId: frame['toolCallId'],
-    ...(withPage && frame['page'] !== undefined ? { page: frame['page'] } : {}),
+    ...(withPage && frame['page'] !== undefined ? { targetPage: frame['page'] } : {}),
     request: frame['request'],
   } as JsonValue);
 }
@@ -529,7 +529,7 @@ describe('流程 B：同站多 tab 定向 dom 全链路', () => {
         expectedPageUrl: BG_URL,
         steps: [{ action: 'click', ref: 'za-9' }],
       });
-      // 一次性签名覆盖 page：同 payload 可复算；剥 page 复算即不等（篡改落点=验签失败）。
+      // 一次性签名覆盖 targetPage：同 payload 可复算；剥落点复算即不等（篡改落点=验签失败）。
       expect(recomputeSignature(sessionId, instruction, true)).toBe(instruction['signature']);
       expect(recomputeSignature(sessionId, instruction, false)).not.toBe(instruction['signature']);
       await postFrame(token, sessionId, {
@@ -878,8 +878,8 @@ describe('签发时刻重校验与定向导航上下文（fail-closed 收口）'
   });
 });
 
-describe('不支持定向的工具带 page：不作目标页标注', () => {
-  it('有界履约工具的 page 是无效实参：审计仍按活跃页归因，不标成被传入的句柄', async () => {
+describe('不支持定向的工具带 targetPage：不作目标页标注', () => {
+  it('有界履约工具的 targetPage 是无效实参：审计仍按活跃页归因，不标成被传入的句柄', async () => {
     const token = await signToken();
     const { sessionId, sse } = await startBoundedSession(token);
     try {

@@ -46,7 +46,7 @@ async function signedFrame(
     expiresAt: frame.expiresAt,
     ttl: frame.ttl,
     toolCallId: frame.toolCallId,
-    ...(page !== undefined ? { page } : {}),
+    ...(page !== undefined ? { targetPage: page } : {}),
     request: frame.request,
   } as unknown as JsonValue);
   frame.signature = base64Url(
@@ -96,7 +96,7 @@ describe('exec-instruction 副作用前验证', () => {
     ).resolves.toEqual({ ok: false, error: 'instruction-invalid' });
   });
 
-  it('带 page 的定向帧：page 入签名 payload 后验签通过（adr-023 D3）', async () => {
+  it('带 page 的定向帧：落点以 targetPage 键入签名 payload 后验签通过（adr-023 D3）', async () => {
     const { frame, publicKey } = await signedFrame(1_000, 'p2');
     await expect(verifyExecInstruction(frame, publicKey, new Set(), 's1', 2_000)).resolves.toEqual({
       ok: true,
