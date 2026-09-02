@@ -4,7 +4,7 @@
  *
  * E2E-B（L2 全链路，浏览器级）
  *   B1 teach：模型调 config_draft → 面板出 .za-config-card 草稿卡 → 点 .za-config-approve → 服务端落盘 overlay（origin=teach）。
- *   B2 下轮注入：新回合的 system 注入含该规则条目（[id] 正文（来源：对话确认）），注入透明视图 L2 分区出现 user-rules 段且 origin=L2。
+ *   B2 下轮注入：新回合的 system 注入含该规则条目（[id] 正文（来源：对话确认）），注入自省 L2 层出现 user-rules 段且 origin=L2。
  *   B3 配置中心：options 页个人定制页把 order-list.refresh-orders（pack 基线 auto）收紧为 hitl → PUT 落盘 → teach 条目原样保留。
  *   B4 收紧生效：同一工具再次被调用时弹 HITL 确认卡（收紧前同一工具在 M3 既有 E2E 中为直执无卡），确认后经签名指令真实执行一次。
  *
@@ -48,6 +48,9 @@ let installMain = '';
 /** 两个身份的 hostUserId 由服务端激活响应给出（派生权威在服务端）。 */
 let userMain = '';
 let userDegraded = '';
+/** 两个身份各自的匿名令牌：脚本侧直查会话注入自省端点时鉴权用。 */
+let tokenMain = '';
+let tokenDegraded = '';
 
 const HOST_PORT = Number(process.env.ZA_E2E_G6_HOST_PORT ?? 4173);
 /**
@@ -329,12 +332,20 @@ async function sendMessage(panel, text) {
   await panel.locator('[data-za-action][data-mode="send"]').click();
 }
 
-async function openInjectionView(panel) {
-  const view = panel.locator('[data-za-injection]');
-  if (!(await view.isHidden())) await panel.locator('[data-za-injection-toggle]').click();
-  await panel.locator('[data-za-injection-toggle]').click();
-  await panel.locator('.za-injection-head').waitFor({ state: 'visible', timeout: 20_000 });
-  return view;
+/** 会话注入自省（GET /v1/sessions/:id/injection）：与 compose 同源，是 L2 生效与治理收紧的服务端可观察面。 */
+async function fetchInjection(serverBase, sessionId, token) {
+  const response = await fetch(`${serverBase}/v1/sessions/${sessionId}/injection`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert(response.ok, `注入自省端点 HTTP ${response.status}`);
+  return response.json();
+}
+
+/** 插件自建会话、脚本不持有其 id：取审计中自 since 以来最近一条 assembly 事件的 sessionId。 */
+function currentSessionIdSince(since) {
+  const assembly = auditLines().slice(since).findLast((event) => event.type === 'assembly');
+  assert(assembly !== undefined, '审计缺 assembly 事件，无从定位当前会话');
+  return assembly.sessionId;
 }
 
 function readOverlay(hostUserId) {
@@ -420,7 +431,7 @@ async function main() {
     const serverBase = `http://127.0.0.1:${server.port}`;
     // 身份派生以服务端为准：激活只签发、不落盘，故预激活 degraded 身份不会让它进 lastGood 缓存，
     // C1「该 subject 服务端从未成功读过」的前提仍成立。
-    ({ hostUserId: userDegraded } = await activate(serverBase, INSTALL_DEGRADED));
+    ({ hostUserId: userDegraded, token: tokenDegraded } = await activate(serverBase, INSTALL_DEGRADED));
 
     console.log('[4/6] 真实 Chromium 加载 MV3 extension…');
     let context;
@@ -464,7 +475,7 @@ async function main() {
 
     installMain = await sw.evaluate(async () => (await chrome.storage.local.get('za.installId'))['za.installId']);
     assert(typeof installMain === 'string' && installMain !== '', '插件未生成安装 id（匿名自动登录未发生）');
-    ({ hostUserId: userMain } = await activate(serverBase, installMain));
+    ({ hostUserId: userMain, token: tokenMain } = await activate(serverBase, installMain));
 
     // ------------------------------------------------------------ E2E-B
     console.log('[5/6] E2E-B：L2 全链路（teach 草稿 → 确认 → 注入 → 配置中心收紧 → HITL）');
@@ -492,7 +503,7 @@ async function main() {
     await waitFor(async () => (await card.getAttribute('data-decided')) === 'accept', { label: 'B1 卡片终态' });
     note('B1 确认：.za-config-approve → 服务端合并落盘（origin=teach、subject 由 claims 推导）');
 
-    // B2 下轮注入含该规则 + 透明视图 origin=L2
+    // B2 下轮注入含该规则 + 注入自省 origin=L2
     const requestsBeforeB2 = mock.requests.length;
     await sendMessage(panel, '订单列表页能做什么？');
     await waitFor(async () => (await panelText(panel)).includes(EXPLAIN_REPLY), { label: 'B2 讲解回合完成' });
@@ -502,18 +513,14 @@ async function main() {
     assert(b2System.includes(teachRule.id), 'B2：个人规则注入缺条目 id（R4 逐条可追溯）');
     note('B2 注入：下轮 system 含该规则条目（带 id 与来源标注）');
 
-    const view = await openInjectionView(panel);
-    await view.locator('[data-za-layer="L2"]').waitFor({ state: 'visible', timeout: 20_000 });
-    const l2Block = view.locator('[data-za-layer="L2"] [data-za-block-kind="user-rules"]');
-    assert((await l2Block.count()) === 1, 'B2：透明视图 L2 分区未出现 user-rules 段');
-    const l2BlockText = await l2Block.innerText();
-    assert(l2BlockText.includes('L2'), `B2：user-rules 段未标注 origin=L2（实际：${l2BlockText}）`);
-    assert(l2BlockText.includes(teachRule.id), 'B2：user-rules 段未标注条目 id');
-    assert((await view.locator('.za-injection-revision').innerText()).includes('个人定制版本'),
-      'B2：透明视图未呈现本轮定格的个人定制版本');
-    await panel.screenshot({ path: join(evidenceB, 'b2-injection-view-l2.png'), fullPage: true });
-    note('B2 透明视图：L2 分区呈现 user-rules（origin=L2）+ 定格 revision');
-    await panel.locator('[data-za-injection-toggle]').click();
+    const b2Injection = await fetchInjection(serverBase, currentSessionIdSince(auditBaseB), tokenMain);
+    const l2Blocks = b2Injection.blocks.filter((block) => block.origin === 'L2' && block.kind === 'user-rules');
+    assert(l2Blocks.length === 1, `B2：注入自省 L2 层未出现 user-rules 段（实际：${JSON.stringify(b2Injection.blocks)}）`);
+    assert(l2Blocks[0].id === teachRule.id, `B2：user-rules 段未标注条目 id（实际：${JSON.stringify(l2Blocks[0])}）`);
+    assert(typeof b2Injection.userConfigRevision === 'string' && b2Injection.userConfigRevision !== '',
+      'B2：注入自省未呈现本轮定格的个人定制版本');
+    writeEvidence(evidenceB, 'b2-injection.json', `${JSON.stringify(b2Injection, null, 2)}\n`);
+    note('B2 注入自省：L2 层呈现 user-rules（origin=L2、带条目 id）+ 定格 revision');
 
     // B3 配置中心收紧 auto → hitl
     const options = await context.newPage();
@@ -562,16 +569,14 @@ async function main() {
     assert(host.counts.refresh === 1, `B4：宿主刷新接口应恰调用一次，实际 ${host.counts.refresh}`);
     note('B4 收紧生效：原 auto 工具改判 hitl → 弹确认卡 → 确认后经签名指令真实执行一次');
 
-    const viewAfter = await openInjectionView(panel);
-    const toolRow = viewAfter.locator(`[data-za-tool-id="${TIGHTEN_TOOL}"]`);
-    await toolRow.waitFor({ state: 'visible', timeout: 20_000 });
-    const toolRowText = await toolRow.innerText();
-    assert(toolRowText.includes('自动执行（auto）') && toolRowText.includes('需确认（hitl）'),
-      `B4：透明视图未呈现 baseTier→effectiveTier 收紧（实际：${toolRowText}）`);
-    assert(toolRowText.includes(`收紧来源：${PACK_ID}`), `B4：透明视图未标注收紧来源（实际：${toolRowText}）`);
-    await panel.screenshot({ path: join(evidenceB, 'b4-injection-view-tightened.png'), fullPage: true });
-    await panel.locator('[data-za-injection-toggle]').click();
-    note('B4 透明视图：工具面呈现 auto→hitl 收紧箭头与收紧来源');
+    const b4Injection = await fetchInjection(serverBase, currentSessionIdSince(auditBaseB), tokenMain);
+    const tightened = (b4Injection.tools ?? []).find((tool) => tool.toolId === TIGHTEN_TOOL);
+    assert(tightened !== undefined, `B4：注入自省工具面缺 ${TIGHTEN_TOOL}（实际：${JSON.stringify(b4Injection.tools)}）`);
+    assert(tightened.baseTier === 'auto' && tightened.effectiveTier === 'hitl',
+      `B4：注入自省未呈现 baseTier→effectiveTier 收紧（实际：${JSON.stringify(tightened)}）`);
+    assert(tightened.tightenedBy === PACK_ID, `B4：注入自省未标注收紧来源（实际：${JSON.stringify(tightened)}）`);
+    writeEvidence(evidenceB, 'b4-injection.json', `${JSON.stringify(b4Injection, null, 2)}\n`);
+    note('B4 注入自省：工具面呈现 auto→hitl 收紧与收紧来源');
 
     const auditB = archiveAudit(evidenceB, 'audit-e2e-b.jsonl', auditBaseB, [installMain, INSTALL_DEGRADED]);
     const writeEvents = auditB.filter((event) => event.type === 'user-config-write');
@@ -637,7 +642,7 @@ async function main() {
     await panel.screenshot({ path: join(evidenceC, 'c4-tool-refused.png'), fullPage: true });
     note('C4 受影响工具拒执行：模型幻觉调用被拒、宿主接口零调用、无 HITL 卡');
 
-    // C5 审计与透明视图
+    // C5 审计与注入自省
     const auditC = archiveAudit(evidenceC, 'audit-e2e-c.jsonl', auditBaseC, [installMain, INSTALL_DEGRADED]);
     const degradedAssembly = auditC.filter(
       (event) => event.type === 'assembly' && event.data.userConfigDegraded === 'fail-open-closed',
@@ -648,22 +653,16 @@ async function main() {
     assert(!auditC.some((event) => event.type === 'tool-execution'), 'C5：降级轮不得出现代执行事件');
     note('C5 审计：assembly 带 userConfigDegraded=fail-open-closed、无 revision、无 tool-execution');
 
-    const degradedView = await openInjectionView(panel);
-    const degradedViewText = await degradedView.innerText();
-    const toolRowsVisible = await degradedView.locator('.za-injection-tool').count();
-    await panel.screenshot({ path: join(evidenceC, 'c5-injection-view-degraded.png'), fullPage: true });
-    writeEvidence(
-      evidenceC,
-      'injection-view-degraded.txt',
-      `工具行数：${toolRowsVisible}\n含「因存储故障降级收紧」：${degradedViewText.includes('因存储故障降级收紧')}\n---\n${degradedViewText}\n`,
-    );
-    // 降级轮的透明视图是「compose 真实输出 → 视图」这条接缝的唯一浏览器级守卫：
+    const degradedInjection = await fetchInjection(serverBase, currentSessionIdSince(auditBaseC), tokenDegraded);
+    const degradedTools = degradedInjection.tools ?? [];
+    writeEvidence(evidenceC, 'c5-injection-degraded.json', `${JSON.stringify(degradedInjection, null, 2)}\n`);
+    // 降级轮的注入自省是「compose 真实输出 → 自省」这条接缝的唯一端到端守卫：
     // 单测夹具由手写 description 驱动，复现不了服务端降级时的真实形状。
-    assert(toolRowsVisible > 0, 'C5：降级轮透明视图无任何工具行——用户看不到 agent 为何不动手');
-    assert(degradedViewText.includes('因存储故障降级收紧'),
-      'C5：降级轮工具行缺「因存储故障降级收紧」来源标注');
-    assert(degradedViewText.includes('个人定制读取失败'), 'C5：降级轮缺顶部降级说明横幅');
-    note(`C5 透明视图：降级轮逐条列出工具（${toolRowsVisible} 行）+ 收紧来源标注 + 顶部降级横幅`);
+    assert(degradedTools.length > 0, 'C5：降级轮注入自省无任何工具条目——用户看不到 agent 为何不动手');
+    assert(degradedTools.every((tool) => tool.tightenedBy === 'storage-failure' && tool.effectiveTier === 'forbidden'),
+      `C5：降级轮工具条目未全部标注 storage-failure 收紧至 forbidden（实际：${JSON.stringify(degradedTools)}）`);
+    assert(degradedInjection.userConfigRevision === undefined, 'C5：降级轮不应带 userConfigRevision（无可信定格值）');
+    note(`C5 注入自省：降级轮逐条列出工具（${degradedTools.length} 项）+ storage-failure 收紧来源、无 revision`);
 
     writeEvidence(evidenceB, 'assertions.log', `${notes.filter((n) => n.startsWith('B')).join('\n')}\n`);
     writeEvidence(evidenceC, 'assertions.log', `${notes.filter((n) => n.startsWith('C')).join('\n')}\n`);

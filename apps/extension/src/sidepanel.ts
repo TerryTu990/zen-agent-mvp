@@ -1,4 +1,4 @@
-import { isAssistableUrl, panelGroupKey, TAB_GROUP_ID_NONE } from './activation.js';
+import { panelGroupKey, TAB_GROUP_ID_NONE } from './activation.js';
 import {
   appendAttachmentsToPrompt,
   MAX_ATTACHMENT_COUNT,
@@ -6,8 +6,8 @@ import {
 } from './composer-attachments.js';
 import { renderConfigDraftCard } from './config-draft-card.js';
 import { createConversationUi, type UserMessageHandle } from './conversation-hitl.js';
+import { EXECUTION_PREFERENCE_KEY, parseExecutionPreference } from './execution-preference.js';
 import type { ExecutionPreference } from './frames.js';
-import { renderInjectionView } from './injection-view.js';
 import {
   SIDE_PANEL_PORT_NAME,
   type BackgroundToSidePanelMessage,
@@ -16,8 +16,16 @@ import {
   type SidePanelToBackgroundMessage,
 } from './messaging.js';
 
-const EXECUTION_PREFERENCE_KEY = 'za.executionPreference';
 type PendingUserMessage = Extract<SidePanelToBackgroundMessage, { kind: 'user-message' }>;
+
+async function readExecutionPreference(): Promise<ExecutionPreference> {
+  try {
+    const items = await chrome.storage.local.get(EXECUTION_PREFERENCE_KEY);
+    return parseExecutionPreference(items[EXECUTION_PREFERENCE_KEY]);
+  } catch {
+    return 'auto';
+  }
+}
 
 /**
  * 提交瞬间落地的本地回显：气泡先出、输入框即刻清空，不等服务端回声。
@@ -33,12 +41,12 @@ interface LocalEcho {
 type TaskContextMessage = Extract<BackgroundToSidePanelMessage, { kind: 'task-context' }>;
 
 export interface ContextHeaderView {
-  state: 'waiting' | 'ready' | 'unassistable' | 'outside';
+  state: 'waiting' | 'ready' | 'outside';
   title: string;
   detail: string;
 }
 
-/** 面板头部四态视图：message 为 null 表示已绑组但尚未收到上下文（waiting）。 */
+/** 面板头部三态视图：message 为 null 表示已绑组但尚未收到上下文（waiting）。 */
 export function contextHeaderView(message: TaskContextMessage | null, groupId: number): ContextHeaderView {
   if (message === null) {
     return { state: 'waiting', title: '正在连接任务页面', detail: `任务组 ${groupId}` };
@@ -50,30 +58,11 @@ export function contextHeaderView(message: TaskContextMessage | null, groupId: n
       detail: message.url ?? `任务组 ${message.groupId}`,
     };
   }
-  if (message.assistable === false) {
-    return {
-      state: 'unassistable',
-      title: '此页面无法辅助',
-      detail: '切换到站点页面，或直接让 Zen 打开目标网站',
-    };
-  }
   return {
     state: 'ready',
     title: message.title ?? '任务页面已连接',
     detail: message.url ?? `任务组 ${message.groupId}`,
   };
-}
-
-/**
- * navigate 代执行开新页的瞬间 tab.url 尚未 commit（空值 + loading/pendingUrl）：
- * 此时不能据空 URL 判为不可辅助，应省略 assistable（缺省视为可辅助），等 URL commit 后 onUpdated 重报定态。
- */
-export function urlPendingCommit(
-  tab: { url?: string; status?: string; pendingUrl?: string } | undefined,
-): boolean {
-  if (tab === undefined) return false;
-  const urlMissing = tab.url === undefined || tab.url === '';
-  return urlMissing && (tab.status === 'loading' || tab.pendingUrl !== undefined);
 }
 
 export interface SidePanelElements {
@@ -84,12 +73,9 @@ export interface SidePanelElements {
   fileInput: HTMLInputElement;
   attachments: HTMLElement;
   composerNotice: HTMLElement;
-  preference: HTMLSelectElement;
   context: HTMLElement;
   contextTitle: HTMLElement;
   contextDetail: HTMLElement;
-  injection: HTMLElement;
-  injectionToggle: HTMLButtonElement;
 }
 
 export function mountSidePanel(root: HTMLElement): SidePanelElements {
@@ -101,18 +87,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
           <div class="za-context-title">等待连接任务页面</div>
           <div class="za-context-detail">打开要辅助的站点后点击 Zen Agent 图标</div>
         </div>
-        <label>
-          <span hidden>执行偏好</span>
-          <select class="za-preference" data-za-preference aria-label="执行偏好">
-            <option value="auto">自动选择</option>
-            <option value="dom-only">仅客户端 DOM</option>
-            <option value="prefer-client-api">优先客户端 API</option>
-            <option value="prefer-server-api">优先服务端 API</option>
-          </select>
-        </label>
-        <button class="za-injection-toggle" data-za-injection-toggle type="button" aria-expanded="false" aria-label="查看当前页面注入构成" title="查看当前页面注入构成">注入</button>
       </section>
-      <section class="za-injection" data-za-injection aria-label="当前页面注入构成" aria-live="polite" hidden></section>
       <section data-za-messages aria-live="polite">
         <div class="za-empty"><strong>把操作交给 Zen</strong><span>对话会留在这里；页面只负责观察与执行。</span></div>
       </section>
@@ -144,12 +119,9 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
   const fileInput = root.querySelector<HTMLInputElement>('[data-za-file-input]');
   const attachments = root.querySelector<HTMLElement>('[data-za-attachments]');
   const composerNotice = root.querySelector<HTMLElement>('[data-za-composer-notice]');
-  const preference = root.querySelector<HTMLSelectElement>('[data-za-preference]');
   const context = root.querySelector<HTMLElement>('[data-za-context]');
   const contextTitle = root.querySelector<HTMLElement>('.za-context-title');
   const contextDetail = root.querySelector<HTMLElement>('.za-context-detail');
-  const injection = root.querySelector<HTMLElement>('[data-za-injection]');
-  const injectionToggle = root.querySelector<HTMLButtonElement>('[data-za-injection-toggle]');
   if (
     messages === null ||
     input === null ||
@@ -158,12 +130,9 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
     fileInput === null ||
     attachments === null ||
     composerNotice === null ||
-    preference === null ||
     context === null ||
     contextTitle === null ||
-    contextDetail === null ||
-    injection === null ||
-    injectionToggle === null
+    contextDetail === null
   ) {
     throw new Error('Side Panel 初始化失败');
   }
@@ -175,12 +144,9 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
     fileInput,
     attachments,
     composerNotice,
-    preference,
     context,
     contextTitle,
     contextDetail,
-    injection,
-    injectionToggle,
   };
 }
 
@@ -336,12 +302,6 @@ export function startSidePanel(elements: SidePanelElements): void {
       updateComposer();
       return false;
     }
-  };
-
-  const closeInjection = (): void => {
-    elements.injection.hidden = true;
-    elements.injection.textContent = '';
-    elements.injectionToggle.setAttribute('aria-expanded', 'false');
   };
 
   const applyContextHeader = (view: ContextHeaderView): void => {
@@ -501,12 +461,6 @@ export function startSidePanel(elements: SidePanelElements): void {
       }
     } else if (message.kind === 'hitl-result') {
       if (!message.accepted) elements.composerNotice.textContent = '确认结果未送达，确认卡已恢复，请重试';
-    } else if (message.kind === 'injection-result') {
-      // 抽屉已关闭说明用户已不再查看，迟到的响应直接丢弃。
-      if (!elements.injection.hidden) {
-        if (message.ok) renderInjectionView(elements.injection, message.description);
-        else elements.injection.textContent = message.error;
-      }
     } else {
       renderUiEvent(message);
     }
@@ -540,7 +494,6 @@ export function startSidePanel(elements: SidePanelElements): void {
       groupId: tab?.groupId ?? TAB_GROUP_ID_NONE,
       ...(tab?.url !== undefined ? { url: tab.url } : {}),
       ...(tab?.title !== undefined ? { title: tab.title } : {}),
-      ...(urlPendingCommit(tab) ? {} : { assistable: isAssistableUrl(tab?.url) }),
     });
   };
 
@@ -583,7 +536,6 @@ export function startSidePanel(elements: SidePanelElements): void {
     applyContextHeader(contextHeaderView(null, groupId));
     elements.messages.textContent = '';
     ui = createConversationUi(elements.messages);
-    closeInjection();
     ready = false;
     resetActivity();
     connect();
@@ -621,6 +573,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     ui.showThinking();
     scrollMessagesToLatest();
     updateComposer();
+    const executionPreference = await readExecutionPreference();
     let prepared: Awaited<ReturnType<typeof prepareAttachments>>;
     try {
       prepared = await prepareAttachments(files);
@@ -645,7 +598,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       messageId,
       text: prompt,
       ...(prepared.length > 0 ? { displayText: echoText } : {}),
-      executionPreference: elements.preference.value as ExecutionPreference,
+      executionPreference,
     };
     showLocalEcho(messageId, echoText);
     const sent = send(pendingMessage);
@@ -676,18 +629,6 @@ export function startSidePanel(elements: SidePanelElements): void {
     if (isBusy()) return;
     void submit();
   });
-  elements.injectionToggle.addEventListener('click', () => {
-    if (!elements.injection.hidden) {
-      closeInjection();
-      return;
-    }
-    elements.injection.hidden = false;
-    elements.injectionToggle.setAttribute('aria-expanded', 'true');
-    elements.injection.textContent = '正在读取当前页面注入构成…';
-    if (!send({ kind: 'injection-request' })) {
-      elements.injection.textContent = '连接已中断，暂时无法读取当前页面注入构成';
-    }
-  });
   elements.upload.addEventListener('click', () => elements.fileInput.click());
   elements.fileInput.addEventListener('change', () => {
     pendingMessage = null;
@@ -717,12 +658,6 @@ export function startSidePanel(elements: SidePanelElements): void {
       void submit();
     }
   });
-  elements.preference.addEventListener('change', () => {
-    pendingMessage = null;
-    pendingMessageId = null;
-    deliveryAwaiting = false;
-    void chrome.storage.local.set({ [EXECUTION_PREFERENCE_KEY]: elements.preference.value });
-  });
   chrome.tabs.onActivated.addListener((activeInfo) => {
     if (activeInfo.windowId === windowId) void announceBrowsingContext();
   });
@@ -733,13 +668,6 @@ export function startSidePanel(elements: SidePanelElements): void {
     void announceBrowsingContext();
   });
   window.setInterval(() => send({ kind: 'ping' }), 20000);
-
-  void chrome.storage.local.get(EXECUTION_PREFERENCE_KEY).then((items) => {
-    const stored = items[EXECUTION_PREFERENCE_KEY];
-    if (typeof stored === 'string' && [...elements.preference.options].some((option) => option.value === stored)) {
-      elements.preference.value = stored;
-    }
-  });
 
   void chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
     if (tab?.windowId === undefined) return;

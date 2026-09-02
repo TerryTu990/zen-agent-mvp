@@ -220,10 +220,10 @@ async function runScenarios(hostPage, panelPage, counts) {
   assert(finalText.includes('已完成：'), 'd1 happy：应出现 tool-card 已完成状态');
   console.log('  [pass] d1 HITL happy：确认 → 签名指令 → 页面 fetch /cancel → 结果回喂 → 成功总结');
 
-  await panelPage.getByLabel('执行偏好').selectOption('dom-only');
+  await panelPage.evaluate(() => chrome.storage.local.set({ 'za.executionPreference': 'dom-only' }));
   await panelPage.reload();
   await panelPage.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
-  await waitFor(async () => (await panelPage.getByLabel('执行偏好').inputValue()) === 'dom-only', {
+  await waitFor(async () => (await panelPage.evaluate(() => chrome.storage.local.get('za.executionPreference')))['za.executionPreference'] === 'dom-only', {
     label: '执行偏好持久化', timeoutMs: 5000,
   });
   await sendMessage(panelPage, '再次刷新订单列表');

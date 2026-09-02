@@ -1,5 +1,5 @@
 /**
- * 选项页宿主：把 chrome.storage.local 的本机设置（服务端地址 / 自动化调度镜像）接到配置中心四页上，
+ * 选项页宿主：把 chrome.storage.local 的本机设置（服务端地址 / 执行偏好 / 自动化调度镜像）接到配置中心四页上，
  * 并以匿名身份（adr-022）取得本页读写 L2 所需的令牌；令牌值不入 DOM（ZA-C-SEC-04）。
  * 自动化偏好双写：L2（治理可见、服务端合并）+ 本地 `za.autoScan.*`（background alarm 的调度数据源）。
  */
@@ -10,6 +10,7 @@ import {
   parseAutomationDescriptors,
 } from './auto-scan.js';
 import { mountConfigCenter } from './config-center.js';
+import { EXECUTION_PREFERENCE_KEY, parseExecutionPreference } from './execution-preference.js';
 import { createIdentityProvider } from './identity.js';
 import { normalizeTrustedServerBaseUrl } from './server-url.js';
 
@@ -59,6 +60,7 @@ void chrome.storage.local.get(null).then(async (items) => {
     baseUrl,
     authToken,
     serverBaseUrl,
+    executionPreference: parseExecutionPreference(items[EXECUTION_PREFERENCE_KEY]),
     normalizeBaseUrl: normalizeTrustedServerBaseUrl,
     localAutomations: readLocalAutomations(items),
     async saveSettings(patch) {
@@ -66,6 +68,7 @@ void chrome.storage.local.get(null).then(async (items) => {
       if (patch.serverBaseUrl !== undefined && patch.serverBaseUrl !== '') {
         entries[BASEURL_KEY] = patch.serverBaseUrl;
       }
+      if (patch.executionPreference !== undefined) entries[EXECUTION_PREFERENCE_KEY] = patch.executionPreference;
       if (patch.serverBaseUrl === '') await chrome.storage.local.remove(BASEURL_KEY);
       if (Object.keys(entries).length > 0) await chrome.storage.local.set(entries);
     },

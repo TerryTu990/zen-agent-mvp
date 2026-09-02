@@ -31,17 +31,17 @@
  *
  * ── E2E-D1 exclude 路径不激活（仅基座）────────────────────────────────────
  * 前置：同一会话；导航到 /console/private/vault（命中 site.exclude，优先于 locations）。
- * 步骤：等注入视图回落仅基座 → 打开面板「注入」抽屉 → 提问「报告当前站点身份」。
- * 断言：① 注入视图 packId=null、无 L1 层、toolIds=[]；抽屉内无 pack 徽章、无工具面分区；
+ * 步骤：等注入自省回落仅基座 → 提问「报告当前站点身份」。
+ * 断言：① 注入自省 packId=null、无 L1 层、toolIds=[]；
  *      ② 本轮 system 含"无专属功能配置（仅基座）"附注且不含 FACT-BILLING-CYCLE；
  *      ③ 审计 assembly：无 packId、featureId=null、toolIds=[]。
  * 证据：evidence/e2e-d/d1-*.{png,jsonl,json}
  *
  * ── E2E-D3 知识型 pack 讲解可用 ──────────────────────────────────────────
  * 前置：同一会话；导航到 http://127.0.0.1:4184/policy/refund。
- * 步骤：等注入视图解析到 g6-knowledge/policy-guide → 打开「注入」抽屉 → 提问「退款窗口是多久？」。
- * 断言：① 注入视图 packId=g6-knowledge、featureId=policy-guide、toolIds=[]（无 tools.json 仍合法载入）；
- *      ② 抽屉有 pack 徽章与 L1 层（功能规则 + 功能事实），但无工具面分区；
+ * 步骤：等注入自省解析到 g6-knowledge/policy-guide → 提问「退款窗口是多久？」。
+ * 断言：① 注入自省 packId=g6-knowledge、featureId=policy-guide、toolIds=[]（无 tools.json 仍合法载入）；
+ *      ② 注入自省带 pack 人读名，有 L1 层（功能规则 + 功能事实），无工具面条目；
  *      ③ 讲解可用：回答带【FACT-REFUND-WINDOW】引用，无 MOCK- 哨兵；SSE 有 text-delta + turn-complete；
  *      ④ 审计 assembly：packId=g6-knowledge、toolIds=[]。
  * 证据：evidence/e2e-d/d3-*.{png,jsonl,json}
@@ -373,23 +373,6 @@ async function sendMessage(panel, text) {
   await panel.locator('[data-za-action][data-mode="send"]:not([disabled])').click();
 }
 
-async function openInjectionDrawer(panel) {
-  const drawer = panel.locator('[data-za-injection]');
-  if (await drawer.isVisible()) return drawer;
-  await panel.locator('[data-za-injection-toggle]').click();
-  await drawer.waitFor({ state: 'visible', timeout: 10000 });
-  await waitFor(async () => (await drawer.locator('.za-injection-title').count()) > 0, {
-    label: '注入抽屉渲染',
-    timeoutMs: 10000,
-  });
-  return drawer;
-}
-
-async function closeInjectionDrawer(panel) {
-  const drawer = panel.locator('[data-za-injection]');
-  if (await drawer.isVisible()) await panel.locator('[data-za-injection-toggle]').click();
-}
-
 /** 一轮讲解回合：发问 → 等回答落面板 → 收拢本轮的 SSE 帧 / 审计事件 / LLM 请求。 */
 async function askAndCollect(context, question, expectedAnswer, label) {
   const { panel, sse, mock } = context;
@@ -545,15 +528,8 @@ async function caseD1(ctx) {
     `${label}：仅基座不应有 L1 注入段，实际 ${JSON.stringify(injection.blocks)}`,
   );
 
-  const drawer = await openInjectionDrawer(ctx.panel);
-  await waitFor(async () => (await drawer.locator('.za-injection-pack').count()) === 0, {
-    label: `${label}：注入抽屉不应展示 pack 徽章`,
-    timeoutMs: 10000,
-  });
-  assert((await drawer.locator('[data-za-layer="L1"]').count()) === 0, `${label}：注入抽屉不应有 L1 分区`);
-  assert((await drawer.locator('.za-injection-tools').count()) === 0, `${label}：仅基座不应渲染工具面分区`);
-  await ctx.panel.screenshot({ path: evidencePath('e2e-d', 'd1-injection-base-only.png'), fullPage: true });
-  await closeInjectionDrawer(ctx.panel);
+  assert(injection.packName === undefined && injection.packVersion === undefined, `${label}：仅基座不应带 pack 人读名/版本`);
+  assert((injection.tools ?? []).length === 0, `${label}：仅基座工具面条目应为空，实际 ${JSON.stringify(injection.tools)}`);
 
   const result = await askAndCollect(ctx, '报告当前站点身份', ANSWER_BASE_ONLY, label);
   const request = result.llmRequests.at(-1);
@@ -573,14 +549,13 @@ async function caseD1(ctx) {
     case: 'E2E-D1',
     title: 'pack v2 载入：exclude 路径不激活（仅基座）',
     前置: `同一会话；活跃页 ${EXCLUDED_URL}（命中 site.exclude，优先于 locations ["/console"]）`,
-    步骤: ['等注入回落仅基座', '打开 Side Panel「注入」抽屉取证', '提问「报告当前站点身份」'],
+    步骤: ['等注入回落仅基座', '提问「报告当前站点身份」'],
     断言: [
-      '注入透明视图：packId=null、featureId=null、toolIds=[]、无 L1 注入段',
-      '抽屉可见面：无 pack 徽章、无 L1 分区、无工具面分区',
+      '注入自省：packId=null、featureId=null、toolIds=[]、无 L1 注入段、无 pack 人读名/版本、无工具面条目',
       'system 含「无专属功能配置（仅基座）」附注且不含 pack 事实 FACT-BILLING-CYCLE',
       'audit assembly：无 packId、featureId=null、toolIds=[]',
     ],
-    证据: ['d1-injection-base-only.png', 'd1-base-only-answer.png', 'd1-injection.json', 'd1-sse-frames.json', 'd1-audit.jsonl'],
+    证据: ['d1-base-only-answer.png', 'd1-injection.json', 'd1-sse-frames.json', 'd1-audit.jsonl'],
     结果: 'pass',
   });
   console.log(`  [pass] ${label}`);
@@ -605,18 +580,8 @@ async function caseD3(ctx) {
     `${label}：知识型 pack 应注入功能规则与事实，实际 L1=${JSON.stringify(l1Kinds)}`,
   );
 
-  const drawer = await openInjectionDrawer(ctx.panel);
-  await waitFor(
-    async () => {
-      const badge = await drawer.locator('.za-injection-pack').first().textContent().catch(() => null);
-      return badge !== null && badge.includes('G6 退款政策知识站') ? true : `徽章=${badge}`;
-    },
-    { label: `${label}：注入抽屉展示知识型 pack 徽章`, timeoutMs: 10000 },
-  );
-  assert((await drawer.locator('[data-za-layer="L1"]').count()) === 1, `${label}：注入抽屉应有 L1 分区`);
-  assert((await drawer.locator('.za-injection-tools').count()) === 0, `${label}：无 tools.json 的 pack 不应渲染工具面分区`);
-  await ctx.panel.screenshot({ path: evidencePath('e2e-d', 'd3-injection-knowledge-only.png'), fullPage: true });
-  await closeInjectionDrawer(ctx.panel);
+  assert(injection.packName === 'G6 退款政策知识站', `${label}：注入自省缺知识型 pack 人读名，实际 ${injection.packName}`);
+  assert((injection.tools ?? []).length === 0, `${label}：无 tools.json 的 pack 不应有工具面条目，实际 ${JSON.stringify(injection.tools)}`);
 
   const result = await askAndCollect(ctx, '退款窗口是多久？', ANSWER_REFUND, label);
   const request = result.llmRequests.at(-1);
@@ -636,14 +601,13 @@ async function caseD3(ctx) {
     case: 'E2E-D3',
     title: 'pack v2 载入：知识型 pack（无 tools.json）讲解可用',
     前置: `同一会话；活跃页 ${POLICY_URL}；pack g6-knowledge 无 tools.json`,
-    步骤: ['等注入解析到 g6-knowledge/policy-guide', '打开「注入」抽屉取证', '提问「退款窗口是多久？」'],
+    步骤: ['等注入解析到 g6-knowledge/policy-guide', '提问「退款窗口是多久？」'],
     断言: [
-      '注入透明视图：packId=g6-knowledge、featureId=policy-guide、toolIds=[]，L1 含 feature-rules + facts',
-      '抽屉可见面：有 pack 徽章与 L1 分区，无工具面分区',
+      '注入自省：packId=g6-knowledge、featureId=policy-guide、toolIds=[]，L1 含 feature-rules + facts，带 pack 人读名、无工具面条目',
       '讲解可用：回答带【FACT-REFUND-WINDOW】引用，无 MOCK- 哨兵',
       'SSE：≥3 text-delta + 1 turn-complete；audit assembly packId=g6-knowledge、toolIds=[]',
     ],
-    证据: ['d3-injection-knowledge-only.png', 'd3-knowledge-answer.png', 'd3-injection.json', 'd3-sse-frames.json', 'd3-audit.jsonl'],
+    证据: ['d3-knowledge-answer.png', 'd3-injection.json', 'd3-sse-frames.json', 'd3-audit.jsonl'],
     结果: 'pass',
   });
   console.log(`  [pass] ${label}`);

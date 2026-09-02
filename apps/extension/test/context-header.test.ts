@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { contextHeaderView, urlPendingCommit } from '../src/sidepanel.js';
+import { contextHeaderView } from '../src/sidepanel.js';
 
-describe('contextHeaderView：面板头部四态', () => {
+describe('contextHeaderView：面板头部三态', () => {
   it('waiting：已绑组但尚未收到上下文', () => {
     expect(contextHeaderView(null, 7)).toEqual({
       state: 'waiting',
@@ -11,7 +11,7 @@ describe('contextHeaderView：面板头部四态', () => {
     });
   });
 
-  it('ready：组内可辅助页显示页面标题与地址', () => {
+  it('ready：组内站点页显示页面标题与地址', () => {
     expect(
       contextHeaderView(
         {
@@ -20,7 +20,6 @@ describe('contextHeaderView：面板头部四态', () => {
           authorized: true,
           url: 'https://example.com/orders',
           title: '订单列表',
-          assistable: true,
         },
         7,
       ),
@@ -31,16 +30,7 @@ describe('contextHeaderView：面板头部四态', () => {
     });
   });
 
-  it('ready：assistable 缺省视为可辅助（content 上报路径不带标记）', () => {
-    expect(
-      contextHeaderView(
-        { kind: 'task-context', groupId: 7, authorized: true, url: 'https://example.com/' },
-        7,
-      ).state,
-    ).toBe('ready');
-  });
-
-  it('unassistable：组内不可辅助页给行动指引', () => {
+  it('ready：浏览器内部页同样按已连接显示，不给「无法辅助」指引', () => {
     expect(
       contextHeaderView(
         {
@@ -49,18 +39,17 @@ describe('contextHeaderView：面板头部四态', () => {
           authorized: true,
           url: 'chrome://newtab/',
           title: '新标签页',
-          assistable: false,
         },
         7,
       ),
     ).toEqual({
-      state: 'unassistable',
-      title: '此页面无法辅助',
-      detail: '切换到站点页面，或直接让 Zen 打开目标网站',
+      state: 'ready',
+      title: '新标签页',
+      detail: 'chrome://newtab/',
     });
   });
 
-  it('outside：组外页面优先于不可辅助判定', () => {
+  it('outside：组外页面', () => {
     expect(
       contextHeaderView(
         {
@@ -68,7 +57,6 @@ describe('contextHeaderView：面板头部四态', () => {
           groupId: 7,
           authorized: false,
           url: 'chrome://newtab/',
-          assistable: false,
         },
         7,
       ),
@@ -77,19 +65,5 @@ describe('contextHeaderView：面板头部四态', () => {
       title: '当前页面不在任务组内',
       detail: 'chrome://newtab/',
     });
-  });
-});
-
-describe('urlPendingCommit：URL 未 commit 的加载页暂缓 assistable 判定', () => {
-  it('navigate 开新页瞬间（url 空 + loading）不下 assistable 结论', () => {
-    expect(urlPendingCommit({ status: 'loading' })).toBe(true);
-    expect(urlPendingCommit({ url: '', pendingUrl: 'https://example.com/' })).toBe(true);
-  });
-
-  it('URL 已 commit 或无标签页时照常判定', () => {
-    expect(urlPendingCommit({ url: 'https://example.com/', status: 'loading' })).toBe(false);
-    expect(urlPendingCommit({ url: 'chrome://newtab/', status: 'complete' })).toBe(false);
-    expect(urlPendingCommit(undefined)).toBe(false);
-    expect(urlPendingCommit({ status: 'complete' })).toBe(false);
   });
 });

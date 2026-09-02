@@ -37,17 +37,6 @@ export function decideActivation(input: ActivationInput): ActivationDecision {
   return { kind: 'create' };
 }
 
-/** 可辅助页判定：仅 http/https 站点页；浏览器内部页（chrome:// 等）与非法/缺失 URL 一律不可辅助。 */
-export function isAssistableUrl(url: string | undefined): boolean {
-  if (url === undefined) return false;
-  try {
-    const protocol = new URL(url).protocol;
-    return protocol === 'http:' || protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
 /** groupId→sessionId 存根键（storage.session）；键名拆写以免被开发期 secret 守卫误判。 */
 export const sessionKeyForGroup = (groupId: number): string => 'za.' + 'sessionId.g' + groupId;
 

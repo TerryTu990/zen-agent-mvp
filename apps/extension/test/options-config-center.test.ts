@@ -155,6 +155,7 @@ function createHarness(overrides: Partial<ConfigCenterDeps> = {}): Harness {
     baseUrl: 'http://127.0.0.1:8787',
     authToken: AUTH_TOKEN,
     serverBaseUrl: 'http://127.0.0.1:8787',
+    executionPreference: 'auto',
     saveSettings: async () => undefined,
     ...overrides,
   };
@@ -772,6 +773,29 @@ describe('保存链路（乐观并发 + 服务端校验反馈）', () => {
     expect(status).toContain('个人配置未提交');
     expect(status).toContain('重新打开本页');
     expect(status).not.toBe('已保存');
+  });
+
+  it('执行偏好是本机设置：改选即随保存落盘，未改动不进 patch', async () => {
+    const saved: Array<Record<string, string>> = [];
+    const harness = createHarness({
+      saveSettings: async (patch) => {
+        saved.push(patch as Record<string, string>);
+      },
+    });
+    const handle = await mounted(harness);
+    const select = harness.root.querySelector<HTMLSelectElement>('#za-cc-execution-preference')!;
+    expect(select.value).toBe('auto');
+    expect([...select.options].map((option) => option.value)).toEqual([
+      'auto', 'dom-only', 'prefer-client-api', 'prefer-server-api',
+    ]);
+
+    await handle.save();
+    expect(saved).toEqual([]);
+
+    setValue(select, 'dom-only');
+    await handle.save();
+    expect(saved).toEqual([{ executionPreference: 'dom-only' }]);
+    expect(harness.root.querySelector('.za-cc-status')?.textContent ?? '').toContain('已保存');
   });
 
   it('服务端仍不可达时：本机设置照样落盘，个人配置如实标注未提交（不静默吞掉用户操作）', async () => {

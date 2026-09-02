@@ -26,8 +26,6 @@ declare namespace chrome {
       windowId?: number;
       groupId?: number;
       active?: boolean;
-      /** 'loading' | 'complete' 等；URL 未 commit 的加载页据此暂缓 assistable 判定。 */
-      status?: string;
       /** 导航已发起但 URL 尚未 commit 时的目标地址。 */
       pendingUrl?: string;
     }
