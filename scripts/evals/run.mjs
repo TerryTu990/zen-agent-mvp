@@ -23,6 +23,7 @@ const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
 const SNAPSHOT_ROOT = join(REPO_ROOT, 'examples', 'host-demo', 'config');
 const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
 const COMMERCE_ROOT = join(REPO_ROOT, 'assets');
+const SITE_PACKS_ROOT = join(REPO_ROOT, 'examples', 'site-packs');
 const AUDIT_SCHEMA_PATH = join(REPO_ROOT, 'packages', 'contracts', 'schemas', 'audit-event.schema.json');
 const AUDIT_SINK_PATH = join(REPO_ROOT, '.za', 'eval-events.jsonl');
 const RUN_DATE = (() => {
@@ -687,6 +688,7 @@ function renderReport({ results, auditReport, dimensionSummary }) {
   sourceHash.update(readFileSync(SCENARIOS_PATH));
   addTree(ACCEPTANCE_ROOT);
   addTree(COMMERCE_ROOT);
+  addTree(SITE_PACKS_ROOT);
   const project = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
   const lines = [];
   lines.push(`# Zen Commerce Agent Phase 2 评测报告 — ${RUN_DATE}`);
@@ -844,7 +846,7 @@ async function main() {
     await waitServerReady();
 
     console.log('\n按根发现 pack 级评测（acceptance 根 · packs/*/eval/scenarios.json）…');
-    await runPackSets(ACCEPTANCE_ROOT, token, results, new Set(['xianyu-seller']));
+    await runPackSets(ACCEPTANCE_ROOT, token, results);
     await stopServer2();
 
     console.log('\n换起 Zen Commerce Agent 生产快照 server…');
@@ -855,6 +857,15 @@ async function main() {
     console.log('\n按根发现生产 pack 级评测（assets/packs/*/eval/scenarios.json）…');
     await runPackSets(COMMERCE_ROOT, token, results);
     await stopServer3();
+
+    console.log('\n换起已下线站点包根 server（examples/site-packs）…');
+    const stopServer4 = makeStop(startServer(SITE_PACKS_ROOT));
+    cleanups.push(stopServer4);
+    await waitServerReady();
+
+    console.log('\n按根发现站点包级评测（examples/site-packs/packs/*/eval/scenarios.json）…');
+    await runPackSets(SITE_PACKS_ROOT, token, results);
+    await stopServer4();
 
     console.log('\n审计完整性校验…');
     const auditReport = checkAuditIntegrity();

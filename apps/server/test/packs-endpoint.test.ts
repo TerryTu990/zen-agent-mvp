@@ -12,7 +12,7 @@ import { startServer, type RunningServer } from '../src/index.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/host-demo/config');
-const productionRoot = join(repoRoot, 'assets');
+const sitePacksRoot = join(repoRoot, 'examples/site-packs');
 const systemPromptPath = join(repoRoot, 'assets/system-prompt.md');
 const AUDIT_SINK = join(mkdtempSync(join(tmpdir(), 'za-packs-audit-')), 'events.jsonl');
 
@@ -131,8 +131,8 @@ describe('GET /v1/packs（配置中心站点包页 L1 数据源）', () => {
     expect(pack.automations).toEqual([]);
   });
 
-  it('生产快照 assets：xianyu-seller 版本/来源/功能/自动化声明如实透出', async () => {
-    const srv = await startServer(serverOptions({ snapshotRoot: productionRoot }));
+  it('站点包根 site-packs：xianyu-seller 版本/来源/功能/自动化声明如实透出', async () => {
+    const srv = await startServer(serverOptions({ snapshotRoot: sitePacksRoot }));
     try {
       const response = await fetchPacks(`http://127.0.0.1:${srv.port}`, await signToken());
       expect(response.status).toBe(200);
@@ -140,9 +140,9 @@ describe('GET /v1/packs（配置中心站点包页 L1 数据源）', () => {
       const pack = body.packs.find((entry) => entry.packId === 'xianyu-seller');
       expect(pack).toBeDefined();
       expect(pack!.version).toBe('0.9.0');
-      // assets/manifest.json 未声明 source → 归一为 official（registry 缺省语义，adr-020 §3）。
+      // site-packs/manifest.json 未声明 source → 归一为 official（registry 缺省语义，adr-020 §3）。
       expect(pack!.source).toBe('official');
-      // assets/packs/xianyu-seller/pack.json 未声明 name → 省略（不改 assets，UI 回退 packId）。
+      // site-packs/packs/xianyu-seller/pack.json 未声明 name → 省略（UI 回退 packId）。
       expect(pack!.name).toBeUndefined();
       expect(pack!.summary).toBe('闲鱼卖家 PC 端：数据导航、订单识别与受控履约');
       expect(pack!.origin).toBe('https://seller.goofish.com');

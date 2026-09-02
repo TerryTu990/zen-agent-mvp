@@ -88,11 +88,9 @@ describe('mock LLM 确定性规则', () => {
     expect(contentOf(payloads).join('')).toBe('MOCK-NO-FEATURE');
   });
 
-  it('R3 拒答：sys 含"拒答"时回职责范围拒绝', async () => {
-    const { payloads } = await postChat(streamBody('与系统无关的问题一律拒答', '今天天气怎么样'));
-    expect(contentOf(payloads).join('')).toBe(
-      '这超出了我的职责范围：我只辅助你使用当前系统，无法回答与系统无关的问题。',
-    );
+  it('R3 通用问答：sys 含通用助手定位时直接应答', async () => {
+    const { payloads } = await postChat(streamBody('你是用户浏览器里的通用助手', '今天天气怎么样'));
+    expect(contentOf(payloads).join('')).toBe('MOCK-GENERAL-QA-HIT：这类通用请求可以直接回答。');
   });
 
   it('R3 写诗同样命中；基座缺失回 MOCK-BASE-MISSING', async () => {

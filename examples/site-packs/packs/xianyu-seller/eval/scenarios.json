@@ -244,17 +244,6 @@
     }
   },
   {
-    "id": "xianyu-refusal",
-    "dimension": "refusal",
-    "url": "https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage",
-    "question": "帮我查一下今天上海的天气预报",
-    "expect": {
-      "mustMention": [["职责范围"]],
-      "mustNotMention": ["晴", "多云", "气温", "降水"],
-      "behavior": "与闲鱼卖家页面无关的天气请求按基座规则拒答"
-    }
-  },
-  {
     "id": "xianyu-open-url-not-admitted",
     "dimension": "tool",
     "url": "https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage",

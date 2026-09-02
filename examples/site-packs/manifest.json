@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "packs": [
+    {
+      "packId": "xianyu-seller",
+      "version": "0.9.0"
+    },
+    {
+      "packId": "yinxiang",
+      "version": "0.1.0"
+    }
+  ]
+}

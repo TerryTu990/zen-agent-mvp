@@ -250,7 +250,7 @@ async function main() {
     })));
     const server = await startServer({
       port: SERVER_PORT, jwtSecret: JWT_SECRET, signingSecret: SIGNING_SECRET, issAllowlist: [JWT_ISS],
-      snapshotRoot: join(REPO_ROOT, 'assets'), systemPromptPath: join(REPO_ROOT, 'assets/system-prompt.md'),
+      snapshotRoot: join(REPO_ROOT, 'examples/site-packs'), systemPromptPath: join(REPO_ROOT, 'assets/system-prompt.md'),
       auditSinkPath: auditPath, sessionDir, heartbeatMs: 60_000,
       allowedProviders: ['openai-compatible'],
       cardInventoryPort: inventory.port, cardInventoryGuideUrl: 'https://example.test/guide',
@@ -317,7 +317,7 @@ async function main() {
       const groups = await sw.evaluate(() => chrome.tabGroups.query({}));
       return groups.some((group) => group.id === taskGroupId && group.title === 'Zen');
     }, '旧 commerce 标签组自动迁移为 Zen');
-    await panel.getByLabel('执行偏好').selectOption('dom-only');
+    await panel.evaluate(() => chrome.storage.local.set({ 'za.executionPreference': 'dom-only' }));
 
     console.log('[4/5] happy path：发货确认 → 卡密消息回执 → sent…');
     await sendMessage(panel, '执行当前订单自动发货。', {

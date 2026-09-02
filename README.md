@@ -1,7 +1,7 @@
 # Zen Commerce Agent
 
-面向电商经营的可治理浏览器智能体。首期在闲鱼卖家 PC 端完成订单识别、飞书卡密预占、
-受控履约和页面结果复核；客服、商品发布与经营分析按真实业务里程碑扩展。
+可治理的浏览器通用智能体：在任意站点上回答问题、讲解与代操作页面、按需打开网页完成任务；
+站点专属能力以站点包按需上架（生产快照当前只装通用包，闲鱼卖家等站点包见 `examples/site-packs/`）。
 
 **双版本一句话**：MVP = 模块化单体 + Chrome 插件 + git 文件配置 + 客户端代执行通道；
 标准版 = 七系统独立部署 + 三形态客户端 + 双执行通道 + 配置中心——靠升级不变量 U1-U7
@@ -25,8 +25,9 @@ packages/
 apps/
 ├── server/       # 模块化单体组装点（唯一同时依赖全部包，U2）
 └── extension/    # Chrome 插件（C3 接入层契约实现，零 @zen-agent 依赖、经 HTTP/SSE 通信）
-assets/           # Zen Commerce Agent 生产快照：稳定基座 + xianyu-seller pack
+assets/           # 生产快照：稳定基座 + generic-web 通用包
 examples/host-demo/   # 静态 demo 宿主页 + 示例功能配置（开发与评测锚定样例）
+examples/site-packs/  # 已下线的站点包（xianyu-seller / yinxiang），测试与评测继续覆盖
 ```
 
 模块间禁直接 import：只经 `@zen-agent/contracts` 类型 + 端口注入，组装唯一在

@@ -14,7 +14,7 @@ import { createMemorySessionStore, createPersistentSessionStore } from '../src/s
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/host-demo/config');
 const acceptanceRoot = join(repoRoot, 'examples/acceptance');
-const productionRoot = join(repoRoot, 'assets');
+const sitePacksRoot = join(repoRoot, 'examples/site-packs');
 const systemPromptPath = join(repoRoot, 'assets/system-prompt.md');
 // 共享测试 server 的审计落点：审计链测试按 sessionId 过滤本流事件，与其它测试的事件互不干扰。
 const AUDIT_SINK = join(mkdtempSync(join(tmpdir(), 'za-server-audit-')), 'events.jsonl');
@@ -26,7 +26,7 @@ const key = new TextEncoder().encode(JWT_SECRET);
 
 const REPLY_R1 = '根据本功能事实：已完成订单不可取消（其取消按钮为禁用态）。';
 const REPLY_R2_LIST = '这是订单列表页：可查看订单、进入详情、取消未发货订单。';
-const REPLY_R3 = '这超出了我的职责范围：我只辅助你使用当前系统，无法回答与系统无关的问题。';
+const REPLY_GENERAL_QA = 'MOCK-GENERAL-QA-HIT：这类通用请求可以直接回答。';
 const REPLY_NO_ANCHOR = 'MOCK-NO-ANCHOR';
 
 const ORDER_LIST_URL = 'http://127.0.0.1:4173/order-list.html';
@@ -566,7 +566,7 @@ describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
     expect(detailInjection['toolIds']).toEqual([]);
   });
 
-  it('未登记 URL → featureId=null 仅基座（fail-safe），无关请求仍被基座拒答', async () => {
+  it('未登记 URL → featureId=null 仅基座（fail-safe），通用请求由基座直接应答', async () => {
     const token = await signToken();
     const sessionId = await createSession(token);
     await postFrame(token, sessionId, {
@@ -588,7 +588,7 @@ describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
         sessionId,
         text: '今天天气怎么样？',
       });
-      await sse.waitFor(() => textOf(sse.frames) === REPLY_R3);
+      await sse.waitFor(() => textOf(sse.frames) === REPLY_GENERAL_QA);
     } finally {
       sse.close();
     }
@@ -1275,7 +1275,7 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       settle: vi.fn(async () => ({ ok: true })),
     };
     const shippingServer = await startServer(serverOptions({
-      snapshotRoot: productionRoot,
+      snapshotRoot: sitePacksRoot,
       cardInventoryPort: inventory,
       cardInventoryGuideUrl: 'https://example.test/guide',
       fulfillmentProductKeys: { 'item-ship': 'product-ship' },
@@ -2497,8 +2497,8 @@ describe('adr-014 L2 注入贯通：个人规则进入实际 system 注入且与
 });
 
 describe('adr-019 自动化描述符端点（pack 声明下发）', () => {
-  it('GET /v1/automation-descriptors 输出生产快照的 pack 自动化声明', async () => {
-    const srv = await startServer(serverOptions({ snapshotRoot: productionRoot }));
+  it('GET /v1/automation-descriptors 输出站点包根的 pack 自动化声明', async () => {
+    const srv = await startServer(serverOptions({ snapshotRoot: sitePacksRoot }));
     try {
       const token = await signToken();
       const response = await fetch(`http://127.0.0.1:${srv.port}/v1/automation-descriptors`, {
@@ -2525,7 +2525,7 @@ describe('adr-019 自动化描述符端点（pack 声明下发）', () => {
   });
 
   it('未鉴权请求被拒', async () => {
-    const srv = await startServer(serverOptions({ snapshotRoot: productionRoot }));
+    const srv = await startServer(serverOptions({ snapshotRoot: sitePacksRoot }));
     try {
       const response = await fetch(`http://127.0.0.1:${srv.port}/v1/automation-descriptors`);
       expect(response.status).toBe(401);

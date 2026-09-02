@@ -83,19 +83,17 @@ describe('createLlmPort · openai-compatible 流式', () => {
     expect(doneOf(events).stopReason).toBe('end');
   });
 
-  it('R3：基座含拒答时回职责范围拒绝', async () => {
+  it('R3：基座含通用助手定位时直接应答', async () => {
     pointAtMock();
     const events = await collect(
       port().chat({
         messages: [
-          { role: 'system', content: '与系统无关的问题一律拒答' },
+          { role: 'system', content: '你是用户浏览器里的通用助手' },
           { role: 'user', content: '今天天气怎么样' },
         ],
       }),
     );
-    expect(textOf(events)).toBe(
-      '这超出了我的职责范围：我只辅助你使用当前系统，无法回答与系统无关的问题。',
-    );
+    expect(textOf(events)).toBe('MOCK-GENERAL-QA-HIT：这类通用请求可以直接回答。');
   });
 
   it('多条 system 消息拼接参与规则匹配', async () => {

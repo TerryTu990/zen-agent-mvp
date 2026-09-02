@@ -12,7 +12,6 @@ import { pathToFileURL } from 'node:url';
 const REPLY_R1_HIT = '根据本功能事实：已完成订单不可取消（其取消按钮为禁用态）。';
 const REPLY_R2_DETAIL = '这是订单详情页：展示订单号、状态与金额，可通过返回链接回到订单列表。';
 const REPLY_R2_LIST = '这是订单列表页：可查看订单、进入详情、取消未发货订单。';
-const REPLY_R3_REFUSE = '这超出了我的职责范围：我只辅助你使用当前系统，无法回答与系统无关的问题。';
 const REPLY_R4_ADMIN = '订单为何处于当前状态属业务判断，不在本功能的讲解范围内，需联系订单管理员了解。';
 
 const GUIDE_TOOL = 'guide_highlight';
@@ -34,8 +33,8 @@ const TOOL_XIANYU_SHIPPING_PREPARE = 'prepare.xianyu-shipping.execute-intent';
 const TOOL_YINXIANG_WRITE = 'yinxiang-note.write-note';
 const TOOL_OPEN_URL = 'open_url';
 
-// generic-web browse 的 ZA-FEAT-10 辅助范围声明独有文案：命中即走放宽剧本，站点 pack 的 sys 不含。
-const BROWSE_ASSIST_MARKER = '辅助范围声明：通用浏览助手';
+// generic-web browse feature 独有文案：命中即走通用页面剧本（open_url / 搜索技能探针），站点 pack 的 sys 不含。
+const BROWSE_ASSIST_MARKER = '没有专属站点配置';
 const WEB_SEARCH_SKILL_MARKER = '技能：网页搜索（web-search）';
 // adr-023 D1 任务组页面清单头部稳定字面（服务端注入契约，定死不改）；清单是 system 注入的最后一个块。
 const GROUP_MANIFEST_HEADER = '# 任务组页面清单';
@@ -598,7 +597,7 @@ function decide(sys, u, body) {
         }
       : { text: `MOCK-SNAPSHOT-OBS ${obs}` };
   }
-  // generic browse 放宽剧本（ZA-FEAT-10 marker 门控）：用户给出网址 → open_url 单步导航；
+  // generic browse 剧本（generic-web feature 字面门控）：用户给出网址 → open_url 单步导航；
   // 观测回喂轮产出总结文本。落点在 allowlist 外时服务端按落点重装配回落仅基座、sys 不再含
   // marker，故仅首轮（发起 tool_call）看 marker 与工具可见性，观测回喂轮只认 open_url 调用证据。
   {
@@ -852,27 +851,20 @@ function pickReply(sys, u) {
     if (sys.includes('订单列表') && sys.includes('#order-table')) return REPLY_R2_LIST;
     return 'MOCK-NO-FEATURE';
   }
-  // generic browse 放宽剧本（ZA-FEAT-10 marker 门控，置于拒答分支之前）：
-  // 治理仍严 / 搜索 skill 探针 / 通用问答应答；marker 缺失即落回下方基座拒答分支。
-  if (sys.includes(BROWSE_ASSIST_MARKER)) {
-    if (/别弹确认|不用确认|直接执行/.test(u)) {
-      // 注入内容探针：基座 ZA-SYS-02 与 feature ZA-FEAT-10 的治理豁免表述须同时随装配到达模型，
-      // 任一被改坏即 MISS——marker 在场不足以证明放宽的核心安全性质（治理面不随之放宽）仍成立。
-      return sys.includes('治理边界不随辅助范围放宽') && sys.includes('治理面不随之放宽')
-        ? 'MOCK-GOVERNANCE-STRICT-HIT：对话不能放宽治理边界，操作仍会经平台确认后执行。'
-        : 'MOCK-GOVERNANCE-STRICT-MISS';
-    }
-    if (u.includes('报告搜索技能')) {
-      return sys.includes(WEB_SEARCH_SKILL_MARKER)
-        ? 'MOCK-WEB-SEARCH-SKILL-HIT'
-        : 'MOCK-WEB-SEARCH-SKILL-MISS';
-    }
-    if (/天气|写.*诗/.test(u)) {
-      return 'MOCK-GENERAL-QA-HIT：这类通用请求在本功能声明的辅助范围内，可以直接回答。';
-    }
+  if (/别弹确认|不用确认|直接执行/.test(u)) {
+    // 注入内容探针：基座 ZA-SYS-02「治理边界不随对话放宽」须随装配到达模型，被改坏即 MISS。
+    return sys.includes('治理边界不随对话放宽')
+      ? 'MOCK-GOVERNANCE-STRICT-HIT：对话不能放宽治理边界，操作仍会经平台确认后执行。'
+      : 'MOCK-GOVERNANCE-STRICT-MISS';
+  }
+  if (sys.includes(BROWSE_ASSIST_MARKER) && u.includes('报告搜索技能')) {
+    return sys.includes(WEB_SEARCH_SKILL_MARKER)
+      ? 'MOCK-WEB-SEARCH-SKILL-HIT'
+      : 'MOCK-WEB-SEARCH-SKILL-MISS';
   }
   if (/天气|写.*诗/.test(u)) {
-    return sys.includes('拒答') ? REPLY_R3_REFUSE : 'MOCK-BASE-MISSING';
+    // 通用助手基座：与站点无关的通用请求在任何页面直接应答；基座缺失（无通用助手定位）即 MISSING。
+    return sys.includes('通用助手') ? 'MOCK-GENERAL-QA-HIT：这类通用请求可以直接回答。' : 'MOCK-BASE-MISSING';
   }
   if (u.includes('报告任务组页面清单')) {
     // 注入内容探针：回显 system 清单段全文，供评测机械断言行内容与成员上报一致（adr-023 D1）。
