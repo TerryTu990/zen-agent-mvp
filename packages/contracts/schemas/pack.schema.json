@@ -123,6 +123,13 @@
           "uniqueItems": true,
           "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.md$" }
         },
+        "builtinTools": {
+          "$comment": "pack 声明其使用的平台内建工具族 ⊆ 平台已实现闭集（contracts 导出 packBuiltinTools），载入期交叉校验（fail-closed，越界拒载并报出越界值与 packId）；未声明 = 网关不注入任何平台内建工具面（缺省即不注入）。pattern 只做语法面守卫，值域权威在平台实现闭集。",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+        },
         "preparation": {
           "$comment": "pack 声明其使用的准备 workflows ⊆ 服务端已实现闭集，载入期交叉校验（fail-closed）；服务端语义分支原样保留，真泛化锚点=第二个履约站点 pack 接入时。",
           "type": "object",

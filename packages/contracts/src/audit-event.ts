@@ -18,7 +18,22 @@ export type AuditEventType =
 
 export type GateVerdict = 'allow' | 'hitl' | 'deny';
 
-export type ExecutionOutcome = 'ok' | 'error' | 'timeout' | 'invalid-result' | 'skipped';
+/**
+ * 执行结局闭集（与 schema enum 全等，contracts 测试对拍守卫）：
+ * issue-rejected = 判定放行但签发被拒、零指令下发、零副作用（无 nonce），与「已签发并执行失败」不可混记；
+ * dispatched-unknown = 指令已下发、结果因用户中断未归，副作用未知。
+ */
+export const executionOutcomes = [
+  'ok',
+  'error',
+  'timeout',
+  'invalid-result',
+  'skipped',
+  'issue-rejected',
+  'dispatched-unknown',
+] as const;
+
+export type ExecutionOutcome = (typeof executionOutcomes)[number];
 
 export type ClientKind = 'extension' | 'sdk' | 'shell';
 
@@ -121,6 +136,8 @@ export interface HitlVerdictEvent extends AuditEventBase {
     hitlId: string;
     toolCallId?: string;
     decision: HitlDecisionValue;
+    /** 'stopped' = 用户中断回合、服务端为挂起确认合成的 reject；缺省 = 用户在确认卡上真实裁决。 */
+    synthetic?: 'stopped';
   };
 }
 

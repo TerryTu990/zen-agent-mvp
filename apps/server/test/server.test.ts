@@ -1218,6 +1218,19 @@ describe('代执行闭环（toolgate 分级 + HITL 挂起恢复，U7）', () => 
       });
       expect(JSON.stringify(auditEventsFor(sessionId))).not.toContain('fixture-value-not-real');
 
+      // 无人值守回合的审计归因（A-GOV-03）：本轮全部回合事件带 run 归因键，
+      // 使「这次副作用出自哪个自动化的哪一轮」在审计流里可机械回放。
+      const turnEvents = auditEventsFor(sessionId).filter((event) =>
+        ['assembly', 'tool-decision', 'tool-execution'].includes(String(event['type'])),
+      );
+      expect(turnEvents.length).toBeGreaterThan(0);
+      for (const event of turnEvents) {
+        expect(event).toMatchObject({
+          automationRunId: 'scan_run_auto_001',
+          automationId: 'xianyu-auto-scan',
+        });
+      }
+
       const deniedUrl = 'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-unknown&orderId=order-unknown';
       const deniedSessionId = await createSession(token);
       const deniedSse = await openSse(token, deniedSessionId);
@@ -2236,6 +2249,11 @@ describe('审计事件链（M4 全链路 + 脱敏 + 旁路）', () => {
     const execution = events.find((e) => e['type'] === 'tool-execution')!['data'] as Record<string, unknown>;
     expect(execution['outcome']).toBe('ok');
     expect(execution['execution']).toBe('client');
+    // 人工回合基线：run 归因键缺省（automationRunId/automationId 是无人值守回合专属）。
+    for (const event of events) {
+      expect(event['automationRunId']).toBeUndefined();
+      expect(event['automationId']).toBeUndefined();
+    }
 
     // 脱敏 + 无签名：事件全文不含 secret 样式，且不含 exec-instruction 的 signature 字段值。
     const dump = JSON.stringify(events);
@@ -3091,5 +3109,91 @@ describe('B3b — HITL 卡真实性（服务端反解的机械摘要 + R4 五要
     } finally {
       sse.close();
     }
+  });
+});
+
+describe('停止路径的执行结局审计（A-GOV-04：副作用可能已发生即留证）', () => {
+  it('指令已下发后停止 → 审计留 tool-execution(dispatched-unknown) 且带 nonce', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    const messageId = 'message-stop-audit';
+    let nonce = '';
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message', sessionId, messageId, text: '在页面上刷新订单',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      nonce = String(framesByType(sse.frames, 'exec-instruction')[0]!['nonce']);
+      const stopped = await api(`/v1/sessions/${sessionId}/stop`, {
+        method: 'POST',
+        headers: authHeaders(token, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ messageId }),
+      });
+      expect(stopped.status).toBe(202);
+      await sse.waitFor(() => sse.frames.some(
+        (frame) => frame['type'] === 'turn-complete' && frame['messageId'] === messageId,
+      ));
+    } finally {
+      sse.close();
+    }
+    const executions = auditEventsFor(sessionId)
+      .filter((event) => event['type'] === 'tool-execution')
+      .map((event) => event['data'] as Record<string, unknown>);
+    expect(executions).toHaveLength(1);
+    // 「授权了、指令发了、可能执行了」必须与「授权了但没发指令」在审计流里可分。
+    expect(executions[0]).toMatchObject({ outcome: 'dispatched-unknown', nonce, execution: 'client' });
+  });
+
+  it('挂起确认期间停止 → hitl-verdict 记 reject 但标注 synthetic:stopped（与用户真实拒绝可分）', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    const messageId = 'message-stop-hitl-audit';
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message', sessionId, messageId, text: '帮我取消订单 ORD-1001',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      await api(`/v1/sessions/${sessionId}/stop`, {
+        method: 'POST',
+        headers: authHeaders(token, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ messageId }),
+      });
+      await sse.waitFor(() => sse.frames.some(
+        (frame) => frame['type'] === 'turn-complete' && frame['messageId'] === messageId,
+      ));
+    } finally {
+      sse.close();
+    }
+    const events = auditEventsFor(sessionId);
+    const verdict = events.find((event) => event['type'] === 'hitl-verdict')!['data'] as Record<string, unknown>;
+    expect(verdict).toMatchObject({ decision: 'reject', synthetic: 'stopped' });
+    // 中断发生在签发之前：零副作用，故不得凭空补执行事件。
+    expect(events.some((event) => event['type'] === 'tool-execution')).toBe(false);
+  });
+
+  it('用户在确认卡上真实拒绝 → hitl-verdict 不带 synthetic（对照）', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '帮我取消订单 ORD-1001' });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision', sessionId, hitlId: String(hitl['hitlId']), decision: 'reject',
+      });
+      await sse.waitFor(() => sse.frames.some((frame) => frame['type'] === 'turn-complete'));
+    } finally {
+      sse.close();
+    }
+    const verdict = auditEventsFor(sessionId)
+      .find((event) => event['type'] === 'hitl-verdict')!['data'] as Record<string, unknown>;
+    expect(verdict['decision']).toBe('reject');
+    expect(verdict['synthetic']).toBeUndefined();
   });
 });

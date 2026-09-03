@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
+import { executionOutcomes } from '../src/index.js';
 
 const schemasDir = new URL('../schemas/', import.meta.url).pathname;
 const demoConfigDir = new URL('../../../examples/host-demo/config/', import.meta.url).pathname;
@@ -496,6 +497,19 @@ describe('C3 snapshot-report 帧（含页面提示文本 notices 与页面正文
       textTruncated: true,
     },
     'snapshot-report 正文取契约上限长度': { ...baseReport, text: 'x'.repeat(40000) },
+    'snapshot-report 缺省元素截断标注（向后兼容）': baseReport,
+    'snapshot-report 标注元素清单已截断': {
+      ...baseReport,
+      elementsTruncated: true,
+      elementsOmitted: 12,
+    },
+    'snapshot-report 元素清单截断但省略数为 0（配额恰好命中）': {
+      ...baseReport,
+      elementsTruncated: true,
+      elementsOmitted: 0,
+    },
+    'snapshot-report 显式标注元素清单未截断': { ...baseReport, elementsTruncated: false },
+    'snapshot-report 含快照世代': { ...baseReport, snapshotEpoch: 3 },
   };
 
   it.each(Object.keys(validFrames))('合法 %s 通过校验', (label) => {
@@ -520,6 +534,15 @@ describe('C3 snapshot-report 帧（含页面提示文本 notices 与页面正文
     'textTruncated 非布尔': { ...baseReport, text: '正文', textTruncated: 'yes' },
     'textTruncated 无 text 相伴（截断标记无所依附）': { ...baseReport, textTruncated: true },
     'snapshot-report 含未声明的正文旁字段': { ...baseReport, text: '正文', textLength: 2 },
+    'elementsOmitted 无 elementsTruncated 相伴（省略计数无所依附）': {
+      ...baseReport,
+      elementsOmitted: 3,
+    },
+    'elementsOmitted 非整数': { ...baseReport, elementsTruncated: true, elementsOmitted: 1.5 },
+    'elementsOmitted 为负数': { ...baseReport, elementsTruncated: true, elementsOmitted: -1 },
+    'elementsTruncated 非布尔': { ...baseReport, elementsTruncated: 'yes' },
+    'snapshotEpoch 非整数': { ...baseReport, snapshotEpoch: 1.5 },
+    'snapshotEpoch 小于 1（世代自 1 起单调递增）': { ...baseReport, snapshotEpoch: 0 },
     'snapshot-request includeText 非布尔': {
       type: 'snapshot-request',
       sessionId: 's-001',
@@ -1276,5 +1299,74 @@ describe('C3 config-draft / config-decision 帧（adr-014 §5 teach 写入通道
 
   it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {
     expect(validate(invalidFrames[label])).toBe(false);
+  });
+});
+
+describe('C5 执行结局闭集：TS 联合 ↔ schema enum 全等对拍（A-TEST-11 守卫缺口）', () => {
+  const schema = loadJson(join(schemasDir, 'audit-event.schema.json')) as {
+    $defs: { toolExecutionData: { properties: { outcome: { enum: string[] } } } };
+  };
+
+  it('executionOutcomes 与 schema enum 成员完全一致（任一侧扩员漏改即红）', () => {
+    expect([...executionOutcomes].sort()).toEqual([...schema.$defs.toolExecutionData.properties.outcome.enum].sort());
+  });
+
+  const validate = compile(new Ajv2020({ strict: true }), 'audit-event.schema.json');
+  const base = {
+    eventId: 'e-0004',
+    ts: '2026-09-03T08:00:00.000Z',
+    sessionId: 's-001',
+    type: 'tool-execution',
+  };
+
+  it('issue-rejected（签发被拒、零副作用）合法且可无 nonce', () => {
+    expect(
+      validate({
+        ...base,
+        data: { toolCallId: 'tc-9', toolId: 'order-list.cancel-order', execution: 'client', outcome: 'issue-rejected' },
+      }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+  });
+
+  it('dispatched-unknown（已下发、结果未归）合法且带 nonce', () => {
+    expect(
+      validate({
+        ...base,
+        data: {
+          toolCallId: 'tc-9',
+          toolId: 'order-list.cancel-order',
+          execution: 'client',
+          nonce: '11111111-2222-3333-4444-555555555555',
+          outcome: 'dispatched-unknown',
+        },
+      }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+  });
+});
+
+describe('C5 hitl-verdict 合成裁决标注 synthetic（additive）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'audit-event.schema.json');
+  const base = {
+    eventId: 'e-0005',
+    ts: '2026-09-03T08:00:00.000Z',
+    sessionId: 's-001',
+    type: 'hitl-verdict',
+  };
+
+  it('用户中断合成的 reject 带 synthetic:stopped → 合法（可与用户真实拒绝区分）', () => {
+    expect(
+      validate({ ...base, data: { hitlId: 'h-01', toolCallId: 'tc-01', decision: 'reject', synthetic: 'stopped' } }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+  });
+
+  it('缺省 synthetic 仍合法（旧事件不失效）', () => {
+    expect(validate({ ...base, data: { hitlId: 'h-01', decision: 'reject' } })).toBe(true);
+  });
+
+  it('synthetic 越闭集被拒', () => {
+    expect(validate({ ...base, data: { hitlId: 'h-01', decision: 'reject', synthetic: 'whatever' } })).toBe(false);
   });
 });

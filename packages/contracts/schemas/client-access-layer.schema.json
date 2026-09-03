@@ -819,6 +819,20 @@
             }
           }
         },
+        "elementsTruncated": {
+          "$comment": "元素清单是否被客户端配额截断：true=elements 只是页面可交互元素的一个子集，agent MUST NOT 据此断言「页面上没有该控件」，应缩小范围或滚动后重采。缺省或 false=清单完整。与 textTruncated 同口径：禁止静默截断。",
+          "type": "boolean"
+        },
+        "elementsOmitted": {
+          "$comment": "被配额丢弃的可交互元素个数（客户端命中配额后继续计数、不再采集）：0 表示恰好用满配额而无丢弃。截断标记缺席时本字段无意义（dependentRequired 拒绝）。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "snapshotEpoch": {
+          "$comment": "客户端快照世代：同一页面实例内每次采集单调递增（自 1 起）。ref 跨快照对元素黏附，故服务端据此判定手上的 ref 出自哪一代观察、是否已过期；客户端只上报事实，不做任何治理判定。",
+          "type": "integer",
+          "minimum": 1
+        },
         "notices": {
           "$comment": "页面当前可见的告警/校验/状态提示文本（客户端已去重截断）：供 agent 识别表单校验等拦截性提示；缺省=未采集到提示。",
           "type": "array",
@@ -870,6 +884,9 @@
       "dependentRequired": {
         "textTruncated": [
           "text"
+        ],
+        "elementsOmitted": [
+          "elementsTruncated"
         ]
       }
     },

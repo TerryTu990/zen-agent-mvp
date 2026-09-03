@@ -92,6 +92,12 @@ export interface SnapshotReportFrame {
   pageInstanceId?: string;
   title?: string;
   elements: SnapshotElement[];
+  /** true=elements 只是配额内的子集，agent MUST NOT 据此断言页面上没有某控件；缺省/false=清单完整。 */
+  elementsTruncated?: boolean;
+  /** 被配额丢弃的可交互元素个数（0=恰好用满配额而无丢弃）。elementsTruncated 缺席时本字段不得出现。 */
+  elementsOmitted?: number;
+  /** 客户端快照世代（自 1 起单调递增）：ref 对元素黏附，服务端据此识别手上的 ref 出自哪一代观察。 */
+  snapshotEpoch?: number;
   notices?: string[];
   /** 页面正文纯文本，仅 includeText 请求时采集；未请求或页面无正文一律缺席（空串非法）。 */
   text?: string;

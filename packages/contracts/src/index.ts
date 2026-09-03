@@ -77,6 +77,7 @@ export type {
   SiteFence,
   PackEngines,
   PackAnchor,
+  PackBuiltinTool,
   PackCapabilities,
   PackIntegrity,
   PackManifest,
@@ -85,6 +86,7 @@ export type {
   RegistryPackEntry,
   RegistryManifest,
 } from './config-snapshot.js';
+export { packBuiltinTools } from './config-snapshot.js';
 export type {
   AuditEventType,
   AuditPageRef,
@@ -100,6 +102,7 @@ export type {
   UserConfigWriteEvent,
   AuditEvent,
 } from './audit-event.js';
+export { executionOutcomes } from './audit-event.js';
 export type { AutomationTemplateId, PlatformAutomationTemplate } from './automation-template.js';
 export {
   PLATFORM_AUTOMATION_TEMPLATES,

@@ -33,6 +33,7 @@ import type {
   DomToolDefinition,
   DownstreamFrame,
   ExecInstructionFrame,
+  ExecutionOutcome,
   ExecutionPreference,
   ExecResultFrame,
   GateUserConfigInput,
@@ -122,7 +123,7 @@ export interface GatewayDeps {
   corsOrigin: string;
   /** 匿名激活签发密钥；与 verifier 同一 HS256 secret，故签出的 token 能被本 server 验签通过。 */
   activationJwtSecret: string;
-  /** 投递记录（求职 agent 业务日志）落盘目录：record_application 按天写 `<dir>/<date>.jsonl`。 */
+  /** 投递记录（求职 agent 业务日志）落盘根目录：record_application 按 subject 分账写 `<dir>/<tenant 段>/<user 段>/<date>.jsonl`。 */
   applicationsDir: string;
   /** generic 兜底 pack 准入名单（origin 精确值）；空 = generic 永不激活（fail-closed）。 */
   genericAllowlist: string[];
@@ -290,9 +291,10 @@ const PACK_DOC_TOOL_SPEC: LlmToolSpec = {
 };
 
 /**
- * built-in 投递记录工具（求职 agent 业务日志）：pack 激活即注入。非终结、record-only 旁路——
- * 不经 toolgate（写本地业务日志、无宿主副作用、无凭证面），写失败 fail-open 不阻断打招呼主流程。
- * 与审计取证流分立（审计不收工具 params，业务记录需留 company/reason）。
+ * built-in 投递记录工具（求职 agent 业务日志）：注入门＝激活 pack 的 capabilities.builtinTools 声明
+ * （未声明即不注入，平台不对任意站点强加求职域工具面）。非终结、record-only 旁路——不经 toolgate
+ * （写本地业务日志、无宿主副作用、无凭证面），写失败 fail-open 不阻断打招呼主流程。落盘按 subject 分账，
+ * 一个用户的记录读写不可达他人落点。与审计取证流分立（审计不收工具 params，业务记录需留 company/reason）。
  */
 const RECORD_APPLICATION_TOOL_NAME = 'record_application';
 
@@ -317,7 +319,8 @@ const RECORD_APPLICATION_TOOL_SPEC: LlmToolSpec = {
 };
 
 /**
- * built-in 投递记录查询工具：pack 激活即注入。读某天投递记录并汇总回喂，用于回答"今天/某天投了哪些"。
+ * built-in 投递记录查询工具：注入门同 record_application（pack 声明驱动）。读本 subject 某天的投递记录
+ * 并汇总回喂，用于回答"今天/某天投了哪些"。
  */
 const LIST_APPLICATIONS_TOOL_NAME = 'list_applications';
 
@@ -966,7 +969,7 @@ interface SessionRuntime {
   /** 串行链上当前真正执行的消息编号。 */
   runningMessageId: string | null;
   /** HITL 挂起等待器：hitlId → resolver；hitl-decision 到达时解析，回合恢复。 */
-  pendingHitl: Map<string, (decision: HitlDecisionValue) => void>;
+  pendingHitl: Map<string, (decision: PendingHitlOutcome) => void>;
   /** 代执行挂起等待器：nonce → resolver；exec-result 到达时解析，回合恢复。 */
   pendingExec: Map<string, (result: ExecResultFrame) => void>;
   /** 快照挂起等待器：requestId → resolver；snapshot-report 到达时解析。 */
@@ -979,6 +982,18 @@ interface SessionRuntime {
   pendingConfigDrafts: Map<string, PendingConfigDraft>;
   /** 自动扫描状态由服务端持有，供 MV3 service worker 重启后查询恢复单飞锁。 */
   automationRuns: Map<string, { status: 'running' | 'succeeded' | 'failed'; updatedAt: number }>;
+}
+
+/**
+ * 挂起确认的内部裁决值：'stopped' = 用户中断回合时服务端为挂起卡合成的收尾——
+ * 对模型/客户端等价于 reject，但审计以 synthetic 标注区分「用户拒绝」与「用户中断」。
+ */
+type PendingHitlOutcome = HitlDecisionValue | 'stopped';
+
+/** 自动回合归因（C5 automationRunId/automationId）：人工回合恒为 null。 */
+interface AutomationRunRef {
+  runId: string;
+  automationId: string;
 }
 
 const DEFAULT_SNAPSHOT_TIMEOUT_MS = 15_000;
@@ -1037,6 +1052,27 @@ export function createGateway(deps: GatewayDeps): Gateway {
     }
     return { packId, packVersion, featureId, genericOrigin: origin };
   }
+
+  /**
+   * URL 是否落在某已安装 pack 的 site 围栏内（origin 精确 + location 前缀）：与 toolgate 对 navigate
+   * 目标的围栏判定同口径、同数据源（listSites），用于导航落地后按实际落点重校验（捕 302 逃逸）。
+   */
+  const urlInInstalledFence = async (url: string): Promise<boolean> => {
+    let origin: string;
+    let path: string;
+    try {
+      const parsed = new URL(url);
+      origin = parsed.origin;
+      path = parsed.pathname;
+    } catch {
+      return false;
+    }
+    return (await getSites()).some(
+      (site) =>
+        site.origin === origin &&
+        site.locations.some((loc) => loc === '/' || path === loc || path.startsWith(`${loc}/`)),
+    );
+  };
 
   /** 清单激活 pack 列：按行 URL 过 resolveFeature+gateGeneric 取最终 packId；解析异常按 '-'（清单不因解析失败缺行）。 */
   async function groupPagePackColumn(url: string, cache: Map<string, string>): Promise<string> {
@@ -1241,7 +1277,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     featureId: string | null,
     body: Pick<AuditEvent, 'type' | 'data'>,
     pack?: PackRef,
-    run?: { runId: string; automationId: string },
+    run?: AutomationRunRef,
     page?: AuditPageRef,
   ): void => {
     deps.audit.record({
@@ -1262,7 +1298,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
   };
 
   /** 等待客户端 hitl-decision；resolver 先注册再下发帧，避免决策先于等待器到达而丢帧。 */
-  function waitForHitl(sessionId: string, hitlId: string): Promise<HitlDecisionValue> {
+  function waitForHitl(sessionId: string, hitlId: string): Promise<PendingHitlOutcome> {
     const runtime = runtimeOf(sessionId);
     return new Promise((resolve) => runtime.pendingHitl.set(hitlId, resolve));
   }
@@ -1325,6 +1361,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
     userConfig: GateUserConfigInput | undefined,
     /** 本回合无人在场（automationRun 存在即真）：hitl 档在服务端直接拒绝，不广播确认卡（adr-024 D1）。 */
     unattended: boolean,
+    /** 本回合的自动化 run 归因（C5 automationRunId/automationId）；人工回合为 null。 */
+    run: AutomationRunRef | null,
     cancelled: () => boolean,
   ): Promise<Observation> {
     const { sessionId } = session;
@@ -1368,7 +1406,33 @@ export function createGateway(deps: GatewayDeps): Gateway {
         return false;
       }
     };
+    /**
+     * 执行结局审计的在飞状态：一旦副作用可能已发生（指令已下发 / 服务端已发请求）即置 stopOutcome，
+     * 停止路径据此补落 tool-execution——否则「授权了、指令发了、可能执行了」与「授权了但没发指令」
+     * 在审计流里同形，事故回放无法证明该次副作用由 agent 造成。
+     */
+    const execAudit: {
+      startedAt: number;
+      nonce?: string;
+      status?: number;
+      stopOutcome: ExecutionOutcome | null;
+    } = { startedAt: Date.now(), stopOutcome: null };
+    const recordExecution = (outcome: ExecutionOutcome): void => {
+      recordEvent(sessionId, claims, featureId, {
+        type: 'tool-execution',
+        data: {
+          toolCallId,
+          toolId: tool.id,
+          execution: tool.execution,
+          ...(execAudit.nonce !== undefined ? { nonce: execAudit.nonce } : {}),
+          outcome,
+          ...(execAudit.status !== undefined ? { status: execAudit.status } : {}),
+          durationMs: Date.now() - execAudit.startedAt,
+        },
+      }, pack, run ?? undefined, auditPageRef());
+    };
     const stopped = async (): Promise<Observation> => {
+      if (execAudit.stopOutcome !== null) recordExecution(execAudit.stopOutcome);
       const inventoryOk = inventoryBegun ? await settleInventory('manual', 'user-stopped') : true;
       finish('failed');
       return {
@@ -1490,7 +1554,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ? { effectiveTier: effectiveTierOf(tool, userConfig) }
           : {}),
       },
-    }, pack, undefined, auditPageRef());
+    }, pack, run ?? undefined, auditPageRef());
     if (decision.verdict === 'deny') {
       const inventoryOk = await settleInventory('manual', 'toolgate-denied');
       finish('failed');
@@ -1569,11 +1633,19 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...(effectiveTierOf(tool, userConfig) !== tool.riskTier ? { tightenedBy: 'L2' as const } : {}),
         ...(decision.instructionTtlMs !== undefined ? { ttlMs: decision.instructionTtlMs } : {}),
       });
-      const verdict = await decided;
+      const decidedValue = await decided;
+      // 用户中断合成的收尾与用户在卡上真实拒绝对模型等价，但审计必须可分（否则统计把中断计成拒绝）。
+      const syntheticStop = decidedValue === 'stopped';
+      const verdict: HitlDecisionValue = syntheticStop ? 'reject' : decidedValue;
       recordEvent(sessionId, claims, featureId, {
         type: 'hitl-verdict',
-        data: { hitlId, toolCallId, decision: verdict },
-      }, pack, undefined, auditPageRef());
+        data: {
+          hitlId,
+          toolCallId,
+          decision: verdict,
+          ...(syntheticStop ? { synthetic: 'stopped' as const } : {}),
+        },
+      }, pack, run ?? undefined, auditPageRef());
       if (cancelled()) return stopped();
       if (verdict === 'reject') {
         const inventoryOk = await settleInventory('manual', 'user-rejected');
@@ -1599,7 +1671,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             verdict: 'deny',
             reason: approvalStale,
           },
-        }, pack, undefined, auditPageRef());
+        }, pack, run ?? undefined, auditPageRef());
       }
       // 批准即任务级授权：登记 grant，同会话同 pack 同 origin 的同任务后续调用（跨工具，含 navigate）
       // decide 直接放行。两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得
@@ -1647,12 +1719,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (cancelled()) return stopped();
     }
 
-    const startedAt = Date.now();
+    execAudit.startedAt = Date.now();
     // 放行后按通道分支：client 签发一次性签名指令、等客户端回传；server 服务端直调、无 nonce/无客户端回传（U3/U7）。
     let observation: Observation;
-    let nonce: string | undefined;
-    let status: number | undefined;
     let instructionExpiresAt: number | undefined;
+    /** 签发被拒：零指令下发、零副作用——审计结局与「已签发并执行失败」分列（C5 issue-rejected）。 */
+    let issueRejected = false;
     if (approvalStale !== null) {
       observation = { toolCallId, ok: false, content: null, error: approvalStale };
     } else if (tool.execution === 'server') {
@@ -1666,6 +1738,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...(userConfig !== undefined ? { userConfig } : {}),
         ...(unattended ? { unattended: true as const } : {}),
       });
+      // 请求已发出即副作用可能已发生：停止也必须留下执行结局（结局按实际回执）。
+      execAudit.stopOutcome = execOutcome(observation);
       if (cancelled()) return stopped();
     } else {
       // HITL 等待窗可无界：签发入参重读状态表与定向快照上下文，使句柄退役 / 围栏越界 /
@@ -1694,16 +1768,21 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
       if (cancelled()) return stopped();
       if (instruction === null) {
+        issueRejected = true;
         observation = { toolCallId, ok: false, content: null, error: issueRefusal };
       } else {
-        nonce = instruction.nonce;
+        execAudit.nonce = instruction.nonce;
         instructionExpiresAt = instruction.expiresAt;
         const result = waitForExec(sessionId, instruction.nonce, instruction.ttl);
+        // 指令下发即副作用可能发生：在飞结局先记「已下发、结果未归」，结果归位后改判终局。
+        execAudit.stopOutcome = 'dispatched-unknown';
         broadcast(sessionId, instruction);
         const execResult = await result;
+        if (typeof execResult.status === 'number') execAudit.status = execResult.status;
+        // 停止时真实结果被合成帧顶掉、不再过 acceptExecResult：结局停在「已下发、副作用未知」。
         if (cancelled()) return stopped();
-        if (typeof execResult.status === 'number') status = execResult.status;
         observation = await deps.toolgate.acceptExecResult({ sessionId, result: execResult });
+        execAudit.stopOutcome = execOutcome(observation);
         if (cancelled()) return stopped();
       }
     }
@@ -1748,6 +1827,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
               : (isShipment ? 'shipment-status-unconfirmed' : 'fulfillment-receipt-unconfirmed'),
           };
     }
+    if (execAudit.stopOutcome !== null) execAudit.stopOutcome = execOutcome(observation);
     if (cancelled()) return stopped();
     if (boundedIntentId !== null) {
       let inventoryOk: boolean;
@@ -1773,18 +1853,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
     }
     finish(observation.ok ? 'succeeded' : 'failed');
-    recordEvent(sessionId, claims, featureId, {
-      type: 'tool-execution',
-      data: {
-        toolCallId,
-        toolId: tool.id,
-        execution: tool.execution,
-        ...(nonce !== undefined ? { nonce } : {}),
-        outcome: execOutcome(observation),
-        ...(status !== undefined ? { status } : {}),
-        durationMs: Date.now() - startedAt,
-      },
-    }, pack, undefined, auditPageRef());
+    recordExecution(issueRejected ? 'issue-rejected' : execOutcome(observation));
     return observation;
   }
 
@@ -1794,10 +1863,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
     claims: IdentityClaims,
     executionPreference: ExecutionPreference,
     messageId: string | undefined,
-    /** 本回合是否为无人值守自动回合（pack 声明自动化经此路径）：透传给每次判定与签发（adr-024 D1）。 */
-    unattended: boolean,
+    /**
+     * 本回合的自动化 run（pack 声明自动化经此路径）：非 null 即无人值守——
+     * 既是判定/签发的 unattended 依据（adr-024 D1），也是本回合全部审计事件的归因键（C5）。
+     */
+    run: AutomationRunRef | null,
   ): Promise<boolean> {
     const { sessionId } = session;
+    const unattended = run !== null;
     const runtime = runtimeOf(sessionId);
     const cancelled = (): boolean => messageId !== undefined && runtime.cancelledMessageIds.has(messageId);
     const llmRequestId = messageId === undefined ? undefined : `${sessionId}:${messageId}`;
@@ -1819,9 +1892,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const withPreference = (content: string): string =>
       preferenceInstruction === null ? content : `${content}\n\n${preferenceInstruction}`;
     // 按 URL 装配一轮上下文（回合开始与 navigate 落点换装共用）：解析功能、组装注入、建工具面。
-    const assembleFor = async (url: string) => {
+    const assembleFor = async (url: string, fenceEscaped = false) => {
       const resolved = await deps.assembly.resolveFeature({ url });
-      const { packId, packVersion, featureId, genericOrigin } = gateGeneric(resolved, url);
+      // 越界落地按仅基座装配（fail-safe）：既不授予落点 pack 的工具面，也不把 generic pack 的 origin
+      // 围栏重绑到新落点——否则重定向本身成了改围栏的手段。
+      const { packId, packVersion, featureId, genericOrigin } = fenceEscaped
+        ? { packId: null, packVersion: null, featureId: null, genericOrigin: undefined }
+        : gateGeneric(resolved, url);
       const subject = subjectOf(claims);
       // 每回合对 L2 单次读取定格（adr-014 §4）：本轮全部视图/判定/审计只用这一次 compose 的产出，
       // 不另调 describeInjection（其独立读取会破坏单次定格）。
@@ -1852,7 +1929,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ...(composed.packDisabled === true ? { packDisabled: true as const } : {}),
           ...(composed.disabledPackId !== undefined ? { disabledPackId: composed.disabledPackId } : {}),
         },
-      }, pack);
+      }, pack, run ?? undefined);
       // L2 定格面（封 TOCTOU）：本轮 compose 冻结的生效面贯穿全部判定与签发；
       // 降级（读失败无缓存）无 revision，以 degraded 标志表示——此时工具面已全 forbidden（U7）。
       const userConfig: GateUserConfigInput | undefined = gateUserConfigOf(composed);
@@ -1881,11 +1958,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
       // （名单含 '*'）才给通用导航入口；站点 pack / 其余仅基座会话不注入。
       const openUrlOk = openUrlAdmittedFor(pack, url, executionPreference);
       const openUrlTools: LlmToolSpec[] = openUrlOk ? [OPEN_URL_TOOL_SPEC] : [];
-      // 投递记录（业务日志）：pack 激活即注入读写入口，供求职 agent 落盘/回溯投递。
-      const appTools: LlmToolSpec[] =
-        composed.packId !== null
-          ? [RECORD_APPLICATION_TOOL_SPEC, LIST_APPLICATIONS_TOOL_SPEC]
-          : [];
+      // 投递记录（业务日志）注入门＝激活 pack 的 capabilities.builtinTools 声明（缺省即不注入）：
+      // 平台内建工具面不对任意站点强加求职域工具。注入门与调用准入门共用 appToolsOk 单一谓词（防两门漂移）。
+      const appToolsOk = composed.builtinTools?.includes('applications') === true;
+      const appTools: LlmToolSpec[] = appToolsOk
+        ? [RECORD_APPLICATION_TOOL_SPEC, LIST_APPLICATIONS_TOOL_SPEC]
+        : [];
       // config_draft 与写入通道同门：通道未组装时不给草稿入口（草稿无从确认写入）。
       const configTools: LlmToolSpec[] =
         deps.userConfig !== undefined ? [CONFIG_DRAFT_TOOL_SPEC] : [];
@@ -1914,7 +1992,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...fulfillmentPrepareTools,
         ...selectedHostTools.map((tool) => toLlmToolSpec(tool, groupPagesManifestInjected(session))),
       ];
-      return { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk };
+      return { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk, appToolsOk };
     };
     // 站点边界标记（ADR-013）：激活 pack 或 generic 绑定 origin 变更时向历史注入一行标记，
     // 防跨站历史误导（generic pack 多 origin 间切换 packId 恒定，须并比 genericOrigin）；
@@ -1935,7 +2013,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       return { role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` };
     };
 
-    let { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk } =
+    let { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk, appToolsOk } =
       await assembleFor(session.currentUrl ?? '');
     const prevPackId = session.lastPackId;
     const prevGenericOrigin = session.lastGenericOrigin;
@@ -2112,7 +2190,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                 outcome: 'skipped',
                 durationMs: Date.now() - snapshotStartedAt,
               },
-            }, pack, undefined, targetPageRef);
+            }, pack, run ?? undefined, targetPageRef);
             continue;
           }
         }
@@ -2149,7 +2227,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                 outcome: 'timeout',
                 durationMs: Date.now() - snapshotStartedAt,
               },
-            }, pack, undefined, targetPageRef);
+            }, pack, run ?? undefined, targetPageRef);
           }
           continue;
         }
@@ -2215,7 +2293,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             outcome: 'ok',
             durationMs: Date.now() - snapshotStartedAt,
           },
-        }, pack, undefined, targetPageRef);
+        }, pack, run ?? undefined, targetPageRef);
         continue;
       }
 
@@ -2474,13 +2552,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
         continue;
       }
 
-      if (call.name === RECORD_APPLICATION_TOOL_NAME) {
+      if (call.name === RECORD_APPLICATION_TOOL_NAME && appToolsOk) {
         // 业务日志（非终结、record-only 旁路）：把投递落盘当天文件，结果作 observation 回喂后继续本回合。
         const p = call.params;
         const str = (k: string): string => (typeof p[k] === 'string' ? (p[k] as string) : '');
         const optStr = (k: string): string | undefined =>
           typeof p[k] === 'string' ? (p[k] as string) : undefined;
-        const result = recordApplication(deps.applicationsDir, {
+        const result = recordApplication(deps.applicationsDir, subjectOf(claims), {
           company: str('company'),
           position: str('position'),
           ...(optStr('jdDigest') !== undefined ? { jdDigest: optStr('jdDigest')! } : {}),
@@ -2508,10 +2586,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
         continue;
       }
 
-      if (call.name === LIST_APPLICATIONS_TOOL_NAME) {
+      if (call.name === LIST_APPLICATIONS_TOOL_NAME && appToolsOk) {
         // 业务日志查询（非终结）：读某天投递记录汇总回喂后继续本回合。
         const date = typeof call.params['date'] === 'string' ? (call.params['date'] as string) : undefined;
-        const result = listApplications(deps.applicationsDir, date);
+        const result = listApplications(deps.applicationsDir, subjectOf(claims), date);
         const listEcho: LlmMessage = {
           role: 'assistant',
           content: roundText,
@@ -2574,6 +2652,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           evidenceRules,
           userConfig,
           unattended,
+          run,
           cancelled,
         );
         const navEcho: LlmMessage = {
@@ -2592,11 +2671,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
         if (observation.ok && typeof call.params['targetPage'] !== 'string') {
           const landedUrl = String((observation.content as JsonObject | null)?.['url'] ?? '');
           if (landedUrl !== '') {
+            // 围栏落地重校验：site_navigate 的目标在决策与签发两处已判围栏，但 302 可把落点带出围栏。
+            // 越界落地不按新落点装配（回落仅基座）并如实告知模型（R6）；open_url 本就无围栏、不适用。
+            const fenceEscaped =
+              call.name === SITE_NAVIGATE_TOOL_ID && !(await urlInInstalledFence(landedUrl));
             deps.store.setContext(sessionId, landedUrl);
             const previousPackId = pack.packId;
             const previousGenericOrigin = pack.genericOrigin ?? null;
-            ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk } =
-              await assembleFor(landedUrl));
+            ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk, appToolsOk } =
+              await assembleFor(landedUrl, fenceEscaped));
             messages[0] = {
               role: 'system',
               content: withManifest(
@@ -2611,7 +2694,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
             ) {
               deps.store.setLastPackId(sessionId, pack.packId, pack.genericOrigin);
             }
-            if (pack.packId === null) {
+            if (fenceEscaped) {
+              navObsContent +=
+                '\n实际落点与目标站点不一致（发生了跳转），已越出已安装站点围栏：本页不装配任何站点配置，仅通用能力可用。';
+            } else if (pack.packId === null) {
               navObsContent += '\n落点站点未安装专属配置，辅助能力受限。';
             }
           }
@@ -2674,6 +2760,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           evidenceRules,
           userConfig,
           unattended,
+          run,
           cancelled,
         );
       }
@@ -3084,7 +3171,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   claims,
                   upstream.executionPreference ?? 'auto',
                   upstream.messageId,
-                  automationRun !== null,
+                  automationRun,
                 );
               }
               if (automationRun !== null) {
@@ -3282,7 +3369,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     if (runtime.runningMessageId === messageId) {
       for (const [hitlId, resolve] of [...runtime.pendingHitl]) {
         runtime.pendingHitl.delete(hitlId);
-        resolve('reject');
+        resolve('stopped');
       }
       for (const [nonce, resolve] of [...runtime.pendingExec]) {
         runtime.pendingExec.delete(nonce);

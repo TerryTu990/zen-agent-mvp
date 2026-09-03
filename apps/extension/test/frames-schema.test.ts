@@ -162,6 +162,7 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
       type: true, sessionId: true, requestId: true, url: true, title: true,
       pageInstanceId: true, elements: true, notices: true, evidence: true,
       text: true, textTruncated: true,
+      elementsTruncated: true, elementsOmitted: true, snapshotEpoch: true,
     }),
   },
   {

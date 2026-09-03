@@ -13,6 +13,7 @@ import type {
   InjectionToolDescriptor,
   JsonObject,
   PackAutomation,
+  PackBuiltinTool,
   PackDescriptor,
   PackFeatureDescriptor,
   PackManifest,
@@ -37,6 +38,7 @@ import {
   compileConfigSchema,
   contractVersion,
   isDomTool,
+  packBuiltinTools,
   preparationWorkflows,
 } from '@zen-agent/contracts';
 import type { PackSource } from '@zen-agent/contracts';
@@ -95,6 +97,8 @@ interface LoadedPack {
   rules: CompiledRule[];
   features: Map<string, FeatureAssets>;
   skills: SkillAsset[];
+  /** pack 声明的平台内建工具族（capabilities.builtinTools，载入期已过闭集校验）；未声明为空数组。 */
+  builtinTools: PackBuiltinTool[];
   /** docs/ 渐进披露索引；docs/ 为空则 null（零注入）。 */
   docsIndex: string | null;
   /** docs/ 绝对目录（readPackDoc 围栏基准）；docsIndex=null 时为 null。 */
@@ -379,6 +383,13 @@ function assertPackV2Semantics(pack: PackManifest, skills: SkillAsset[], docFile
   }
   assertClosedList(pack.packId, 'skills', pack.capabilities?.skills, skills.map((s) => s.id));
   assertClosedList(pack.packId, 'docs', pack.capabilities?.docs, docFiles);
+  for (const builtin of pack.capabilities?.builtinTools ?? []) {
+    if (!(packBuiltinTools as readonly string[]).includes(builtin)) {
+      throw new Error(
+        `快照拒载：pack ${pack.packId} capabilities.builtinTools 声明 ${builtin} 不在平台内建工具闭集 [${packBuiltinTools.join(', ')}] 内`,
+      );
+    }
+  }
   for (const workflow of pack.capabilities?.preparation?.workflows ?? []) {
     if (!(preparationWorkflows as readonly string[]).includes(workflow)) {
       throw new Error(
@@ -451,6 +462,7 @@ function loadPack(
     docsIndex: docs.docsIndex,
     docsDir: docs.docsDir,
     automations: pack.automations ?? [],
+    builtinTools: pack.capabilities?.builtinTools ?? [],
     configSchema: pack.configSchema ?? null,
   };
 }
@@ -560,6 +572,7 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
     rules,
     features,
     skills: loadSkills(options.snapshotRoot),
+    builtinTools: [],
     docsIndex: docs.docsIndex,
     docsDir: docs.docsDir,
     automations: [],
@@ -884,6 +897,7 @@ function assembleInjection(
       tools: structuredClone(visibleTools),
       docsIndex: pack === null ? null : pack.docsIndex,
       sitesIndex,
+      ...(pack !== null && pack.builtinTools.length > 0 ? { builtinTools: [...pack.builtinTools] } : {}),
       ...l2Extras,
     },
     description: {

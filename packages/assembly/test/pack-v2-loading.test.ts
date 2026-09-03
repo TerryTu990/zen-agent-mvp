@@ -256,3 +256,33 @@ describe('knowledge-only pack（仅 feature.md + facts.md，无 tools.json）', 
     expect(result.skills).toEqual([]);
   });
 });
+
+describe('pack v2 载入：capabilities.builtinTools 平台闭集交叉校验（A-ASM-01 注入门声明化）', () => {
+  it('声明平台已实现的内建工具族 → 载入成功且 compose 原样透出（网关注入门数据源）', async () => {
+    const tmp = v2Snapshot({ capabilities: { builtinTools: ['applications'] } });
+    const port = portOf(tmp);
+    await expect(port.resolveFeature({ url: 'http://p.example/x' })).resolves.toMatchObject({ packId: 'p' });
+    const composed = await port.compose({ sessionId: 's-1', packId: 'p', featureId: 'f' });
+    expect(composed.builtinTools).toEqual(['applications']);
+  });
+
+  it('未声明 builtinTools → compose 不带该字段（缺省即不注入）', async () => {
+    const composed = await portOf(v2Snapshot({})).compose({ sessionId: 's-1', packId: 'p', featureId: 'f' });
+    expect(composed.builtinTools).toBeUndefined();
+  });
+
+  it('仅基座（packId=null）→ compose 不带 builtinTools', async () => {
+    const composed = await portOf(v2Snapshot({ capabilities: { builtinTools: ['applications'] } })).compose({
+      sessionId: 's-1',
+      packId: null,
+      featureId: null,
+    });
+    expect(composed.builtinTools).toBeUndefined();
+  });
+
+  it('越界内建工具族 → fail-closed 拒载，错误含越界值与 packId', async () => {
+    const tmp = v2Snapshot({ capabilities: { builtinTools: ['payments'] } });
+    await expect(portOf(tmp).resolveFeature({ url: 'http://p.example/x' })).rejects.toThrow(/payments/);
+    await expect(portOf(tmp).resolveFeature({ url: 'http://p.example/x' })).rejects.toThrow(/pack p/);
+  });
+});

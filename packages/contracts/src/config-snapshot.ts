@@ -47,6 +47,20 @@ export interface PackAnchor {
   selectorHint?: string;
 }
 
+/**
+ * 平台内建工具族标识：pack 声明使用哪些平台内建工具面，网关据此按 pack 声明注入（未声明即不注入）。
+ * 值域是平台已实现闭集（非 pack 自定义空间）：'applications' = 投递记录读写（record_application/list_applications）。
+ */
+export type PackBuiltinTool = 'applications';
+
+/** 联合类型的穷举镜像：联合增减成员或此处漏更均编译期爆错（双向同源保证）。 */
+const packBuiltinToolMirror: Record<PackBuiltinTool, true> = {
+  applications: true,
+};
+
+/** 平台已实现内建工具族的运行时闭集（capabilities.builtinTools 载入期交叉校验基准）。 */
+export const packBuiltinTools = Object.keys(packBuiltinToolMirror) as PackBuiltinTool[];
+
 /** 结构化能力声明（MCP capabilities 范式）：全部可选，知识型 pack 合法缺省。 */
 export interface PackCapabilities {
   /** featureId → 引导锚点清单；装配端消费锚点 = D2。 */
@@ -55,6 +69,8 @@ export interface PackCapabilities {
   skills?: string[];
   /** docs/ 内文档相对路径闭单：载入期与目录扫描对账。 */
   docs?: string[];
+  /** pack 声明使用的平台内建工具族 ⊆ 平台已实现闭集，载入期交叉校验；未声明 = 网关不注入任何内建工具面。 */
+  builtinTools?: PackBuiltinTool[];
   /** pack 使用的准备 workflows ⊆ 服务端已实现闭集，载入期交叉校验。 */
   preparation?: { workflows: string[] };
 }

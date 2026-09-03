@@ -17,7 +17,7 @@ import type {
   SnapshotEvidence,
 } from './client-access-layer.js';
 import type { AuditEvent, GateVerdict } from './audit-event.js';
-import type { PackAutomation, PackSource } from './config-snapshot.js';
+import type { PackAutomation, PackBuiltinTool, PackSource } from './config-snapshot.js';
 
 // ---- AssemblyPort（②会话网关 ← ⑤配置中心：featureId 定位 + 注入组合）----
 
@@ -82,6 +82,11 @@ export interface ComposeResult {
   tools: ToolDefinition[];
   /** 激活 pack 的 docs/ 渐进披露索引（frontmatter 标题+摘要）；docs/ 为空或无 pack 时为 null。 */
   docsIndex: string | null;
+  /**
+   * 激活 pack 声明的平台内建工具族（pack.json capabilities.builtinTools）：网关据此按声明注入内建工具面。
+   * 缺省 = 未声明或无 pack 激活 → 不注入任何内建工具面（缺省即不注入，非缺省即全给）。
+   */
+  builtinTools?: PackBuiltinTool[];
   /**
    * 已安装站点索引（渐进披露第一层，跨功能稳定）：列出平台可辅助的全部带 site 的 pack（用途+可达 URL），
    * 当前激活 pack 标注（当前）。仅 ≥2 个带 site 的 pack 时非 null（单 site/legacy 无跨站意义 → null）。

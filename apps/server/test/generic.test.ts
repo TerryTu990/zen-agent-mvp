@@ -33,6 +33,8 @@ const GENERIC_ORIGIN = 'http://127.0.0.1:4173';
 const GENERIC_URL = `${GENERIC_ORIGIN}/order-list.html`;
 const OUTSIDE_URL = 'https://outside.example/page';
 const TOOL_BROWSE = 'browse.page-operate';
+/** 送达 LLM 的 wire 名（toolId 的点替换为 '__'）。 */
+const TOOL_BROWSE_WIRE = 'browse__page-operate';
 
 describe('parseFulfillmentProductKeys（服务端商品闭集）', () => {
   it('空值关闭工具；合法对象规范化值；数组、空键值和非字符串 fail-fast', () => {
@@ -949,5 +951,199 @@ describe('generic dom 代操作闭环（packOrigin=活跃页 origin 动态围栏
     } finally {
       sse.close();
     }
+  });
+});
+
+describe('平台内建投递记录工具的注入门（pack 声明驱动，A-ASM-01/A-ARCH-01）', () => {
+  it('声明了 capabilities.builtinTools 的 pack 激活 → 两工具在工具面内', async () => {
+    const toolNames = await toolNamesSentToLlm('https://www.zhipin.com/job_detail/abc123.html');
+    expect(toolNames).toContain('record_application');
+    expect(toolNames).toContain('list_applications');
+  });
+
+  it('未声明的 pack（generic-web）激活 → 两工具不注入（缺省即不注入）', async () => {
+    const toolNames = await toolNamesSentToLlm(GENERIC_URL);
+    expect(toolNames).toContain(TOOL_BROWSE_WIRE);
+    expect(toolNames).not.toContain('record_application');
+    expect(toolNames).not.toContain('list_applications');
+  });
+
+  it('仅基座回合 → 两工具不注入', async () => {
+    const toolNames = await toolNamesSentToLlm(OUTSIDE_URL);
+    expect(toolNames).not.toContain('record_application');
+    expect(toolNames).not.toContain('list_applications');
+  });
+});
+
+/**
+ * site_navigate 落地重校验专用脚本化 mock LLM：首轮产出对围栏内目标的 site_navigate 调用；
+ * 回喂轮把 observation 原样回显（MOCK-NAV-OBS 前缀）。requests 保留每轮请求体，供断言落地后的工具面。
+ */
+function startScriptedNavigateMock(
+  targetUrl: string,
+): Promise<{ port: number; requests: string[]; close(): Promise<void> }> {
+  const requests: string[] = [];
+  const httpServer = createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
+      res.writeHead(404).end();
+      return;
+    }
+    let raw = '';
+    req.on('data', (chunk) => {
+      raw += chunk;
+    });
+    req.on('end', () => {
+      requests.push(raw);
+      let body: { messages?: Array<{ role?: string; content?: unknown }> };
+      try {
+        body = JSON.parse(raw) as typeof body;
+      } catch {
+        body = {};
+      }
+      const messages = body.messages ?? [];
+      const last = messages[messages.length - 1];
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+      });
+      const base = { id: 'x', object: 'chat.completion.chunk', created: 0, model: 'mock-model' };
+      const send = (choice: unknown): void => {
+        res.write(`data: ${JSON.stringify({ ...base, choices: [choice] })}\n\n`);
+      };
+      send({ index: 0, delta: { role: 'assistant' }, finish_reason: null });
+      if (last?.role === 'tool') {
+        send({ index: 0, delta: { content: `MOCK-NAV-OBS ${String(last.content ?? '')}` }, finish_reason: null });
+        send({ index: 0, delta: {}, finish_reason: 'stop' });
+      } else {
+        send({
+          index: 0,
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: 'call_site_navigate',
+                type: 'function',
+                function: {
+                  name: 'site_navigate',
+                  arguments: JSON.stringify({ url: targetUrl, task: '跨站续作同一任务' }),
+                },
+              },
+            ],
+          },
+          finish_reason: null,
+        });
+        send({ index: 0, delta: {}, finish_reason: 'tool_calls' });
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  return new Promise((resolve) => {
+    httpServer.listen(0, '127.0.0.1', () => {
+      const addr = httpServer.address();
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      resolve({ port, requests, close: () => new Promise((r) => httpServer.close(() => r())) });
+    });
+  });
+}
+
+describe('site_navigate 落地后围栏重校验（PC-GOV-04：捕 302 逃逸）', () => {
+  const NAV_TARGET = 'https://www.zhipin.com/web/geek/job';
+  let scripted: { port: number; requests: string[]; close(): Promise<void> };
+  let navServer: RunningServer;
+  let navBase = '';
+  let prevBaseUrl: string | undefined;
+
+  beforeAll(async () => {
+    scripted = await startScriptedNavigateMock(NAV_TARGET);
+    prevBaseUrl = process.env['ZA_LLM_BASE_URL'];
+    process.env['ZA_LLM_BASE_URL'] = `http://127.0.0.1:${scripted.port}/v1`;
+    navServer = await startServer({
+      port: 0,
+      jwtSecret: JWT_SECRET,
+      signingSecret: SIGNING_SECRET,
+      issAllowlist: [ISS],
+      snapshotRoot,
+      systemPromptPath,
+      auditSinkPath: AUDIT_SINK,
+      allowedProviders: ['openai-compatible'],
+      heartbeatMs: 60_000,
+      // 落点 origin 在 generic 准入名单内：不做落地重校验时它会被重绑为 generic pack 的围栏。
+      genericAllowlist: [GENERIC_ORIGIN],
+    });
+    navBase = `http://127.0.0.1:${navServer.port}`;
+  });
+
+  afterAll(async () => {
+    await navServer?.close();
+    await scripted?.close();
+    if (prevBaseUrl !== undefined) process.env['ZA_LLM_BASE_URL'] = prevBaseUrl;
+  });
+
+  /** 走完一次 site_navigate（hitl 批准 → 指令 → 客户端上报落点），返回本回合送达 LLM 的末轮工具名。 */
+  async function navigateLandingAt(landedUrl: string): Promise<{ toolNames: string[]; text: string }> {
+    const token = await signToken();
+    const sessionId = await createSession(navBase, token);
+    const sse = await openSse(navBase, token, sessionId);
+    try {
+      await postFrame(navBase, token, sessionId, {
+        type: 'context-report',
+        sessionId,
+        url: 'https://www.zhipin.com/job_detail/abc123.html',
+      });
+      await postFrame(navBase, token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '回到列表页继续',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      expect(hitl['toolId']).toBe('site_navigate');
+      await postFrame(navBase, token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(hitl['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      const instr = framesByType(sse.frames, 'exec-instruction')[0]!;
+      await postFrame(navBase, token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instr['nonce']),
+        ok: true,
+        // 客户端如实上报落点：302 后的实际 URL 与签发目标不同。
+        body: { url: landedUrl },
+      });
+      const text = (): string =>
+        sse.frames
+          .filter((f) => f['type'] === 'text-delta')
+          .map((f) => String(f['delta']))
+          .join('');
+      await sse.waitFor(() => text().includes('MOCK-NAV-OBS'));
+      const request = JSON.parse(scripted.requests[scripted.requests.length - 1]!) as {
+        tools?: Array<{ name?: string; function?: { name?: string } }>;
+      };
+      return {
+        toolNames: (request.tools ?? []).map((tool) => tool.function?.name ?? tool.name ?? ''),
+        text: text(),
+      };
+    } finally {
+      sse.close();
+    }
+  }
+
+  it('落点仍在围栏内（无重定向）→ 照常按落点换装（回归锚）', async () => {
+    const { toolNames, text } = await navigateLandingAt(NAV_TARGET);
+    expect(toolNames.some((name) => name.startsWith('job-search__'))).toBe(true);
+    expect(text).not.toContain('越出已安装站点围栏');
+  });
+
+  it('302 落到围栏外 → 不按新落点授予 pack 工具面（回落仅基座）且如实告知模型', async () => {
+    const { toolNames, text } = await navigateLandingAt(GENERIC_URL);
+    expect(text).toContain('越出已安装站点围栏');
+    expect(toolNames).not.toContain(TOOL_BROWSE_WIRE);
+    expect(toolNames.some((name) => name.startsWith('job-search__') || name.startsWith('job-detail__'))).toBe(false);
   });
 });
