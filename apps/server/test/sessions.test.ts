@@ -255,3 +255,57 @@ describe('createPersistentSessionStore（P2 会话持久化）', () => {
     expect(restored!.lastGenericOrigin).toBe('https://b.example');
   });
 });
+
+describe('adr-024 G10 — 会话逐出的治理态回收挂点（onEvict）', () => {
+  it('TTL 清理逐出会话时通知监听者，使网关能回收该会话的进程内治理态', () => {
+    const dir = freshDir();
+    let clock = 1_000_000;
+    const store = persistent(dir, { ttlMs: 1000, now: () => clock });
+    const evicted: string[] = [];
+    store.onEvict((sessionId) => evicted.push(sessionId));
+    const stale = store.create(CLAIMS).sessionId;
+    clock += 500;
+    const fresh = store.create(CLAIMS).sessionId;
+    clock += 600;
+    store.sweep();
+    expect(evicted).toEqual([stale]);
+    expect(store.get(fresh)).toBeDefined();
+  });
+
+  it('显式逐出同样通知；同一 sessionId 逐出后不再重复通知', () => {
+    const dir = freshDir();
+    const store = persistent(dir);
+    const evicted: string[] = [];
+    store.onEvict((sessionId) => evicted.push(sessionId));
+    const { sessionId } = store.create(CLAIMS);
+    store.delete(sessionId);
+    store.delete(sessionId);
+    expect(evicted).toEqual([sessionId]);
+  });
+
+  it('监听者抛错不阻断清理：其余会话照常逐出（回收异常不拖垮 sweep）', () => {
+    const dir = freshDir();
+    let clock = 1_000_000;
+    const store = persistent(dir, { ttlMs: 1000, now: () => clock });
+    const seen: string[] = [];
+    store.onEvict(() => {
+      throw new Error('回收失败');
+    });
+    store.onEvict((sessionId) => seen.push(sessionId));
+    const first = store.create(CLAIMS).sessionId;
+    const second = store.create(CLAIMS).sessionId;
+    clock += 2000;
+    expect(() => store.sweep()).not.toThrow();
+    expect(seen.sort()).toEqual([first, second].sort());
+    expect(store.get(first)).toBeUndefined();
+  });
+
+  it('内存 store 独立可用：delete 即通知（持久化装饰器只是转发）', () => {
+    const store = createMemorySessionStore();
+    const evicted: string[] = [];
+    store.onEvict((sessionId) => evicted.push(sessionId));
+    const { sessionId } = store.create(CLAIMS);
+    store.delete(sessionId);
+    expect(evicted).toEqual([sessionId]);
+  });
+});

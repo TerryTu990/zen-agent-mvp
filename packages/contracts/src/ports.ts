@@ -382,6 +382,8 @@ export type ConfirmShipmentStatusResult = ConfirmFulfillmentReceiptResult;
  * packOrigin 缺省=legacy 无 site pack（沿用平台 claims 身份、不校 origin 围栏）。
  */
 interface PackScopeInput {
+  /** 工具所属激活 pack 的 id（取自装配结果，非模型自述）：任务级授权的作用域指纹分量；缺省=无 pack 作用域。 */
+  packId?: string;
   /** 工具所属激活 pack 的 origin 围栏：站点 pack = site.origin；generic pack = 网关以活跃页 origin 填充；有值即启用 origin 围栏 + per-origin 身份口径。 */
   packOrigin?: string;
   /**
@@ -422,6 +424,11 @@ export interface GateDecisionInput extends PackScopeInput {
    * params.targetPage 有值而本表缺省/未命中一律拒签（U7 fail-closed，禁回退活跃页）；无 targetPage 的调用不消费本表。
    */
   groupPages?: GroupPageEntry[];
+  /**
+   * 本回合无人在场（adr-024 D1，网关按 automationRun 判定后传入）：生效档为 hitl 一律 deny
+   * 且不消费任务级授权；缺省=人工回合，判定逐字节同基线。
+   */
+  unattended?: true;
 }
 
 /** 判定结果：分级矩阵 + 身份/实参校验，任一不过即 deny（fail-closed，U7）。 */
@@ -443,6 +450,8 @@ export interface IssueExecInstructionInput extends PackScopeInput {
   userConfig?: GateUserConfigInput;
   /** 会话组页面状态表快照：签发前独立重解析定向目标（语义同 GateDecisionInput.groupPages，U7 封 TOCTOU）。 */
   groupPages?: GroupPageEntry[];
+  /** 本回合无人在场（语义同 GateDecisionInput.unattended）；缺省=人工回合。 */
+  unattended?: true;
 }
 
 export interface AcceptExecResultInput {
@@ -458,11 +467,19 @@ export interface Observation {
   error?: string;
 }
 
-/** 任务级 HITL 授权登记：hitl 获批后记 grant，同会话同任务的后续调用（跨工具）decide 直接放行（一任务一授权）。 */
+/**
+ * 任务级 HITL 授权登记：hitl 获批后记 grant，同会话同 pack 同 origin 的同任务后续调用（跨工具）
+ * decide 直接放行（一任务一授权）。作用域指纹 = (sessionId, packId, packOrigin, task)——
+ * 前三项是服务端自持事实，唯一由模型提供的 task 不做归一化。
+ */
 export interface HitlGrantInput {
   sessionId: string;
   /** agent 声明的任务标题（params.task）：授权作用域即用户在确认卡上看到并批准的这个任务。 */
   task: string;
+  /** 批准时激活 pack 的 id（语义同 GateDecisionInput.packId）；缺省须与 decide 侧同样缺省才命中。 */
+  packId?: string;
+  /** 批准时激活 pack 的 origin（语义同 GateDecisionInput.packOrigin）；缺省须与 decide 侧同样缺省才命中。 */
+  packOrigin?: string;
 }
 
 export interface ToolGatePort {
@@ -482,10 +499,22 @@ export interface ToolGatePort {
   confirmShipmentStatus(input: ConfirmShipmentStatusInput): Promise<ConfirmShipmentStatusResult>;
   decide(input: GateDecisionInput): Promise<GateDecision>;
   /**
-   * 登记任务级授权：同 (sessionId,task) 的后续 decide 放行（跨工具共享，every-call 工具除外），
-   * 滑动 TTL 过期 / exec-result=user-stopped 吊销后回到 hitl。
+   * 批准恢复期复核（adr-024 D3）：approve 之后、签发之前以当轮最新上下文重跑判定链
+   * （分级 + L2 收紧终值 + 身份 + 围栏 + dom 步骤 ref 出自最近快照）。
+   * 通过=allow；任一不过=deny reason `approval-stale`（用户批准的是当时那个动作，不是长期通行证）。
+   * 只判定不落状态：既不登记也不消费任务级授权。
+   */
+  reconfirmApproval(input: GateDecisionInput): Promise<GateDecision>;
+  /**
+   * 登记任务级授权：同 (sessionId,packId,packOrigin,task) 的后续 decide 放行（跨工具共享，every-call 工具除外），
+   * 滑动 TTL 过期 / 用户停止吊销后回到 hitl。
    */
   grantHitl(input: HitlGrantInput): Promise<void>;
+  /**
+   * 吊销本会话全部任务级授权（adr-024 D2）：用户点停止即收回自动执行授权，后续同任务回到 hitl。
+   * 幂等；无授权的会话是无操作。
+   */
+  revokeHitlGrants(sessionId: string): Promise<void>;
   /** 前提：decide 已放行（allow 或 hitl 获批）。签发即登记一次性 nonce。 */
   issueExecInstruction(input: IssueExecInstructionInput): Promise<ExecInstructionFrame>;
   /** 核销 nonce、验 ttl、按 resultSchema 校验后规整；任一不过返回 ok=false 的 observation。 */

@@ -58,6 +58,8 @@ export interface ToolGateOptions {
   hitlGrantTtlMs?: number;
   /** 时钟注入点（默认 Date.now），仅测试用于驱动 ttl；内部参数，非端口。 */
   now?: () => number;
+  /** nonce 登记的条目上界，默认 10000；仅测试注入小值以覆盖高水位驱逐，内部参数、非端口。 */
+  nonceStoreMax?: number;
   /**
    * server 通道凭证解析：ref→真值；真值 MUST NOT 落日志/审计/Context（SEC-01/02），
    * 由组装层运行时注入、不写进 toolgate。缺省或解析不到按未配置处理（executeServer 返回 credential-unresolved）。
@@ -85,8 +87,17 @@ export interface BoundedFulfillmentPolicy {
 
 const DEFAULT_TTL_MS = 60000;
 const DEFAULT_HITL_GRANT_TTL_MS = 900000;
+const DEFAULT_NONCE_STORE_MAX = 10000;
 /** 客户端解释器对用户点「停止」的约定错误串：命中即吊销本会话的全部任务授权。 */
 const USER_STOPPED_ERROR = 'user-stopped';
+/** 无人值守回合命中需确认档的拒绝归因（adr-024 D1）：审计据此机械检验「无人在场没有静默执行」。 */
+const HITL_UNATTENDED_REASON = 'hitl-unattended';
+/**
+ * 批准在恢复执行前已不成立的拒绝归因前缀（adr-024 D3）：以 `approval-stale:<底层依据>` 形态返回，
+ * 使「批准已失效」可按前缀机械检验，同时保留具体依据供 agent 如实转述与审计定位（R6 / SEC-04：
+ * 底层依据是判定词元，不含实参值）。
+ */
+const APPROVAL_STALE_REASON = 'approval-stale';
 
 /** 递归按键名升序序列化，使签名不受对象键序影响（防篡改稳定基线）。 */
 function stableStringify(value: JsonValue): string {
@@ -164,9 +175,21 @@ interface NonceStore {
   markConsumed(nonce: string): void;
 }
 
+/**
+ * 尺寸上界按插入序高水位驱逐（G3-10）：登记量到达上界即丢弃最旧条目，把无界增长收成常数内存。
+ * MUST NOT 改按时间过期——那会让超时未回传的旧 nonce 从「已登记」变回「未知」，
+ * 重放检测在窗口边缘失去依据；驱逐只发生在远早于任何在途指令 ttl 的深处，且被驱逐的
+ * nonce 落到 unknown-nonce（仍是拒绝），方向 fail-safe。
+ */
 class InMemoryNonceStore implements NonceStore {
   private readonly records = new Map<string, NonceRecord>();
+  constructor(private readonly max: number) {}
   put(nonce: string, record: NonceRecord): void {
+    while (this.records.size >= this.max) {
+      const oldest = this.records.keys().next().value;
+      if (oldest === undefined) break;
+      this.records.delete(oldest);
+    }
     this.records.set(nonce, record);
   }
   get(nonce: string): NonceRecord | undefined {
@@ -398,17 +421,30 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const grantTtlMs = options.hitlGrantTtlMs ?? DEFAULT_HITL_GRANT_TTL_MS;
   const now = options.now ?? Date.now;
-  const store = new InMemoryNonceStore();
+  const store = new InMemoryNonceStore(Math.max(1, options.nonceStoreMax ?? DEFAULT_NONCE_STORE_MAX));
   const execVerificationKey = createPublicKey(execSigningPrivateKey(options.signingSecret))
     .export({ format: 'der', type: 'spki' })
     .toString('base64url');
-  // 任务级 HITL 授权：key=(sessionId,task) → 最近使用时刻（滑动 TTL）。同任务跨工具共享授权
-  // （用户批准的是任务，不是某个工具）；进程内即可，随会话生命周期。
+  // 任务级 HITL 授权：key=(sessionId,packId,packOrigin,task) → 最近使用时刻（滑动 TTL）。
+  // 同任务跨工具共享授权（用户批准的是任务，不是某个工具）；进程内即可，随会话生命周期。
+  // packId/packOrigin 由网关取自装配结果与当前目标页（服务端自持事实，模型无法自述），使跨站/跨 pack
+  // 沿用同一 task 标题不再挂靠已授权任务；task 本身不做归一化，避免新增模糊命中面。
   const hitlGrants = new Map<string, number>();
-  const grantKey = (sessionId: string, task: string): string => `${sessionId} ${task}`;
+  const grantScopeKey = (scope: {
+    sessionId: string;
+    packId?: string;
+    packOrigin?: string;
+    task: string;
+  }): string =>
+    JSON.stringify([scope.sessionId, scope.packId ?? null, scope.packOrigin ?? null, scope.task]);
   /** 命中且未过滑动闲置期则续期并放行；过期即清除（回到 hitl）。 */
-  const consumeGrant = (sessionId: string, task: string): boolean => {
-    const key = grantKey(sessionId, task);
+  const consumeGrant = (input: GateDecisionInput, task: string): boolean => {
+    const key = grantScopeKey({
+      sessionId: input.sessionId,
+      ...(input.packId !== undefined ? { packId: input.packId } : {}),
+      ...(input.packOrigin !== undefined ? { packOrigin: input.packOrigin } : {}),
+      task,
+    });
     const lastUsed = hitlGrants.get(key);
     if (lastUsed === undefined) return false;
     if (now() - lastUsed > grantTtlMs) {
@@ -420,7 +456,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   };
   /** 用户停止：吊销本会话全部任务授权（停止表达的是对自动执行整体的收回，不区分任务与工具）。 */
   const revokeGrants = (sessionId: string): void => {
-    const prefix = `${sessionId} `;
+    // 作用域键是 JSON 数组字面量，会话 id 恒为首元素：按其转义形态取前缀即精确匹配本会话，无歧义。
+    const prefix = `[${JSON.stringify(sessionId)},`;
     for (const key of hitlGrants.keys()) {
       if (key.startsWith(prefix)) hitlGrants.delete(key);
     }
@@ -724,6 +761,80 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   function deny(reason: string): GateDecision {
     return { verdict: 'deny', reason };
   }
+
+  /**
+   * 内建导航（site_navigate / open_url）的校验段：实参 schema → 定向目标解析 → 目标 URL 围栏。
+   * 返回 null 即通过；不含 hitl 分级与任务级授权语义（那是各调用点自己的判断）。
+   * decide 与 reconfirmApproval 共用本实现，使批准恢复期的围栏复核与首次判定同源。
+   */
+  const validateBuiltinNavigation = (input: GateDecisionInput): { reason: string } | null => {
+    if (input.toolId === SITE_NAVIGATE_TOOL_ID) {
+      if (!siteNavigateParamsValidator(input.params)) return { reason: 'invalid-params' };
+      // 内建 navigate 可定向任意组内页（含 silent——导航即其激活通路，adr-023 D3）：仅要求句柄命中状态表。
+      const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
+      if ('reason' in resolvedTarget) return { reason: resolvedTarget.reason };
+      const url = input.params['url'];
+      if (typeof url !== 'string' || !urlInFence(url)) return { reason: 'fence-violation' };
+      return null;
+    }
+    if (!openUrlParamsValidator(input.params)) return { reason: 'invalid-params' };
+    const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
+    if ('reason' in resolvedTarget) return { reason: resolvedTarget.reason };
+    const url = input.params['url'];
+    if (typeof url !== 'string' || !httpNavigableUrl(url)) return { reason: 'unsafe-url' };
+    return null;
+  };
+
+  /**
+   * 判定链的校验段（fail-closed，U7）：工具闭集 → 分级（含 L2 定格收紧终值）→ 通道 → 实参 →
+   * 身份 → 围栏与 dom 批次（ref 出自入参给的最近快照）。reason 只述依据、不含实参值（SEC-04）。
+   * decide 与 reconfirmApproval 共用本实现，使批准恢复期的复核与首次判定逐条同源。
+   * 不含任务级授权复用、有界履约预占与无人值守收口——那些是各自调用点的语义。
+   */
+  const validateCall = (
+    input: GateDecisionInput,
+  ): { tool: ToolDefinition; riskTier: RiskTier } | { reason: string } => {
+    const tool = toolsById.get(input.toolId);
+    if (!tool) return { reason: 'unknown-tool' };
+    if (!KNOWN_RISK_TIERS.has(tool.riskTier)) return { reason: 'unknown-risk-tier' };
+    const riskTier = effectiveRiskTier(tool, input.userConfig);
+    // 通道闸 fail-closed：闭集两值都已实现（client 代执行 / server 直调）；显式列举，未来枚举扩张时新通道默认被拒而非静默降级（U3/U7）。
+    if (tool.execution !== 'client' && tool.execution !== 'server') {
+      return { reason: 'channel-not-implemented' };
+    }
+    const validateParams = paramsValidators.get(input.toolId);
+    if (!validateParams || !validateParams(input.params)) return { reason: 'invalid-params' };
+    // 身份口径按 adapter 形态分派（ADR-013）：dom 只要求平台 JWT，http/server 要求宿主 claims（site pack 按 per-origin）。
+    const identityDenial = checkIdentity(tool, input);
+    if (identityDenial !== null) return { reason: identityDenial };
+    // degraded 降级轮的 forbidden 与用户/pack 配置的 forbidden 可区分（R6）：前者因配置存储故障临时禁用。
+    if (riskTier === 'forbidden') {
+      return {
+        reason:
+          input.userConfig?.degraded === true && tool.riskTier !== 'forbidden'
+            ? 'user-config-unavailable'
+            : 'forbidden',
+      };
+    }
+    // bounded-fulfillment 固定步骤绑定活跃页意图，不支持定向（fail-closed：带 targetPage 即拒）。
+    if (tool.authorization?.kind === 'bounded-fulfillment' && input.params['targetPage'] !== undefined) {
+      return { reason: 'invalid-params' };
+    }
+    if (isDomTool(tool) && tool.authorization?.kind !== 'bounded-fulfillment') {
+      const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
+      if ('reason' in resolvedTarget) return { reason: resolvedTarget.reason };
+      const validated = validateDomSteps(
+        tool,
+        input.params,
+        input.domContext,
+        input.packOrigin,
+        urlInFence,
+        resolvedTarget.target,
+      );
+      if ('reason' in validated) return { reason: validated.reason };
+    }
+    return { tool, riskTier };
+  };
 
   /**
    * 一次性签名并登记 nonce（U7）：Ed25519 精确覆盖绝对时限与最终请求，插件副作用前验签。
@@ -1036,14 +1147,12 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       // 目标 URL 须落在某已安装 pack 的 site 围栏内（跨站允许别 pack origin，但必须已安装），否则 fence-violation。
       // 带 task 且该任务已获批 → 放行（导航是任务的一步，共享任务级授权）；无 task 或未获批仍 hitl。
       if (input.toolId === SITE_NAVIGATE_TOOL_ID) {
-        if (!siteNavigateParamsValidator(input.params)) return deny('invalid-params');
-        // 内建 navigate 可定向任意组内页（含 silent——导航即其激活通路，adr-023 D3）：仅要求句柄命中状态表。
-        const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
-        if ('reason' in resolvedTarget) return deny(resolvedTarget.reason);
-        const url = input.params['url'];
-        if (typeof url !== 'string' || !urlInFence(url)) return deny('fence-violation');
+        const navDenial = validateBuiltinNavigation(input);
+        if (navDenial !== null) return deny(navDenial.reason);
+        // 无人值守回合：导航同属需确认项，且不消费任务级授权（adr-024 D1）。
+        if (input.unattended === true) return deny(HITL_UNATTENDED_REASON);
         const navTask = input.params['task'];
-        if (typeof navTask === 'string' && consumeGrant(input.sessionId, navTask)) {
+        if (typeof navTask === 'string' && consumeGrant(input, navTask)) {
           return { verdict: 'allow' };
         }
         return { verdict: 'hitl' };
@@ -1051,75 +1160,60 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       // 内建通用导航（generic 配套）：专路裁决——参数不过即 deny；目标须为无内嵌凭证的 http/https
       // 绝对 URL，否则 unsafe-url；每次必弹卡（every-call 语义），不消费/不复用任务级授权。
       if (input.toolId === OPEN_URL_TOOL_ID) {
-        if (!openUrlParamsValidator(input.params)) return deny('invalid-params');
-        const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
-        if ('reason' in resolvedTarget) return deny(resolvedTarget.reason);
-        const url = input.params['url'];
-        if (typeof url !== 'string' || !httpNavigableUrl(url)) return deny('unsafe-url');
+        const openDenial = validateBuiltinNavigation(input);
+        if (openDenial !== null) return deny(openDenial.reason);
+        // 无人值守回合：every-call 的通用导航同样无人可确认（adr-024 D1）。
+        if (input.unattended === true) return deny(HITL_UNATTENDED_REASON);
         return { verdict: 'hitl' };
       }
       // fail-closed 判定链：任一前置不过即 deny，reason 只述依据、不含实参值（U7 / SEC-04）。
-      const tool = toolsById.get(input.toolId);
-      if (!tool) return deny('unknown-tool');
-      if (!KNOWN_RISK_TIERS.has(tool.riskTier)) return deny('unknown-risk-tier');
-      const riskTier = effectiveRiskTier(tool, input.userConfig);
-      // 通道闸 fail-closed：闭集两值都已实现（client 代执行 / server 直调）；显式列举，未来枚举扩张时新通道默认被拒而非静默降级（U3/U7）。
-      if (tool.execution !== 'client' && tool.execution !== 'server')
-        return deny('channel-not-implemented');
-      const validateParams = paramsValidators.get(input.toolId);
-      if (!validateParams || !validateParams(input.params)) return deny('invalid-params');
-      // 身份口径按 adapter 形态分派（ADR-013）：dom 只要求平台 JWT，http/server 要求宿主 claims（site pack 按 per-origin）。
-      const identityDenial = checkIdentity(tool, input);
-      if (identityDenial !== null) return deny(identityDenial);
-      // degraded 降级轮的 forbidden 与用户/pack 配置的 forbidden 可区分（R6）：前者因配置存储故障临时禁用。
-      if (riskTier === 'forbidden') {
-        return deny(
-          input.userConfig?.degraded === true && tool.riskTier !== 'forbidden'
-            ? 'user-config-unavailable'
-            : 'forbidden',
-        );
-      }
-      // bounded-fulfillment 固定步骤绑定活跃页意图，不支持定向（fail-closed：带 targetPage 即拒）。
-      if (tool.authorization?.kind === 'bounded-fulfillment' && input.params['targetPage'] !== undefined) {
-        return deny('invalid-params');
-      }
-      if (isDomTool(tool) && tool.authorization?.kind !== 'bounded-fulfillment') {
-        const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
-        if ('reason' in resolvedTarget) return deny(resolvedTarget.reason);
-        const validated = validateDomSteps(
-          tool,
-          input.params,
-          input.domContext,
-          input.packOrigin,
-          urlInFence,
-          resolvedTarget.target,
-        );
-        if ('reason' in validated) return deny(validated.reason);
-      }
-      // 任务级授权（跨工具共享）：带 task 且同会话该任务已获批未闲置过期 → 放行（一任务一确认）。
+      const checked = validateCall(input);
+      if ('reason' in checked) return deny(checked.reason);
+      const { tool, riskTier } = checked;
+      // 任务级授权（跨工具共享）：带 task 且同作用域该任务已获批未闲置过期 → 放行（一任务一确认）。
       // 复用判定必须在 dom 步骤校验之后——已授权任务的非法批次仍 deny（U7 fail-closed）；
-      // every-call 工具跳过复用查询（对外不可撤回动作次次单独确认，不复用授权）。
+      // every-call 工具跳过复用查询（对外不可撤回动作次次单独确认，不复用授权）；
+      // 无人值守回合一律不查授权——「同任务此前有人批准过」在无人在场时不构成放行依据（adr-024 D1）。
       const grantTask = input.params['task'];
       if (
         riskTier === 'hitl' &&
+        input.unattended !== true &&
         tool.hitlMode !== 'every-call' &&
         typeof grantTask === 'string' &&
-        consumeGrant(input.sessionId, grantTask)
+        consumeGrant(input, grantTask)
       ) {
         return { verdict: 'allow' };
       }
       // ADR-016：every-call 对自由文本仍次次确认；只有声明了 bounded-fulfillment 且本次调用
       // 完整命中服务端预批准策略时才自动放行。decide 同步完成订单预占，日限额并发下不超卖。
+      // 有界履约的批准来自运营者预置策略而非在场用户，故不受无人值守收口影响。
       if (riskTier === 'hitl' && tool.authorization?.kind === 'bounded-fulfillment') {
         const bounded = reserveBoundedFulfillment(tool, input);
         if (bounded.allowed) return { verdict: 'allow' };
         return deny(bounded.reason ?? 'bounded-authorization-denied');
       }
+      // R7 的服务端落点：无人在场时需确认档一律拒绝，不广播确认卡、不无界挂起等待。
+      if (riskTier === 'hitl' && input.unattended === true) return deny(HITL_UNATTENDED_REASON);
       return { verdict: riskTier === 'hitl' ? 'hitl' : 'allow' };
     },
 
+    async reconfirmApproval(input: GateDecisionInput): Promise<GateDecision> {
+      // 内建导航的批准只覆盖本次调用、不登记任务级授权，故复核只重跑参数与目标围栏。
+      const checked =
+        input.toolId === SITE_NAVIGATE_TOOL_ID || input.toolId === OPEN_URL_TOOL_ID
+          ? validateBuiltinNavigation(input)
+          : validateCall(input);
+      return checked !== null && 'reason' in checked
+        ? deny(`${APPROVAL_STALE_REASON}:${checked.reason}`)
+        : { verdict: 'allow' };
+    },
+
     async grantHitl(input: HitlGrantInput): Promise<void> {
-      hitlGrants.set(grantKey(input.sessionId, input.task), now());
+      hitlGrants.set(grantScopeKey(input), now());
+    },
+
+    async revokeHitlGrants(sessionId: string): Promise<void> {
+      revokeGrants(sessionId);
     },
 
     async issueExecInstruction(input: IssueExecInstructionInput): Promise<ExecInstructionFrame> {
@@ -1164,6 +1258,15 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       // 签发是治理终点：以与 decide 同一冻结的 L2 定格面独立重校验（U7，封 TOCTOU）。
       if (effectiveRiskTier(tool, input.userConfig) === 'forbidden') {
         throw new Error('签发拒绝：工具在 L2 定格面为 forbidden');
+      }
+      // 无人值守收口在签发处独立复述（adr-024 D1）：需确认档不签发，不依赖 decide 已拒的假设。
+      // 有界履约的批准来自运营者预置策略而非在场用户，不在收口范围内。
+      if (
+        input.unattended === true &&
+        effectiveRiskTier(tool, input.userConfig) === 'hitl' &&
+        tool.authorization?.kind !== 'bounded-fulfillment'
+      ) {
+        throw new Error(`签发拒绝：${HITL_UNATTENDED_REASON}`);
       }
       const keyForCall = callKey(input.sessionId, input.toolCallId);
       if (

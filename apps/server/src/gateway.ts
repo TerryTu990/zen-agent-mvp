@@ -765,6 +765,9 @@ export function hitlTargetUrl(tool: ToolDefinition, params: JsonObject): string 
 /** 未知签发异常的回喂文案：不携带任何异常细节，agent 据此按普通失败收尾。 */
 const ISSUE_REFUSED_GENERIC = 'issue-refused';
 
+/** 批准在恢复执行前已不成立的回喂/审计归因（adr-024 D3）；与 toolgate 同一词元。 */
+const APPROVAL_STALE_ERROR = 'approval-stale';
+
 /**
  * toolgate 治理性拒签文案的前缀闭集：这些是 toolgate 的常量口径（含其自造的 reason 词元），
  * 可安全回喂 agent 与落历史。前缀漂移只会退化为通用文案，方向上是收紧的。
@@ -807,6 +810,21 @@ function effectiveTierOf(
   const declared = userConfig?.effectiveTiers[tool.id];
   if (declared === undefined) return tool.riskTier;
   return RISK_TIER_RANK[declared] > RISK_TIER_RANK[tool.riskTier] ? declared : tool.riskTier;
+}
+
+/**
+ * compose 产出的 L2 生效面 → toolgate 端口入参形态（封 TOCTOU 的定格值）；
+ * 无 L2 参与（未组装写入通道）时 undefined，语义即纯静态分级判定。
+ */
+function gateUserConfigOf(composed: ComposeResult): GateUserConfigInput | undefined {
+  if (composed.effectiveTools === undefined) return undefined;
+  return {
+    ...(composed.userConfigRevision !== undefined ? { revision: composed.userConfigRevision } : {}),
+    ...(composed.userConfigDegraded !== undefined ? { degraded: true as const } : {}),
+    effectiveTiers: Object.fromEntries(
+      composed.effectiveTools.map((tool) => [tool.toolId, tool.effectiveTier]),
+    ),
+  };
 }
 
 /** 激活 pack 定位（审计与 docs 读取用）；packId=null 表仅基座。 */
@@ -1022,14 +1040,18 @@ export function createGateway(deps: GatewayDeps): Gateway {
     session: SessionState,
     pack: PackRef,
     claims: IdentityClaims,
-  ): Promise<{ packOrigin?: string; claimsForOrigin?: IdentityClaims }> {
+  ): Promise<{ packId?: string; packOrigin?: string; claimsForOrigin?: IdentityClaims }> {
     if (pack.packId === null) return {};
-    if (pack.genericOrigin !== undefined) return { packOrigin: pack.genericOrigin };
+    // packId 与 origin 都取自装配结果与当前目标页（服务端自持事实）：任务级授权的作用域指纹据此绑定，
+    // 模型自述的 task 标题无法跨站/跨 pack 挂靠已授权任务（adr-024 D4）。
+    const scoped = { packId: pack.packId };
+    if (pack.genericOrigin !== undefined) return { ...scoped, packOrigin: pack.genericOrigin };
     const site = (await getSites()).find((s) => s.packId === pack.packId);
-    if (site === undefined) return {};
+    if (site === undefined) return scoped;
     const claimsForOrigin =
       site.tenant !== undefined ? session.claimsByOrigin[site.origin] : claims;
     return {
+      ...scoped,
       packOrigin: site.origin,
       ...(claimsForOrigin !== undefined ? { claimsForOrigin } : {}),
     };
@@ -1067,6 +1089,39 @@ export function createGateway(deps: GatewayDeps): Gateway {
     }
     return runtime;
   };
+
+  /**
+   * 会话逐出时的治理态回收（adr-024 G10）：先收紧（吊销任务级授权），再 settle 挂起等待器并释放 runtime。
+   * 顺序不可颠倒——吊销失败即原样保留 runtime 与授权、只记本地错误，下次逐出再试：
+   * 回收异常 MUST NOT 演变成治理放宽（nonce 墓碑仍在、重放仍被拒、授权不因清不掉而放行）。
+   * 保留期内挂起的代执行/快照等待器仍由各自的 ttl 计时器 settle，不会永久悬挂。
+   */
+  const reclaimSession = async (sessionId: string): Promise<void> => {
+    try {
+      await deps.toolgate.revokeHitlGrants(sessionId);
+    } catch (cause) {
+      console.error('会话逐出时吊销任务级授权失败，治理态原样保留：', cause);
+      return;
+    }
+    const runtime = runtimes.get(sessionId);
+    if (runtime === undefined) return;
+    for (const [hitlId, resolve] of [...runtime.pendingHitl]) {
+      runtime.pendingHitl.delete(hitlId);
+      resolve('reject');
+    }
+    for (const [nonce, resolve] of [...runtime.pendingExec]) {
+      runtime.pendingExec.delete(nonce);
+      resolve({ type: 'exec-result', sessionId, nonce, ok: false, error: 'timeout' });
+    }
+    for (const [requestId, resolve] of [...runtime.pendingSnapshot]) {
+      runtime.pendingSnapshot.delete(requestId);
+      resolve(null);
+    }
+    runtimes.delete(sessionId);
+  };
+  deps.store.onEvict((sessionId) => {
+    void reclaimSession(sessionId);
+  });
 
   const broadcast = (sessionId: string, frame: DownstreamFrame): void => {
     const runtime = runtimes.get(sessionId);
@@ -1175,6 +1230,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
     call: { toolCallId: string; params: JsonObject },
     evidenceRules: SnapshotEvidenceRule[],
     userConfig: GateUserConfigInput | undefined,
+    /** 本回合无人在场（automationRun 存在即真）：hitl 档在服务端直接拒绝，不广播确认卡（adr-024 D1）。 */
+    unattended: boolean,
     cancelled: () => boolean,
   ): Promise<Observation> {
     const { sessionId } = session;
@@ -1269,6 +1326,48 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // 工具所属激活 pack 的 site 作用域（ADR-013）：origin 围栏 + per-origin 身份口径。
     const scope = await packScope(session, pack, claims);
     if (cancelled()) return stopped();
+    /**
+     * 批准恢复期复核（adr-024 D3）：以批准时刻的最新事实重跑判定，返回拒绝归因或 null（批准仍成立）。
+     * 重装配只用于收紧——取当前 L2 生效面并核对工具是否仍在装配出的工具面内（pack 被关停即不在）；
+     * 判定本体（分级/围栏/dom 批次 ref 出自最近快照）在 toolgate，fail-closed。
+     * 装配取不到当前生效面即视为批准不再成立，不回落本轮定格面放行。
+     * 内建导航不登记任务级授权、也不属任何 pack 工具面，故只复核参数与目标围栏。
+     */
+    const reconfirmApproval = async (): Promise<string | null> => {
+      const builtinNavigation = tool.id === SITE_NAVIGATE_TOOL_ID || tool.id === OPEN_URL_TOOL_ID;
+      let freshUserConfig = userConfig;
+      if (!builtinNavigation) {
+        if (pack.packId === null) return APPROVAL_STALE_ERROR;
+        let recomposed: ComposeResult;
+        try {
+          recomposed = await deps.assembly.compose({
+            sessionId,
+            packId: pack.packId,
+            featureId,
+            subject: subjectOf(claims),
+          });
+        } catch {
+          return APPROVAL_STALE_ERROR;
+        }
+        if (!recomposed.tools.some((candidate) => candidate.id === tool.id)) {
+          return APPROVAL_STALE_ERROR;
+        }
+        freshUserConfig = gateUserConfigOf(recomposed) ?? userConfig;
+      }
+      const reconfirmDomContext = domContextNow();
+      const decision = await deps.toolgate.reconfirmApproval({
+        sessionId,
+        toolCallId,
+        toolId: tool.id,
+        params,
+        claims,
+        ...scope,
+        ...(reconfirmDomContext !== undefined ? { domContext: reconfirmDomContext } : {}),
+        ...(freshUserConfig !== undefined ? { userConfig: freshUserConfig } : {}),
+        ...groupPagesNow(),
+      });
+      return decision.verdict === 'deny' ? (decision.reason ?? APPROVAL_STALE_ERROR) : null;
+    };
     const decision = await deps.toolgate.decide({
       sessionId,
       toolCallId,
@@ -1279,6 +1378,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       ...(domContext !== undefined ? { domContext } : {}),
       ...(userConfig !== undefined ? { userConfig } : {}),
       ...groupPagesNow(),
+      ...(unattended ? { unattended: true as const } : {}),
     });
     if (cancelled()) return stopped();
     recordEvent(sessionId, claims, featureId, {
@@ -1308,6 +1408,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
         error: inventoryOk ? (decision.reason ?? 'denied') : 'fulfillment-inventory-backfill-failed',
       };
     }
+    // 批准恢复期复核的结论（adr-024 D3）：非 null 即批准已不成立——不登记授权、不签发指令，
+    // 按与签发拒绝同一形态收尾（回喂拒绝观测 + tool-execution 记 error），使 agent 如实转述（R6）。
+    let approvalStale: string | null = null;
     if (decision.verdict === 'hitl') {
       const hitlId = randomUUID();
       const decided = waitForHitl(sessionId, hitlId);
@@ -1357,16 +1460,39 @@ export function createGateway(deps: GatewayDeps): Gateway {
           error: inventoryOk ? 'user-rejected' : 'fulfillment-inventory-backfill-failed',
         };
       }
-      // 批准即任务级授权：登记 grant，同会话同任务的后续调用（跨工具，含 navigate）decide 直接放行。
-      // 两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得顺带解锁同名任务）；
-      // site_navigate / open_url（导航卡只呈现目标 URL，用户未见任务计划，不构成任务级知情授权）。
+      // 批准恢复期复核（adr-024 D3）：用户批准的是当时那个动作，不是一张长期通行证。挂起期间页面可能已
+      // 重采（旧 ref 失配）、目标页已退役、用户刚把该工具收紧到 forbidden 或关停了 pack——签发前以当轮
+      // 最新事实重跑判定，任一不过即不登记授权、不签发指令，回喂 ok:false 并如实告知（R6）。
+      approvalStale = await reconfirmApproval();
+      if (approvalStale !== null) {
+        recordEvent(sessionId, claims, featureId, {
+          type: 'tool-decision',
+          data: {
+            toolCallId,
+            toolId: tool.id,
+            riskTier: tool.riskTier,
+            verdict: 'deny',
+            reason: approvalStale,
+          },
+        }, pack, undefined, auditPageRef());
+      }
+      // 批准即任务级授权：登记 grant，同会话同 pack 同 origin 的同任务后续调用（跨工具，含 navigate）
+      // decide 直接放行。两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得
+      // 顺带解锁同名任务）；site_navigate / open_url（导航卡只呈现目标 URL，用户未见任务计划，不构成
+      // 任务级知情授权）。
       if (
+        approvalStale === null &&
         tool.hitlMode !== 'every-call' &&
         tool.id !== SITE_NAVIGATE_TOOL_ID &&
         tool.id !== OPEN_URL_TOOL_ID &&
         typeof params['task'] === 'string'
       ) {
-        await deps.toolgate.grantHitl({ sessionId, task: params['task'] });
+        await deps.toolgate.grantHitl({
+          sessionId,
+          task: params['task'],
+          ...(scope.packId !== undefined ? { packId: scope.packId } : {}),
+          ...(scope.packOrigin !== undefined ? { packOrigin: scope.packOrigin } : {}),
+        });
         if (cancelled()) return stopped();
       }
     }
@@ -1402,7 +1528,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
     let nonce: string | undefined;
     let status: number | undefined;
     let instructionExpiresAt: number | undefined;
-    if (tool.execution === 'server') {
+    if (approvalStale !== null) {
+      observation = { toolCallId, ok: false, content: null, error: approvalStale };
+    } else if (tool.execution === 'server') {
       observation = await deps.toolgate.executeServer({
         sessionId,
         toolCallId,
@@ -1411,6 +1539,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         claims,
         ...scope,
         ...(userConfig !== undefined ? { userConfig } : {}),
+        ...(unattended ? { unattended: true as const } : {}),
       });
       if (cancelled()) return stopped();
     } else {
@@ -1432,6 +1561,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ...(issueDomContext !== undefined ? { domContext: issueDomContext } : {}),
           ...(userConfig !== undefined ? { userConfig } : {}),
           ...groupPagesNow(),
+          ...(unattended ? { unattended: true as const } : {}),
         });
       } catch (cause) {
         issueRefusal = issueRefusalText(cause);
@@ -1539,6 +1669,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
     claims: IdentityClaims,
     executionPreference: ExecutionPreference,
     messageId: string | undefined,
+    /** 本回合是否为无人值守自动回合（pack 声明自动化经此路径）：透传给每次判定与签发（adr-024 D1）。 */
+    unattended: boolean,
   ): Promise<boolean> {
     const { sessionId } = session;
     const runtime = runtimeOf(sessionId);
@@ -1598,18 +1730,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }, pack);
       // L2 定格面（封 TOCTOU）：本轮 compose 冻结的生效面贯穿全部判定与签发；
       // 降级（读失败无缓存）无 revision，以 degraded 标志表示——此时工具面已全 forbidden（U7）。
-      const userConfig: GateUserConfigInput | undefined =
-        composed.effectiveTools === undefined
-          ? undefined
-          : {
-              ...(composed.userConfigRevision !== undefined
-                ? { revision: composed.userConfigRevision }
-                : {}),
-              ...(composed.userConfigDegraded !== undefined ? { degraded: true as const } : {}),
-              effectiveTiers: Object.fromEntries(
-                composed.effectiveTools.map((tool) => [tool.toolId, tool.effectiveTier]),
-              ),
-            };
+      const userConfig: GateUserConfigInput | undefined = gateUserConfigOf(composed);
       const selectedHostTools = selectToolsForPreference(composed.tools, executionPreference);
       const hostToolsById = new Map(selectedHostTools.map((tool) => [tool.id, tool]));
       const evidenceById = new Map<string, SnapshotEvidenceRule>();
@@ -2327,6 +2448,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           call,
           evidenceRules,
           userConfig,
+          unattended,
           cancelled,
         );
         const navEcho: LlmMessage = {
@@ -2426,6 +2548,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           call,
           evidenceRules,
           userConfig,
+          unattended,
           cancelled,
         );
       }
@@ -2836,6 +2959,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   claims,
                   upstream.executionPreference ?? 'auto',
                   upstream.messageId,
+                  automationRun !== null,
                 );
               }
               if (automationRun !== null) {
@@ -3021,6 +3145,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
     if (runtime.cancelledMessageIds.size > 256) {
       const oldest = runtime.cancelledMessageIds.values().next().value as string | undefined;
       if (oldest !== undefined) runtime.cancelledMessageIds.delete(oldest);
+    }
+    // 停止＝用户收回自动执行授权（adr-024 D2）：吊销本会话全部任务级授权，后续同任务回到逐次确认。
+    // 吊销失败只记本地错误、不阻断停止——停止本身不能因吊销失败而失败。
+    try {
+      await deps.toolgate.revokeHitlGrants(session.sessionId);
+    } catch (cause) {
+      console.error('停止时吊销任务级授权失败：', cause);
     }
     deps.llm.cancel(`${session.sessionId}:${messageId}`);
     if (runtime.runningMessageId === messageId) {

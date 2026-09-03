@@ -2529,3 +2529,352 @@ describe('toolgate ADR-013 — 命名空间纪律（跨 pack 同名 toolId 拒�
     ).not.toThrow();
   });
 });
+
+describe('adr-024 D1 — 无人值守回合的服务端收口（unattended）', () => {
+  const base = { sessionId: 's1', toolCallId: 'c-u', toolId: domHitlTool.id, claims: validClaims };
+  const taskParams = (task: string) => ({
+    task,
+    steps: [{ action: 'click', ref: 'za-1' }],
+    summary: 'x',
+  });
+
+  it('unattended 回合命中 hitl 档 → deny hitl-unattended（无人在场不得挂起等待确认）', async () => {
+    const d = await makePort().decide({
+      ...base,
+      params: taskParams('建令牌'),
+      domContext,
+      unattended: true,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'hitl-unattended' });
+  });
+
+  it('unattended 回合不消费任务级授权：已获批任务仍 deny，且授权未被消耗（人工回合仍可用）', async () => {
+    const port = makePort();
+    await port.grantHitl({ sessionId: 's1', task: '建令牌' });
+    const auto = await port.decide({
+      ...base,
+      params: taskParams('建令牌'),
+      domContext,
+      unattended: true,
+    });
+    expect(auto).toEqual({ verdict: 'deny', reason: 'hitl-unattended' });
+    const manual = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
+    expect(manual.verdict).toBe('allow');
+  });
+
+  it('unattended 回合 auto 档维持现状放行（收口只针对需确认项）', async () => {
+    const d = await makePort().decide({
+      sessionId: 's1',
+      toolCallId: 'c-a',
+      toolId: autoTool.id,
+      params: {},
+      claims: validClaims,
+      unattended: true,
+    });
+    expect(d).toEqual({ verdict: 'allow' });
+  });
+
+  it('unattended 回合的 forbidden 判定不被收口改写（归因仍是 forbidden）', async () => {
+    const d = await makePort().decide({
+      sessionId: 's1',
+      toolCallId: 'c-f',
+      toolId: forbiddenTool.id,
+      params: {},
+      claims: validClaims,
+      unattended: true,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'forbidden' });
+  });
+
+  it('unattended 回合的内建 site_navigate：已获批任务也 deny hitl-unattended', async () => {
+    const port = makeSitePort();
+    await port.grantHitl({ sessionId: 's', task: '发信' });
+    const d = await port.decide({
+      sessionId: 's',
+      toolCallId: 'c',
+      toolId: SITE_NAVIGATE_TOOL_ID,
+      claims: validClaims,
+      params: { url: `${MAIL_ORIGIN}/js6/main.jsp`, task: '发信' },
+      unattended: true,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'hitl-unattended' });
+  });
+
+  it('unattended 回合的内建 open_url → deny hitl-unattended（every-call 无人可确认）', async () => {
+    const d = await makeSitePort().decide({
+      sessionId: 's',
+      toolCallId: 'c',
+      toolId: OPEN_URL_TOOL_ID,
+      claims: validClaims,
+      params: { url: 'https://www.example.com/search' },
+      unattended: true,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'hitl-unattended' });
+  });
+
+  it('签发处独立复述收口：unattended 的 hitl 档拒签（不依赖 decide 已拒的假设，U7）', async () => {
+    await expect(
+      makePort().issueExecInstruction({
+        ...base,
+        params: taskParams('建令牌'),
+        domContext,
+        unattended: true,
+      }),
+    ).rejects.toThrow(/签发拒绝：hitl-unattended/);
+  });
+
+  it('签发处收口不误伤 auto 档：unattended 的 auto 工具照常签发', async () => {
+    const frame = await makePort().issueExecInstruction({
+      sessionId: 's1',
+      toolCallId: 'c-a2',
+      toolId: autoTool.id,
+      params: {},
+      claims: validClaims,
+      unattended: true,
+    });
+    expect(frame.type).toBe('exec-instruction');
+  });
+
+  it('不传 unattended 即人工回合：hitl 档仍返回 hitl（旧行为逐字节不变）', async () => {
+    const d = await makePort().decide({ ...base, params: taskParams('建令牌'), domContext });
+    expect(d).toEqual({ verdict: 'hitl' });
+  });
+});
+
+describe('adr-024 D2 — 停止即吊销任务授权（revokeHitlGrants）', () => {
+  const base = { sessionId: 's1', toolCallId: 'c-r', toolId: domHitlTool.id, claims: validClaims };
+  const taskParams = (task: string) => ({
+    task,
+    steps: [{ action: 'click', ref: 'za-1' }],
+    summary: 'x',
+  });
+
+  it('吊销本会话全部任务授权，后续同任务回到 hitl；其它会话不受影响', async () => {
+    const port = makePort();
+    await port.grantHitl({ sessionId: 's1', task: '建令牌' });
+    await port.grantHitl({ sessionId: 's1', task: '删令牌' });
+    await port.grantHitl({ sessionId: 's2', task: '建令牌' });
+    expect((await port.decide({ ...base, params: taskParams('建令牌'), domContext })).verdict).toBe('allow');
+
+    await port.revokeHitlGrants('s1');
+
+    expect((await port.decide({ ...base, params: taskParams('建令牌'), domContext })).verdict).toBe('hitl');
+    expect((await port.decide({ ...base, params: taskParams('删令牌'), domContext })).verdict).toBe('hitl');
+    const other = await port.decide({
+      ...base,
+      sessionId: 's2',
+      params: taskParams('建令牌'),
+      domContext,
+    });
+    expect(other.verdict).toBe('allow');
+  });
+
+  it('对无授权会话吊销是幂等无操作（停止流程不因此失败）', async () => {
+    const port = makePort();
+    await expect(port.revokeHitlGrants('never-granted')).resolves.toBeUndefined();
+  });
+});
+
+describe('adr-024 D3 — 批准恢复期复核（reconfirmApproval）', () => {
+  const base = { sessionId: 's1', toolCallId: 'c-rc', toolId: domHitlTool.id, claims: validClaims };
+  const taskParams = (task: string) => ({
+    task,
+    steps: [{ action: 'click', ref: 'za-1' }],
+    summary: 'x',
+  });
+
+  it('上下文未变 → allow（批准仍然成立）', async () => {
+    const d = await makePort().reconfirmApproval({
+      ...base,
+      params: taskParams('建令牌'),
+      domContext,
+    });
+    expect(d).toEqual({ verdict: 'allow' });
+  });
+
+  it('挂起期间快照已换（ref 不在最近快照）→ deny approval-stale，归因保留底层依据', async () => {
+    const d = await makePort().reconfirmApproval({
+      ...base,
+      params: taskParams('建令牌'),
+      domContext: { ...domContext, refs: ['za-9'] },
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'approval-stale:ref-not-in-snapshot' });
+  });
+
+  it('挂起期间 L2 把该工具收紧到 forbidden → deny approval-stale', async () => {
+    const d = await makePort().reconfirmApproval({
+      ...base,
+      params: taskParams('建令牌'),
+      domContext,
+      userConfig: { effectiveTiers: { [domHitlTool.id]: 'forbidden' } },
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'approval-stale:forbidden' });
+  });
+
+  it('复核不登记任何授权：复核通过后同任务的下一次 decide 仍是 hitl', async () => {
+    const port = makePort();
+    const ok = await port.reconfirmApproval({ ...base, params: taskParams('建令牌'), domContext });
+    expect(ok.verdict).toBe('allow');
+    const next = await port.decide({ ...base, params: taskParams('建令牌'), domContext });
+    expect(next.verdict).toBe('hitl');
+  });
+
+  it('工具已不在闭集（pack 已下架）→ deny approval-stale', async () => {
+    const d = await makePort().reconfirmApproval({
+      ...base,
+      toolId: 'order-list.does-not-exist',
+      params: taskParams('建令牌'),
+      domContext,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'approval-stale:unknown-tool' });
+  });
+
+  it('内建 open_url 复核：围栏内 allow，非 http/https 目标 deny approval-stale', async () => {
+    const port = makeSitePort();
+    const openBase = { sessionId: 's', toolCallId: 'c', toolId: OPEN_URL_TOOL_ID, claims: validClaims };
+    await expect(
+      port.reconfirmApproval({ ...openBase, params: { url: 'https://www.example.com/search' } }),
+    ).resolves.toEqual({ verdict: 'allow' });
+    await expect(
+      port.reconfirmApproval({ ...openBase, params: { url: 'javascript:alert(1)' } }),
+    ).resolves.toEqual({ verdict: 'deny', reason: 'approval-stale:unsafe-url' });
+  });
+
+  it('内建 site_navigate 复核：围栏内 allow，越出已安装站点 deny approval-stale', async () => {
+    const port = makeSitePort();
+    const navBase = { sessionId: 's', toolCallId: 'c', toolId: SITE_NAVIGATE_TOOL_ID, claims: validClaims };
+    await expect(
+      port.reconfirmApproval({ ...navBase, params: { url: `${MAIL_ORIGIN}/js6/main.jsp` } }),
+    ).resolves.toEqual({ verdict: 'allow' });
+    await expect(
+      port.reconfirmApproval({ ...navBase, params: { url: 'https://evil.example/x' } }),
+    ).resolves.toEqual({ verdict: 'deny', reason: 'approval-stale:fence-violation' });
+  });
+});
+
+describe('adr-024 D4 — 任务级授权的作用域指纹（sessionId + packId + origin + task）', () => {
+  const SELLER_ORIGIN = 'https://seller.example';
+  const domBase = { sessionId: 's1', toolCallId: 'c-s', toolId: domHitlTool.id, claims: validClaims };
+  const taskParams = (task: string) => ({
+    task,
+    steps: [{ action: 'click', ref: 'za-1' }],
+    summary: 'x',
+  });
+
+  it('同 session 同 pack 同 origin：授权跨工具照常复用（一任务一确认未被误收紧）', async () => {
+    const port = makePort();
+    await port.grantHitl({
+      sessionId: 's1',
+      task: '建令牌',
+      packId: 'seller-pack',
+      packOrigin: SELLER_ORIGIN,
+    });
+    const sameTool = await port.decide({
+      ...domBase,
+      params: taskParams('建令牌'),
+      domContext,
+      packId: 'seller-pack',
+      packOrigin: SELLER_ORIGIN,
+    });
+    expect(sameTool.verdict).toBe('allow');
+    const crossTool = await port.decide({
+      sessionId: 's1',
+      toolCallId: 'c-x',
+      toolId: httpTaskHitlTool.id,
+      params: { task: '建令牌', orderId: 'o-1' },
+      claims: validClaims,
+      packId: 'seller-pack',
+      packOrigin: SELLER_ORIGIN,
+      claimsForOrigin: validClaims,
+    });
+    expect(crossTool.verdict).toBe('allow');
+  });
+
+  it('同 session 同 task 但 origin 不同 → 授权不复用，仍 hitl', async () => {
+    const port = makePort();
+    await port.grantHitl({
+      sessionId: 's1',
+      task: '建令牌',
+      packId: 'seller-pack',
+      packOrigin: 'https://other.example',
+    });
+    const d = await port.decide({
+      ...domBase,
+      params: taskParams('建令牌'),
+      domContext,
+      packId: 'seller-pack',
+      packOrigin: SELLER_ORIGIN,
+    });
+    expect(d.verdict).toBe('hitl');
+  });
+
+  it('同 session 同 task 同 origin 但 packId 不同 → 授权不复用，仍 hitl', async () => {
+    const port = makePort();
+    await port.grantHitl({
+      sessionId: 's1',
+      task: '建令牌',
+      packId: 'other-pack',
+      packOrigin: SELLER_ORIGIN,
+    });
+    const d = await port.decide({
+      ...domBase,
+      params: taskParams('建令牌'),
+      domContext,
+      packId: 'seller-pack',
+      packOrigin: SELLER_ORIGIN,
+    });
+    expect(d.verdict).toBe('hitl');
+  });
+
+  it('无 pack 作用域的会话（legacy）：授权照旧按 (sessionId, task) 复用', async () => {
+    const port = makePort();
+    await port.grantHitl({ sessionId: 's1', task: '建令牌' });
+    const d = await port.decide({ ...domBase, params: taskParams('建令牌'), domContext });
+    expect(d.verdict).toBe('allow');
+  });
+
+  it('task 不做归一化：前后空白不同即不同授权（不引入模糊命中面）', async () => {
+    const port = makePort();
+    await port.grantHitl({ sessionId: 's1', task: ' 建令牌' });
+    const d = await port.decide({ ...domBase, params: taskParams('建令牌'), domContext });
+    expect(d.verdict).toBe('hitl');
+  });
+});
+
+describe('adr-024 G10 — nonce 登记的尺寸上界与高水位驱逐', () => {
+  const issue = (port: ReturnType<typeof makePort>, index: number) =>
+    port.issueExecInstruction({
+      sessionId: 's1',
+      toolCallId: `c-${index}`,
+      toolId: autoTool.id,
+      params: {},
+      claims: validClaims,
+    });
+
+  it('超出上界后按插入序驱逐最旧项：最新 nonce 仍留墓碑（重放判 replayed），被驱逐的判 unknown-nonce', async () => {
+    const port = createToolGatePort({
+      tools: allTools,
+      signingSecret: SIGN_FIXTURE,
+      nonceStoreMax: 4,
+    });
+    const frames = [];
+    for (let i = 0; i < 8; i += 1) frames.push(await issue(port, i));
+    const newest = frames[frames.length - 1]!;
+    const first = await port.acceptExecResult({
+      sessionId: 's1',
+      result: { type: 'exec-result', sessionId: 's1', nonce: newest.nonce, ok: true, body: { ok: true } },
+    });
+    expect(first).toMatchObject({ ok: true });
+    const replayed = await port.acceptExecResult({
+      sessionId: 's1',
+      result: { type: 'exec-result', sessionId: 's1', nonce: newest.nonce, ok: true, body: { ok: true } },
+    });
+    expect(replayed).toMatchObject({ ok: false, error: 'replayed' });
+    // 被驱逐的旧 nonce 不得因“记录不存在”而放行：结果一律拒绝。
+    const evicted = await port.acceptExecResult({
+      sessionId: 's1',
+      result: { type: 'exec-result', sessionId: 's1', nonce: frames[0]!.nonce, ok: true, body: { ok: true } },
+    });
+    expect(evicted).toMatchObject({ ok: false, error: 'unknown-nonce' });
+  });
+});

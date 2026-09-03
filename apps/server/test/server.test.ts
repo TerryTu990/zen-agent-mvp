@@ -2656,3 +2656,281 @@ describe('adr-019 批次④验收：第二站点 pack 零核心改动接入', ()
     }
   });
 });
+
+describe('adr-024 治理决策链完整性（无人值守收口 / 停止吊销 / 批准复核）', () => {
+  const ORDER_MANAGE_URL =
+    'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage';
+  const IM_URL =
+    'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-u&orderId=order-u&peerUserId=buyer-u';
+  const ORDERS_TOOL = 'xianyu-orders.page-operate';
+  const SEND_TOOL = 'xianyu-fulfillment.send-test-message';
+  const ORDERS_PROMPT = '在页面上筛选待发货订单';
+  const ORDER_ELEMENTS = [
+    { ref: 'za-pending', role: 'button', label: '待发货' },
+    { ref: 'za-empty', role: 'text', label: '暂无数据' },
+  ];
+
+  function toolDecisions(sessionId: string, toolId: string): Array<Record<string, unknown>> {
+    return auditEventsFor(sessionId)
+      .filter((event) => event['type'] === 'tool-decision')
+      .map((event) => event['data'] as Record<string, unknown>)
+      .filter((data) => data['toolId'] === toolId);
+  }
+
+  async function reportSnapshot(
+    token: string,
+    sessionId: string,
+    requestId: string,
+    url: string,
+    elements: Array<Record<string, unknown>>,
+  ): Promise<void> {
+    await postFrame(token, sessionId, {
+      type: 'snapshot-report',
+      sessionId,
+      requestId,
+      url,
+      pageInstanceId: 'page-adr024',
+      elements,
+    });
+  }
+
+  it('pack 声明自动化的无人值守回合命中 hitl 工具：服务端 deny，不广播确认卡、不签发指令', async () => {
+    const unattendedServer = await startServer(
+      serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 2 }),
+    );
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${unattendedServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: IM_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '发送闲鱼测试消息',
+        automationRunId: 'adr024_unattended_run', automationId: 'xianyu-auto-scan',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      await reportSnapshot(
+        token,
+        sessionId,
+        String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
+        IM_URL,
+        [
+          { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send', role: 'button', label: '发 送' },
+        ],
+      );
+      await sse.waitFor(() => lastCardStatus(sse.frames, SEND_TOOL) === 'failed');
+      // 无人在场时确认卡不得出现在任何客户端上——治理拒绝在服务端完成，不依赖插件自动 reject。
+      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      const decisions = toolDecisions(sessionId, SEND_TOOL);
+      expect(decisions.length).toBeGreaterThan(0);
+      expect(decisions[decisions.length - 1]).toMatchObject({
+        verdict: 'deny',
+        reason: 'hitl-unattended',
+      });
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await unattendedServer.close();
+    }
+  });
+
+  it('同一 hitl 工具在人工回合仍照常弹确认卡（收口只针对无人值守回合）', async () => {
+    const attendedServer = await startServer(
+      serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 2 }),
+    );
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${attendedServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: IM_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '发送闲鱼测试消息' });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      await reportSnapshot(
+        token,
+        sessionId,
+        String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
+        IM_URL,
+        [
+          { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send', role: 'button', label: '发 送' },
+        ],
+      );
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length === 1);
+      expect(framesByType(sse.frames, 'hitl-request')[0]!['toolId']).toBe(SEND_TOOL);
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(framesByType(sse.frames, 'hitl-request')[0]!['hitlId']),
+        decision: 'reject',
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, SEND_TOOL) === 'failed');
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await attendedServer.close();
+    }
+  });
+
+  it('用户停止即吊销任务授权：停止后同任务同工具再调用重新弹确认卡', async () => {
+    const stopServer = await startServer(
+      serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 3 }),
+    );
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${stopServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_MANAGE_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message', sessionId, text: ORDERS_PROMPT, messageId: 'adr024-stop-1',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      await reportSnapshot(
+        token, sessionId,
+        String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
+        ORDER_MANAGE_URL, ORDER_ELEMENTS,
+      );
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length === 1);
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(framesByType(sse.frames, 'hitl-request')[0]!['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
+      const stopped = await api(`/v1/sessions/${sessionId}/stop`, {
+        method: 'POST',
+        headers: authHeaders(token, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ messageId: 'adr024-stop-1' }),
+      });
+      expect(stopped.status).toBe(202);
+      await sse.waitFor(() =>
+        framesByType(sse.frames, 'turn-complete').some((f) => f['messageId'] === 'adr024-stop-1'),
+      );
+
+      await postFrame(token, sessionId, {
+        type: 'user-message', sessionId, text: ORDERS_PROMPT, messageId: 'adr024-stop-2',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 2);
+      await reportSnapshot(
+        token, sessionId,
+        String(framesByType(sse.frames, 'snapshot-request')[1]!['requestId']),
+        ORDER_MANAGE_URL, ORDER_ELEMENTS,
+      );
+      // 停止已收回自动执行授权：同任务不得凭旧 grant 直接放行。
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length === 2);
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(1);
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await stopServer.close();
+    }
+  });
+
+  it('批准恢复期复核：挂起期间该工具被 L2 收紧到 forbidden → approval-stale 拒绝且不签发指令', async () => {
+    const userConfigDir = mkdtempSync(join(tmpdir(), 'za-adr024-l2-'));
+    const staleServer = await startServer(
+      serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 3, userConfigDir }),
+    );
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${staleServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_MANAGE_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: ORDERS_PROMPT });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      await reportSnapshot(
+        token, sessionId,
+        String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
+        ORDER_MANAGE_URL, ORDER_ELEMENTS,
+      );
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length === 1);
+      // 用户在确认卡挂起期间把该工具收紧到 forbidden：批准的是当时那个动作，不是长期通行证。
+      await createFsUserConfigStore({ dir: userConfigDir }).write(
+        { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+        {
+          schemaVersion: 1,
+          subject: { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+          packs: {
+            'xianyu-seller': { restrictions: { riskTierRaise: { [ORDERS_TOOL]: 'forbidden' } } },
+          },
+        },
+      );
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(framesByType(sse.frames, 'hitl-request')[0]!['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, ORDERS_TOOL) === 'failed');
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      const decisions = toolDecisions(sessionId, ORDERS_TOOL);
+      const stale = decisions[decisions.length - 1]!;
+      expect(stale['verdict']).toBe('deny');
+      // 归因按 `approval-stale:<底层依据>` 形态落审计：前缀可机械检验，依据保留给排障。
+      expect(String(stale['reason'])).toBe('approval-stale:forbidden');
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await staleServer.close();
+    }
+  });
+
+  it('批准恢复期复核：挂起期间 pack 被关停（工具已不在工具面）→ approval-stale 拒绝且不签发指令', async () => {
+    const userConfigDir = mkdtempSync(join(tmpdir(), 'za-adr024-off-'));
+    const disabledServer = await startServer(
+      serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 3, userConfigDir }),
+    );
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${disabledServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_MANAGE_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: ORDERS_PROMPT });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      await reportSnapshot(
+        token, sessionId,
+        String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
+        ORDER_MANAGE_URL, ORDER_ELEMENTS,
+      );
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length === 1);
+      await createFsUserConfigStore({ dir: userConfigDir }).write(
+        { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+        {
+          schemaVersion: 1,
+          subject: { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+          packs: { 'xianyu-seller': { enabled: false } },
+        },
+      );
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(framesByType(sse.frames, 'hitl-request')[0]!['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, ORDERS_TOOL) === 'failed');
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      const decisions = toolDecisions(sessionId, ORDERS_TOOL);
+      expect(decisions[decisions.length - 1]).toMatchObject({
+        verdict: 'deny',
+        reason: 'approval-stale',
+      });
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await disabledServer.close();
+    }
+  });
+});
