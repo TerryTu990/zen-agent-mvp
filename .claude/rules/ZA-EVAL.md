@@ -23,7 +23,7 @@ paths:
 ---
 
 ## ZA-C-EVAL-02~  ≥3 跑判回归 + 触发分层
-**基线与回归判定以 ≥3 次重复的通过率比较（单跑方差大不可信）；触发分层：改单个 pack/feature 只跑该 packId/featureId 命中的子集，基座 system-prompt / registry / 装配引擎改动跑全量。**
+**多跑纪律按 LLM 形态分列：确定性 mock（`pnpm eval` 的默认形态）本身无输出方差，3 跑只测 runner 时序稳定性，回归判定以「全过」为准即可；真模型路径（`test:e2e:real`）MUST ≥3 跑并以通过率比较——单跑方差大不可信。触发分层：改单个 pack/feature 只跑该 packId/featureId 命中的子集，基座 system-prompt / registry / 装配引擎改动跑全量。**
 - 每场景 token 成本沉淀进度量。
 - 偏离（单跑下结论 / 该全量却只跑子集）须说明理由。
 

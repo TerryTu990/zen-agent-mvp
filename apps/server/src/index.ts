@@ -49,6 +49,10 @@ export interface ServerOptions {
   heartbeatMs?: number;
   /** agent loop 单回合轮数上限，默认 12；dom 代操作一批页面操作固定耗 2 轮（操作+复核快照）。 */
   maxTurnRounds?: number;
+  /** 同工具同因连续失败的止损上限；缺省 3。 */
+  maxConsecutiveFailures?: number;
+  /** 人工确认卡的等待上限（毫秒）；缺省不设＝不启用上限，与基线等价。 */
+  hitlTimeoutMs?: number;
   /** 代执行指令/等待客户端结果 TTL；缺省 60000ms。测试可缩短以验证主动超时。 */
   execInstructionTtlMs?: number;
   /** 等待客户端 snapshot-report 的上限毫秒；缺省 15000ms。测试可缩短以验证快照超时路径。 */
@@ -280,6 +284,10 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     store,
     heartbeatMs: options.heartbeatMs ?? 15_000,
     maxTurnRounds: options.maxTurnRounds ?? 12,
+    ...(options.maxConsecutiveFailures !== undefined
+      ? { maxConsecutiveFailures: options.maxConsecutiveFailures }
+      : {}),
+    ...(options.hitlTimeoutMs !== undefined ? { hitlTimeoutMs: options.hitlTimeoutMs } : {}),
     ...(options.snapshotTimeoutMs !== undefined
       ? { snapshotTimeoutMs: options.snapshotTimeoutMs }
       : {}),

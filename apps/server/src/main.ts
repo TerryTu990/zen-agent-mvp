@@ -55,8 +55,9 @@ if (!Number.isFinite(compressThreshold) || compressThreshold <= 0 || compressThr
   console.error('ZA_LLM_COMPRESS_THRESHOLD 不是 (0,1] 区间小数，拒绝启动');
   process.exit(1);
 }
-// LLM 分层超时（llm-port）、同因连续失败预算与人工确认等待上限（网关）由各自消费侧就地读取；
-// 此处只做启动期取值校验，把「配置写错」在启动时挡住，而不是推迟成运行期的静默不生效。未设置＝该项不启用。
+// LLM 分层超时（llm-port）由该端口就地读取；网关侧两项（连续失败预算、人工确认等待上限）在此解析为
+// ServerOptions 后经组装点注入，与其余配置共用同一条通路。启动期取值校验把「配置写错」挡在启动时，
+// 而不是推迟成运行期的静默不生效。未设置＝该项不启用。
 for (const name of [
   'ZA_LLM_TIMEOUT_MS',
   'ZA_LLM_FIRST_CHUNK_MS',
@@ -72,6 +73,16 @@ for (const name of [
     process.exit(1);
   }
 }
+
+/** 已过启动期校验的正整数 env；未设或空串返回 undefined（＝该项不启用）。 */
+function positiveIntEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  return Number(raw);
+}
+
+const maxConsecutiveFailures = positiveIntEnv('ZA_MAX_CONSECUTIVE_FAILURES');
+const hitlTimeoutMs = positiveIntEnv('ZA_HITL_TIMEOUT_MS');
 let genericAllowlist: string[] = [];
 try {
   genericAllowlist = parseGenericAllowlist(process.env['ZA_GENERIC_ALLOWLIST']);
@@ -123,6 +134,8 @@ startServer({
     .filter((iss) => iss !== ''),
   snapshotRoot,
   maxTurnRounds,
+  ...(maxConsecutiveFailures !== undefined ? { maxConsecutiveFailures } : {}),
+  ...(hitlTimeoutMs !== undefined ? { hitlTimeoutMs } : {}),
   compressContextWindow,
   compressThreshold,
   corsOrigin: process.env['ZA_CORS_ORIGIN'] ?? '*',

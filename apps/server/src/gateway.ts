@@ -118,6 +118,8 @@ export interface GatewayDeps {
   maxTurnRounds: number;
   /** 同工具同因连续失败的止损上限；缺省按 env `ZA_MAX_CONSECUTIVE_FAILURES`（非正整数视为未设），再缺省 3。 */
   maxConsecutiveFailures?: number;
+  /** 人工确认卡的等待上限（毫秒）；缺省按 env `ZA_HITL_TIMEOUT_MS`，两者都未设＝不启用上限（与基线逐字等价）。 */
+  hitlTimeoutMs?: number;
   /** 等客户端 snapshot-report 的上限毫秒；缺省 15000。有界履约的复核快照另按指令剩余时限计。 */
   snapshotTimeoutMs?: number;
   /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW）。 */
@@ -1110,7 +1112,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     DEFAULT_MAX_CONSECUTIVE_FAILURES;
   // 人工确认的挂起等待上限（adr-024 D1）：未设即 undefined＝不启用——不装计时器，等待行为与基线严格等价。
   // 无默认值是有意的：确认卡的合理等待时长取决于部署形态（前台交互 vs 长时无人看管），不由服务端替用户猜。
-  const hitlTimeoutMs = envPositiveInt('ZA_HITL_TIMEOUT_MS');
+  const hitlTimeoutMs = deps.hitlTimeoutMs ?? envPositiveInt('ZA_HITL_TIMEOUT_MS');
   const validateFrame = createFrameValidator();
   const validateActivationRequest = createActivationRequestValidator();
   const runtimes = new Map<string, SessionRuntime>();
