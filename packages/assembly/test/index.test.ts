@@ -637,3 +637,27 @@ describe('非法快照 fail-closed 拒载', () => {
     await expect(port.compose({ sessionId: 's1', packId: null, featureId: null })).rejects.toThrow();
   });
 });
+
+describe('describeInjection.reason：generic 兜底与站点包的区分（A-UX-02）', () => {
+  it('generic 兜底 pack 激活 → reason=generic（边界：面板据此说明本页无专属包）', async () => {
+    const port = fixturePort('registry-generic');
+    const resolved = await port.resolveFeature({ url: 'http://nowhere.example/x' });
+    expect(resolved.packId).toBe('gen');
+    const description = await port.describeInjection({
+      sessionId: 's1',
+      packId: resolved.packId,
+      featureId: resolved.featureId,
+    });
+    expect(description.reason).toBe('generic');
+  });
+
+  it('站点 pack 命中 → reason=pack（正常）', async () => {
+    const port = fixturePort('registry-generic');
+    const description = await port.describeInjection({
+      sessionId: 's1',
+      packId: 'site-a',
+      featureId: null,
+    });
+    expect(description.reason).toBe('pack');
+  });
+});

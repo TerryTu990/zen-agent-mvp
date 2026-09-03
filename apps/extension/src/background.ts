@@ -36,6 +36,7 @@ import {
   type BackgroundToSidePanelMessage,
   type BackgroundToContentMessage,
   type ContentToBackgroundMessage,
+  type InjectionDescriptionView,
   type SidePanelToBackgroundMessage,
   type SidePanelUiEvent,
   type ContentRuntimeMessage,
@@ -1020,6 +1021,38 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     port.onDisconnect.addListener(() => detachContent(port));
   }
 
+  /**
+   * 「本页生效」块取数：转发本组会话的 GET /v1/sessions/:id/injection，不新增鉴权面；
+   * 无会话时按需建立会话（首次展开会产生建会话副作用）。失败一律回人读原因
+   * （不含令牌与响应体细节，SEC-04），且不影响会话与投递管线。
+   */
+  async function describeInjection(): Promise<Extract<BackgroundToSidePanelMessage, { kind: 'injection-result' }>> {
+    const session = await ensureSession();
+    if (session === null) return { kind: 'injection-result', ok: false, error: '会话暂不可用，请稍后重试' };
+    try {
+      const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/injection`, {
+        headers: { authorization: `Bearer ${session.token}` },
+        signal: abort.signal,
+      });
+      if (!response.ok) {
+        return { kind: 'injection-result', ok: false, error: `服务端未返回本页装配描述（HTTP ${response.status}）` };
+      }
+      return { kind: 'injection-result', ok: true, description: await response.json() as InjectionDescriptionView };
+    } catch {
+      return { kind: 'injection-result', ok: false, error: '无法连接服务端，请检查网络后重试' };
+    }
+  }
+
+  /** 右键选区：面板可能尚未挂上（本次点击才打开），故先缓存一条、待面板 ready 再投。 */
+  let pendingComposerQuote: string | null = null;
+  function queueComposerQuote(text: string): void {
+    if (panels.size > 0) {
+      postToPanels({ kind: 'compose-quote', text });
+      return;
+    }
+    pendingComposerQuote = text;
+  }
+
   function attachPanel(port: chrome.runtime.Port): void {
     pendingPanels.add(port);
     const finishAttach = (): void => {
@@ -1034,6 +1067,10 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         pendingPanels.delete(port);
         panels.add(port);
         postPanel(port, { kind: 'panel-ready' });
+        if (pendingComposerQuote !== null) {
+          postPanel(port, { kind: 'compose-quote', text: pendingComposerQuote });
+          pendingComposerQuote = null;
+        }
       });
     };
     finishAttach();
@@ -1048,6 +1085,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           ...(message.url !== undefined ? { url: message.url } : {}),
           ...(message.title !== undefined ? { title: message.title } : {}),
         });
+        return;
+      }
+      if (message.kind === 'injection-request') {
+        // 只读取数，不入投递管线：透明信息不排在会话消息之后，也不阻塞会话消息。
+        void describeInjection().then((result) => postPanel(port, result));
         return;
       }
       if (message.kind === 'stop-operation') {
@@ -1213,7 +1255,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   /** 本组 tab 集/URL 可能变化（tabs.onUpdated/onRemoved）→ 防抖后重报全量清单。 */
   const notifyGroupTabsChanged = (): void => scheduleGroupPagesReport();
 
-  return { attachContent, attachPanel, triggerAutoScan, configurationChanged, notifyGroupTabsChanged, close };
+  return { attachContent, attachPanel, queueComposerQuote, triggerAutoScan, configurationChanged, notifyGroupTabsChanged, close };
 }
 
 type GroupBridge = ReturnType<typeof createGroupBridge>;
@@ -1375,6 +1417,42 @@ chrome.action.onClicked.addListener((tab) => {
   }).catch(() => {
     console.error('Zen Agent 工具栏激活失败');
   });
+});
+
+const SELECTION_MENU_ID = 'za-explain-selection';
+
+/** 右键菜单在 SW 每次冷启时重建：create 对已存在 id 会抛重复，故先 removeAll。 */
+async function installContextMenus(): Promise<void> {
+  await chrome.contextMenus.removeAll().catch(() => {});
+  chrome.contextMenus.create({
+    id: SELECTION_MENU_ID,
+    title: '用 Zen 讲解选中内容',
+    contexts: ['selection'],
+  });
+}
+
+void installContextMenus();
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== SELECTION_MENU_ID) return;
+  const text = (info.selectionText ?? '').trim();
+  if (text === '' || tab?.id === undefined) return;
+  const tabId = tab.id;
+  const selectionTab = tab;
+  // 菜单点击即用户手势：enable/open 与 action 点击同路径发出，中间不得 await（否则手势失效）。
+  void runToolbarSidePanelAction({
+    enablePanel: () => chrome.sidePanel.setOptions({ tabId, path: 'sidepanel.html', enabled: true }),
+    openPanel: () => chrome.sidePanel.open({ tabId }),
+    activatePage: () => handleIconClick(selectionTab),
+  })
+    .then(async () => {
+      const groupId = (await chrome.tabs.get(tabId)).groupId ?? TAB_GROUP_ID_NONE;
+      if (groupId === TAB_GROUP_ID_NONE) return;
+      bridgeFor(groupId).queueComposerQuote(text);
+    })
+    .catch(() => {
+      console.error('Zen Agent 选区讲解入口失败');
+    });
 });
 
 async function readAutomationDescriptors(): Promise<AutomationDescriptor[]> {

@@ -647,6 +647,19 @@ function buildSystemContent(composed: ComposeResult): string {
   if (composed.sitesIndex !== null) parts.push(composed.sitesIndex);
   if (composed.featureRules !== null) parts.push(composed.featureRules);
   if (composed.facts !== null) parts.push(composed.facts);
+  // L2 偏好与站点包设置居 L2 段首：它们是粗粒度参数，个人规则可再就具体场景覆盖。
+  if (composed.userPreferences !== undefined && composed.userPreferences.length > 0) {
+    parts.push(['# 用户偏好', ...composed.userPreferences.map((entry) => entry.text)].join('\n'));
+  }
+  if (composed.packConfig !== undefined && composed.packConfig.length > 0) {
+    parts.push(
+      [
+        '# 站点包设置',
+        '用户在本站点包提供的可配置项上填写的值，按其执行：',
+        ...composed.packConfig.map((entry) => `- ${entry.text}`),
+      ].join('\n'),
+    );
+  }
   // L2 个人规则/事实居 L1 功能块之后、skills 之前（adr-014 注入序）；条目已由 compose 渲染并带来源标注。
   if (composed.userRules !== undefined && composed.userRules.length > 0) {
     parts.push(['# 用户个人规则', ...composed.userRules.map((entry) => entry.text)].join('\n'));

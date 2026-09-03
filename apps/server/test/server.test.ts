@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -3195,5 +3195,99 @@ describe('停止路径的执行结局审计（A-GOV-04：副作用可能已发�
       .find((event) => event['type'] === 'hitl-verdict')!['data'] as Record<string, unknown>;
     expect(verdict['decision']).toBe('reject');
     expect(verdict['synthetic']).toBeUndefined();
+  });
+});
+
+/**
+ * A-SUP-01/02 端到端：用户偏好与 pack 声明的可配置点必须真的出现在送达 LLM 的 system 里，
+ * 而不只是 compose 返回了字段——断言点是捕获式 mock 收到的 system 文本本身。
+ */
+describe('L2 用户塑形贯通注入：回答详略偏好与站点包设置进 system（A-SUP-01/A-SUP-02）', () => {
+  let capturing: CapturingMock;
+  let shapedServer: RunningServer;
+  let prevBaseUrl: string | undefined;
+  const userConfigDir = mkdtempSync(join(tmpdir(), 'za-shaping-store-'));
+  const shapedSnapshotRoot = mkdtempSync(join(tmpdir(), 'za-shaping-snapshot-'));
+
+  beforeAll(async () => {
+    // host-demo 快照的等价副本 + pack 声明 configSchema：packConfig 的注入面只能来自 pack 作者声明。
+    cpSync(snapshotRoot, shapedSnapshotRoot, { recursive: true });
+    const packJsonPath = join(shapedSnapshotRoot, 'packs/host-demo/pack.json');
+    const packJson = JSON.parse(readFileSync(packJsonPath, 'utf8')) as Record<string, unknown>;
+    packJson['configSchema'] = {
+      type: 'object',
+      properties: { shippingTemplate: { type: 'string' } },
+      additionalProperties: false,
+    };
+    writeFileSync(packJsonPath, JSON.stringify(packJson));
+
+    await createFsUserConfigStore({ dir: userConfigDir }).write(
+      { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+      {
+        schemaVersion: 1,
+        subject: { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+        packs: {
+          '*': { preferences: { verbosity: 'concise' } },
+          'host-demo': { packConfig: { shippingTemplate: '江浙沪包邮模板' } },
+        },
+      },
+    );
+    capturing = await startCapturingMock();
+    prevBaseUrl = process.env['ZA_LLM_BASE_URL'];
+    process.env['ZA_LLM_BASE_URL'] = `http://127.0.0.1:${capturing.port}/v1`;
+    shapedServer = await startServer(
+      serverOptions({ userConfigDir, snapshotRoot: shapedSnapshotRoot }),
+    );
+  });
+
+  afterAll(async () => {
+    await shapedServer?.close();
+    await capturing?.close();
+    if (prevBaseUrl !== undefined) process.env['ZA_LLM_BASE_URL'] = prevBaseUrl;
+  });
+
+  it('送达 LLM 的 system 含详略指令与站点包设置值；/injection 同轮出对应块', async () => {
+    capturing.requests.length = 0;
+    const token = await signToken();
+    const base = `http://127.0.0.1:${shapedServer.port}`;
+    const created = await fetch(`${base}/v1/sessions`, { method: 'POST', headers: authHeaders(token) });
+    const { sessionId } = (await created.json()) as { sessionId: string };
+    const post = (frame: Record<string, unknown>): Promise<Response> =>
+      fetch(`${base}/v1/sessions/${sessionId}/frames`, {
+        method: 'POST',
+        headers: authHeaders(token, { 'content-type': 'application/json' }),
+        body: JSON.stringify(frame),
+      });
+    await post({ type: 'context-report', sessionId, url: ORDER_LIST_URL });
+    await post({ type: 'user-message', sessionId, text: '你好' });
+    const deadline = Date.now() + 8000;
+    while (capturing.requests.length === 0) {
+      if (Date.now() > deadline) throw new Error('等待 LLM 调用捕获超时');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    const req = capturing.requests[capturing.requests.length - 1]!;
+    const messages = (req['messages'] ?? []) as Array<{ role: string; content: string }>;
+    const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+    expect(system).toContain('用户偏好');
+    expect(system).toContain('简洁');
+    expect(system).toContain('站点包设置');
+    expect(system).toContain('shippingTemplate');
+    expect(system).toContain('江浙沪包邮模板');
+
+    const injection = await fetch(`${base}/v1/sessions/${sessionId}/injection`, {
+      headers: authHeaders(token),
+    });
+    expect(injection.status).toBe(200);
+    const view = (await injection.json()) as {
+      reason?: string;
+      blocks?: Array<{ kind: string; id?: string }>;
+    };
+    expect(view.reason).toBe('pack');
+    expect((view.blocks ?? []).filter((b) => b.kind === 'user-preferences').map((b) => b.id)).toEqual([
+      'verbosity',
+    ]);
+    expect((view.blocks ?? []).filter((b) => b.kind === 'pack-config').map((b) => b.id)).toEqual([
+      'shippingTemplate',
+    ]);
   });
 });

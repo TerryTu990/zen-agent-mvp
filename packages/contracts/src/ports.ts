@@ -97,6 +97,17 @@ export interface ComposeResult {
    * 缺省 = 纯 L1 装配（无 L2 参与）或 degraded（读失败无缓存，以 userConfigDegraded 标注替代）。
    */
   userConfigRevision?: string;
+  /**
+   * L2 生效偏好的渲染条目（id = 偏好键，如 "verbosity"）：pack 作用域覆盖 "*" 全局后逐项渲染，
+   * 注入序居 L2 段首（个人规则可再覆盖粗粒度偏好）；缺省 = 无 L2 参与、未设偏好或读失败降级。
+   */
+  userPreferences?: UserInjectionEntry[];
+  /**
+   * 当前激活 pack 的用户配置渲染条目（id = 配置键）：只含该 pack 在 pack.json configSchema 中
+   * 已声明的键——未声明键逐条失效并收入 invalidRefs（pack 更新后收窄声明空间时的运行期兜底）。
+   * 缺省 = 无 L2 参与、pack 未声明可配置点或用户未填值。
+   */
+  packConfig?: UserInjectionEntry[];
   /** L2 个人规则渲染块（按当前 featureId 过滤，注入序在 L1 之后、"*" 先于 pack 级）；缺省 = 无 L2 参与或读失败 fail-open。 */
   userRules?: UserInjectionEntry[];
   /** L2 个人事实渲染块；语义同 userRules。 */
@@ -123,12 +134,17 @@ export interface ComposeResult {
 }
 
 export interface InjectionBlock {
-  /** 'user-rules'/'user-facts' = L2 个人条目（每条一个 block，id=条目 id，origin:'L2'）。 */
+  /**
+   * 'user-rules'/'user-facts' = L2 个人条目（每条一个 block，id=条目 id，origin:'L2'）；
+   * 'user-preferences'/'pack-config' 同为每项一个 block，id 分别为偏好键与配置键。
+   */
   kind:
     | 'system-prompt'
     | 'sites-index'
     | 'feature-rules'
     | 'facts'
+    | 'user-preferences'
+    | 'pack-config'
     | 'user-rules'
     | 'user-facts'
     | 'skill'
@@ -177,6 +193,12 @@ export interface InjectionDescription {
   userConfigRevision?: string;
   /** 被关停的 packId（与 ComposeResult.disabledPackId 同源同值）：关停轮 packId 已回落 null，透明视图据此如实呈现「已关停」而非「无 pack」；缺省 = 非关停轮。 */
   disabledPackId?: string;
+  /**
+   * 本轮装配面之所以如此的原因闭集（R4 透明性）：'pack' 站点包命中 / 'generic' 通用兜底包 /
+   * 'base-only' 无 pack 命中仅基座 / 'pack-disabled' 用户关停后回落仅基座。
+   * 服务端判定，客户端只呈现不推断（U7）；缺省 = 旧版本服务端未标注。
+   */
+  reason?: 'pack' | 'generic' | 'base-only' | 'pack-disabled';
 }
 
 /** pack docs 正文按需读取（渐进披露的 pack_doc 内建工具后端）：只读当前激活 pack 的 docs/。 */

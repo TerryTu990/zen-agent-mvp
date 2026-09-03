@@ -32,6 +32,7 @@ import type {
   UserOverlayEntry,
   UserOverlayPackScope,
   UserOverlayRestrictions,
+  UserOverlayVerbosity,
 } from '@zen-agent/contracts';
 import {
   checkContractCompatibility,
@@ -709,6 +710,62 @@ function renderUserEntry(entry: UserOverlayEntry): UserInjectionEntry {
   };
 }
 
+/**
+ * 回答详略三档 → 对模型可执行的注入指令：档位本身是枚举值，模型无从据枚举名推出篇幅要求，
+ * 故此处把每档展开为具体的写作约束（用户塑形要真的改变行为，而非只留在配置里）。
+ */
+const VERBOSITY_DIRECTIVES: Record<UserOverlayVerbosity, string> = {
+  concise:
+    '回答详略：用户要求简洁。直接给结论与必需步骤，正文控制在三句或三个要点以内；省略背景铺垫、同义复述与不影响执行的解释，需要展开时先问。',
+  standard:
+    '回答详略：用户要求标准。先给结论，再补必要的前提与关键步骤；篇幅适中，不逐项展开可省略的背景，也不压缩掉执行所需的信息。',
+  detailed:
+    '回答详略：用户要求详细。先给结论，再逐条说明步骤、前提、边界与失败时的处理，可举例说明；不因篇幅省略关键中间步骤。',
+};
+
+/** L2 偏好合并：pack 作用域覆盖 "*" 全局（后写者生效，与规则/事实的注入序同口径）。 */
+function resolveUserPreferences(overlay: UserOverlay, scopeIds: string[]): UserInjectionEntry[] {
+  let verbosity: UserOverlayVerbosity | undefined;
+  for (const scopeId of scopeIds) {
+    const declared = overlay.packs[scopeId]?.preferences?.verbosity;
+    if (declared !== undefined) verbosity = declared;
+  }
+  return verbosity === undefined ? [] : [{ id: 'verbosity', text: VERBOSITY_DIRECTIVES[verbosity] }];
+}
+
+/** configSchema 声明的键闭集；未声明 properties（如布尔 schema）即空闭集，全部 packConfig 键失效。 */
+function declaredConfigKeys(configSchema: JsonObject | null): Set<string> {
+  const properties = configSchema?.['properties'];
+  if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {
+    return new Set();
+  }
+  return new Set(Object.keys(properties));
+}
+
+/**
+ * pack 用户配置渲染：只注入 pack 已声明的键——pack 升级收窄 configSchema 后，旧 overlay 里
+ * 残留的键在写入期已无从拦截，故运行期逐条失效（收入 invalidRefs）而非整体拒绝。
+ * 值文本与 L2 条目同守结构清洗，字符串值无法伪造平台注入的章节边界。
+ */
+function resolvePackConfig(
+  packConfig: JsonObject | undefined,
+  configSchema: JsonObject | null,
+): { entries: UserInjectionEntry[]; invalidRefs: string[] } {
+  if (packConfig === undefined) return { entries: [], invalidRefs: [] };
+  const declared = declaredConfigKeys(configSchema);
+  const entries: UserInjectionEntry[] = [];
+  const invalidRefs: string[] = [];
+  for (const [key, value] of Object.entries(packConfig)) {
+    if (!declared.has(key)) {
+      invalidRefs.push(`packConfig:${key}`);
+      continue;
+    }
+    const rendered = typeof value === 'string' ? value : JSON.stringify(value);
+    entries.push({ id: key, text: `${key}：${neutralizeStructuralMarkers(rendered)}` });
+  }
+  return { entries, invalidRefs };
+}
+
 /** featureId 过滤：条目缺省 featureId = 整 pack 生效；有值须 === 当前 featureId 才注入。 */
 function filterUserEntries(
   entries: UserOverlayEntry[] | undefined,
@@ -816,8 +873,26 @@ function assembleInjection(
 
   const userRules: UserInjectionEntry[] = [];
   const userFacts: UserInjectionEntry[] = [];
+  let userPreferences: UserInjectionEntry[] = [];
+  let packConfig: UserInjectionEntry[] = [];
+  let packConfigInvalidRefs: string[] = [];
   if (l2Active && !l2.degraded && l2.overlay !== null) {
     const scopeIds = activePackId !== null ? ['*', activePackId] : ['*'];
+    userPreferences = resolveUserPreferences(l2.overlay, scopeIds);
+    for (const entry of userPreferences) {
+      blocks.push({ kind: 'user-preferences', id: entry.id, bytes: bytes(entry.text), origin: 'L2' });
+    }
+    if (pack !== null) {
+      const resolved = resolvePackConfig(
+        (requestedScope as UserOverlayPackScope | undefined)?.packConfig,
+        pack.configSchema,
+      );
+      packConfig = resolved.entries;
+      packConfigInvalidRefs = resolved.invalidRefs;
+      for (const entry of packConfig) {
+        blocks.push({ kind: 'pack-config', id: entry.id, bytes: bytes(entry.text), origin: 'L2' });
+      }
+    }
     for (const scopeId of scopeIds) {
       const scope = l2.overlay.packs[scopeId];
       if (scope === undefined) continue;
@@ -874,12 +949,15 @@ function assembleInjection(
       invalidRefs = merged.invalidRefs;
     }
   }
+  const allInvalidRefs = [...invalidRefs, ...packConfigInvalidRefs];
   const l2Extras: Partial<ComposeResult> = l2Active
     ? {
         ...(l2.revision !== undefined ? { userConfigRevision: l2.revision } : {}),
         ...(l2.degraded ? { userConfigDegraded: 'fail-open-closed' as const } : { userRules, userFacts }),
+        ...(userPreferences.length > 0 ? { userPreferences } : {}),
+        ...(packConfig.length > 0 ? { packConfig } : {}),
         ...(effectiveTools !== undefined ? { effectiveTools } : {}),
-        ...(invalidRefs.length > 0 ? { invalidRefs } : {}),
+        ...(allInvalidRefs.length > 0 ? { invalidRefs: allInvalidRefs } : {}),
         ...(l2.stale === true ? { userConfigStale: true as const } : {}),
         ...(disabledPackId !== null ? { packDisabled: true as const, disabledPackId } : {}),
       }
@@ -912,6 +990,14 @@ function assembleInjection(
       ...(effectiveTools !== undefined ? { tools: structuredClone(effectiveTools) } : {}),
       ...(l2Active && l2.revision !== undefined ? { userConfigRevision: l2.revision } : {}),
       ...(disabledPackId !== null ? { disabledPackId } : {}),
+      reason:
+        disabledPackId !== null
+          ? 'pack-disabled'
+          : pack === null
+            ? 'base-only'
+            : pack.generic
+              ? 'generic'
+              : 'pack',
     },
   };
 }

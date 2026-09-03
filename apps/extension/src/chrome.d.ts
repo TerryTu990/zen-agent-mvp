@@ -134,6 +134,25 @@ declare namespace chrome {
     };
     const onStartup: { addListener(callback: () => void): void };
     const onInstalled: { addListener(callback: () => void): void };
+    /** 打开扩展选项页（配置中心）；已打开时聚焦既有标签页。 */
+    function openOptionsPage(): Promise<void>;
+  }
+
+  namespace contextMenus {
+    interface OnClickData {
+      menuItemId: string | number;
+      /** contexts:['selection'] 项被点击时的页面选中文本。 */
+      selectionText?: string;
+    }
+    function create(createProperties: {
+      id: string;
+      title: string;
+      contexts: string[];
+    }): void;
+    function removeAll(): Promise<void>;
+    const onClicked: {
+      addListener(callback: (info: OnClickData, tab?: tabs.Tab) => void): void;
+    };
   }
 
   namespace alarms {
