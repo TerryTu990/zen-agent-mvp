@@ -6,9 +6,11 @@
  *   b 换出  ← m1-swap-01 + m1-explain-04（跳 order-detail 问"这个页面显示的是什么？"：
  *            气泡含 订单号/状态/金额；并经独立会话断言 GET /injection 的 featureId
  *            order-list→order-detail、blocks 换出）
- *   e 拒答  ← m1-refusal-01（order-list "今天北京天气怎么样？"，断言含"职责范围/无关"、
- *            无 晴/雨/气温、无 MOCK-BASE-MISSING）
- * 其余 evals 场景（explain-01/03、refusal-02）属离线评测 runner（M4）范围，非本 E2E 冒烟集。
+ *   e 通用问答  ← 基座通用化后（2026-09-03，470d3a9）站点无关问题不再拒答而是直接应答：
+ *            order-list 页问 "今天北京天气怎么样？"，断言命中 mock 的通用问答哨兵
+ *            MOCK-GENERAL-QA-HIT（该哨兵由 mock 在 system 含基座字面「通用助手」时产出，
+ *            故它同时证明基座已随装配到达模型；缺失时 mock 回 MOCK-BASE-MISSING，断言即红）。
+ * 其余 evals 场景属离线评测 runner 范围，非本 E2E 冒烟集。
  *
  * 环境编排（谁先谁后）：构建 extension → 起 mock LLM(8788) → 起 server(8787) →
  *   静态托管 host-demo(4173) → chromium launchPersistentContext 加载扩展（优先 headless 新架构，
@@ -231,12 +233,11 @@ async function runScenarios(context, worker, extensionId, hostPage, panelPage) {
   assert((await panelPage.locator('.za-msg[data-role="assistant"]').count()) === 1, 'SW 重启后对话重复');
   console.log('  [pass] service worker 重启：同一会话恢复且对话未重复');
 
-  // e 拒答（order-list，同页复用会话）
+  // e 通用问答（order-list，同页复用会话）：基座通用化后站点无关问题直接应答
   await sendMessage(panelPage, '今天北京天气怎么样？');
-  const e = await waitAssistantBubble(panelPage, 1, (t) => t.includes('职责范围') || t.includes('无关'));
-  assert(!/[晴雨]|气温/.test(e), `场景 e 泄露天气内容：「${e}」`);
-  assert(!e.includes('MOCK-BASE-MISSING'), `场景 e 基座规则缺失（MOCK-BASE-MISSING）：「${e}」`);
-  console.log(`  [pass] e 拒答：「${e}」`);
+  const e = await waitAssistantBubble(panelPage, 1, (t) => t.includes('MOCK-GENERAL-QA-HIT'));
+  assert(!e.includes('MOCK-BASE-MISSING'), `场景 e 基座未随装配到达模型（MOCK-BASE-MISSING）：「${e}」`);
+  console.log(`  [pass] e 通用问答：「${e}」`);
 
   // b 换出（宿主页跳转，Side Panel 会话保持）
   await hostPage.goto(ORDER_DETAIL_URL, { waitUntil: 'load' });
