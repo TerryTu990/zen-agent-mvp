@@ -74,6 +74,21 @@ export function openShadowRootOf(el: Element): ShadowRoot | null {
   return (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot ?? null;
 }
 
+/**
+ * 根与其内部所有 open shadow root：Web Components 站点的控件、提示与帧都在影子树里。
+ * 元素快照、notices/evidence 与正文帧扫描共用本函数，采集面不分叉。
+ */
+export function scopesOf(root: ParentNode): ParentNode[] {
+  const scopes: ParentNode[] = [root];
+  for (let i = 0; i < scopes.length; i += 1) {
+    for (const el of scopes[i]?.querySelectorAll('*') ?? []) {
+      const shadow = openShadowRootOf(el);
+      if (shadow !== null) scopes.push(shadow);
+    }
+  }
+  return scopes;
+}
+
 function collectNodeText(
   node: Node,
   pieces: string[],
@@ -197,11 +212,13 @@ function collectDocText(doc: Document, pieces: string[]): void {
   const root = findRoot(doc, layout);
   if (root === null) return;
   collectElementText(root, pieces, root === doc.body ? BODY_EXCLUDED_TAGS : EXCLUDED_TAGS, layout);
-  for (const iframe of root.querySelectorAll('iframe')) {
-    if (isDisqualifiedSubtree(iframe, layout) || isZeroSizedFrame(iframe)) continue;
-    const childDoc = sameOriginDoc(iframe);
-    if (childDoc === null) continue;
-    collectDocText(childDoc, pieces);
+  for (const scope of scopesOf(root)) {
+    for (const iframe of scope.querySelectorAll('iframe')) {
+      if (isDisqualifiedSubtree(iframe, layout) || isZeroSizedFrame(iframe)) continue;
+      const childDoc = sameOriginDoc(iframe);
+      if (childDoc === null) continue;
+      collectDocText(childDoc, pieces);
+    }
   }
 }
 

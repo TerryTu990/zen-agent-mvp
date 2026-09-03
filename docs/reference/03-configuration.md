@@ -91,7 +91,7 @@
 | `automations` | ⬜ | 周期自动化声明（adr-019，≤5 条，纯调度/提示词数据不承载治理）：每条 `{id, prompt, workRoutes, executionPreference, defaultPeriodMinutes?}`——`workRoutes` 是工作页判定前缀（激活页 URL 去 origin 后的 path+hash 须以任一前缀开头，origin 恒取 `site.origin`），`executionPreference` 闭集 `auto` / `dom-only` / `prefer-client-api` / `prefer-server-api`，`defaultPeriodMinutes` 省略时按 5 分钟。`id` 跨 pack 唯一（载入期查重拒载）；generic pack 禁声明 |
 | `engines.contract` | ⬜ | 平台兼容声明（VS Code engines 范式，adr-020）：对 contracts 导出 `contractVersion` 的 semver range；载入期比对，range 非法或不满足即拒载（不降级猜测） |
 | `capabilities` | ⬜ | 结构化能力声明（MCP capabilities 范式），全部可选，知识型 pack（仅 feature.md+facts.md）合法缺省：`skills`（`skills/` 目录闭单，与目录**双向对账**——声明多一项或目录多一项均拒载）、`docs`（`docs/` 内相对路径闭单，同样双向对账）、`preparation.workflows`（须 ⊆ 服务端已实现准备工作流闭集，载入期交叉校验）、`anchors`（featureId → 引导锚点数组 `{id, role, label, selectorHint?}`，契约定义的结构化锚点登记位，失配降级、不作准入门槛；装配端尚未接线消费，现行实践仍把定位锚点写在 `facts.md`，见 §3.3） |
-| `configSchema` | ⬜ | pack 声明的用户可配置点（adr-020）：一份 JSON Schema 对象（可含默认值，纯数据）；载入期校验其可编译，L2 `packConfig` 写入期按它校验（未声明或值越界即拒）。取值以结构化数据注入，不改变工具 riskTier 与治理面 |
+| `configSchema` | ⬜ | pack 声明的用户可配置点（adr-020）：一份**扁平顶层** JSON Schema 对象——必带 `type: "object"` + `properties`（键闭集即可配置点）+ `additionalProperties: false`，顶层不得出现 `$ref`/`allOf`/`patternProperties` 等组合关键字（键的值 schema 可任意复杂，复用走 `$defs` + 值内 `$ref`）。载入期校验形态与可编译性，两者任一不过即拒载；L2 `packConfig` 写入期按它校验（未声明或值越界即拒），注入期按同一份顶层 `properties` 取键，故写入端与注入端同源。取值以结构化数据注入，不改变工具 riskTier 与治理面 |
 | `integrity` | ⬜ | canonical 文件清单 sha256（U4 不可变的机械化验证）：键=pack 内相对路径、值=sha256 hex。装配端校验启用锚点=打包分发落地时，当前只做契约校验、不比对内容 |
 
 **generic 兜底包最小形态**（`assets/packs/generic-web/pack.json` 即此形态）：无 `site`、无 `automations`，激活完全由服务端准入名单决定。
@@ -177,7 +177,7 @@
 
 ## 4. 服务端环境变量全表
 
-事实权威：`apps/server/src/main.ts`（读取与校验）+ `packages/llm-port/src/index.ts`（LLM 三项惰性读取）。
+事实权威：`apps/server/src/main.ts`（读取与启动期校验）+ `packages/llm-port/src/index.ts`（LLM 上游六项惰性读取：base/model/key + 三层超时）。
 
 ### 必填（缺失拒启）
 
@@ -196,6 +196,7 @@
 | `ZA_CORS_ORIGIN` | `*` | `Access-Control-Allow-Origin` 响应头 |
 | `ZA_JWT_ISS_ALLOWLIST` | `zen-agent-anon` | 外部签发方的 iss 白名单（逗号分隔）；匿名激活签发的 `zen-agent-anon` 由服务端在组装时无条件并入，覆盖或漏填此项都不会让服务端拒绝自己签发的令牌 |
 | `ZA_MAX_TURN_ROUNDS` | `12` | agent loop 单回合轮数上限（跨站任务建议 40） |
+| `ZA_MAX_CONSECUTIVE_FAILURES` | `3` | 同工具同因连续失败的止损上限：达此值即终结回合（`turn-complete.reason=consecutive-failures`），任一次成功清零；与 `ZA_MAX_TURN_ROUNDS` 并列，先到者生效。取值须为正整数，写错拒启 |
 | `ZA_GENERIC_ALLOWLIST` | 空（generic 兜底永不激活） | 通用兜底 pack 的准入名单（逗号分隔），条目三形态：`*`（任意站点）/ `scheme://*.host`（该域及其子域）/ origin 精确值；非法条目启动期拒启。活跃页 origin 命中才激活 generic pack（无 http/https origin 的静默页一律不激活，`*` 也不例外）。名单含 `*` 时另放行**静默页冷启动**的 `open_url` 内建工具：会话保持仅基座装配，只多一个通用开页入口 |
 
 ### LLM 上游（openai 兼容；调用时惰性读取）
@@ -207,6 +208,9 @@
 | `ZA_LLM_API_KEY` | 可选 | 上游 Bearer 密钥 |
 | `ZA_LLM_CONTEXT_WINDOW` | `200000` | 历史压缩的上下文窗口 token 数 |
 | `ZA_LLM_COMPRESS_THRESHOLD` | `0.6` | 压缩触发比例（(0,1]） |
+| `ZA_LLM_TIMEOUT_MS` | 未设（不启用该层） | 单次上游调用（含流式读取全程）的绝对上限毫秒 |
+| `ZA_LLM_FIRST_CHUNK_MS` | 未设（不启用该层） | 请求发出到收到首个响应字节的上限毫秒（上游挂起不再让回合永远转圈） |
+| `ZA_LLM_IDLE_MS` | 未设（不启用该层） | 相邻响应字节之间的静默上限毫秒（每收到一片即重置） |
 
 ### 路径与数据（相对路径按进程 cwd 解析——容器内用绝对路径）
 

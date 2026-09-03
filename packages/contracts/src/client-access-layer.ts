@@ -104,7 +104,7 @@ export interface SnapshotReportFrame {
   elementsTruncated?: boolean;
   /** 被配额丢弃的可交互元素个数（0=恰好用满配额而无丢弃）。elementsTruncated 缺席时本字段不得出现。 */
   elementsOmitted?: number;
-  /** 客户端快照世代（自 1 起单调递增）：ref 对元素黏附，服务端据此识别手上的 ref 出自哪一代观察。 */
+  /** 客户端快照世代（自 1 起单调递增）：ref 对元素黏附，服务端原样落入 dom 判定上下文标定 ref 闭集的代次。 */
   snapshotEpoch?: number;
   /** 页面当前可见的告警/校验/状态提示文本（客户端去重截断）：供 agent 识别表单校验等拦截性提示。 */
   notices?: string[];

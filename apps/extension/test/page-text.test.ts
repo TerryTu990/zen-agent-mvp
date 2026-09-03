@@ -165,6 +165,20 @@ describe('extractPageText：同源 iframe 下钻', () => {
     expect(extractPageText(document).text).toBe('顶层正文\n\n帧内正文');
   });
 
+  it('正文根内 open shadow root 里的同源 iframe 同样下钻（采集面与元素快照同界）', () => {
+    document.body.innerHTML = '<main><p>顶层正文</p><div id="host"></div></main>';
+    const shadow = document.querySelector('#host')!.attachShadow({ mode: 'open' });
+    const frame = document.createElement('iframe');
+    shadow.appendChild(frame);
+    // jsdom 不为影子树内的 iframe 建浏览上下文（contentDocument 恒 null），以同源文档替身固定该形态：
+    // 被测的是「影子树内的帧会不会被扫到」，而非 jsdom 的帧实现。
+    const childDoc = document.implementation.createHTMLDocument('');
+    childDoc.body.innerHTML = '<article><p>影子树帧内正文</p></article>';
+    Object.defineProperty(frame, 'contentDocument', { value: childDoc });
+
+    expect(extractPageText(document).text).toContain('影子树帧内正文');
+  });
+
   it('正文根之外的同源 iframe 不进正文（小部件/广告帧不得冒充正文）', () => {
     document.body.innerHTML = '<main><p>顶层正文</p></main><div class="widget"></div>';
     const outside = document.createElement('iframe');

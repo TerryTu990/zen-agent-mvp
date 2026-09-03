@@ -733,7 +733,11 @@ function resolveUserPreferences(overlay: UserOverlay, scopeIds: string[]): UserI
   return verbosity === undefined ? [] : [{ id: 'verbosity', text: VERBOSITY_DIRECTIVES[verbosity] }];
 }
 
-/** configSchema 声明的键闭集；未声明 properties（如布尔 schema）即空闭集，全部 packConfig 键失效。 */
+/**
+ * configSchema 声明的键闭集 = 顶层 properties 的键。契约把 configSchema 收紧为扁平顶层声明
+ * （必带 type:object + properties + additionalProperties:false，顶层禁组合关键字，载入期拒非法形态），
+ * 故本朴素扫描与写入期的 ajv 全量校验同源；非对象 properties 只可能出现在契约外的调用面，取空闭集。
+ */
 function declaredConfigKeys(configSchema: JsonObject | null): Set<string> {
   const properties = configSchema?.['properties'];
   if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {

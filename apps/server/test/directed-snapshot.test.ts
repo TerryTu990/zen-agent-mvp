@@ -48,6 +48,8 @@ const SILENT_URL = 'https://docs.example/guide';
 
 interface DirectedMockHandle {
   port: number;
+  /** 上游请求体原文（JSON 字符串）：供断言「送到模型面前的消息视图」保留了哪几份快照全文。 */
+  requests: string[];
   close(): Promise<void>;
 }
 
@@ -61,6 +63,29 @@ type MockDecision = { text: string } | { toolCall: { id: string; name: string; a
 function decide(u: string, messages: Array<Record<string, unknown>>): MockDecision {
   const last = messages[messages.length - 1] as { role?: string; content?: unknown } | undefined;
   const obs = last?.role === 'tool' ? String(last.content ?? '') : null;
+  // 同回合读两页：驱动「请求视图按观察目标分组保留」的路径（回合内跨页并存，adr-023 比对场景）。
+  if (u.includes('跨页定向读取')) {
+    const taken = messages.filter((m) => m['role'] === 'tool').length;
+    if (taken === 0) {
+      return {
+        toolCall: {
+          id: 'call_cross_a',
+          name: SNAPSHOT_TOOL,
+          arguments: JSON.stringify({ targetPage: ODD_HANDLE }),
+        },
+      };
+    }
+    if (taken === 1) {
+      return {
+        toolCall: {
+          id: 'call_cross_b',
+          name: SNAPSHOT_TOOL,
+          arguments: JSON.stringify({ targetPage: NO_ORIGIN_HANDLE }),
+        },
+      };
+    }
+    return { text: 'MOCK-CROSS-PAGE-DONE' };
+  }
   if (obs !== null) {
     if (u.includes('定向后操作') && obs.startsWith('[来自 ')) {
       return {
@@ -122,6 +147,7 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
 }
 
 function startDirectedMock(): Promise<DirectedMockHandle> {
+  const requests: string[] = [];
   const server = createServer((req, res) => {
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions') {
       res.writeHead(404, { 'content-type': 'application/json' });
@@ -133,6 +159,7 @@ function startDirectedMock(): Promise<DirectedMockHandle> {
       raw += chunk;
     });
     req.on('end', () => {
+      requests.push(raw);
       const body = JSON.parse(raw) as { messages: Array<Record<string, unknown>> };
       const lastUser = [...body.messages].reverse().find((m) => m['role'] === 'user');
       const decision = decide(String(lastUser?.['content'] ?? ''), body.messages);
@@ -181,6 +208,7 @@ function startDirectedMock(): Promise<DirectedMockHandle> {
       const address = server.address();
       resolve({
         port: typeof address === 'object' && address !== null ? address.port : 0,
+        requests,
         close: () =>
           new Promise((res2, rej2) => server.close((err) => (err ? rej2(err) : res2()))),
       });
@@ -410,6 +438,53 @@ describe('定向快照全链路（成功路径）', () => {
     expect(events).toHaveLength(1);
     expect((events[0]!['data'] as Record<string, unknown>)['outcome']).toBe('ok');
     expect(events[0]!['page']).toEqual({ handle: ODD_HANDLE, origin: TARGET_ORIGIN });
+  });
+
+  it('同回合定向读两页：请求视图各页各留最近一份全文，跨页比对在同一回合内可达', async () => {
+    const token = await signToken();
+    const { sessionId, sse } = await startGroupSession(token);
+    try {
+      await driveTurn(token, sessionId, '跨页定向读取 两页对比');
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      const first = framesByType(sse.frames, 'snapshot-request')[0]!;
+      expect(first['page']).toBe(ODD_HANDLE);
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(first['requestId']),
+        url: TARGET_URL,
+        title: '收件箱',
+        elements: [{ ref: 'za-1', role: 'link', label: 'A页独有元素' }],
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 2);
+      const second = framesByType(sse.frames, 'snapshot-request')[1]!;
+      expect(second['page']).toBe(NO_ORIGIN_HANDLE);
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(second['requestId']),
+        url: 'not a url!!',
+        title: '怪页',
+        elements: [{ ref: 'za-1', role: 'button', label: 'B页独有元素' }],
+      });
+      await sse.waitFor(() => joinedText(sse).includes('MOCK-CROSS-PAGE-DONE'));
+      await awaitTurnComplete(sse);
+    } finally {
+      sse.close();
+    }
+    const messages = (
+      JSON.parse(mock.requests[mock.requests.length - 1]!) as {
+        messages: Array<{ role?: string; content?: string }>;
+      }
+    ).messages;
+    const obsOf = (tag: string): string =>
+      messages.find((m) => m.role === 'tool' && (m.content ?? '').startsWith(tag))?.content ?? '';
+    const aObs = obsOf(`[来自 ${ODD_HANDLE} · ${TARGET_ORIGIN}]`);
+    const bObs = obsOf(`[来自 ${NO_ORIGIN_HANDLE}]`);
+    // 两页最近一份同时在场：先读的一页不因后读另一页而被存根（否则同回合比对不可达）。
+    expect(aObs).toContain('A页独有元素');
+    expect(bObs).toContain('B页独有元素');
+    expect(aObs).not.toContain('快照已过期');
   });
 
   it('目标页 URL 取不到 origin：前缀退化为仅句柄，审计 page 只带 handle', async () => {

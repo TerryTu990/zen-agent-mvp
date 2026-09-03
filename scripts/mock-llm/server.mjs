@@ -904,6 +904,16 @@ function driveOrchestration(u, obs, body) {
       ],
     };
   }
+  // 停止后剩余调用：首个是受治理代执行（停止即被 runExecSubflow 短路），第二个是内建观察工具——
+  // 驱动「停止后 callLoop 是否仍向页面分发内建分支」的路径。
+  if (u.includes('模拟停止后剩余调用') && obs === null && hasTool(body, TOOL_REFRESH)) {
+    return {
+      toolCalls: [
+        { id: 'call_stop_1', name: TOOL_REFRESH, arguments: JSON.stringify({}) },
+        { id: 'call_stop_2', name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) },
+      ],
+    };
+  }
   // 工具面外的幻觉工具名：每轮都发，驱动服务端的连续失败预算而非靠模型自觉收敛。
   if (u.includes('模拟未知工具')) {
     return {

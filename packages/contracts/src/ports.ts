@@ -327,6 +327,8 @@ export interface DomGateContext {
   url?: string;
   /** 快照所属 content script 页面生命周期，防快照后切页/刷新再执行。 */
   pageInstanceId?: string;
+  /** 产出本 ref 闭集的客户端快照世代（C3 snapshotEpoch 原样落位）：同页多次观察的先后由它标定。 */
+  snapshotEpoch?: number;
   /** 最近快照元素的最小语义，用于有界履约固定校验输入框与发送按钮。 */
   elements?: SnapshotElement[];
   /** 最近快照按 pack 配方生成的结构化证据；服务端可信准备器只消费闭集统计，不读取消息正文。 */

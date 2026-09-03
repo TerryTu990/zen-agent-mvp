@@ -6,6 +6,7 @@ import {
   SUMMARY_MARKER,
   SUMMARY_UNVERIFIED_NOTICE,
   TRUNCATION_NOTICE_PREFIX,
+  TRUNCATION_UNVERIFIED_NOTICE,
   compressHistory,
   estimateHistoryTokens,
   redactForLlm,
@@ -308,6 +309,45 @@ describe('压缩韧性（不可信声明 / 脱敏 / 两级降级）', () => {
     expect(head).toContain(tag);
     // 最近 keepRounds 个用户回合原文保留
     expect(result.at(-1)).toEqual({ role: 'assistant', content: '回答5' });
+  });
+
+  it('确定性截断存根带与摘要对偶的告诫：省略段可能已执行过操作，不得假定未做', async () => {
+    const result = await compressHistory(turns(8), {
+      llm: fakeLlm('', { error: true }),
+      keepRounds: 2,
+      contextWindow: 100,
+      estimate: 95,
+    });
+    expect(result[0]!.content).toContain(TRUNCATION_UNVERIFIED_NOTICE);
+  });
+
+  it('确定性截断保留执行回执摘录：任务授权计划与其结果成对保留，失败与成功可分', async () => {
+    const history: LlmMessage[] = [
+      ...turns(1),
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'x.send-message', params: { task: '给张三发消息' } }],
+      },
+      { role: 'tool', toolCallId: 'c1', content: '{"ok":true}' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c2', name: 'x.ship-order', params: { task: '给订单发货' } }],
+      },
+      { role: 'tool', toolCallId: 'c2', content: '{"error":"exec-failed"}' },
+      ...turns(5),
+    ];
+    const result = await compressHistory(history, {
+      llm: fakeLlm('', { error: true }),
+      keepRounds: 2,
+      contextWindow: 100,
+      estimate: 95,
+    });
+    const head = result[0]!.content;
+    expect(head).toContain('给张三发消息');
+    expect(head).toContain('x.send-message → 成功');
+    expect(head).toContain('x.ship-order → 失败');
   });
 
   it('确定性截断的通知回调如实告知用户（R6）', async () => {

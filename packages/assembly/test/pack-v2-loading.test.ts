@@ -157,7 +157,34 @@ describe('pack v2 载入：preparation.workflows 服务端闭集交叉校验', (
 describe('pack v2 载入：configSchema 合法性校验', () => {
   it('configSchema 不是合法 JSON Schema → 拒载', async () => {
     const tmp = v2Snapshot({
-      configSchema: { type: 'object', properties: { x: { type: 'no-such-type' } } },
+      configSchema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { x: { type: 'no-such-type' } },
+      },
+    });
+    await expect(portOf(tmp).resolveFeature({ url: 'http://p.example/x' })).rejects.toThrow(
+      /configSchema/,
+    );
+  });
+
+  it('configSchema 顶层用 allOf 声明键 → 拒载（注入期按顶层 properties 取键，非扁平声明必失配）', async () => {
+    const tmp = v2Snapshot({
+      configSchema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { a: { type: 'string' } },
+        allOf: [{ properties: { b: { type: 'string' } } }],
+      },
+    });
+    await expect(portOf(tmp).resolveFeature({ url: 'http://p.example/x' })).rejects.toThrow(
+      /configSchema/,
+    );
+  });
+
+  it('configSchema 未把 additionalProperties 钉成 false（自由键空间）→ 拒载', async () => {
+    const tmp = v2Snapshot({
+      configSchema: { type: 'object', properties: { a: { type: 'string' } } },
     });
     await expect(portOf(tmp).resolveFeature({ url: 'http://p.example/x' })).rejects.toThrow(
       /configSchema/,

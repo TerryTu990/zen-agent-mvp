@@ -2855,6 +2855,48 @@ describe('adr-024 治理决策链完整性（无人值守收口 / 停止吊销 /
     }
   });
 
+  it('快照世代进 dom 判定上下文：toolgate 收到的 domContext.snapshotEpoch 与本次上报同代', async () => {
+    const epochServer = await startServer(
+      serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 3 }),
+    );
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${epochServer.port}`;
+    // 端口边界取证：domContext 只在裁决入参里外显，故在端口对象上挂透传观察者而非改被测实现。
+    const gate = epochServer.ports.toolgate;
+    const realDecide = gate.decide.bind(gate);
+    const decideInputs: Array<Parameters<typeof realDecide>[0]> = [];
+    gate.decide = async (input) => {
+      decideInputs.push(input);
+      return realDecide(input);
+    };
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_MANAGE_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: ORDERS_PROMPT });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
+        url: ORDER_MANAGE_URL,
+        pageInstanceId: 'page-epoch',
+        snapshotEpoch: 7,
+        elements: ORDER_ELEMENTS,
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length === 1);
+      const withDom = decideInputs.filter((input) => input.domContext !== undefined);
+      expect(withDom.length).toBeGreaterThan(0);
+      for (const input of withDom) expect(input.domContext?.snapshotEpoch).toBe(7);
+    } finally {
+      sse.close();
+      gate.decide = realDecide;
+      baseUrl = previousBaseUrl;
+      await epochServer.close();
+    }
+  });
+
   it('批准恢复期复核：挂起期间该工具被 L2 收紧到 forbidden → approval-stale 拒绝且不签发指令', async () => {
     const userConfigDir = mkdtempSync(join(tmpdir(), 'za-adr024-l2-'));
     const staleServer = await startServer(
@@ -3361,6 +3403,60 @@ describe('编排韧性：并行调用 / 未知工具 / 失败预算 / 终止原�
     }
   });
 
+  it('用户停止后同一轮剩余调用零分发：不再发 snapshot-request，剩余调用回喂 not-executed/user-stopped', async () => {
+    // 快照等待器缩短到 300ms：缺陷态下第二个调用会真的发帧并等待，短超时让红/绿差异快速可判。
+    const stopServer = await startServer(serverOptions({ snapshotTimeoutMs: 300 }));
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${stopServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        messageId: 'msg-stop-rest',
+        text: '模拟停止后剩余调用 刷新订单列表',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
+      const snapshotsBefore = framesByType(sse.frames, 'snapshot-request').length;
+      const stopped = await api(`/v1/sessions/${sessionId}/stop`, {
+        method: 'POST',
+        headers: authHeaders(token, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ messageId: 'msg-stop-rest' }),
+      });
+      expect(stopped.status).toBe(202);
+      await sse.waitFor(() =>
+        framesByType(sse.frames, 'turn-complete').some((f) => f['messageId'] === 'msg-stop-rest'),
+      );
+      expect(lastTurnComplete(sse.frames)['reason']).toBe('stopped');
+      // 停止＝立刻收手：排在后面的内建调用不得再向页面发帧。
+      expect(framesByType(sse.frames, 'snapshot-request')).toHaveLength(snapshotsBefore);
+      // 未执行的调用如实回喂（不静默丢弃）：下一回合请求视图里该 toolCallId 有成对观测。
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        messageId: 'msg-stop-rest-next',
+        text: '今天天气怎么样',
+      });
+      await sse.waitFor(() =>
+        framesByType(sse.frames, 'turn-complete').some((f) => f['messageId'] === 'msg-stop-rest-next'),
+      );
+      const messages = requestMessagesAt(mock.requests.length - 1);
+      const skipped = messages.find((m) => m.role === 'tool' && m.tool_call_id === 'call_stop_2');
+      expect(skipped, JSON.stringify(messages.map((m) => `${m.role}:${m.tool_call_id ?? ''}`))).toBeDefined();
+      expect(JSON.parse(skipped!.content ?? '{}')).toMatchObject({
+        error: 'not-executed',
+        reason: 'user-stopped',
+      });
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await stopServer.close();
+    }
+  });
+
   it('工具面外的幻觉工具名：回喂 tool-not-available 观测而非终结回合，含可用工具名列表', async () => {
     const token = await signToken();
     const sessionId = await createSession(token);
@@ -3433,6 +3529,50 @@ describe('编排韧性：并行调用 / 未知工具 / 失败预算 / 终止原�
       });
       await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
       expect(lastTurnComplete(sse.frames)['reason']).toBe('completed');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('元素清单被配额截断：截断事实进回喂观测（与 textTruncated 同口径），模型不得据此断言控件不存在', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '模拟连续快照 观察这一页',
+      });
+      for (let round = 1; round <= 3; round += 1) {
+        await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === round);
+        const request = framesByType(sse.frames, 'snapshot-request')[round - 1]!;
+        await postFrame(token, sessionId, {
+          type: 'snapshot-report',
+          sessionId,
+          requestId: String(request['requestId']),
+          url: ORDER_LIST_URL,
+          title: `截断快照 第${round}次`,
+          elements: [{ ref: `za-t${round}`, role: 'button', label: `按钮${round}` }],
+          elementsTruncated: true,
+          elementsOmitted: 42,
+        });
+      }
+      await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
+      const messages = requestMessagesAt(mock.requests.length - 1);
+      const obs = messages.find(
+        (m) => m.role === 'tool' && (m.content ?? '').includes('截断快照 第3次'),
+      );
+      expect(obs, JSON.stringify(messages.map((m) => m.role))).toBeDefined();
+      const body = JSON.parse(obs!.content ?? '{}') as {
+        elementsTruncated?: boolean;
+        elementsOmitted?: number;
+        elementsNote?: string;
+      };
+      expect(body.elementsTruncated).toBe(true);
+      expect(body.elementsOmitted).toBe(42);
+      expect(body.elementsNote).toContain('不完整');
     } finally {
       sse.close();
     }

@@ -707,6 +707,28 @@ describe('createSnapshotter：shadow DOM 与帧资格（A-PAGE-09/12 / PC-PAGE-0
     expect(createSnapshotter().collect().notices).toEqual(['顶层提示', '帧内校验失败']);
   });
 
+  it('open shadow root 内的校验提示进 notices（采集面与元素快照同界）', () => {
+    document.body.innerHTML = '<div role="alert">轻 DOM 提示</div><div id="host"></div>';
+    const shadow = document.querySelector('#host')!.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<div role="alert">影子树校验失败</div>';
+    expect(createSnapshotter().collect().notices).toEqual(['轻 DOM 提示', '影子树校验失败']);
+  });
+
+  it('open shadow root 内的 pack 证据配方计入 evidence（影子树站点不再恒零命中）', () => {
+    document.body.innerHTML = '<div id="host"></div>';
+    const shadow = document.querySelector('#host')!.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<div class="msg"><span class="st">未读</span></div>';
+    const rule = {
+      id: 'message-receipts',
+      itemSelector: '.msg',
+      statusSelector: '.st',
+      statuses: ['未读', '已读'],
+    };
+    expect(createSnapshotter().collect([rule]).evidence).toEqual({
+      'message-receipts': { count: 1, latest: '未读' },
+    });
+  });
+
   it('evidence 按已下钻的同源帧合并计数', () => {
     document.body.innerHTML = '<div class="msg"><span class="st">已读</span></div>';
     const frame = document.createElement('iframe');

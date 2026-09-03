@@ -23,6 +23,13 @@ export const SUMMARY_UNVERIFIED_NOTICE =
 /** 确定性截断产物的头部标识：与摘要块区分，读者与再压缩都能机械识别。 */
 export const TRUNCATION_NOTICE_PREFIX = '【较早对话已省略】';
 
+/**
+ * 截断块的可信度声明（与 SUMMARY_UNVERIFIED_NOTICE 对偶）：省略段里可能已执行过不可逆动作，
+ * 既不得据此声称已完成，也不得按「没记录＝没做过」重做——两个方向的默认假设都被禁掉。
+ */
+export const TRUNCATION_UNVERIFIED_NOTICE =
+  '（本段省略的较早回合中可能已执行过操作：既不得据此声称任何操作已完成，也不得假定尚未执行；动手前先重新观察核实当前状态。）';
+
 const SUMMARY_SYSTEM_PROMPT =
   '你是对话历史压缩器。把给定的较早对话回合压缩为一段滚动摘要，' +
   '必须涵盖：用户的业务目标、已完成的关键步骤、关键结论与当前进展。' +
@@ -136,6 +143,41 @@ function extractTaskPlans(messages: LlmMessage[]): string[] {
   return plans;
 }
 
+/**
+ * 执行回执摘录：较早回合里实际发生过的调用与其成败，与任务授权计划成对保留——
+ * 只留「打算做什么」不留「做没做成」会把模型推向重做已执行的不可逆动作。
+ * 只取工具名与成败二元，不带结果正文（结果正文含页面数据与错误细节，进压缩块既烧 token 又扩泄露面）。
+ * 观测非 JSON（带页标注的快照正文）即视为成功——失败观测一律是本网关自建的 {error:...} 对象。
+ */
+function extractToolReceipts(messages: LlmMessage[]): string[] {
+  const nameById = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== 'assistant' || message.toolCalls === undefined) continue;
+    for (const call of message.toolCalls) nameById.set(call.id, call.name);
+  }
+  const receipts: string[] = [];
+  const seen = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== 'tool' || message.toolCallId === undefined) continue;
+    const name = nameById.get(message.toolCallId);
+    if (name === undefined) continue;
+    let failed = false;
+    try {
+      const parsed: unknown = JSON.parse(message.content);
+      failed =
+        typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) &&
+        (parsed as Record<string, unknown>)['error'] !== undefined;
+    } catch {
+      failed = false;
+    }
+    const line = `${name} → ${failed ? '失败' : '成功'}`;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    receipts.push(line);
+  }
+  return receipts;
+}
+
 /** 观测页标注（定向快照 observation 首行）：入摘要须整行保留，按出现顺序去重。 */
 function extractPageObsTags(messages: LlmMessage[]): string[] {
   const tags: string[] = [];
@@ -206,14 +248,16 @@ export interface CompressOptions {
   onDegrade?: (kind: CompressDegradation) => void;
 }
 
-/** 保真项：治理事实（站点边界 / 任务级授权 / 观测页标注）不因省 token 而消失。 */
+/** 保真项：治理事实（站点边界 / 任务级授权 + 其回执 / 观测页标注）不因省 token 而消失。 */
 function preservedFacts(head: LlmMessage[]): string[] {
   const parts: string[] = [];
   const boundaries = head.filter(isBoundaryMarker).map((message) => message.content);
   const tasks = extractTaskPlans(head);
+  const receipts = extractToolReceipts(head);
   const pageTags = extractPageObsTags(head);
   if (boundaries.length > 0) parts.push('保留的站点边界标记：', ...boundaries);
   if (tasks.length > 0) parts.push('保留的任务授权计划：', ...tasks);
+  if (receipts.length > 0) parts.push('保留的执行回执摘录（较早回合已发生的调用与结果）：', ...receipts);
   if (pageTags.length > 0) {
     parts.push('保留的观测页标注（较早回合定向读取过的页面）：', ...pageTags);
   }
@@ -221,11 +265,14 @@ function preservedFacts(head: LlmMessage[]): string[] {
 }
 
 /**
- * 确定性截断（不调 LLM）：较早回合整体替换为一行省略存根 + 保真项，最近 K 回合原文保留。
+ * 确定性截断（不调 LLM）：较早回合整体替换为一行省略存根 + 对偶告诫 + 保真项，最近 K 回合原文保留。
  * 摘要路径不可用时的唯一兜底——省 token 这件事不能依赖模型可用性。
  */
 function fallbackTruncate(head: LlmMessage[], tail: LlmMessage[]): LlmMessage[] {
-  const parts = [`${TRUNCATION_NOTICE_PREFIX}（${head.length} 条消息未能生成摘要，已直接省略）`];
+  const parts = [
+    `${TRUNCATION_NOTICE_PREFIX}（${head.length} 条消息未能生成摘要，已直接省略）`,
+    TRUNCATION_UNVERIFIED_NOTICE,
+  ];
   parts.push(...preservedFacts(head));
   return [{ role: 'user', content: redactForLlm(parts.join('\n')) }, ...tail];
 }

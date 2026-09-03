@@ -196,7 +196,7 @@ agent(LLM) ─tool_call(工具 id + params)─► ②网关 ─► ③toolgate�
 
 要点（U7 的运行时形态）：判定与挂起全部在服务端；客户端拿到的只是"一次性、短时效、签名过"的指令，执行结果必须过服务端 schema 校验才进 agent 上下文。
 
-**任务级 HITL 授权（adr-013，对 4.3 的演进）**：hitl 工具批准后，toolgate 以 `(sessionId, task)` 登记授权（滑动闲置 TTL，默认 15min）——同会话同任务标题的后续调用**跨工具共享**放行（含带 task 的 `site_navigate`），不再逐次弹卡。两个例外不并入复用：`hitlMode: 'every-call'` 工具（发信等对外不可撤回动作，次次单独确认，批准也不登记）与授权卡未呈现任务计划的 navigate 批准。用户点「停止」中止在途批次并拒绝待确认卡片，但**当前不吊销已登记授权**（`toolgate` 的 `revokeGrants` 只在 `acceptExecResult` 收到 `user-stopped` 时触发，而停止路径在调用它之前即提前返回——本轮 B3 批次修正中）；授权卡展示 agent 声明的 `plan`（任务级大步骤），用户批准的即这份计划。dom 步骤校验永远先于授权复用——已授权任务的非法批次照样 deny（fail-closed 不被 grant 绕过）。
+**任务级 HITL 授权（adr-013，对 4.3 的演进）**：hitl 工具批准后，toolgate 以 `(sessionId, packId, packOrigin, task)` 四元组登记授权（滑动闲置 TTL，默认 15min；后三项取自服务端自持事实而非模型自述，防跨 pack 同名 task 蹭授权）——同会话同作用域同任务标题的后续调用**跨工具共享**放行（含带 task 的 `site_navigate`），不再逐次弹卡。两个例外不并入复用：`hitlMode: 'every-call'` 工具（发信等对外不可撤回动作，次次单独确认，批准也不登记）与授权卡未呈现任务计划的 navigate 批准。用户点「停止」中止在途批次、拒绝待确认卡片，并吊销本会话全部任务级授权（adr-024 D2，`ToolGatePort.revokeHitlGrants`；吊销失败只记本地错误、不阻断停止）；会话逐出回收同样先吊销再回收，吊销失败即原样保留治理态——回收异常不得演变成治理放宽。授权卡展示 agent 声明的 `plan`（任务级大步骤），用户批准的即这份计划。dom 步骤校验永远先于授权复用——已授权任务的非法批次照样 deny（fail-closed 不被 grant 绕过）。
 
 **有界自动履约（adr-016）**：可信连接器先通过进程内端口登记一次性履约意图，绑定账号、精确页面 URL/页面生命周期、商品、规范化订单、数量、消息/发送 ref、回执基线与固定正文；模型工具只传 opaque `intentId`。toolgate 匹配服务端策略并原子预占全局订单键，只构造 `fill → click`。服务端 Ed25519 私钥签名会话、绝对时限与最终请求，插件仅信任生产 HTTPS（本机开发例外）SSE 公钥，并在副作用前验签、验过期、持久化 nonce 去重。DOM 两步成功不等于送达：网关在原指令时限内强制请求发送后快照，回执仍绑定同一 URL/页面实例且数量恰增 1 才记 `completed`；其余均 `uncertain` 且不自动重试。输入值由插件不采集、网关再剥离，策略/正文不进模型或审计。
 
@@ -213,7 +213,7 @@ agent ─tool_call(dom 工具: task+plan+steps[闭集动作])─► ③toolgate
 ①插件 ─exec-result─► 服务端校验 → 回喂 ─► agent 重新 page_snapshot 复核页面证据
 ```
 
-要点：agent 以页面实际变化（复核快照）判定业务成败，不以执行 ok 为准；`fill` 支持 input/textarea 与 contenteditable 富文本；用户「停止」即中止批次（授权吊销的现状见 §4.3 任务级授权段）。
+要点：agent 以页面实际变化（复核快照）判定业务成败，不以执行 ok 为准；`fill` 支持 input/textarea 与 contenteditable 富文本；用户「停止」即中止批次并吊销本会话全部任务级授权（见 §4.3 任务级授权段）。
 
 ### 4.5 跨站任务组（adr-013：navigate → 回合内换装 → 任务续作）
 

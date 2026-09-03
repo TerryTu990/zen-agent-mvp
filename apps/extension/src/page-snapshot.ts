@@ -1,7 +1,7 @@
 /**
  * 页面快照采集器（adr-011 观察半程）：扫描可交互元素、分配 za-N ref，供 dom 批次解释器解引用。
  * ref 对元素黏附并跨 collect 单调递增：仍连接且 role/label 未变的元素复用旧 ref，消失元素的旧 ref
- * 一律缺席（resolve → null），永不改绑到别的控件；snapshotEpoch 让服务端识别 ref 出自哪一代观察。
+ * 一律缺席（resolve → null），永不改绑到别的控件；snapshotEpoch 随帧上报，服务端原样落入 dom 判定上下文，标定当前 ref 闭集的代次。
  * 可见性有布局时按计算样式与实际盒子判定、无布局（jsdom）退回声明式属性与内联样式，
  * 两种世界都不把隐藏弹层里的同名控件当成可点目标。
  * 配额（MAX_ELEMENTS）按「浮层/模态 → 视口内控件 → 其余控件 → 静态单元格」分级分配，
@@ -13,8 +13,8 @@ import {
   hasLayout,
   isHiddenElement,
   isZeroSizedFrame,
-  openShadowRootOf,
   sameOriginDoc,
+  scopesOf,
 } from './page-text.js';
 import {
   DOM_SETTLE_QUIET_MS,
@@ -92,7 +92,7 @@ export interface PageSnapshot {
   url: string;
   title: string;
   elements: SnapshotElement[];
-  /** 本次采集的世代号，自 1 起单调递增：ref 黏附元素，服务端据此识别 ref 出自哪一代观察。 */
+  /** 本次采集的世代号，自 1 起单调递增：ref 黏附元素，服务端原样落入 dom 判定上下文，标定当前 ref 闭集的代次。 */
   snapshotEpoch: number;
   /** true = elements 只是配额内的子集；缺席即完整。 */
   elementsTruncated?: boolean;
@@ -115,9 +115,14 @@ export interface Snapshotter {
   resolve(ref: string): Element | null;
 }
 
-/** 已下钻的文档及其布局可用性：notices/evidence 与元素快照采同一批文档，采集面不分叉。 */
+/**
+ * 已下钻的文档及其采集面：scopes = 该文档与其内部所有 open shadow root。
+ * notices/evidence 与元素快照共用同一批 scopes，采集面不分叉——影子树里的控件可操作、
+ * 校验提示却采不到，会让 agent 把被拦下的提交当成已完成。
+ */
 interface VisitedDoc {
   doc: Document;
+  scopes: ParentNode[];
   layout: boolean;
 }
 
@@ -281,18 +286,6 @@ function safeHrefOf(el: Element): string | undefined {
   }
 }
 
-/** 文档与其内部所有 open shadow root：Web Components 站点的控件与正文都在影子树里。 */
-function scopesOf(root: ParentNode): ParentNode[] {
-  const scopes: ParentNode[] = [root];
-  for (let i = 0; i < scopes.length; i += 1) {
-    for (const el of scopes[i]?.querySelectorAll('*') ?? []) {
-      const shadow = openShadowRootOf(el);
-      if (shadow !== null) scopes.push(shadow);
-    }
-  }
-  return scopes;
-}
-
 function findVisible(scopes: ParentNode[], selector: string, layout: boolean): Element[] {
   return scopes
     .flatMap((scope) => [...scope.querySelectorAll(selector)])
@@ -328,9 +321,10 @@ function isSemanticNotice(el: Element): boolean {
 function collectNotices(visited: VisitedDoc[]): string[] {
   const notices: string[] = [];
   const seen = new Set<string>();
-  for (const { doc, layout } of visited) {
+  for (const { scopes, layout } of visited) {
+    // 嵌套去重用 contains，不跨影子边界；跨 scope 的重复由 seen 文本去重兜底。
     const accepted: Element[] = [];
-    for (const el of doc.querySelectorAll(NOTICE_SELECTOR)) {
+    for (const el of scopes.flatMap((scope) => [...scope.querySelectorAll(NOTICE_SELECTOR)])) {
       if (notices.length >= MAX_NOTICES) return notices;
       if (isHidden(el, layout)) continue;
       // 嵌套命中（如 alert 区内的 error 子节点）只取外层，避免同段文本重复上报。
@@ -359,10 +353,10 @@ function collectEvidence(
   for (const rule of rules.slice(0, MAX_NOTICES)) {
     const allowed = new Set(rule.statuses);
     const itemStatuses: string[] = [];
-    for (const { doc, layout } of visited) {
+    for (const { scopes, layout } of visited) {
       let items: Element[];
       try {
-        items = findVisible([doc], rule.itemSelector, layout);
+        items = findVisible(scopes, rule.itemSelector, layout);
       } catch {
         continue;
       }
@@ -483,8 +477,8 @@ export function createSnapshotter(doc: Document = document): Snapshotter {
 
       const walk = (into: Document, framePrefix: string): void => {
         const layout = hasLayout(into);
-        visited.push({ doc: into, layout });
         const scopes = scopesOf(into);
+        visited.push({ doc: into, scopes, layout });
         // 浮层/模态内可交互元素先分配 ref：防页面主体占满配额导致弹层按钮、下拉选项拿不到 ref。
         for (const root of findPriorityRoots(scopes, layout)) {
           for (const el of root.querySelectorAll(INTERACTIVE_SELECTOR)) {

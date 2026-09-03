@@ -147,8 +147,20 @@
       }
     },
     "configSchema": {
-      "$comment": "pack 声明的用户可配置点（adr-020）：JSON Schema 对象（含默认值，纯数据）——可变空间由 pack 作者定义，用户只在空间内取值；L2 packConfig 写入期按此校验（schema 不存在或值越界即拒），参数值以结构化数据注入、不改变工具 riskTier 与治理面。载入期校验其为可编译 JSON Schema。",
-      "type": "object"
+      "$comment": "pack 声明的用户可配置点（adr-020）：JSON Schema 对象（含默认值，纯数据）——可变空间由 pack 作者定义，用户只在空间内取值；L2 packConfig 写入期按此校验（schema 不存在或值越界即拒），参数值以结构化数据注入、不改变工具 riskTier 与治理面。载入期校验其为可编译 JSON Schema。形态收紧为扁平顶层声明：可配置键闭集 = 顶层 properties 的键，additionalProperties 必须钉死 false，顶层不得出现 $ref/allOf/patternProperties 等组合关键字——注入期按同一份顶层 properties 取键，两端由此同源，写入端接受而注入端静默丢弃的形态在载入期即被拒。键的值 schema 可任意复杂，需要复用时用 $defs + 值内 $ref。",
+      "type": "object",
+      "required": ["type", "properties", "additionalProperties"],
+      "properties": {
+        "$schema": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "type": { "const": "object" },
+        "properties": { "type": "object", "minProperties": 1 },
+        "required": { "type": "array", "items": { "type": "string" } },
+        "additionalProperties": { "const": false },
+        "$defs": { "type": "object" }
+      },
+      "additionalProperties": false
     },
     "integrity": {
       "$comment": "canonical 文件清单 sha256（U4 不可变的机械化验证）：键=pack 内相对路径，值=sha256 hex。装配端校验启用锚点=P3.5（打包分发时）。",

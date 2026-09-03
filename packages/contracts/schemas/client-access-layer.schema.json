@@ -841,7 +841,7 @@
           "minimum": 0
         },
         "snapshotEpoch": {
-          "$comment": "客户端快照世代：同一页面实例内每次采集单调递增（自 1 起）。ref 跨快照对元素黏附，故服务端据此判定手上的 ref 出自哪一代观察、是否已过期；客户端只上报事实，不做任何治理判定。",
+          "$comment": "客户端快照世代：同一页面实例内每次采集单调递增（自 1 起）。ref 跨快照对元素黏附，服务端原样落入 dom 判定上下文（DomGateContext.snapshotEpoch）标定当前 ref 闭集的代次；客户端只上报事实，不做任何治理判定。",
           "type": "integer",
           "minimum": 1
         },
