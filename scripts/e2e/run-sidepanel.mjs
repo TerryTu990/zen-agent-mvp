@@ -179,10 +179,19 @@ async function main() {
     let sw;
     for (const headless of [true, false]) {
       await run('rm', ['-rf', PROFILE_DIR]);
-      const candidate = await chromium.launchPersistentContext(PROFILE_DIR, {
-        headless,
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
-      });
+      // headless 下 MV3 扩展常起不来（本机即如此），且失败形态既有「启动返回但无 SW」也有「启动挂起」；
+      // 两者都只该触发回退，故启动本身入 try 且给短超时——否则挂起会直接终结整轮，headed 一次都轮不到。
+      let candidate;
+      try {
+        candidate = await chromium.launchPersistentContext(PROFILE_DIR, {
+          headless,
+          ...(headless ? { timeout: 45_000 } : {}),
+          args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+        });
+      } catch (cause) {
+        console.log(`  启动失败（headless=${headless}）：${cause instanceof Error ? cause.message.split('\n')[0] : cause}`);
+        continue;
+      }
       sw = await waitServiceWorker(candidate).catch(() => null);
       if (sw !== null) {
         context = candidate;

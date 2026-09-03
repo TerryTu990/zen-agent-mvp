@@ -38,7 +38,7 @@
 | 判据自检 | `node scripts/evals/run.mjs --check` | **不存在** | 绿（22 探针在位 + 89 判据可证伪） |
 | 默认 E2E | `pnpm test:e2e` | **红**（断言与基座相反） | **绿** |
 | E2E 其余七项 | `:m2 :m3 :d3 :coldstart :automation :explain-pack :user-config` | 未系统跑 | **全绿** |
-| 面板 E2E | `pnpm test:e2e:sidepanel` | **红**（401 阶段） | **红**（推进到 404 阶段，见 §5） |
+| 面板 E2E | `pnpm test:e2e:sidepanel` | 记为红（401 阶段）——**未复现，存疑** | **绿**（2026-09-03 复核连跑 14 次，含 3 次满负载；见 §5） |
 | 真实 LLM / 真实站点 | `test:e2e:real` / `:real-site` | BLOCKED | **BLOCKED，未执行** |
 
 单测分包终态：extension 440 / server 345 / contracts 307 / assembly 139 / toolgate 156 / llm-port 54 /
@@ -145,7 +145,7 @@ card-inventory 10 / fulfillment 8 / audit 5。
 
 | 事项 | 状态 | 锚点 |
 |---|---|---|
-| `pnpm test:e2e:sidepanel` 红 | **基线即红**（`ed634f0` 就失败在 401 阶段），本轮推进到 404 阶段仍红。诊断为真实产品缺陷：404 会话失效后重试请求根本未发出，而面板已清空草稿并显示本地回显 | 下一轮首要专项 |
+| ~~`pnpm test:e2e:sidepanel` 红~~ | **误判，已更正**。2026-09-03 复核在 HEAD 连跑 14 次全绿（3 次并行满单测负载）；原诊断「404 重试请求未发出」不可复现，且 `apps/server`/`apps/extension` 的 404 投递路径自基线起未改一行，本轮不存在「推进一个阶段」的改动。真实成因未查明；复核期间复现出一个足以造成假红的操作事故——`pnpm --filter @zen-agent/extension build` 先 `rm -rf dist` 再 `tsc`，类型检查失败会留下残缺 `dist/`，此时带 `ZA_EXTENSION_E2E_DIR` 跳过重建去跑 E2E，扩展 service worker 注册不了 | 已了结 |
 | 真实 LLM E2E（`test:e2e:real`） | **BLOCKED 未执行**——凭证文件在 ZA-C-SEC-03 的读禁区闭集内，本轮未绕过未伪造 | 由持有凭证者按 `package.json` 中该脚本已写好的 env 注入形态执行 |
 | 真实站点 E2E（`test:e2e:real-site`） | 同上；本轮只补了入口使其可被发现 | 需真实站点与协作平台凭证 + 已登录的浏览器 profile |
 | `run-real-llm.mjs` 的新判据兼容 | 已实现，**未经实跑验证**（同上原因），只验证了语法与判据逻辑 | 同上 |
@@ -187,10 +187,11 @@ card-inventory 10 / fulfillment 8 / audit 5。
 
 ## 8. 这一轮最值得记住的三件事
 
-1. **两个门在 Phase 0 基线就是红的，而此前没人知道**：`pnpm test:e2e`（断言与 2026-09-03 改版后的基座相反）
-   与 `pnpm test:e2e:sidepanel`。前者本轮修好，后者诊断出真实缺陷但未修完。
-   同类问题还有 `verify:phase2` 引用两个已删测试文件而 vitest 静默零匹配——门早已失效却一直全绿。
-   本轮新增 `verify:paths` 把「路径写错＝门失效」变成硬失败。
+1. **门可能在基线就是红的，而此前没人知道**：`pnpm test:e2e` 的断言与 2026-09-03 改版后的基座相反，本轮修好；
+   `verify:phase2` 引用两个已删测试文件而 vitest 静默零匹配——门早已失效却一直全绿，本轮新增 `verify:paths` 把
+   「路径写错＝门失效」变成硬失败。
+   **但这条教训也有反面**：同批被记为红的 `test:e2e:sidepanel` 是误判（见 §5）。
+   判一个门红同样要有证据纪律——至少复跑 3 次、确认构建产物完整，单次红不足以立案。
 2. **对标不只是抄机制，它反过来照出了自己的盲区**：三条 r1 九镜头都没抓到的缺陷是被对标反查出来的——
    批准恢复执行前无复核（vercel/ai）、L2 偏好写入后零消费（chatGPTBox）、围栏只在导航发起前校验（browser-use）。
 3. **「契约绿而缺陷未闭合」是最危险的假绿形态**：裁判在方案阶段就点名否决了「只下发 effects 字段而不改插件渲染」，

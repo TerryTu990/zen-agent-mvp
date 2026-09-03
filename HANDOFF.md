@@ -25,14 +25,9 @@
 | 评测 | `pnpm eval` | 89 组场景 × 3 跑全过；审计完整性 PASS |
 | 评测判据自检 | `node scripts/evals/run.mjs --check` | 绿（探针在位 + 89 条判据均可被证伪） |
 | 浏览器 E2E（mock LLM） | `test:e2e` `:m2` `:m3` `:d3` `:coldstart` `:automation` `:explain-pack` `:user-config` | **八项全绿** |
+| 面板 E2E | `pnpm test:e2e:sidepanel` | **绿**（2026-09-03 复核连跑 14 次，含 3 次满单测负载） |
 
 **已知未绿（如实记录）**：
-
-- `pnpm test:e2e:sidepanel` **红**。它在 Phase 0 基线 `ed634f0` **就已经红**（基线失败点是 401 阶段
-  「重试未使用重新激活的令牌」，现在推进到 404 阶段「重试改变了 messageId」）。
-  主会话诊断：404 会话失效后的重试请求**根本未发出**（夹具帧序列只有 3 条、第 4 条缺失），
-  而面板已清空草稿并显示本地回显——用户会以为消息已发送。按「卡住即停」纪律停止深挖，
-  锚点：下一轮或专项修复（这是真实产品缺陷，不是脚本问题）。
 - `pnpm test:e2e:real`（真实 LLM）与 `test:e2e:real-site`（真实站点 + 飞书）**BLOCKED，未执行**。
   凭证位于 `ZA-C-SEC-03` 的读禁区内，开发期不得装载，本轮未绕过、未伪造。
   解除命令见 `docs/reviews/2026-08-05-l0-l3-delivery-report.md` §2.2。
@@ -89,7 +84,7 @@
 
 | 事项 | 锚点 |
 |---|---|
-| `test:e2e:sidepanel` 红（404 重试请求未发出，基线即红、本轮推进一个阶段） | 下一轮开工时优先专项修复 |
+| ~~`test:e2e:sidepanel` 红~~ **误判，已更正**：复核连跑 14 次全绿；原「404 重试请求未发出」不可复现 | 已了结（2026-09-03 复核） |
 | 真实 LLM / 真实站点 E2E 未执行（BLOCKED） | 提供凭证与已登录 profile 后按 §2 解除命令执行 |
 | `run-real-llm.mjs` 的新判据兼容未经实跑验证 | 同上 |
 | ~~8 项待 Terry 裁决~~ **已于 2026-09-03 全部裁决**；改写与实施尚未落地 | 裁决原文与下一轮工作序列见 `docs/plans/2026-09-03-terry-rulings-and-next-round.md` |
@@ -115,8 +110,8 @@
 
 ## 七、下一步建议
 
-1. **修 `test:e2e:sidepanel`**（唯一一个红的门，且是真实缺陷）——`docs/plans/2026-09-03-terry-rulings-and-next-round.md` §2 的 N0。
-2. 按该文 §2 的 N1-N5 序列推进八项裁决的落地：N1（R8 事实边界 + 不可信内容定界，合并共用一次全量评测）、
+1. ~~修 `test:e2e:sidepanel`~~ **已了结**：复核发现它并不红（连跑 14 次全绿），原记录是误判，三处文档已更正。
+2. 按 `docs/plans/2026-09-03-terry-rulings-and-next-round.md` §2 的 N1-N5 序列推进八项裁决的落地：N1（R8 事实边界 + 不可信内容定界，合并共用一次全量评测）、
    N2（删 `ZA_GENERIC_ALLOWLIST` + 补 L2 站点黑名单）、N3（垂直履约语义移出 C6，先出 ADR）、
    N4（R4 条文改写 + 快捷指令库）、N5（权限最小化注入）。
 3. r2 的 12 条 partial 里挑「进 describeInjection」与「domContext 同步」两条收口（都是本轮改动的残余面）。
