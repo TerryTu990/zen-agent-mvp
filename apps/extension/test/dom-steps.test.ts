@@ -155,3 +155,46 @@ describe('createDomStepRunner：闭集步骤解释执行', () => {
     expect(outcome.body).toEqual({ reads: { 'za-1': 'b' }, completedSteps: 2 });
   });
 });
+
+describe('B3b G7 — 密码控件回读掩码（纵深防御：服务端敏感闸之外的第二道）', () => {
+  // 探针串只是普通标记文本，用于断言"原值任何片段都不出现在回传体里"。
+  const CANARY = 'Zx9Canary71';
+
+  it('read 目标是 type=password 的输入框 → 回传固定掩码，回传体不含原值任何子串', async () => {
+    document.body.innerHTML = '<input type="password" />';
+    const input = document.querySelector('input')!;
+    input.value = CANARY;
+
+    const outcome = await runnerFor({ 'za-pw': input }).run([
+      { action: 'read', ref: 'za-pw', name: 'pw' },
+    ]);
+
+    expect(outcome.ok).toBe(true);
+    const serialized = JSON.stringify(outcome.body);
+    for (let start = 0; start + 3 <= CANARY.length; start += 1) {
+      expect(serialized).not.toContain(CANARY.slice(start, start + 3));
+    }
+    expect((outcome.body as { reads: Record<string, string> }).reads['pw']).toBe('[已隐藏的密码字段]');
+  });
+
+  it('写值路径不因掩码改变：fill 照常生效，随后回读仍是掩码', async () => {
+    document.body.innerHTML = '<input type="password" />';
+    const input = document.querySelector('input')!;
+
+    const outcome = await runnerFor({ 'za-pw': input }).run([
+      { action: 'fill', ref: 'za-pw', value: CANARY },
+      { action: 'read', ref: 'za-pw', name: 'pw' },
+    ]);
+
+    expect(input.value).toBe(CANARY);
+    expect(JSON.stringify(outcome.body)).not.toContain(CANARY);
+  });
+
+  it('非密码输入框不受影响：普通 input 照常回读真值', async () => {
+    document.body.innerHTML = '<input type="text" value="普通值" />';
+    const outcome = await runnerFor({ 'za-1': document.querySelector('input') }).run([
+      { action: 'read', ref: 'za-1', name: 'v' },
+    ]);
+    expect(outcome.body).toEqual({ reads: { v: '普通值' }, completedSteps: 1 });
+  });
+});

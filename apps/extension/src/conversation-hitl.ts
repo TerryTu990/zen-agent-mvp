@@ -1,4 +1,13 @@
-import type { HitlDecisionValue, HitlRequestFrame, JsonObject, TextDeltaFrame, ToolCardFrame } from './frames.js';
+import type {
+  HitlDecisionValue,
+  HitlEffect,
+  HitlPackDisplay,
+  HitlRequestFrame,
+  JsonObject,
+  PackSource,
+  TextDeltaFrame,
+  ToolCardFrame,
+} from './frames.js';
 import { renderMarkdown } from './markdown.js';
 
 type ToolMode = NonNullable<ToolCardFrame['mode']>;
@@ -44,20 +53,48 @@ function summarizeParams(params: JsonObject): string {
     .join('，');
 }
 
-/** dom 任务授权卡的功能级摘要：只呈现任务/摘要/步数，不铺字段细节（一任务一确认，adr-011）。 */
-function summarizeDomTask(params: JsonObject): { title: string; detail: string; plan: string[] } {
+/**
+ * dom 任务授权卡上的 agent 自述部分：task/summary/plan 全部由模型撰写，是次要信息——
+ * 用户据以裁决的「将发生什么」只看服务端反解的 frame.effects。
+ */
+function summarizeDomTask(params: JsonObject): { title: string; claim: string; plan: string[] } {
   const summary = typeof params['summary'] === 'string' ? params['summary'] : '';
-  const steps = Array.isArray(params['steps']) ? params['steps'].length : 0;
-  const count = `共 ${steps} 步页面操作`;
-  // plan＝agent 声明的任务级执行计划（人话大步骤）：授权卡列出，让用户知悉批准后将自动执行的全貌。
   const plan = Array.isArray(params['plan'])
     ? params['plan'].filter((item): item is string => typeof item === 'string')
     : [];
-  return {
-    title: String(params['task']),
-    detail: summary === '' ? count : `${summary}（${count}）`,
-    plan,
-  };
+  return { title: String(params['task']), claim: summary, plan };
+}
+
+/** pack 来源徽章措辞（与配置中心同表）。 */
+const PACK_SOURCE_LABEL: Record<PackSource, string> = {
+  official: '官方',
+  community: '社区',
+  local: '自建',
+};
+
+/** 来源 pack 与作用站点行（R4）：只拼服务端给的字段，缺什么略什么，不本地补齐治理语义。 */
+function packLineOf(pack: HitlPackDisplay): string {
+  const parts = [`站点包「${pack.name ?? pack.packId}」`];
+  if (pack.source !== undefined) parts.push(PACK_SOURCE_LABEL[pack.source]);
+  if (pack.origin !== undefined) parts.push(pack.origin);
+  return `来源：${parts.join(' · ')}`;
+}
+
+/** 单条机械摘要行：动作与目标恒有值（服务端反解不出时目标写「目标未知」），值摘要缺席即不显示。 */
+function effectLineOf(effect: HitlEffect, index: number): string {
+  const head = `${index + 1}. ${effect.action}〈${effect.target}〉`;
+  return effect.valuePreview === undefined ? head : `${head}，值：「${effect.valuePreview}」`;
+}
+
+/**
+ * 治理小字（UI 规范 §5 五要素之一）：措辞固定，有效期只在服务端下发 ttlMs 时标注——
+ * 不编造一个平台并不保证的时限。
+ */
+function governanceNoteOf(ttlMs: number | undefined): string {
+  const parts = ['一次性签名指令'];
+  if (ttlMs !== undefined) parts.push(`${Math.round(ttlMs / 1000)} 秒内有效`);
+  parts.push('全程审计留痕');
+  return parts.join(' · ');
 }
 
 const WHO_LABEL: Record<'user' | 'assistant', string> = {
@@ -228,9 +265,34 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         title.className = 'za-hitl-title';
         title.textContent = domTask === null ? `需你确认：${frame.toolId}` : `需你授权：${domTask.title}`;
 
-        const detail = document.createElement('div');
-        detail.className = 'za-hitl-detail';
-        detail.textContent = domTask === null ? summarizeParams(frame.params) : domTask.detail;
+        // 非 dom 调用的实参摘要仍直接列字段；dom 任务的模型自述降为 claim 块（次要信息）。
+        const detail = domTask === null ? document.createElement('div') : null;
+        if (detail !== null) {
+          detail.className = 'za-hitl-detail';
+          detail.textContent = summarizeParams(frame.params);
+        }
+
+        /**
+         * 卡上「将发生什么」的唯一权威来源：服务端按 toolgate 净化终值 + 最近快照反解的 effects。
+         * 缺省即不呈现动作清单——客户端不从 params 推断（U7 客户端零判定）。
+         */
+        const effectsBlock =
+          frame.effects === undefined || frame.effects.length === 0
+            ? null
+            : document.createElement('div');
+        if (effectsBlock !== null && frame.effects !== undefined) {
+          effectsBlock.className = 'za-hitl-effects';
+          const heading = document.createElement('div');
+          heading.className = 'za-hitl-detail';
+          heading.textContent = '将执行以下操作（服务端已校验的最终指令）：';
+          effectsBlock.append(heading);
+          frame.effects.forEach((effect, index) => {
+            const line = document.createElement('div');
+            line.className = 'za-hitl-effect za-hitl-detail';
+            line.textContent = effectLineOf(effect, index);
+            effectsBlock.append(line);
+          });
+        }
 
         // 目标页/目标 URL 只信服务端组装字段，不从 params 做任何展示推断（U7/U8：客户端零判定）。
         let targetUrlLine: HTMLElement | null = null;
@@ -250,6 +312,25 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
               : `目标页：${pageTitle}（${frame.targetPage.origin}）`;
         }
 
+        const packLine = frame.pack === undefined ? null : document.createElement('div');
+        if (packLine !== null && frame.pack !== undefined) {
+          packLine.className = 'za-hitl-pack za-hitl-detail';
+          packLine.textContent = packLineOf(frame.pack);
+        }
+
+        const riskLine = frame.risk === undefined ? null : document.createElement('div');
+        if (riskLine !== null) {
+          riskLine.className = 'za-hitl-risk za-hitl-detail';
+          riskLine.textContent = `风险：${frame.risk}`;
+        }
+
+        // 模型自述（summary/plan）标注来源后作次要信息呈现：它是待核对的说法，不是裁决依据。
+        const claimLine = domTask !== null && domTask.claim !== '' ? document.createElement('div') : null;
+        if (claimLine !== null && domTask !== null) {
+          claimLine.className = 'za-hitl-claim za-hitl-detail';
+          claimLine.textContent = `agent 自述：${domTask.claim}`;
+        }
+
         const planList = domTask !== null && domTask.plan.length > 0 ? document.createElement('ol') : null;
         if (planList !== null && domTask !== null) {
           planList.className = 'za-hitl-plan';
@@ -266,6 +347,16 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
           hint.textContent = '授权后本任务内的后续操作（含页面操作与站点跳转）将自动执行；执行中可随时点「停止」。';
         }
 
+        const tightenedLine = frame.tightenedBy === undefined ? null : document.createElement('div');
+        if (tightenedLine !== null) {
+          tightenedLine.className = 'za-hitl-tightened za-hitl-detail';
+          tightenedLine.textContent = '这是你自己设置的确认项（站点包默认为自动执行）。';
+        }
+
+        const gov = document.createElement('div');
+        gov.className = 'za-hitl-gov za-hitl-detail';
+        gov.textContent = governanceNoteOf(frame.ttlMs);
+
         const actions = document.createElement('div');
         actions.className = 'za-hitl-actions';
         const approve = document.createElement('button');
@@ -278,20 +369,29 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         reject.textContent = '拒绝';
         actions.append(approve, reject);
 
-        card.append(title, detail);
+        // 阅读顺序＝UI 规范 §5 五要素：动作与参数 → 作用站点与来源 pack → 风险行 → 治理小字 → 两个按钮。
+        card.append(title);
+        if (detail !== null) card.append(detail);
+        if (effectsBlock !== null) card.append(effectsBlock);
         if (targetUrlLine !== null) card.append(targetUrlLine);
         if (targetPageLine !== null) card.append(targetPageLine);
+        if (packLine !== null) card.append(packLine);
+        if (riskLine !== null) card.append(riskLine);
+        if (claimLine !== null) card.append(claimLine);
         if (planList !== null) card.append(planList);
         if (hint !== null) card.append(hint);
+        if (tightenedLine !== null) card.append(tightenedLine);
         if (frame.reason !== undefined) {
           const reason = document.createElement('div');
           reason.className = 'za-hitl-reason';
           reason.textContent = frame.reason;
           card.append(reason);
         }
-        card.append(actions);
+        card.append(gov, actions);
         messages.append(card);
         messages.scrollTop = messages.scrollHeight;
+        // 防误触放权（UI 规范 §8）：默认焦点落「拒绝」，回车不构成授权。
+        reject.focus();
 
         const settle = (decision: HitlDecisionValue | null) => {
           card.remove();

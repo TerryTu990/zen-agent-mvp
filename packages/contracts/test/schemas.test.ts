@@ -389,6 +389,24 @@ describe('C3 定向副作用 page 与 HITL 目标页展示（adr-023 D3）', () 
     },
     'hitl-request navigate 目标 URL 呈现': { ...hitlBase, targetUrl: 'https://seller.example/console' },
     'hitl-request 缺省（活跃页，不加措辞）': hitlBase,
+    'hitl-request 服务端反解的机械摘要 effects': {
+      ...hitlBase,
+      effects: [
+        { action: '填写', target: '收件人（input:text）', valuePreview: 'a@b.example' },
+        { action: '点击', target: '发送（button）' },
+        { action: '导航到', target: 'https://seller.example/console' },
+      ],
+    },
+    'hitl-request 来源 pack 与作用站点': {
+      ...hitlBase,
+      pack: { packId: 'xianyu-seller', name: '闲鱼卖家', source: 'official', origin: 'https://seller.example' },
+    },
+    'hitl-request 风险行 / L2 收紧来源 / 指令有效期': {
+      ...hitlBase,
+      risk: '将写入页面内容并触发按钮，提交后不可撤销',
+      tightenedBy: 'L2',
+      ttlMs: 60000,
+    },
   };
 
   it.each(Object.keys(validFrames))('合法 %s 通过校验', (label) => {
@@ -402,6 +420,18 @@ describe('C3 定向副作用 page 与 HITL 目标页展示（adr-023 D3）', () 
     'guide-action page 空串': { ...guideBase, page: '' },
     'hitl-request targetPage 带越界键': { ...hitlBase, targetPage: { title: 't', handle: 'p2' } },
     'hitl-request targetUrl 空串': { ...hitlBase, targetUrl: '' },
+    'hitl-request effects 条目带越界键（ref 等实现细节不得外泄到展示面）': {
+      ...hitlBase,
+      effects: [{ action: '点击', target: '发送（button）', ref: 'za-2' }],
+    },
+    'hitl-request effects 条目缺 target（目标未知也须由服务端如实写出）': {
+      ...hitlBase,
+      effects: [{ action: '点击' }],
+    },
+    'hitl-request pack 缺 packId': { ...hitlBase, pack: { name: '闲鱼卖家' } },
+    'hitl-request pack.source 越闭集': { ...hitlBase, pack: { packId: 'p', source: 'vendor' } },
+    'hitl-request tightenedBy 非 L2（收紧来源只有用户覆盖层一种）': { ...hitlBase, tightenedBy: 'L1' },
+    'hitl-request ttlMs 非正整数': { ...hitlBase, ttlMs: 0 },
   };
 
   it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {

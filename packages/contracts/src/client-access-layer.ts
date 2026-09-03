@@ -5,6 +5,7 @@
  */
 import type { JsonObject, JsonValue } from './json.js';
 import type { HttpMethod, SnapshotEvidenceRule } from './tool-definition.js';
+import type { PackSource } from './config-snapshot.js';
 
 /** 五能力闭集（U5）：任何客户端形态实现同一组能力。 */
 export type ClientCapability =
@@ -194,6 +195,30 @@ export interface HitlPageDisplay {
   origin?: string;
 }
 
+/**
+ * 确认卡机械摘要条目：服务端把 toolgate 校验后的净化终值步骤按最近快照元素表反解所得（U8）。
+ * 用户裁决的是「将真正发生什么」，不是模型在 params 里自述的 summary/plan。
+ */
+export interface HitlEffect {
+  /** 动作措辞（点击/填写/读取/导航到…），取自服务端闭集映射。 */
+  action: string;
+  /** 目标描述：元素反解为「标签（角色）」；导航步为目标地址；反解不出即如实标注目标未知，不猜测。 */
+  target: string;
+  /** fill/select 的写入值摘要（消毒+截断）；密码/文件类控件与反解不出的目标一律省略（fail-closed）。 */
+  valuePreview?: string;
+}
+
+/** 确认卡来源 pack 展示（R4 作用站点与来源 pack）：服务端组装消毒，客户端只渲染徽章与措辞。 */
+export interface HitlPackDisplay {
+  packId: string;
+  /** pack.json name；未声明时省略，展示回退 packId。 */
+  name?: string;
+  /** registry 登记来源（来源徽章数据源）。 */
+  source?: PackSource;
+  /** 作用站点：site pack 取 site.origin，generic pack 取激活时绑定的活跃页 origin；无围栏时省略。 */
+  origin?: string;
+}
+
 export interface HitlRequestFrame {
   type: 'hitl-request';
   sessionId: string;
@@ -207,6 +232,16 @@ export interface HitlRequestFrame {
   targetPage?: HitlPageDisplay;
   /** navigate 类调用（open_url/site_navigate/单步 navigate 批次）的目标 URL：卡正文 MUST 呈现，服务端已消毒。 */
   targetUrl?: string;
+  /** 服务端反解的机械摘要：卡正文 MUST 优先呈现，params 内模型自述只作次要信息。 */
+  effects?: HitlEffect[];
+  /** 工具所属激活 pack 的展示信息；无 pack（仅基座）时省略。 */
+  pack?: HitlPackDisplay;
+  /** 风险行文案（UI 规范 §5 五要素之一）：服务端按净化终值机械派生，不取模型自述。 */
+  risk?: string;
+  /** 本次确认由用户自己收紧分级而来时标注（R4 可追溯）；pack 默认即需确认时省略。 */
+  tightenedBy?: 'L2';
+  /** 批准后签发的一次性指令有效期（毫秒）：治理小字据此标注有效期。 */
+  ttlMs?: number;
 }
 
 /** 服务端已定值的最终请求，客户端不做模板求值。 */

@@ -2934,3 +2934,162 @@ describe('adr-024 治理决策链完整性（无人值守收口 / 停止吊销 /
     }
   });
 });
+
+describe('B3b — HITL 卡真实性（服务端反解的机械摘要 + R4 五要素）', () => {
+  const SEND_TOOL = 'xianyu-fulfillment.send-test-message';
+  const IM_URL =
+    'https://seller.goofish.com/?site=COMMONPRO#/im?itemId=item-u&orderId=order-u&peerUserId=buyer-u';
+
+  it('dom 确认卡携带服务端反解的 effects/pack/风险行/有效期（用户批准的是「将发生什么」）', async () => {
+    const srv = await startServer(serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 2 }));
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${srv.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: IM_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '发送闲鱼测试消息' });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
+        url: IM_URL,
+        pageInstanceId: 'page-b3b',
+        elements: [
+          { ref: 'za-message', role: 'textarea', label: '请输入消息' },
+          { ref: 'za-send', role: 'button', label: '发 送' },
+        ],
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length === 1);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      expect(hitl['toolId']).toBe(SEND_TOOL);
+      // 卡上的动作由 toolgate 净化终值 + 最近快照元素表反解得来，不是模型自述。
+      expect(hitl['effects']).toEqual([{ action: '点击', target: '发 送（button）' }]);
+      expect(hitl['pack']).toEqual({
+        packId: 'xianyu-seller',
+        source: 'official',
+        origin: 'https://seller.goofish.com',
+      });
+      expect(hitl['risk']).toBe('将触发页面按钮：一旦触发提交，平台无法为你撤销。');
+      expect(hitl['ttlMs']).toBe(60000);
+      // pack 默认即需确认：不得谎称是用户自己收紧的。
+      expect(hitl['tightenedBy']).toBeUndefined();
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(hitl['hitlId']),
+        decision: 'reject',
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, SEND_TOOL) === 'failed');
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await srv.close();
+    }
+  });
+
+  it('L2 把 auto 收紧到 hitl：卡上标注 tightenedBy=L2，effects 逐字反映 fill 值与目标控件', async () => {
+    const userConfigDir = mkdtempSync(join(tmpdir(), 'za-b3b-l2-'));
+    await createFsUserConfigStore({ dir: userConfigDir }).write(
+      { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+      {
+        schemaVersion: 1,
+        subject: { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+        packs: {
+          'host-demo': { restrictions: { riskTierRaise: { 'order-list.page-operate': 'hitl' } } },
+        },
+      },
+    );
+    const srv = await startServer(serverOptions({ userConfigDir, maxTurnRounds: 2 }));
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${srv.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '帮我在页面上给订单加个备注',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
+        url: ORDER_LIST_URL,
+        title: '订单列表',
+        elements: [
+          { ref: 'za-1', role: 'input:text', label: '备注' },
+          { ref: 'za-2', role: 'button', label: '保存' },
+        ],
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length === 1);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      expect(hitl['effects']).toEqual([
+        { action: '填写', target: '备注（input:text）', valuePreview: 'mock-note' },
+        { action: '点击', target: '保存（button）' },
+        { action: '读取', target: '备注（input:text）' },
+      ]);
+      expect(hitl['tightenedBy']).toBe('L2');
+      expect(hitl['pack']).toEqual({
+        packId: 'host-demo',
+        source: 'official',
+        origin: 'http://127.0.0.1:4173',
+      });
+      expect(hitl['risk']).toBe('将写入页面内容并触发页面按钮：一旦触发提交，平台无法为你撤销。');
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(hitl['hitlId']),
+        decision: 'reject',
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'order-list.page-operate') === 'failed');
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await srv.close();
+    }
+  });
+
+  it('read 目标是密码框 → 服务端 deny read-sensitive-control，不签发指令、密码值不进模型上下文', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '帮我在页面上给订单加个备注',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length > 0);
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
+        url: ORDER_LIST_URL,
+        title: '订单列表',
+        elements: [
+          { ref: 'za-1', role: 'input:password', label: '登录密码' },
+          { ref: 'za-2', role: 'button', label: '保存' },
+        ],
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'order-list.page-operate') === 'failed');
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      const decisions = auditEventsFor(sessionId)
+        .filter((event) => event['type'] === 'tool-decision')
+        .map((event) => event['data'] as Record<string, unknown>)
+        .filter((data) => data['toolId'] === 'order-list.page-operate');
+      expect(decisions[decisions.length - 1]).toMatchObject({
+        verdict: 'deny',
+        reason: 'read-sensitive-control',
+      });
+    } finally {
+      sse.close();
+    }
+  });
+});

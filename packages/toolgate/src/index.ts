@@ -223,6 +223,14 @@ const RESERVED_DOM_ACTIONS = new Set(['waitFor']);
 const MAX_DOM_STEPS = 20;
 const READ_NAME_PATTERN = /^[\w-]{1,64}$/;
 
+/**
+ * 敏感控件角色闭集（快照 roleOf 口径 `input:<type>`）：
+ * read 命中即拒（值会经 observation 进模型上下文与会话落盘）；fill 命中即强制逐次确认。
+ * 页面自声明的 role 属性可绕开本闭集，故插件侧 readValueOf 另有掩码作纵深防御。
+ */
+const SENSITIVE_READ_ROLES = new Set(['input:password']);
+const SENSITIVE_FILL_ROLES = new Set(['input:password', 'input:file']);
+
 /** 平台级定向参数 targetPage 的形状约束（adr-023 D3）：与 C3 句柄同界（1..64），刻意无 pattern——句柄不透明（U5）。 */
 const TARGET_PAGE_PARAM_SCHEMA: JsonObject = { type: 'string', minLength: 1, maxLength: 64 };
 
@@ -283,6 +291,9 @@ function locationMatches(path: string, loc: string): boolean {
  * 无 packOrigin 的 pack 无 origin 围栏基准，定向一律拒（缺省路径不受影响）；
  * silent 页仅单步 navigate 可签（通道分级）；ref 批次仍须 domContext（此时它是目标页定向快照的上下文），
  * 定向单步 navigate 免 domContext（silent 页无快照可取）。
+ * 敏感控件闭集：按 domContext.elements 反查 ref 的 role——read 命中 SENSITIVE_READ_ROLES
+ * 即 deny；elements 缺省时 read 一律 deny（信息缺失不降级放行）；fill 命中 SENSITIVE_FILL_ROLES
+ * 置 sensitiveFill，调用点据此强制逐次确认。
  * 通过则返回只含已知字段的净化步骤（剥离 LLM 幻觉出的多余键，签名精确覆盖将执行内容）；
  * 任一不过返回 reason 字符串（不含实参值，SEC-04）。
  */
@@ -293,7 +304,7 @@ function validateDomSteps(
   packOrigin: string | undefined,
   urlInFence: (url: string) => boolean,
   target?: GroupPageEntry,
-): { steps: DomStep[] } | { reason: string } {
+): { steps: DomStep[]; sensitiveFill?: true } | { reason: string } {
   // 任务标题必填：它是任务级 HITL 授权的作用域标识（用户批准的就是它），也是审计可读锚点。
   const task = params['task'];
   if (typeof task !== 'string' || task.trim() === '') return { reason: 'missing-task' };
@@ -352,7 +363,9 @@ function validateDomSteps(
     return { reason: 'origin-fence-violation' };
   }
   const refs = new Set(domContext?.refs ?? []);
+  const roleByRef = new Map((domContext?.elements ?? []).map((element) => [element.ref, element.role]));
   const steps: DomStep[] = [];
+  let sensitiveFill: true | undefined;
   for (const item of raw) {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) {
       return { reason: 'invalid-step-shape' };
@@ -378,11 +391,19 @@ function validateDomSteps(
       if (typeof name !== 'string' || !READ_NAME_PATTERN.test(name)) {
         return { reason: 'missing-read-name' };
       }
+      // 回读面 fail-closed：证明不了目标不是敏感控件就不回读——elements 缺省即无从证明。
+      if (domContext?.elements === undefined) return { reason: 'dom-elements-missing' };
+      if (SENSITIVE_READ_ROLES.has(roleByRef.get(ref) ?? '')) {
+        return { reason: 'read-sensitive-control' };
+      }
       step.name = name;
+    }
+    if (action === 'fill' && SENSITIVE_FILL_ROLES.has(roleByRef.get(ref) ?? '')) {
+      sensitiveFill = true;
     }
     steps.push(step);
   }
-  return { steps };
+  return { steps, ...(sensitiveFill === true ? { sensitiveFill } : {}) };
 }
 
 /** 把 {{name}} 占位替换为实参；encode 用于 URL 路径段转义，headers/body 传恒等函数。 */
@@ -763,11 +784,23 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   }
 
   /**
+   * hitl 判定随附的确认卡展示数据（纯数据，不参与判定）：净化终值步骤 + 本次签发的指令有效期。
+   * 非 dom 工具无步骤可反解，只带有效期。
+   */
+  const hitlDisplay = (steps?: DomStep[]): Pick<GateDecision, 'sanitizedSteps' | 'instructionTtlMs'> => ({
+    ...(steps !== undefined ? { sanitizedSteps: steps } : {}),
+    instructionTtlMs: ttlMs,
+  });
+
+  /**
    * 内建导航（site_navigate / open_url）的校验段：实参 schema → 定向目标解析 → 目标 URL 围栏。
-   * 返回 null 即通过；不含 hitl 分级与任务级授权语义（那是各调用点自己的判断）。
+   * 通过则返回与签发处同构的净化终值单步 navigate（确认卡机械摘要的数据源）；
+   * 不含 hitl 分级与任务级授权语义（那是各调用点自己的判断）。
    * decide 与 reconfirmApproval 共用本实现，使批准恢复期的围栏复核与首次判定同源。
    */
-  const validateBuiltinNavigation = (input: GateDecisionInput): { reason: string } | null => {
+  const validateBuiltinNavigation = (
+    input: GateDecisionInput,
+  ): { steps: DomStep[] } | { reason: string } => {
     if (input.toolId === SITE_NAVIGATE_TOOL_ID) {
       if (!siteNavigateParamsValidator(input.params)) return { reason: 'invalid-params' };
       // 内建 navigate 可定向任意组内页（含 silent——导航即其激活通路，adr-023 D3）：仅要求句柄命中状态表。
@@ -775,14 +808,14 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       if ('reason' in resolvedTarget) return { reason: resolvedTarget.reason };
       const url = input.params['url'];
       if (typeof url !== 'string' || !urlInFence(url)) return { reason: 'fence-violation' };
-      return null;
+      return { steps: [{ action: 'navigate', url }] };
     }
     if (!openUrlParamsValidator(input.params)) return { reason: 'invalid-params' };
     const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
     if ('reason' in resolvedTarget) return { reason: resolvedTarget.reason };
     const url = input.params['url'];
     if (typeof url !== 'string' || !httpNavigableUrl(url)) return { reason: 'unsafe-url' };
-    return null;
+    return { steps: [{ action: 'navigate', url }] };
   };
 
   /**
@@ -793,7 +826,9 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
    */
   const validateCall = (
     input: GateDecisionInput,
-  ): { tool: ToolDefinition; riskTier: RiskTier } | { reason: string } => {
+  ):
+    | { tool: ToolDefinition; riskTier: RiskTier; steps?: DomStep[]; sensitiveFill?: true }
+    | { reason: string } => {
     const tool = toolsById.get(input.toolId);
     if (!tool) return { reason: 'unknown-tool' };
     if (!KNOWN_RISK_TIERS.has(tool.riskTier)) return { reason: 'unknown-risk-tier' };
@@ -832,6 +867,12 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         resolvedTarget.target,
       );
       if ('reason' in validated) return { reason: validated.reason };
+      return {
+        tool,
+        riskTier,
+        steps: validated.steps,
+        ...(validated.sensitiveFill === true ? { sensitiveFill: true as const } : {}),
+      };
     }
     return { tool, riskTier };
   };
@@ -1147,29 +1188,35 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       // 目标 URL 须落在某已安装 pack 的 site 围栏内（跨站允许别 pack origin，但必须已安装），否则 fence-violation。
       // 带 task 且该任务已获批 → 放行（导航是任务的一步，共享任务级授权）；无 task 或未获批仍 hitl。
       if (input.toolId === SITE_NAVIGATE_TOOL_ID) {
-        const navDenial = validateBuiltinNavigation(input);
-        if (navDenial !== null) return deny(navDenial.reason);
+        const navChecked = validateBuiltinNavigation(input);
+        if ('reason' in navChecked) return deny(navChecked.reason);
         // 无人值守回合：导航同属需确认项，且不消费任务级授权（adr-024 D1）。
         if (input.unattended === true) return deny(HITL_UNATTENDED_REASON);
         const navTask = input.params['task'];
         if (typeof navTask === 'string' && consumeGrant(input, navTask)) {
           return { verdict: 'allow' };
         }
-        return { verdict: 'hitl' };
+        return { verdict: 'hitl', ...hitlDisplay(navChecked.steps) };
       }
       // 内建通用导航（generic 配套）：专路裁决——参数不过即 deny；目标须为无内嵌凭证的 http/https
       // 绝对 URL，否则 unsafe-url；每次必弹卡（every-call 语义），不消费/不复用任务级授权。
       if (input.toolId === OPEN_URL_TOOL_ID) {
-        const openDenial = validateBuiltinNavigation(input);
-        if (openDenial !== null) return deny(openDenial.reason);
+        const openChecked = validateBuiltinNavigation(input);
+        if ('reason' in openChecked) return deny(openChecked.reason);
         // 无人值守回合：every-call 的通用导航同样无人可确认（adr-024 D1）。
         if (input.unattended === true) return deny(HITL_UNATTENDED_REASON);
-        return { verdict: 'hitl' };
+        return { verdict: 'hitl', ...hitlDisplay(openChecked.steps) };
       }
       // fail-closed 判定链：任一前置不过即 deny，reason 只述依据、不含实参值（U7 / SEC-04）。
       const checked = validateCall(input);
       if ('reason' in checked) return deny(checked.reason);
-      const { tool, riskTier } = checked;
+      const { tool, riskTier, steps, sensitiveFill } = checked;
+      // 敏感控件写入（密码框/文件选择）：批次不因静态档为 auto 而免确认，也不消费任务级授权——
+      // 「同任务此前批准过」不构成对下一次敏感写入的知情同意。
+      if (sensitiveFill === true) {
+        if (input.unattended === true) return deny(HITL_UNATTENDED_REASON);
+        return { verdict: 'hitl', ...hitlDisplay(steps) };
+      }
       // 任务级授权（跨工具共享）：带 task 且同作用域该任务已获批未闲置过期 → 放行（一任务一确认）。
       // 复用判定必须在 dom 步骤校验之后——已授权任务的非法批次仍 deny（U7 fail-closed）；
       // every-call 工具跳过复用查询（对外不可撤回动作次次单独确认，不复用授权）；
@@ -1194,7 +1241,8 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       }
       // R7 的服务端落点：无人在场时需确认档一律拒绝，不广播确认卡、不无界挂起等待。
       if (riskTier === 'hitl' && input.unattended === true) return deny(HITL_UNATTENDED_REASON);
-      return { verdict: riskTier === 'hitl' ? 'hitl' : 'allow' };
+      if (riskTier === 'hitl') return { verdict: 'hitl', ...hitlDisplay(steps) };
+      return { verdict: 'allow' };
     },
 
     async reconfirmApproval(input: GateDecisionInput): Promise<GateDecision> {
@@ -1203,7 +1251,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         input.toolId === SITE_NAVIGATE_TOOL_ID || input.toolId === OPEN_URL_TOOL_ID
           ? validateBuiltinNavigation(input)
           : validateCall(input);
-      return checked !== null && 'reason' in checked
+      return 'reason' in checked
         ? deny(`${APPROVAL_STALE_REASON}:${checked.reason}`)
         : { verdict: 'allow' };
     },

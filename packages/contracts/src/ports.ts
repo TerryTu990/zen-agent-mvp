@@ -9,6 +9,7 @@ import type { RiskTier, ToolDefinition } from './tool-definition.js';
 import type { UserConfigSubject, UserOverlay } from './user-overlay.js';
 import type { IdentityClaims } from './identity-claims.js';
 import type {
+  DomStep,
   ExecInstructionFrame,
   ExecResultFrame,
   GroupPageEntry,
@@ -435,6 +436,14 @@ export interface GateDecisionInput extends PackScopeInput {
 export interface GateDecision {
   verdict: GateVerdict;
   reason?: string;
+  /**
+   * hitl 判定随附的净化终值步骤（已剥模型幻觉键、ref 已验出自最近快照）：网关据此组装确认卡的
+   * 机械摘要——用户批准的必须是将被签发执行的内容，而非模型在 params 里自述的 summary/plan。
+   * 纯数据、不参与任何判定；非 hitl 判定一律缺省。
+   */
+  sanitizedSteps?: DomStep[];
+  /** 随 sanitizedSteps 下发的一次性指令有效期（毫秒）：确认卡治理小字据此如实标注，客户端不自拟。 */
+  instructionTtlMs?: number;
 }
 
 export interface IssueExecInstructionInput extends PackScopeInput {

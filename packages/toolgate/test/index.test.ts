@@ -2379,8 +2379,9 @@ describe('toolgate adr-023 D3 — 定向副作用（目标页解析/围栏/通�
       groupPages,
     };
     const url = 'https://seller.example/console/orders';
-    expect(await port.decide({ ...base, params: { url, targetPage: 'p4' } })).toEqual({ verdict: 'hitl' });
-    expect(await port.decide({ ...base, params: { url, targetPage: 'p9' } })).toEqual({ verdict: 'hitl' });
+    const navHitl = { verdict: 'hitl', sanitizedSteps: [{ action: 'navigate', url }], instructionTtlMs: 60000 };
+    expect(await port.decide({ ...base, params: { url, targetPage: 'p4' } })).toEqual(navHitl);
+    expect(await port.decide({ ...base, params: { url, targetPage: 'p9' } })).toEqual(navHitl);
     expect(await port.decide({ ...base, params: { url, targetPage: 'p404' } })).toEqual({
       verdict: 'deny',
       reason: 'page-not-in-group',
@@ -2402,7 +2403,11 @@ describe('toolgate adr-023 D3 — 定向副作用（目标页解析/围栏/通�
       groupPages,
     };
     const url = 'https://anywhere.example/landing';
-    expect(await port.decide({ ...base, params: { url, targetPage: 'p4' } })).toEqual({ verdict: 'hitl' });
+    expect(await port.decide({ ...base, params: { url, targetPage: 'p4' } })).toEqual({
+      verdict: 'hitl',
+      sanitizedSteps: [{ action: 'navigate', url }],
+      instructionTtlMs: 60000,
+    });
     expect(await port.decide({ ...base, params: { url, targetPage: 'p404' } })).toEqual({
       verdict: 'deny',
       reason: 'page-not-in-group',
@@ -2635,9 +2640,13 @@ describe('adr-024 D1 — 无人值守回合的服务端收口（unattended）', 
     expect(frame.type).toBe('exec-instruction');
   });
 
-  it('不传 unattended 即人工回合：hitl 档仍返回 hitl（旧行为逐字节不变）', async () => {
+  it('不传 unattended 即人工回合：hitl 档仍返回 hitl（判定逐字节不变，只多随附确认卡展示数据）', async () => {
     const d = await makePort().decide({ ...base, params: taskParams('建令牌'), domContext });
-    expect(d).toEqual({ verdict: 'hitl' });
+    expect(d).toEqual({
+      verdict: 'hitl',
+      sanitizedSteps: [{ action: 'click', ref: 'za-1' }],
+      instructionTtlMs: 60000,
+    });
   });
 });
 
@@ -2876,5 +2885,139 @@ describe('adr-024 G10 — nonce 登记的尺寸上界与高水位驱逐', () => 
       result: { type: 'exec-result', sessionId: 's1', nonce: frames[0]!.nonce, ok: true, body: { ok: true } },
     });
     expect(evicted).toMatchObject({ ok: false, error: 'unknown-nonce' });
+  });
+});
+
+describe('B3b G5 — hitl 判定随附净化终值与指令有效期（确认卡机械摘要的唯一数据源）', () => {
+  const base = { sessionId: 's1', toolCallId: 'c-eff', toolId: domHitlTool.id, claims: validClaims };
+
+  it('dom hitl 判定返回净化终值 steps（剥模型幻觉键）与签发有效期，供网关反解成卡上机械摘要', async () => {
+    const d = await makePort({ ttlMs: 45000 }).decide({
+      ...base,
+      params: {
+        task: '发消息',
+        steps: [
+          { action: 'fill', ref: 'za-1', value: '你好', hallucinated: 'x' },
+          { action: 'click', ref: 'za-2' },
+        ],
+        summary: '模型自述',
+      },
+      domContext,
+    });
+    expect(d).toEqual({
+      verdict: 'hitl',
+      sanitizedSteps: [
+        { action: 'fill', ref: 'za-1', value: '你好' },
+        { action: 'click', ref: 'za-2' },
+      ],
+      instructionTtlMs: 45000,
+    });
+  });
+
+  it('allow 判定不带展示字段：机械摘要只服务于须人裁决的那一次', async () => {
+    const d = await makePort().decide({
+      ...base,
+      toolId: domTool.id,
+      params: { task: 't', steps: [{ action: 'click', ref: 'za-2' }], summary: 'x' },
+      domContext,
+    });
+    expect(d).toEqual({ verdict: 'allow' });
+  });
+});
+
+describe('B3b G7 — 敏感控件闭集（读拒绝 / 写每次单独确认）', () => {
+  const base = { sessionId: 's1', toolCallId: 'c-sens', toolId: domTool.id, claims: validClaims };
+  const sensitiveContext = {
+    ...domContext,
+    refs: ['za-1', 'za-2', 'za-pw', 'za-file'],
+    elements: [
+      { ref: 'za-1', role: 'textarea', label: '请输入消息' },
+      { ref: 'za-2', role: 'button', label: '发送' },
+      { ref: 'za-pw', role: 'input:password', label: '登录密码' },
+      { ref: 'za-file', role: 'input:file', label: '上传身份证' },
+    ],
+  };
+
+  it('read 目标是 input:password → deny read-sensitive-control（密码值不得经 observation 进模型上下文）', async () => {
+    const d = await makePort().decide({
+      ...base,
+      params: {
+        task: '核对输入',
+        steps: [{ action: 'read', ref: 'za-pw', name: 'pw' }],
+        summary: 'x',
+      },
+      domContext: sensitiveContext,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'read-sensitive-control' });
+  });
+
+  it('domContext 缺 elements → read 一律 deny dom-elements-missing（信息缺失不降级放行，fail-closed）', async () => {
+    const { elements: _elements, ...noElements } = sensitiveContext;
+    const d = await makePort().decide({
+      ...base,
+      params: { task: '读一下', steps: [{ action: 'read', ref: 'za-1', name: 'v' }], summary: 'x' },
+      domContext: noElements,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'dom-elements-missing' });
+  });
+
+  it('read 缺 name 仍先判 missing-read-name（既有实参形状校验不被敏感闸吞掉）', async () => {
+    const d = await makePort().decide({
+      ...base,
+      params: { task: 't', steps: [{ action: 'read', ref: 'za-pw' }], summary: 'x' },
+      domContext: sensitiveContext,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'missing-read-name' });
+  });
+
+  it('fill 目标是 input:password / input:file → 静态档 auto 也强制 hitl（每次单独确认）', async () => {
+    const port = makePort();
+    for (const ref of ['za-pw', 'za-file']) {
+      const d = await port.decide({
+        ...base,
+        params: { task: '填一下', steps: [{ action: 'fill', ref, value: 'v' }], summary: 'x' },
+        domContext: sensitiveContext,
+      });
+      expect(d.verdict).toBe('hitl');
+    }
+  });
+
+  it('敏感 fill 不复用任务级授权：同 task 已获批仍逐次弹卡', async () => {
+    const port = makePort();
+    await port.grantHitl({ sessionId: 's1', task: '填一下' });
+    const ordinary = await port.decide({
+      ...base,
+      toolId: domHitlTool.id,
+      params: { task: '填一下', steps: [{ action: 'fill', ref: 'za-1', value: 'v' }], summary: 'x' },
+      domContext: sensitiveContext,
+    });
+    expect(ordinary).toMatchObject({ verdict: 'allow' });
+    const sensitive = await port.decide({
+      ...base,
+      toolId: domHitlTool.id,
+      params: { task: '填一下', steps: [{ action: 'fill', ref: 'za-pw', value: 'v' }], summary: 'x' },
+      domContext: sensitiveContext,
+    });
+    expect(sensitive.verdict).toBe('hitl');
+  });
+
+  it('unattended 回合的敏感 fill → deny hitl-unattended（无人可确认即不执行）', async () => {
+    const d = await makePort().decide({
+      ...base,
+      params: { task: '填一下', steps: [{ action: 'fill', ref: 'za-pw', value: 'v' }], summary: 'x' },
+      domContext: sensitiveContext,
+      unattended: true,
+    });
+    expect(d).toEqual({ verdict: 'deny', reason: 'hitl-unattended' });
+  });
+
+  it('签发处独立复述敏感闸：password read 拒签（不依赖 decide 已拒的假设，U7）', async () => {
+    await expect(
+      makePort().issueExecInstruction({
+        ...base,
+        params: { task: 't', steps: [{ action: 'read', ref: 'za-pw', name: 'pw' }], summary: 'x' },
+        domContext: sensitiveContext,
+      }),
+    ).rejects.toThrow(/read-sensitive-control/);
   });
 });

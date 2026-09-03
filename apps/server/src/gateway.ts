@@ -29,6 +29,7 @@ import type {
   AuditPort,
   ComposeResult,
   DomGateContext,
+  DomStep,
   DomToolDefinition,
   DownstreamFrame,
   ExecInstructionFrame,
@@ -39,6 +40,7 @@ import type {
   GuideActionKind,
   GuideActionFrame,
   HitlDecisionValue,
+  HitlRequestFrame,
   IdentityClaims,
   FulfillmentCoordinatorPort,
   JsonObject,
@@ -47,9 +49,11 @@ import type {
   LlmPort,
   LlmToolSpec,
   Observation,
+  PackDescriptor,
   ResolveFeatureResult,
   RiskTier,
   SiteDescriptor,
+  SnapshotElement,
   SnapshotReportFrame,
   SnapshotEvidenceRule,
   ToolCardStatus,
@@ -762,6 +766,91 @@ export function hitlTargetUrl(tool: ToolDefinition, params: JsonObject): string 
   return truncateWithEllipsis(stripDisplayUnsafeChars(parsed.href), HITL_TARGET_URL_MAX);
 }
 
+type HitlEffect = NonNullable<HitlRequestFrame['effects']>[number];
+
+/** 确认卡展示上限：目标描述与写入值摘要都可能来自不可信页面文本/模型实参，超限即截断标注。 */
+const HITL_EFFECT_TARGET_MAX = 60;
+const HITL_EFFECT_VALUE_MAX = 60;
+
+/** dom 动作 → 卡上机械措辞（服务端闭集，客户端不自拟）。 */
+const DOM_ACTION_WORDING: Record<DomStep['action'], string> = {
+  navigate: '导航到',
+  waitFor: '等待',
+  click: '点击',
+  fill: '填写',
+  select: '选择',
+  read: '读取',
+  scroll: '滚动到',
+  highlight: '高亮',
+};
+
+/** 反解不出目标时的如实标注（ref 不在最近快照元素表）：不猜测、不省略该步（U7 fail-closed 的展示面）。 */
+const HITL_EFFECT_TARGET_UNKNOWN = '目标未知（不在最近快照元素表内）';
+
+/** 写入值不上卡的控件角色闭集：与 toolgate 敏感闸同口径，密码/文件选择的值不进确认卡与任何日志。 */
+const HITL_NO_PREVIEW_ROLES = new Set(['input:password', 'input:file']);
+
+/**
+ * 确认卡机械摘要（U8）：把 toolgate 校验后的净化终值步骤按最近快照元素表反解为
+ * 「动作 + 目标（标签/角色）+ 写入值摘要」。用户批准的必须是将被签发执行的内容，
+ * 而非模型在 params.summary/plan 里自述的内容。
+ * 反解不出即如实标注目标未知，且不呈现写入值——证明不了目标不是敏感控件就不回显值。
+ */
+function hitlEffectsOf(
+  steps: DomStep[],
+  elements: SnapshotElement[] | undefined,
+): HitlEffect[] {
+  const byRef = new Map((elements ?? []).map((element) => [element.ref, element]));
+  return steps.map((step): HitlEffect => {
+    const action = DOM_ACTION_WORDING[step.action];
+    if (step.action === 'navigate') {
+      return {
+        action,
+        target: truncateWithEllipsis(stripDisplayUnsafeChars(step.url ?? ''), HITL_TARGET_URL_MAX),
+      };
+    }
+    const element = step.ref === undefined ? undefined : byRef.get(step.ref);
+    const target =
+      element === undefined
+        ? HITL_EFFECT_TARGET_UNKNOWN
+        : truncateWithEllipsis(
+            stripDisplayUnsafeChars(`${element.label}（${element.role}）`),
+            HITL_EFFECT_TARGET_MAX,
+          );
+    const previewable =
+      step.value !== undefined && element !== undefined && !HITL_NO_PREVIEW_ROLES.has(element.role);
+    return {
+      action,
+      target,
+      ...(previewable
+        ? {
+            valuePreview: truncateWithEllipsis(
+              stripDisplayUnsafeChars(step.value ?? ''),
+              HITL_EFFECT_VALUE_MAX,
+            ),
+          }
+        : {}),
+    };
+  });
+}
+
+/**
+ * 风险行（UI 规范 §5 五要素之一）：只按净化终值机械派生「会不会写入 / 会不会触发提交 / 会不会换页」，
+ * 不取模型自述、不臆断具体业务后果（工具契约当前未建模 irreversible）。
+ */
+function hitlRiskOf(steps: DomStep[]): string {
+  const kinds = new Set(steps.map((step) => step.action));
+  if (kinds.has('navigate')) return '将在任务组内打开目标地址；页面跳转本身不提交内容。';
+  const writes = kinds.has('fill') || kinds.has('select');
+  if (kinds.has('click')) {
+    return writes
+      ? '将写入页面内容并触发页面按钮：一旦触发提交，平台无法为你撤销。'
+      : '将触发页面按钮：一旦触发提交，平台无法为你撤销。';
+  }
+  if (writes) return '将写入页面内容，不触发提交按钮。';
+  return '只读取页面内容，不写入、不提交。';
+}
+
 /** 未知签发异常的回喂文案：不携带任何异常细节，agent 据此按普通失败收尾。 */
 const ISSUE_REFUSED_GENERIC = 'issue-refused';
 
@@ -905,6 +994,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
   // 已安装 site 列表（快照不可变，惰性载入一次缓存）：per-origin 身份路由 + navigate 围栏 + 边界标记 origin 用。
   let sitesPromise: Promise<SiteDescriptor[]> | undefined;
   const getSites = (): Promise<SiteDescriptor[]> => (sitesPromise ??= deps.assembly.listSites());
+
+  // 已安装 pack 展示投影（快照不可变，惰性一次）：确认卡的来源 pack 名与来源徽章取此（R4）。
+  let packsPromise: Promise<PackDescriptor[]> | undefined;
+  const getPacks = (): Promise<PackDescriptor[]> => (packsPromise ??= deps.assembly.listPacks());
 
   // 全 pack 工具的静态分级表（快照不可变，惰性一次）：只读自动回合拒绝越界工具时的 riskTier 归因依据。
   let toolTiersPromise: Promise<Map<string, RiskTier>> | undefined;
@@ -1433,6 +1526,30 @@ export function createGateway(deps: GatewayDeps): Gateway {
             })()
           : undefined;
       const targetUrl = hitlTargetUrl(tool, params);
+      // 卡上「将发生什么」只取 toolgate 校验后的净化终值（decision.sanitizedSteps）反解，
+      // 不从模型实参推断：params 里的 summary/plan 是不可信自述，只作次要信息随帧下发。
+      const effects =
+        decision.sanitizedSteps === undefined
+          ? undefined
+          : hitlEffectsOf(decision.sanitizedSteps, domContext?.elements);
+      // 来源 pack 与作用站点（R4 五要素）：packId/origin 取服务端自持事实，名与来源徽章取 registry 投影。
+      const activePackId = pack.packId;
+      const packDisplay =
+        activePackId === null
+          ? undefined
+          : await (async () => {
+              const descriptor = (await getPacks()).find((entry) => entry.packId === activePackId);
+              const name = descriptor?.name ?? '';
+              return {
+                packId: activePackId,
+                ...(name !== ''
+                  ? { name: truncateWithEllipsis(stripDisplayUnsafeChars(name), GROUP_PAGES_TITLE_MAX) }
+                  : {}),
+                ...(descriptor?.source !== undefined ? { source: descriptor.source } : {}),
+                ...(scope.packOrigin !== undefined ? { origin: scope.packOrigin } : {}),
+              };
+            })();
+      if (cancelled()) return stopped();
       broadcast(sessionId, {
         type: 'hitl-request',
         sessionId,
@@ -1443,6 +1560,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
         ...(targetPage !== undefined ? { targetPage } : {}),
         ...(targetUrl !== undefined ? { targetUrl } : {}),
+        ...(effects !== undefined ? { effects } : {}),
+        ...(packDisplay !== undefined ? { pack: packDisplay } : {}),
+        ...(decision.sanitizedSteps !== undefined
+          ? { risk: hitlRiskOf(decision.sanitizedSteps) }
+          : {}),
+        // 本次确认由用户自己把分级收紧上来时标注（R4 可追溯）：pack 默认即需确认时省略。
+        ...(effectiveTierOf(tool, userConfig) !== tool.riskTier ? { tightenedBy: 'L2' as const } : {}),
+        ...(decision.instructionTtlMs !== undefined ? { ttlMs: decision.instructionTtlMs } : {}),
       });
       const verdict = await decided;
       recordEvent(sessionId, claims, featureId, {

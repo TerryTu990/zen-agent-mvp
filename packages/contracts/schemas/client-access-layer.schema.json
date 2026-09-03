@@ -410,6 +410,78 @@
           "$comment": "navigate 类调用（open_url/site_navigate/单步 navigate 批次）的目标 URL：卡正文 MUST 呈现真实导航去向，服务端已消毒。",
           "type": "string",
           "minLength": 1
+        },
+        "effects": {
+          "$comment": "服务端把 toolgate 校验后的净化终值步骤按最近快照元素表反解所得的机械摘要：卡正文 MUST 优先呈现本字段（用户批准的是「将真正发生什么」），params 内模型自述的 summary/plan 只作次要信息。ref 反解不出即在 target 上如实标注目标未知，不猜测（U7 fail-closed）。全部取值服务端已消毒截断，客户端只渲染不推断（U8）。",
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "target"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1
+              },
+              "valuePreview": {
+                "$comment": "fill/select 的写入值摘要；密码/文件类控件与反解不出的目标一律省略（fail-closed，敏感值不上卡）。",
+                "type": "string"
+              }
+            }
+          }
+        },
+        "pack": {
+          "$comment": "工具所属激活 pack 的展示信息（R4 作用站点与来源 pack）：服务端自 registry 与 site 围栏组装，客户端只渲染徽章与措辞。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "packId"
+          ],
+          "properties": {
+            "packId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "official",
+                "community",
+                "local"
+              ]
+            },
+            "origin": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "risk": {
+          "$comment": "风险行文案（UI 规范 §5 五要素之一）：服务端按净化终值机械派生「会写什么/会不会提交」，不取模型自述。",
+          "type": "string",
+          "minLength": 1
+        },
+        "tightenedBy": {
+          "$comment": "本次确认由用户自己收紧分级（L2 覆盖层）而来时标注，卡上据此可追溯（R4）；pack 默认即需确认时省略。收紧来源闭集当前只有用户覆盖层一种。",
+          "const": "L2"
+        },
+        "ttlMs": {
+          "$comment": "批准后签发的一次性指令有效期（毫秒）：治理小字据此如实标注有效期；服务端取自 toolgate 判定结果，客户端不自拟。",
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

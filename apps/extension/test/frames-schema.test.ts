@@ -192,7 +192,8 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
     def: 'hitlRequest',
     keys: keysOf<HitlRequestFrame>({
       type: true, sessionId: true, hitlId: true, toolCallId: true, toolId: true, reason: true, params: true,
-      targetPage: true, targetUrl: true,
+      targetPage: true, targetUrl: true, effects: true, pack: true, risk: true,
+      tightenedBy: true, ttlMs: true,
     }),
   },
   {

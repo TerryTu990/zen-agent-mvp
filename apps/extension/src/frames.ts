@@ -171,6 +171,27 @@ export interface HitlPageDisplay {
   origin?: string;
 }
 
+/** pack registry 登记来源（来源徽章数据源）；与 C4 PackSource 同闭集。 */
+export type PackSource = 'official' | 'community' | 'local';
+
+/**
+ * 确认卡机械摘要条目：服务端把 toolgate 校验后的净化终值步骤按最近快照元素表反解所得。
+ * 卡正文据此呈现「将真正发生什么」，而非模型在 params 里自述的 summary/plan。
+ */
+export interface HitlEffect {
+  action: string;
+  target: string;
+  valuePreview?: string;
+}
+
+/** 确认卡来源 pack 展示（R4 作用站点与来源 pack）：服务端组装消毒，客户端只渲染。 */
+export interface HitlPackDisplay {
+  packId: string;
+  name?: string;
+  source?: PackSource;
+  origin?: string;
+}
+
 export interface HitlRequestFrame {
   type: 'hitl-request';
   sessionId: string;
@@ -182,6 +203,15 @@ export interface HitlRequestFrame {
   targetPage?: HitlPageDisplay;
   /** navigate 类调用（open_url/site_navigate/单步 navigate 批次）的目标 URL：卡正文 MUST 呈现，服务端已消毒。 */
   targetUrl?: string;
+  /** 服务端反解的机械摘要：卡正文 MUST 优先呈现，模型自述只作次要信息。 */
+  effects?: HitlEffect[];
+  pack?: HitlPackDisplay;
+  /** 风险行文案：服务端按净化终值机械派生。 */
+  risk?: string;
+  /** 本次确认由用户自己收紧分级而来时标注（R4 可追溯）。 */
+  tightenedBy?: 'L2';
+  /** 批准后签发的一次性指令有效期（毫秒）。 */
+  ttlMs?: number;
 }
 
 export interface ExecRequest {
