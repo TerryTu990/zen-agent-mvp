@@ -904,6 +904,9 @@ const ISSUE_REFUSED_GENERIC = 'issue-refused';
 /** 批准在恢复执行前已不成立的回喂/审计归因（adr-024 D3）；与 toolgate 同一词元。 */
 const APPROVAL_STALE_ERROR = 'approval-stale';
 
+/** 人工确认久未裁决而由服务端合成收口的回喂/审计归因（adr-024 D1）。 */
+const HITL_TIMEOUT_ERROR = 'hitl-timeout';
+
 /**
  * toolgate 治理性拒签文案的前缀闭集：这些是 toolgate 的常量口径（含其自造的 reason 词元），
  * 可安全回喂 agent 与落历史。前缀漂移只会退化为通用文案，方向上是收紧的。
@@ -1029,10 +1032,12 @@ interface SessionRuntime {
 }
 
 /**
- * 挂起确认的内部裁决值：'stopped' = 用户中断回合时服务端为挂起卡合成的收尾——
- * 对模型/客户端等价于 reject，但审计以 synthetic 标注区分「用户拒绝」与「用户中断」。
+ * 挂起确认的内部裁决值：'stopped' = 用户中断回合时服务端为挂起卡合成的收尾；
+ * 'timeout' = 等待上限到期时合成的收尾。两者对模型/客户端均等价于 reject，
+ * 但审计各有归因（synthetic:stopped / tool-decision deny reason=hitl-timeout），
+ * 使统计能把「用户拒绝」与「用户中断」「无人裁决」分开。
  */
-type PendingHitlOutcome = HitlDecisionValue | 'stopped';
+type PendingHitlOutcome = HitlDecisionValue | 'stopped' | 'timeout';
 
 /** 自动回合归因（C5 automationRunId/automationId）：人工回合恒为 null。 */
 interface AutomationRunRef {
@@ -1103,6 +1108,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
     deps.maxConsecutiveFailures ??
     envPositiveInt('ZA_MAX_CONSECUTIVE_FAILURES') ??
     DEFAULT_MAX_CONSECUTIVE_FAILURES;
+  // 人工确认的挂起等待上限（adr-024 D1）：未设即 undefined＝不启用——不装计时器，等待行为与基线严格等价。
+  // 无默认值是有意的：确认卡的合理等待时长取决于部署形态（前台交互 vs 长时无人看管），不由服务端替用户猜。
+  const hitlTimeoutMs = envPositiveInt('ZA_HITL_TIMEOUT_MS');
   const validateFrame = createFrameValidator();
   const validateActivationRequest = createActivationRequestValidator();
   const runtimes = new Map<string, SessionRuntime>();
@@ -1400,10 +1408,26 @@ export function createGateway(deps: GatewayDeps): Gateway {
     } as AuditEvent);
   };
 
-  /** 等待客户端 hitl-decision；resolver 先注册再下发帧，避免决策先于等待器到达而丢帧。 */
+  /**
+   * 等待客户端 hitl-decision；resolver 先注册再下发帧，避免决策先于等待器到达而丢帧。
+   * 配了上限才装计时器：到期即摘等待器并合成 'timeout'，迟到的裁决帧按已失效走 409。
+   */
   function waitForHitl(sessionId: string, hitlId: string): Promise<PendingHitlOutcome> {
     const runtime = runtimeOf(sessionId);
-    return new Promise((resolve) => runtime.pendingHitl.set(hitlId, resolve));
+    return new Promise((resolve) => {
+      if (hitlTimeoutMs === undefined) {
+        runtime.pendingHitl.set(hitlId, resolve);
+        return;
+      }
+      const timer = setTimeout(() => {
+        runtime.pendingHitl.delete(hitlId);
+        resolve('timeout');
+      }, hitlTimeoutMs);
+      runtime.pendingHitl.set(hitlId, (outcome) => {
+        clearTimeout(timer);
+        resolve(outcome);
+      });
+    });
   }
 
   /** 等待客户端 exec-result；同理先注册 nonce 等待器，再下发 exec-instruction 帧。 */
@@ -1739,7 +1763,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
       const decidedValue = await decided;
       // 用户中断合成的收尾与用户在卡上真实拒绝对模型等价，但审计必须可分（否则统计把中断计成拒绝）。
       const syntheticStop = decidedValue === 'stopped';
-      const verdict: HitlDecisionValue = syntheticStop ? 'reject' : decidedValue;
+      const hitlTimedOut = decidedValue === 'timeout';
+      const verdict: HitlDecisionValue = syntheticStop || hitlTimedOut ? 'reject' : decidedValue;
       recordEvent(sessionId, claims, featureId, {
         type: 'hitl-verdict',
         data: {
@@ -1749,15 +1774,30 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ...(syntheticStop ? { synthetic: 'stopped' as const } : {}),
         },
       }, pack, run ?? undefined, auditPageRef());
+      // 到期收口的归因单独记一条 deny：hitl-verdict 的 synthetic 闭集只认 stopped（C5），
+      // 若不另记，无人裁决在审计里与用户真实拒绝不可分。
+      if (hitlTimedOut) {
+        recordEvent(sessionId, claims, featureId, {
+          type: 'tool-decision',
+          data: {
+            toolCallId,
+            toolId: tool.id,
+            riskTier: tool.riskTier,
+            verdict: 'deny',
+            reason: HITL_TIMEOUT_ERROR,
+          },
+        }, pack, run ?? undefined, auditPageRef());
+      }
       if (cancelled()) return stopped();
       if (verdict === 'reject') {
-        const inventoryOk = await settleInventory('manual', 'user-rejected');
+        const rejectReason = hitlTimedOut ? HITL_TIMEOUT_ERROR : 'user-rejected';
+        const inventoryOk = await settleInventory('manual', rejectReason);
         finish('failed');
         return {
           toolCallId,
           ok: false,
           content: null,
-          error: inventoryOk ? 'user-rejected' : 'fulfillment-inventory-backfill-failed',
+          error: inventoryOk ? rejectReason : 'fulfillment-inventory-backfill-failed',
         };
       }
       // 批准恢复期复核（adr-024 D3）：用户批准的是当时那个动作，不是一张长期通行证。挂起期间页面可能已

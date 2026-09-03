@@ -3243,6 +3243,79 @@ describe('停止路径的执行结局审计（A-GOV-04：副作用可能已发�
 });
 
 /**
+ * adr-024 D1：人工回合的确认卡在无人裁决时不得永久挂起——串行链会被该会话后续消息一直等下去。
+ * 上限只在 env 显式配置时启用，故两条用例分别钉住「未配置＝与基线严格等价」与「配置后到期收口」。
+ */
+describe('HITL 挂起等待上限（adr-024 D1）', () => {
+  const HITL_TIMEOUT_ENV = 'ZA_HITL_TIMEOUT_MS';
+
+  it('未设 ZA_HITL_TIMEOUT_MS → 等待无上限：远超上限时长后裁决仍被接受并签发指令', async () => {
+    expect(process.env[HITL_TIMEOUT_ENV]).toBeUndefined();
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '帮我取消订单 ORD-1001' });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      // 静置远超启用态用例所用的 150ms 上限：等待器仍在＝未装计时器。
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(lastCardStatus(sse.frames, 'order-list.cancel-order')).toBe('running');
+      const decided = await postFrame(token, sessionId, {
+        type: 'hitl-decision', sessionId, hitlId: String(hitl['hitlId']), decision: 'approve',
+      });
+      expect(decided.status).toBe(202);
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('设 ZA_HITL_TIMEOUT_MS → 到期合成 reject：不签发指令、回喂 hitl-timeout、审计可与用户拒绝区分、迟到裁决 409', async () => {
+    const previousEnv = process.env[HITL_TIMEOUT_ENV];
+    process.env[HITL_TIMEOUT_ENV] = '150';
+    const timeoutServer = await startServer(serverOptions());
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${timeoutServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '帮我取消订单 ORD-1001' });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      await sse.waitFor(() => lastCardStatus(sse.frames, 'order-list.cancel-order') === 'failed');
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      const late = await postFrame(token, sessionId, {
+        type: 'hitl-decision', sessionId, hitlId: String(hitl['hitlId']), decision: 'approve',
+      });
+      expect(late.status).toBe(409);
+      await sse.waitFor(() => sse.frames.some((frame) => frame['type'] === 'turn-complete'));
+      // 回喂给模型的是 hitl-timeout（非 user-rejected）：mock 据失败类别收尾，不得谎称已取消订单。
+      expect(textOf(sse.frames)).toBe('操作未成功完成。');
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await timeoutServer.close();
+      if (previousEnv === undefined) delete process.env[HITL_TIMEOUT_ENV];
+      else process.env[HITL_TIMEOUT_ENV] = previousEnv;
+    }
+    const events = auditEventsFor(sessionId);
+    const verdict = events.find((event) => event['type'] === 'hitl-verdict')!['data'] as Record<string, unknown>;
+    expect(verdict['decision']).toBe('reject');
+    const denies = events
+      .filter((event) => event['type'] === 'tool-decision')
+      .map((event) => event['data'] as Record<string, unknown>)
+      .filter((data) => data['verdict'] === 'deny');
+    expect(denies.some((data) => data['reason'] === 'hitl-timeout')).toBe(true);
+    // 到期发生在签发之前：零副作用，不得凭空补执行事件。
+    expect(events.some((event) => event['type'] === 'tool-execution')).toBe(false);
+  });
+});
+
+/**
  * A-SUP-01/02 端到端：用户偏好与 pack 声明的可配置点必须真的出现在送达 LLM 的 system 里，
  * 而不只是 compose 返回了字段——断言点是捕获式 mock 收到的 system 文本本身。
  */

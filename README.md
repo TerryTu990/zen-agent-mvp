@@ -53,8 +53,12 @@ Node ≥22 · pnpm workspace + catalog（typescript/vitest/zod）· TypeScript �
 | `pnpm test` | 全仓测试（`pnpm -r --workspace-concurrency=1 test`，串行） |
 | `pnpm lint:deps` | 依赖 lint（U2 星形组装约束，`scripts/lint-deps.mjs`） |
 | `pnpm eval` | 功能配置评测（`scripts/evals/run.mjs`，报告落 `evals/runs/`；改 `assets/` 必跑，ZA-EVAL） |
+| `pnpm eval --check` | 评测判据自检：不起服务端、不调 LLM，只查注入内容探针字面在位 + 每条场景判据可被证伪 |
+| `pnpm verify:paths` | `verify:*` 门里显式列出的测试路径存在性自检（vitest 对不存在路径静默零匹配，路径写错＝门失效） |
 | `pnpm test:e2e`<br>（`:m2` `:m3` `:m5` `:sidepanel` `:coldstart` `:d3` `:xianyu`） | 分场景端到端脚本（`scripts/e2e/run-*.mjs`），各自拉起服务端并驱动扩展 |
+| `pnpm test:e2e:explain-pack`<br>`pnpm test:e2e:user-config`<br>`pnpm test:e2e:automation` | G6 三个浏览器端到端（真实 Chromium + MV3 + 可编程 mock LLM）：讲解/pack 载入三态、L2 用户塑形、自动化触发 |
 | `pnpm test:e2e:real` | 真实 LLM 上游的端到端（读仓外 `.env`，密钥不入仓） |
+| `pnpm test:e2e:real-site` | E2E-E 真实站点主案例（`scripts/e2e/run-g6-real-site.mjs`）。**需真实 LLM 凭证 + 操作者已登录的站点/飞书页面会话**，由操作者本人运行、不在自动批次内；本轮未执行 |
 | `pnpm verify:phase1:core` | 验证门核心：`lint:deps` + `build` + `test` + `eval` |
 | `pnpm verify:phase1` | `:core` + `release/verify-phase1.sh`（真实 MV3 E2E、zip、amd64 镜像、回滚行为） |
 | `pnpm verify:phase2` / `pnpm verify:phase3` | 更大范围验证门：契约/快照/履约用例定点回归（phase2）、xianyu + sidepanel e2e（phase3） |

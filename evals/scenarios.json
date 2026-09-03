@@ -57,6 +57,7 @@
   {
     "id": "m1-general-qa-01",
     "dimension": "explain",
+    "mockOnly": true,
     "page": "order-list.html",
     "featureId": "order-list",
     "question": "今天北京天气怎么样？",
@@ -69,6 +70,7 @@
   {
     "id": "m1-general-qa-02",
     "dimension": "explain",
+    "mockOnly": true,
     "page": "order-list.html",
     "featureId": "order-list",
     "question": "帮我写一首关于秋天的诗",
@@ -91,6 +93,7 @@
   {
     "id": "m2-guide-02",
     "dimension": "guide",
+    "mockOnly": true,
     "page": "order-list.html",
     "featureId": "order-list",
     "question": "在哪里打印发票？",
@@ -181,6 +184,7 @@
   {
     "id": "g6-automation-01",
     "dimension": "automation",
+    "mockOnly": true,
     "page": "order-list.html",
     "featureId": "order-list",
     "question": "按周期扫描这一页的变化",
@@ -208,6 +212,7 @@
   {
     "id": "d1-manifest-01",
     "dimension": "explain",
+    "mockOnly": true,
     "page": "order-list.html",
     "featureId": "order-list",
     "groupPagesReports": [
@@ -231,6 +236,7 @@
   {
     "id": "d1-manifest-02",
     "dimension": "explain",
+    "mockOnly": true,
     "page": "order-list.html",
     "featureId": "order-list",
     "groupPagesReports": [
@@ -254,6 +260,7 @@
   {
     "id": "d1-manifest-03",
     "dimension": "explain",
+    "mockOnly": true,
     "page": "order-list.html",
     "featureId": "order-list",
     "question": "组里开着哪些页面？",

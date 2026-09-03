@@ -90,7 +90,7 @@ pack 作者工具长期推迟，以「agent 辅助起草 pack 文件初稿」替
 | 侧边栏 | HITL 确认卡 | 参数/站点归属/风险/一次性签名、结果如实（R4/R6） | `sidepanel/hitl.html` |
 | 侧边栏 | 自动化任务报告 | 托管运行 + 需确认收口（R7） | `sidepanel/automation-report.html` |
 | 侧边栏 | teach 沉淀确认卡 | 草稿 → 显式确认入库（R3） | `sidepanel/teach.html` |
-| 透明性 | 注入构成视图 | 四层装配可见、当前页面属性（R4/R5） | `transparency/injection.html` |
+| 透明性 | 注入构成视图 | 四层装配可见、当前页面属性（R4/R5）。**抽屉已于 2026-09-03（`11454c4`）下线**；最小替代是面板上下文条内的「本页生效」块（消费服务端注入自省端点，只反映站点包注入面，不含平台内建工具）。R4 互证条款与北极星验收措辞待裁决，见 `../adr/adr-025` 与 r1 A-UX-02 | `transparency/injection.html` |
 | 配置中心 | 站点包管理 | 来源徽章、能力面、纯数据提示、导入导出（R2） | `settings/packs.html` |
 | 配置中心 | 个人定制 | 规则列表、只收紧矩阵（R1）、偏好 | `settings/overlay.html` |
 | 配置中心 | 自动化 | 按站点分组 + 来源归属（R4）、通用监测兜底（R9）、底线条（R7） | `settings/automation.html` |
