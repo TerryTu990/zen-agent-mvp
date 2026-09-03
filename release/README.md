@@ -37,7 +37,8 @@ release/
 ├── current-release -> releases/<deploy-id>/ # 当前完整部署描述符（原子切换）
 ├── releases/           # 每次部署的 compose + deployment.env（无 secret）
 ├── snapshots/          # 不可变版本目录；至少保留当前和上一版
-│   └── <version>/
+│   └── <version>/      # 三件套缺一不可，deploy-server.sh 上传前即断言
+│       ├── system-prompt.md
 │       ├── manifest.json
 │       └── packs/…
 ├── lark-cli/           # 0700；飞书 general profile 与 token 刷新状态
@@ -58,9 +59,11 @@ Chrome 的“加载已解压的扩展程序”不能选择 zip 文件，必须�
 
 当前生产扩展：
 
-- zip：`/Users/terrytu/Workspace2025/Working/zen-agent-mvp/release/artifacts/zen-agent-extension-0.4.0.zip`
-- 已解压、可直接选择的目录：`/Users/terrytu/Workspace2025/Working/zen-agent-mvp/release/artifacts/zen-agent-extension-0.4.0`
-- Chrome 文件选择器中应看到该目录内有 `manifest.json`、`options.html`、`dist/` 和 `icons/`；选择这个目录本身，不要进入 `dist/`，也不要选择 zip。
+- 版本取 `apps/extension/manifest.json` 的 `version`（当前 **0.10.1**），`release/build-extension.sh` 产出
+  `release/artifacts/zen-agent-extension-<version>.zip`；本机没有对应版本的 zip 就先跑一次打包。
+- 解压出可直接选择的目录（Chrome 只认目录，不认 zip）：
+  `unzip -o release/artifacts/zen-agent-extension-<version>.zip -d release/artifacts/zen-agent-extension-<version>`
+- Chrome 文件选择器中应看到该目录内有 `manifest.json`、`options.html`、`sidepanel.html`、`sidepanel.css`、`dist/` 和 `icons/`；选择这个目录本身，不要进入 `dist/`，也不要选择 zip。
 
 安装步骤：
 

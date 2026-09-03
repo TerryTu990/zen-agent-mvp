@@ -29,7 +29,7 @@
       "type": "object"
     },
     "execution": {
-      "$comment": "执行通道闭集（U3）：MVP 只实现 client，server 保留不删。agent 对通道无感知（D3），通道是定义侧配置维度。",
+      "$comment": "执行通道闭集（U3）：client 与 server 两值均已实现；client 内按 adapter.kind 分形（缺省 http 代执行 / dom 可见页面代操作），分形不扩本闭集。agent 对通道无感知（D3），通道是定义侧配置维度；未知值 toolgate fail-closed 拒绝。",
       "type": "string",
       "enum": ["client", "server"]
     },
@@ -320,7 +320,7 @@
       }
     },
     "serverAdapter": {
-      "$comment": "server 通道适配：服务端直调 API 映射（token 化 API 首选）。U3 保留段——MVP 定形不实现，标准版补执行器时本契约不变。凭证一律 credentialRef 引用名，真值由服务端运行时注入、永不入配置。",
+      "$comment": "server 通道适配：服务端直调 API 映射（token 化 API 首选），执行器已实现（toolgate.executeServer）。凭证一律 credentialRef 引用名，真值只在执行器边界解析、永不入配置与审计。",
       "type": "object",
       "additionalProperties": false,
       "required": ["method", "urlTemplate"],

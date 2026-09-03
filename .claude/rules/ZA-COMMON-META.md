@@ -8,7 +8,7 @@
 >
 > **本文件是开发期（dev-time）治理**——约束 Claude/Terry 开发 zen-agent-mvp 本身时的行为。
 > 运行期（产品内嵌 agent）治理是 `assets/system-prompt.md`（跨功能稳定基座）+
-> `assets/features/<id>/`（功能规则/事实/工具面）+ `assets/skills/<fn>/SKILL.md`
+> `assets/manifest.json`（registry）+ `assets/packs/<packId>/`（站点包：pack.json + features/<id>/ + skills/<fn>/SKILL.md）
 > （运行时装配注入、不进开发会话）；其位置/编号/加载边界见 `ZA-C-AGENT-*`。
 
 ---

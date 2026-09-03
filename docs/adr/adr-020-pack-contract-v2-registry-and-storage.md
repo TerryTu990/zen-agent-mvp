@@ -2,7 +2,7 @@
 
 ## 状态
 
-提议（2026-08-04，随 `plans/2026-08-04-site-pack-and-user-config-tech-plan.md` 定稿；
+已接受（2026-09-03 转已接受：pack v2 字段（generic/engines/capabilities/configSchema/integrity）与 registry 形态已实施并有载入期校验，见 `packages/contracts/schemas/pack.schema.json` 与 `packages/assembly/test/pack-v2-loading.test.ts`。原始记录：2026-08-04，随 `plans/2026-08-04-site-pack-and-user-config-tech-plan.md` 定稿；
 与 adr-014 配套——L2 用户层在彼、pack 层与存储在此）
 
 ## 背景

@@ -47,7 +47,7 @@ S3 多形态客户端 → S4 七系统拆分+状态外置）。关键维度的�
 | 部署/多租户 | 模块化单体、单租户；多租户模型已裁决（共享内容+租户指针，adr-020） | 三级扩展：垂直 → 会话亲和水平复制 → S4 七系统拆分 |
 | 会话 | 标签组会话、可跨站点（adr-012/013）；上下文治理 P0-P2；组级视野与定向操作（adr-023） | 状态外置、SSE 集群 |
 | HITL | 分级挂起 + 卡片确认 + 任务级授权（adr-016） | 同左 + pending 持久化跨端恢复 |
-| 评测 | 五维度纪律（ZA-EVAL：讲解/引导/工具/HITL/自动化），官方 pack 强制 | 评测门内置发布流程 |
+| 评测 | 六维度纪律（ZA-EVAL：讲解/装配换出/引导/工具/HITL/自动化），官方 pack 强制 | 评测门内置发布流程 |
 
 ## 3. 七系统与职责边界（速览）
 
@@ -107,7 +107,7 @@ D21（adr-021）用户自建自动化触发器 ·
 
 ## 7. 治理体系（两层，速查入口 `CLAUDE.md`）
 
-- **开发期**：`.claude/rules/ZA-*.md`（COMMON 四类 + WHERE U1-U8 + AGENT 运行期边界 + EVAL 六维评测）
+- **开发期**：`.claude/rules/ZA-*.md`（COMMON 四类 + WHERE U1-U8 + AGENT 运行期边界 + EVAL 六维评测，闭集见 `ZA-C-EVAL-01`）
   + hooks 三件套（secret-guard / bash-guard / verify-on-stop）。
 - **运行期**：`assets/`——system-prompt 基座（`ZA-SYS-*`）+ registry + packs（`ZA-FEAT-*`，仅约束
   本仓官方制品）；MUST NOT 进开发会话（ZA-C-AGENT-01）；pack 纯数据（ZA-C-AGENT-03）；
@@ -118,27 +118,37 @@ D21（adr-021）用户自建自动化触发器 ·
 ```
 zen-agent-mvp/
 ├── CLAUDE.md / README.md
-├── docs/{reference/, adr/（D1-D22）, plans/, design/（产品设计稿+UI 规范）, research/, roadmap.md}
+├── docs/{reference/, adr/（D1-D23）, plans/, design/（产品设计稿+UI 规范）, research/, roadmap.md}
 ├── .claude/{rules/, hooks/, skills/, settings.json}
 ├── packages/{contracts, assembly, toolgate, llm-port, audit, fulfillment, card-inventory}
 ├── apps/{server, extension}
 ├── assets/{system-prompt.md, manifest.json, packs/<packId>/…}
-├── examples/host-demo/
-└── .za/{events.jsonl, sessions/, user-config/（P2.5）, …}   # 运行态，gitignore
+├── examples/{host-demo/, acceptance/, site-packs/（已下线站点包）}
+└── .za/{events.jsonl, sessions/, user-config/（P2.5）, applications/, …}   # 运行态，gitignore
 ```
 
 ## 9. 验收基准
 
 - **MVP 验收（v1 §9）已达成**：闲鱼生产闭环（讲解/引导/HITL 代执行/自动化 + 全链路脱敏审计）。
 - **平台恒定验收**（任何阶段不豁免）：`pnpm -r build` + 串行 test 绿；依赖 lint（U2）；改 assets/
-  过六维评测（ZA-EVAL）；审计脱敏抽查。
+  过六维评测（闭集见 `ZA-C-EVAL-01`）；审计脱敏抽查。
 - **分期验收**：以 P 线各期验收基准为准（P1 已了结：核心 grep 无 xianyu、第二消费方零核心改动）。
 - **完整产品验收（P4，北极星）**：新用户安装 → Google 登录/试用 → 在目标站点零手工配置完成
   一次讲解与一次 HITL 代执行 → 在配置中心完成一次个人定制（L2）并在注入透明视图中看到它生效。
 
 ## 10. 当前阶段范围声明
 
-奠基期（治理+契约+骨架）与 P1（内核归一）已完成。当前阶段 = **P2.5 契约先行**
-（C7 user-overlay + pack v2 字段 + C3/C5/C6 扩展，见技术方案 §5），随后 P2.5-b/c 实施与 P2 品牌回归。
+奠基期（治理+契约+骨架）、P1（内核归一）与 **P2.5**（C7 user-overlay + pack v2 字段 + C3/C5/C6 扩展，
+见技术方案 §5）已完成：P2.5-a/b/c 三批连同 L0+配置中心 UI、L3 自动化泛化、E2E 门于 2026-08-05 收敛，
+见 `../reviews/2026-08-05-l0-l3-delivery-report.md`；adr-023（任务组多 tab 工作区）已接受并实施。
+P2 品牌回归只完成产品面（插件 manifest 与 release 产物命名已是 Zen Agent），根包名与发行变体机制未了结。
+生产 registry 只登记 `generic-web` 兜底包，xianyu-seller / yinxiang 已下线到 `examples/site-packs/`。
+下一阶段 = **P3 商店合规**（权限最小化 + CWS 上架）与 **P4 托管服务**（Google 账号登录为正式投产前置
+条件），均未启动。
+
+**待裁决登记**：2026-09-03 基座改为通用助手（`assets/system-prompt.md`），「拒答边界」评测维度随之退出
+闭集；§1 第 1 档与产品规则 R8 的「配置未覆盖明确拒答」是否同步改写，待 Terry 裁决（锚点：该裁决作出时
+以 ADR 记录并回写本节与 §1）。
+
 本文件修订纪律：定位/铁律/不变量级变更 MUST 经 Terry 裁决并同步 `.claude/rules/` 与 CLAUDE.md，
 一般演进以 ADR 增补、按需回写本文件。

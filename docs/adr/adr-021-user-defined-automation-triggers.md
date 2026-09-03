@@ -2,7 +2,7 @@
 
 ## 状态
 
-提议（2026-08-05，随 G5「L3 自动化泛化」批次立案；了结 adr-019 遗留的「用户自建触发器无契约」缺口，
+已接受（2026-09-03 转已接受：user-overlay watches 契约、平台内建只读模板与自动回合只读强制已实施，见 `packages/contracts/src/automation-template.ts` 与 `apps/server/src/watch-run.ts`。原始记录：2026-08-05，随 G5「L3 自动化泛化」批次立案；了结 adr-019 遗留的「用户自建触发器无契约」缺口，
 并了结产品形态定义 D3 的只读侧判定）
 
 ## 背景

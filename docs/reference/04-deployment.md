@@ -11,6 +11,7 @@
    - **容器日志（stdout/stderr）**= 运维排障流：启动信息、请求异常、LLM 上游错误、fail-open 告警（均已脱敏，SEC-04）；交给容器平台采集（`docker logs` / Loki / CloudWatch）。
    - **审计文件（`/data/za/events.jsonl`）**= 治理证据流：C5 schema、record-only、落盘前脱敏；**必须落持久卷**，否则容器重建即丢审计。二者语义不同，勿把审计导到 stdout、也勿指望容器日志替代审计。
 4. **数据可写卷**：`/data/za`（审计 + 会话持久化）挂 named volume / PV，容器重建会话可恢复。
+   L2 用户覆盖层（`ZA_USER_CONFIG_DIR`）与投递记录（`ZA_APPLICATIONS_DIR`）的缺省是**相对路径** `.za/user-config` / `.za/applications`，镜像**未**固化——按 cwd 落到 WORKDIR `/app/server`（root 属主的镜像层，进程以 `node` 用户运行），写入会失败（L2 报 `write-failed`；投递记录 record-only 旁路、静默丢）且不在持久卷内。启用 L2 必须显式把二者设为 `/data/za/` 下的绝对路径。
 
 ## 2. 镜像构成（根 `Dockerfile`）
 
@@ -25,8 +26,9 @@
 ## 3. 快速开始（compose）
 
 ```bash
-# 1) 准备快照根（宿主机目录，含 manifest.json + packs/*）
-export ZA_SNAPSHOT_HOST_DIR=$PWD/examples/acceptance
+# 1) 准备快照根（宿主机目录，MUST 含 system-prompt.md + manifest.json + packs/*）
+#    仓库内满足三件套的现成目录只有生产快照根 assets/
+export ZA_SNAPSHOT_HOST_DIR=$PWD/assets
 
 # 2) 注入 secret 与 LLM 上游（生产走 secret 管理，不写文件）
 export ZA_JWT_SECRET=…  ZA_SIGNING_SECRET=…
@@ -41,6 +43,8 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 
 `docker-compose.yml` 已声明：快照只读卷（`:ro`）、`za-data` 数据卷、必填变量 `${VAR:?required}` 缺失即拒启（与服务端 `requireEnv` fail-fast 语义一致）。
 
+**快照根三件套缺一不可**：镜像把 `ZA_SYSTEM_PROMPT_PATH` 固化为 `/app/snapshot/system-prompt.md`，快照根缺基座文件即装配器「快照拒载」、服务端打印启动失败并退出（`restart: unless-stopped` 下表现为重启循环，`/healthz` 始终不通）；`release/deploy-server.sh` 上传前也断言 `manifest.json` 与 `system-prompt.md` 同时在场。挂只有 `manifest.json + packs/` 的目录（如 `examples/acceptance`）必须同时覆盖 `ZA_SYSTEM_PROMPT_PATH` 指向另一个可读的基座文件——各 e2e 脚本就是这么做的。
+
 ## 4. 环境变量清单（容器视角）
 
 完整语义见 `03-configuration.md` §4；容器部署最小集：
@@ -51,6 +55,7 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 | LLM 上游 | `ZA_LLM_BASE_URL` `ZA_LLM_API_KEY` `ZA_LLM_MODEL` | openai 兼容端点 |
 | 快照 | `ZA_SNAPSHOT_ROOT=/app/snapshot` | 指向只读卷挂载点 |
 | 已在镜像固化（可覆盖） | `ZA_HOST=0.0.0.0` `ZA_PORT=8787` `ZA_AUDIT_SINK=/data/za/events.jsonl` `ZA_SESSION_DIR=/data/za/sessions` `ZA_SYSTEM_PROMPT_PATH=/app/snapshot/system-prompt.md` | prompt 与 registry/pack 成为同一不可变快照；绝对路径规避 cwd 陷阱 |
+| 未固化的数据路径（须显式设） | `ZA_USER_CONFIG_DIR` `ZA_APPLICATIONS_DIR` | 缺省 `.za/user-config` / `.za/applications`（相对 cwd）；容器内落在 `/app/server` 镜像层不可写也不持久，启用 L2 须设为 `/data/za/user-config` / `/data/za/applications` |
 | 按需 | `ZA_CORS_ORIGIN` `ZA_JWT_ISS_ALLOWLIST` `ZA_MAX_TURN_ROUNDS` `ZA_GENERIC_ALLOWLIST` `ZA_CRED_*` | 见配置参考；`ZA_GENERIC_ALLOWLIST` 决定通用兜底 pack 在哪些站点激活（缺省不激活，`*` 另放行静默页冷启动开页）；`ZA_JWT_ISS_ALLOWLIST` 只管外部签发方——匿名激活的 iss 由服务端无条件并入白名单，既有 `.env` 留旧值也不会让服务端拒绝自己签发的令牌 |
 
 ## 5. 站点配置的发布与回滚

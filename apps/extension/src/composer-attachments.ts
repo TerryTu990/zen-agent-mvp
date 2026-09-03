@@ -25,7 +25,7 @@ export async function prepareAttachments(files: readonly File[]): Promise<Prepar
     if (SENSITIVE_NAME.test(file.name)) throw new Error(`${file.name} 疑似敏感数据文件，禁止发送给智能体`);
     const content = await file.text();
     if (SENSITIVE_CONTENT.test(content) || content.split(/\r?\n/).some((line) => OPAQUE_VALUE_LINE.test(line.trim()))) {
-      throw new Error(`${file.name} 疑似包含卡密、令牌或凭证，已阻止发送`);
+      throw new Error(`${file.name} 疑似包含密钥、令牌或凭证，已阻止发送`);
     }
     prepared.push({ name: file.name.replace(/[<>\r\n]/g, '_'), content });
   }

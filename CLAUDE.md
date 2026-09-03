@@ -33,7 +33,7 @@
 | `ZA-COMMON-SEC.md` | 通用·SEC | secret 不入仓、凭证注入不写值、凭证读禁区、错误不泄敏 | 常驻 |
 | `ZA-WHERE.md` | 架构不变量 | U1-U8 平滑升级红线：端口 JSON / 禁横向 import / 通道闭集 / 快照不可变同构 / 五能力契约 / 审计 schema 独立 / 决策服务端+一次性签名 / 装配治理对对话免疫 | 按需(packages/apps/assets) |
 | `ZA-AGENT.md` | 运行期治理边界 | `assets/` 装配制品 MUST NOT 进开发会话、`ZA-SYS`/`ZA-FEAT` 编号约定、pack 纯数据、L2 契约只收紧 | 按需(assets/assembly/contracts) |
-| `ZA-EVAL.md` | 功能配置评测 | 改 assets/ 必跑评测（讲解/引导/工具/HITL/拒答/自动化六维度）、≥3 跑判回归、示例与评测互斥、素材同仓 | 按需(assets) |
+| `ZA-EVAL.md` | 功能配置评测 | 改 assets/ 必跑评测（讲解/装配换出/引导/工具/HITL/自动化六维度）、≥3 跑判回归、示例与评测互斥、素材同仓 | 按需(assets) |
 
 **强制级图例**：`*` 无自动拦截、必须自守、宁可停下问人；`~` 建议性、偏离须说明理由；条款旁 `【hook 强制】` 表示有脚本硬拦。
 

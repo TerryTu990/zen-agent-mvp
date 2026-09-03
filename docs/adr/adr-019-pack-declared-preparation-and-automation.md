@@ -2,7 +2,7 @@
 
 ## 状态
 
-提议（2026-08-04 初稿，P1「内核归一」的设计基准，待 Terry 复审；实施分批见「后果」）
+已接受（2026-09-03 转已接受：pack 声明式 preparation 与周期自动化已实施，见 `pack.schema.json` automations/capabilities.preparation 与 `apps/server/src/gateway.ts` 的 prepare 工具注入。原始记录：2026-08-04 初稿，P1「内核归一」的设计基准；实施分批见「后果」）
 
 ## 背景
 

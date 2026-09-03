@@ -4,7 +4,7 @@
  */
 import type { JsonObject } from './json.js';
 
-/** 执行通道闭集（U3）：MVP 只实现 client，server 枚举保留不删。 */
+/** 执行通道闭集（U3）：client 与 server 均已实现；client 内按 adapter.kind 分形（http / dom）。 */
 export type ToolExecution = 'client' | 'server';
 
 /** 操作分级闭集（分级矩阵落点）：服务端 fail-closed 判定（U7），未知值一律 deny。 */
@@ -105,7 +105,7 @@ export interface ClientAdapter {
   bodyTemplate?: JsonObject | string;
 }
 
-/** server 通道适配（U3 保留段，MVP 定形不实现）：凭证只写引用名，真值运行时注入。 */
+/** server 通道适配（服务端直调，已实现）：凭证只写引用名，真值由执行器边界运行时注入。 */
 export interface ServerAdapter {
   method: HttpMethod;
   urlTemplate: string;

@@ -14,7 +14,7 @@ paths:
 ---
 
 ## ZA-C-WHERE-01*（U1）端口跨模块只传 JSON 可序列化值
-**C6 四端口（AssemblyPort / ToolGatePort / LlmPort / AuditPort）的入参与返回值 MUST 全部 JSON 可序列化；MUST NOT 跨端口传函数、类实例、流句柄等进程内对象。**
+**C6 全部模块端口（AssemblyPort / ToolGatePort / LlmPort / AuditPort / UserConfigStore / CardInventoryPort / FulfillmentCoordinatorPort，以 `packages/contracts/src/ports.ts` 导出为准）的入参与返回值 MUST 全部 JSON 可序列化；MUST NOT 跨端口传函数、类实例、流句柄等进程内对象。**
 - 拆服务时端口调用 1:1 替换为 RPC，签名与语义不变——升级改传输层，不改契约。
 - 流式 carve-out：端口方法返回 `AsyncIterable` 且逐个产出的事件本体全部 JSON 可序列化时，视为流式 RPC（SSE）的合法进程内投影，不触发本条（LlmPort.chat 即此形态）。
 - 判定：端口签名/实现出现函数、类实例、Stream、AbortSignal 等不可序列化值跨端口传递（上述流式 carve-out 除外）→ 触发，改为纯数据。
@@ -35,11 +35,13 @@ paths:
 ---
 
 ## ZA-C-WHERE-03*（U3）工具 execution 通道闭集
-**C1 工具定义的 `execution` MUST 取 `'client' | 'server'` 闭集；MVP 只实现 client 通道，`server` 枚举值 MUST 保留不删；toolgate 遇未实现通道 MUST fail-closed 拒绝而非降级。**
-- 通道是工具定义里的配置维度，agent / 网关 / 客户端对通道无感知。
-- 判定：类型收窄为仅 client / 流程写死客户端执行分支 / 未实现通道被静默降级执行 → 触发。
+**C1 工具定义的 `execution` MUST 取 `'client' | 'server'` 闭集，两值均已实现；client 通道内按 `adapter.kind` 分形（缺省 http 代执行 / `dom` 可见页面代操作），分形 MUST 落在 adapter 维度、MUST NOT 扩 execution 闭集；toolgate 遇未知通道值或未实现分形 MUST fail-closed 拒绝而非降级。**
+- 通道与分形都是工具定义里的配置维度，agent / 网关 / 客户端对其无感知。
+- 新增通道或新增 adapter 分形 MUST 先扩闭集并显式实现放行分支；未列入闭集的值一律拒绝。
+- 判定：类型收窄为单一通道 / 流程写死某通道执行分支 / 未知通道值被静默按 client 执行 → 触发。
 
-> 反例：把 `execution` 类型定义成字面量 `'client'`（"反正 server 没实现"）→ 标准版上服务端直调变全链路改造 → 违反 WHERE-03。
+> 反例：把 dom 写成第三个 `execution` 值（而非 client 下的 adapter 分形）→ 通道闭集失去边界、三形态变三套判定 → 违反 WHERE-03；
+> 另一反例：新增枚举值后 toolgate 无对应分支却按 client 执行 → 静默降级 → 同违反。
 
 ---
 

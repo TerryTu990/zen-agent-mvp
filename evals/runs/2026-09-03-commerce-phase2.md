@@ -1,6 +1,6 @@
 # Zen Commerce Agent Phase 2 评测报告 — 2026-09-03
 
-证据环境：评测输入 SHA-256 `a78f57619ad99515bbf8fd954d0dfd8cc154876a8f930958400abefbc8e04b3a`；Node `>=22`；`pnpm@10.32.1`；LLM=确定性 mock（非真实模型）。
+证据环境：评测输入 SHA-256 `cf6aa37d0a8234c6740cf0932c9a759129ca12478e29e31f31c5a33695de748c`；Node `>=22`；`pnpm@10.32.1`；LLM=确定性 mock（非真实模型）。
 runner：`scripts/evals/run.mjs`；每场景重复 3 次，需 3/3 全过才算该场景通过（ZA-C-EVAL-02）。
 
 ## 场景通过率

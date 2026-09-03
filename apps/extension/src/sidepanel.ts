@@ -184,7 +184,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       case 'session-expired':
         return '会话已失效，已准备重新连接，请直接重试';
       case 'session-interrupted':
-        return '上一回合因服务重启中断，投递状态无法确认；请先核对订单或消息状态，再决定是否重新发送';
+        return '上一回合因服务重启中断，投递状态无法确认；请先核对业务状态，再决定是否重新发送';
       case 'protocol-invalid':
         return '服务端安全握手失败，请检查服务地址或签名配置';
       case 'delivery-unknown':
@@ -641,7 +641,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       return;
     }
     selectedFiles.push(...additions);
-    elements.composerNotice.textContent = '知识文档内容会发送给智能体；请勿上传卡密库存、令牌或凭证';
+    elements.composerNotice.textContent = '知识文档内容会发送给智能体；请勿上传密钥、令牌或凭证';
     renderAttachments();
     updateComposer();
   });
