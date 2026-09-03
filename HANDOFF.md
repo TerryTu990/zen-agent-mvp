@@ -92,7 +92,7 @@
 | `test:e2e:sidepanel` 红（404 重试请求未发出，基线即红、本轮推进一个阶段） | 下一轮开工时优先专项修复 |
 | 真实 LLM / 真实站点 E2E 未执行（BLOCKED） | 提供凭证与已登录 profile 后按 §2 解除命令执行 |
 | `run-real-llm.mjs` 的新判据兼容未经实跑验证 | 同上 |
-| **8 项待 Terry 裁决**（R8 拒答边界改写、注入透明视图定位、L0 运营者配置的 U4 豁免、履约语义进核心契约等） | 见交付报告 §6 与 adr-025 §决策待定项 |
+| ~~8 项待 Terry 裁决~~ **已于 2026-09-03 全部裁决**；改写与实施尚未落地 | 裁决原文与下一轮工作序列见 `docs/plans/2026-09-03-terry-rulings-and-next-round.md` |
 
 ### 6.2 r2 标记为 partial 的必修项（12 条，均有具体缺口描述）
 
@@ -115,7 +115,9 @@
 
 ## 七、下一步建议
 
-1. **修 `test:e2e:sidepanel`**（唯一一个红的门，且是真实缺陷）。
-2. 把 8 项待裁决交 Terry，尤其 R8——它决定知识型 pack 的产品叙事。
+1. **修 `test:e2e:sidepanel`**（唯一一个红的门，且是真实缺陷）——`docs/plans/2026-09-03-terry-rulings-and-next-round.md` §2 的 N0。
+2. 按该文 §2 的 N1-N5 序列推进八项裁决的落地：N1（R8 事实边界 + 不可信内容定界，合并共用一次全量评测）、
+   N2（删 `ZA_GENERIC_ALLOWLIST` + 补 L2 站点黑名单）、N3（垂直履约语义移出 C6，先出 ADR）、
+   N4（R4 条文改写 + 快捷指令库）、N5（权限最小化注入）。
 3. r2 的 12 条 partial 里挑「进 describeInjection」与「domContext 同步」两条收口（都是本轮改动的残余面）。
 4. 若要发布：先补 `apps/extension/manifest.json` 版本递增，再走 release skill；本轮**未发布**，生产仍是上次发布的版本。
