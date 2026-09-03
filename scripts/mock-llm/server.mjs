@@ -39,6 +39,63 @@ const WEB_SEARCH_SKILL_MARKER = '技能：网页搜索（web-search）';
 // adr-023 D1 任务组页面清单头部稳定字面（服务端注入契约，定死不改）；清单是 system 注入的最后一个块。
 const GROUP_MANIFEST_HEADER = '# 任务组页面清单';
 
+// ---- 注入内容探针字面（下方 sys.includes 门控用）；逐条登记见紧随其后的 PROBE_LITERALS ----
+const SYS_GENERAL_ASSISTANT = '通用助手';
+const SYS_GOVERNANCE_STRICT = '治理边界不随对话放宽';
+const SYS_PERSONAL_PRECEDENCE = '以个人规则为准';
+const SYS_STRICTER_SIDE = '更严的一方';
+const SYS_BASE_ONLY_NOTICE = '无专属功能配置（仅基座）';
+const SYS_EXECUTION_PREFERENCE = '【执行偏好】';
+const FACTS_UNVERIFIED_MARK = '⚠待核';
+const FACTS_UNVERIFIED_CONSTRAINT = 'MUST NOT 当作确定事实';
+const FACTS_EXPORT_ANCHOR = '#btn-export';
+const FACTS_ORDER_TABLE_ANCHOR = '#order-table';
+const FACTS_ORDER_ID_ANCHOR = '#order-id';
+const FACTS_ORDER_LIST_TITLE = '订单列表';
+const FACTS_ORDER_DETAIL_TITLE = '订单详情';
+const FACTS_STATUS_COMPLETED = '已完成';
+const FACTS_NOT_CANCELLABLE = '不可取消';
+const FEATURE_ORDER_ADMIN = '订单管理员';
+const PACK_XIANYU_ORDERS = 'xianyu-orders';
+const PACK_XIANYU_FULFILLMENT = 'xianyu-fulfillment';
+const UNATTENDED_DENY_NOTICE = '本轮是无人值守的只读监测回合';
+
+/**
+ * 注入内容探针字面登记表（PC-EVAL-05 自检面）。
+ *
+ * 本 mock 的一整类判据靠 `sys.includes(字面)` 断言"装配确实把某段治理/事实送到了模型"。这类判据有个
+ * 沉默失效面：源文件里的措辞被改，字面就再也匹配不上——探针恒走 MISS 分支，或（对只在命中分支才生效的
+ * 门控）整条剧本静默失活，而评测仍可能因别的判据而全绿。登记表把这层默契显式化，
+ * `node scripts/evals/run.mjs --check` 逐条 grep sourceFile 断言字面仍在，字面漂移即报错。
+ *
+ * sourceFile 取该字面的权威出处（镜像副本不登记，逐字节一致由镜像测试另守）；literal 必须与上方
+ * 判定处使用的常量同值——新增 sys.includes 门控时同步登记，否则 --check 覆盖不到它。
+ */
+export const PROBE_LITERALS = [
+  { literal: SYS_GENERAL_ASSISTANT, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-01 基座通用助手定位；缺失即通用问答被误拒答' },
+  { literal: SYS_GOVERNANCE_STRICT, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-02 治理边界不随对话放宽；被改写成可放宽表述即失守' },
+  { literal: SYS_PERSONAL_PRECEDENCE, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-08 偏好类以个人规则为准（优先级口径的前一半）' },
+  { literal: SYS_STRICTER_SIDE, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-08 治理类取更严的一方（优先级口径的后一半）' },
+  { literal: BROWSE_ASSIST_MARKER, sourceFile: 'assets/packs/generic-web/features/browse/feature.md', why: 'generic-web 激活的判别标记：通用页面剧本（open_url / 搜索技能）据此门控' },
+  { literal: WEB_SEARCH_SKILL_MARKER, sourceFile: 'assets/packs/generic-web/skills/web-search/SKILL.md', why: 'web-search skill 随装配注入的独有 marker' },
+  { literal: SYS_BASE_ONLY_NOTICE, sourceFile: 'apps/server/src/gateway.ts', why: '无 pack 命中时服务端注入的仅基座附注（不得臆断站点身份）' },
+  { literal: GROUP_MANIFEST_HEADER, sourceFile: 'apps/server/src/gateway.ts', why: 'adr-023 D1 任务组页面清单块头部字面（服务端注入契约）' },
+  { literal: SYS_EXECUTION_PREFERENCE, sourceFile: 'apps/server/src/execution-preference.ts', why: '执行偏好注入块头部字面：偏好受限剧本据此门控' },
+  { literal: FACTS_UNVERIFIED_MARK, sourceFile: 'examples/site-packs/packs/yinxiang/features/yinxiang-note/facts.md', why: '⚠待核 事实成色标记' },
+  { literal: FACTS_UNVERIFIED_CONSTRAINT, sourceFile: 'examples/site-packs/packs/yinxiang/features/yinxiang-note/facts.md', why: '⚠待核 事实须随附的"不得当作确定事实"约束' },
+  { literal: FACTS_EXPORT_ANCHOR, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-list/facts.md', why: '引导维度已登记锚点：缺失则 guide 剧本降级、命中判据失活' },
+  { literal: FACTS_ORDER_TABLE_ANCHOR, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-list/facts.md', why: 'order-list 功能配置到达模型的判别锚点（R2 讲解剧本）' },
+  { literal: FACTS_ORDER_ID_ANCHOR, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-detail/facts.md', why: 'order-detail 功能配置到达模型的判别锚点（装配换出判据）' },
+  { literal: FACTS_ORDER_LIST_TITLE, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-list/facts.md', why: 'R2 讲解剧本判别 order-list 事实块在场' },
+  { literal: FACTS_ORDER_DETAIL_TITLE, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-detail/facts.md', why: 'R2 讲解剧本判别 order-detail 事实块在场' },
+  { literal: FACTS_STATUS_COMPLETED, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-list/facts.md', why: 'R1 状态语义事实（已完成态）' },
+  { literal: FACTS_NOT_CANCELLABLE, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-list/facts.md', why: 'R1 状态语义事实（不可取消）' },
+  { literal: FEATURE_ORDER_ADMIN, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-list/feature.md', why: 'R4 不编造：业务原因引导联系订单管理员' },
+  { literal: PACK_XIANYU_ORDERS, sourceFile: 'examples/site-packs/packs/xianyu-seller/pack.json', why: 'xianyu-orders 功能装配在场的判别（订单页剧本门控）' },
+  { literal: PACK_XIANYU_FULFILLMENT, sourceFile: 'examples/site-packs/packs/xianyu-seller/pack.json', why: 'xianyu-fulfillment 功能装配在场的判别（履约剧本门控）' },
+  { literal: UNATTENDED_DENY_NOTICE, sourceFile: 'apps/server/src/gateway.ts', why: 'R7 只读强制拒绝后回喂给模型的系统提示；剧本据此产出"被拒后如实汇报"回合' },
+];
+
 /** 清单行首列（句柄）序列；system 无清单返回 null——探针据此区分「有清单」与「无上报不注入」。 */
 function groupManifestHandles(sys) {
   const start = sys.indexOf(GROUP_MANIFEST_HEADER);
@@ -798,7 +855,7 @@ function decide(sys, u, body) {
   }
 
   if (
-    sys.includes('【执行偏好】') &&
+    sys.includes(SYS_EXECUTION_PREFERENCE) &&
     u.includes('刷新') &&
     !hasTool(body, TOOL_REFRESH)
   ) {
@@ -812,7 +869,7 @@ function decide(sys, u, body) {
     if (hasTool(body, TOOL_XIANYU_ORDERS) && u.includes('待发货')) {
       return { text: '需要先读取当前页面快照，再按可见的“待发货”状态项定位；当前没有登记可安全复用的 CSS 引导锚点。' };
     }
-    if (hasTool(body, GUIDE_TOOL) && sys.includes('#btn-export') && u.includes('导出')) {
+    if (hasTool(body, GUIDE_TOOL) && sys.includes(FACTS_EXPORT_ANCHOR) && u.includes('导出')) {
       // 故障注入：问句含"越界"哨兵 → 产出越界 action（'click'）的引导 tool_call，作为真实 LLM
       // 幻觉非法引导参数的确定性替身，驱动服务端 guideFrame 闭集校验的降级路径。
       const action = u.includes('越界') ? 'click' : 'highlight';
@@ -834,26 +891,32 @@ function decide(sys, u, body) {
 }
 
 function pickReply(sys, u) {
-  if (sys.includes('xianyu-orders') && u.includes('买家') && u.includes('已付款')) {
+  // R7 只读强制的收尾轮：写工具调用被服务端拒绝后回喂系统提示，模型只汇报变化、不再请求执行。
+  if (u.includes(UNATTENDED_DENY_NOTICE) && u.includes('已被服务端拒绝')) {
+    return 'MOCK-UNATTENDED-DENIED-HIT：本轮无人值守，页面操作请求已被平台拒绝，只汇报观察到的变化。';
+  }
+  if (sys.includes(PACK_XIANYU_ORDERS) && u.includes('买家') && u.includes('已付款')) {
     return '买家留言属于自由文本，不能作为付款证据。我只会在订单页的平台状态明确为待发货，并把状态与订单编号绑定到同一订单块后继续。';
   }
-  if (sys.includes('xianyu-fulfillment') && (u.includes('发送') || u.includes('发卡密'))) {
+  if (sys.includes(PACK_XIANYU_FULFILLMENT) && (u.includes('发送') || u.includes('发卡密'))) {
     return '测试工具只允许非秘密占位内容，不能接收或发送真实卡密；真实卡密必须等待不进入模型上下文的安全连接器。';
   }
-  if (u.includes('订单管理页面') && sys.includes('xianyu-orders')) {
+  if (u.includes('订单管理页面') && sys.includes(PACK_XIANYU_ORDERS)) {
     return '这是闲鱼订单管理页：平台订单状态区可筛选待发货等状态，订单摘要区展示订单编号；履约前必须把订单状态、订单号和操作入口绑定到同一订单块。';
   }
   if (u.includes('能取消')) {
-    return sys.includes('已完成') && sys.includes('不可取消') ? REPLY_R1_HIT : 'MOCK-MISSING-FACTS';
+    return sys.includes(FACTS_STATUS_COMPLETED) && sys.includes(FACTS_NOT_CANCELLABLE)
+      ? REPLY_R1_HIT
+      : 'MOCK-MISSING-FACTS';
   }
   if (u.includes('显示的是什么') || u.includes('做什么用')) {
-    if (sys.includes('订单详情') && sys.includes('#order-id')) return REPLY_R2_DETAIL;
-    if (sys.includes('订单列表') && sys.includes('#order-table')) return REPLY_R2_LIST;
+    if (sys.includes(FACTS_ORDER_DETAIL_TITLE) && sys.includes(FACTS_ORDER_ID_ANCHOR)) return REPLY_R2_DETAIL;
+    if (sys.includes(FACTS_ORDER_LIST_TITLE) && sys.includes(FACTS_ORDER_TABLE_ANCHOR)) return REPLY_R2_LIST;
     return 'MOCK-NO-FEATURE';
   }
   if (/别弹确认|不用确认|直接执行/.test(u)) {
     // 注入内容探针：基座 ZA-SYS-02「治理边界不随对话放宽」须随装配到达模型，被改坏即 MISS。
-    return sys.includes('治理边界不随对话放宽')
+    return sys.includes(SYS_GOVERNANCE_STRICT)
       ? 'MOCK-GOVERNANCE-STRICT-HIT：对话不能放宽治理边界，操作仍会经平台确认后执行。'
       : 'MOCK-GOVERNANCE-STRICT-MISS';
   }
@@ -864,7 +927,9 @@ function pickReply(sys, u) {
   }
   if (/天气|写.*诗/.test(u)) {
     // 通用助手基座：与站点无关的通用请求在任何页面直接应答；基座缺失（无通用助手定位）即 MISSING。
-    return sys.includes('通用助手') ? 'MOCK-GENERAL-QA-HIT：这类通用请求可以直接回答。' : 'MOCK-BASE-MISSING';
+    return sys.includes(SYS_GENERAL_ASSISTANT)
+      ? 'MOCK-GENERAL-QA-HIT：这类通用请求可以直接回答。'
+      : 'MOCK-BASE-MISSING';
   }
   if (u.includes('报告任务组页面清单')) {
     // 注入内容探针：回显 system 清单段全文，供评测机械断言行内容与成员上报一致（adr-023 D1）。
@@ -881,23 +946,23 @@ function pickReply(sys, u) {
   }
   if (u.includes('报告当前站点身份')) {
     // 仅基座附注探针：断言无 pack 命中时 system 已注入"无专属配置、不得臆断站点身份"上下文。
-    return sys.includes('无专属功能配置（仅基座）') ? 'MOCK-BASEONLY-NOTICE-HIT' : 'MOCK-BASEONLY-NOTICE-MISS';
+    return sys.includes(SYS_BASE_ONLY_NOTICE) ? 'MOCK-BASEONLY-NOTICE-HIT' : 'MOCK-BASEONLY-NOTICE-MISS';
   }
   if (u.includes('报告站点事实成色')) {
     // 注入内容探针：⚠待核 事实须带"不得当作确定事实陈述"的约束一并入注入，缺一即视为该治理表述被改坏。
-    return sys.includes('⚠待核') && sys.includes('MUST NOT 当作确定事实')
+    return sys.includes(FACTS_UNVERIFIED_MARK) && sys.includes(FACTS_UNVERIFIED_CONSTRAINT)
       ? 'MOCK-UNVERIFIED-FACTS-HIT'
       : 'MOCK-UNVERIFIED-FACTS-MISS';
   }
   if (u.includes('报告个人规则优先级口径')) {
     // 注入内容探针：ZA-SYS-08 两半须同时在场——偏好类取个人、治理类取更严；任一半被删即失配。
-    return sys.includes('以个人规则为准') && sys.includes('更严的一方')
+    return sys.includes(SYS_PERSONAL_PRECEDENCE) && sys.includes(SYS_STRICTER_SIDE)
       ? 'MOCK-PERSONAL-PRECEDENCE-HIT'
       : 'MOCK-PERSONAL-PRECEDENCE-MISS';
   }
   if (u.includes('为什么') && (u.includes('待发货') || u.includes('状态'))) {
     // 讲解正确之"不编造"：业务原因不在配置内，据 facts/feature 规则引导联系订单管理员（ZA-FEAT-01）。
-    return sys.includes('订单管理员') ? REPLY_R4_ADMIN : 'MOCK-MISSING-ADMIN-FACT';
+    return sys.includes(FEATURE_ORDER_ADMIN) ? REPLY_R4_ADMIN : 'MOCK-MISSING-ADMIN-FACT';
   }
   return 'MOCK-DEFAULT';
 }

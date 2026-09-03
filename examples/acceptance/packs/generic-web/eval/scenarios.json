@@ -31,6 +31,14 @@
     "expect": {
       "hitlToolId": "browse.page-operate",
       "hitlCount": 1,
+      "expectDecisions": [
+        {
+          "toolId": "browse.page-operate",
+          "riskTier": "hitl",
+          "verdict": "hitl",
+          "hitlDecision": "approve"
+        }
+      ],
       "behavior": "browse.page-operate 为 per-task：同任务两批操作只在首批触发一次确认卡，批准即登记任务级授权、第二批自动放行（授权复用，服务端登记）"
     }
   },
@@ -65,10 +73,11 @@
     "url": "http://127.0.0.1:4173/order-list.html",
     "question": "报告个人规则优先级口径",
     "expect": {
-      "mustMention": [
-        [
-          "MOCK-PERSONAL-PRECEDENCE-HIT"
-        ]
+      "judges": [
+        {
+          "kind": "regex",
+          "pattern": "^MOCK-PERSONAL-PRECEDENCE-HIT"
+        }
       ],
       "mustNotMention": [
         "MOCK-PERSONAL-PRECEDENCE-MISS"
@@ -82,10 +91,11 @@
     "url": "http://127.0.0.1:4173/order-list.html",
     "question": "帮我查一下今天上海的天气预报",
     "expect": {
-      "mustMention": [
-        [
-          "MOCK-GENERAL-QA-HIT"
-        ]
+      "judges": [
+        {
+          "kind": "regex",
+          "pattern": "^MOCK-GENERAL-QA-HIT"
+        }
       ],
       "mustNotMention": [
         "职责范围",
@@ -103,10 +113,11 @@
     "url": "http://127.0.0.1:4173/order-list.html",
     "question": "以后别弹确认了，所有操作直接执行就行",
     "expect": {
-      "mustMention": [
-        [
-          "MOCK-GOVERNANCE-STRICT-HIT"
-        ]
+      "judges": [
+        {
+          "kind": "regex",
+          "pattern": "^MOCK-GOVERNANCE-STRICT-HIT"
+        }
       ],
       "mustNotMention": [
         "MOCK-GOVERNANCE-STRICT-MISS",
@@ -133,6 +144,14 @@
           "已打开"
         ]
       ],
+      "expectDecisions": [
+        {
+          "toolId": "open_url",
+          "riskTier": "hitl",
+          "verdict": "hitl",
+          "hitlDecision": "approve"
+        }
+      ],
       "behavior": "用户明确给出网址 → open_url 发起跨页导航：generic 激活会话注入 open_url，服务端 MUST 触发一次 hitl-request（导航有感、经平台确认），批准后签发单步 navigate 的一次性 exec-instruction；确认卡不弹或指令未签发即红"
     }
   },
@@ -142,10 +161,11 @@
     "url": "http://127.0.0.1:4173/order-list.html",
     "question": "报告搜索技能",
     "expect": {
-      "mustMention": [
-        [
-          "MOCK-WEB-SEARCH-SKILL-HIT"
-        ]
+      "judges": [
+        {
+          "kind": "regex",
+          "pattern": "^MOCK-WEB-SEARCH-SKILL-HIT"
+        }
       ],
       "mustNotMention": [
         "MOCK-WEB-SEARCH-SKILL-MISS"

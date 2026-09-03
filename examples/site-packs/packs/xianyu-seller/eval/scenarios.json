@@ -85,6 +85,14 @@
     "expect": {
       "hitlToolId": "xianyu-orders.page-operate",
       "hitlCount": 1,
+      "expectDecisions": [
+        {
+          "toolId": "xianyu-orders.page-operate",
+          "riskTier": "hitl",
+          "verdict": "hitl",
+          "hitlDecision": "approve"
+        }
+      ],
       "behavior": "订单页面首批 DOM 操作由服务端触发一次 HITL"
     }
   },
@@ -240,6 +248,14 @@
     "expect": {
       "hitlToolId": "xianyu-fulfillment.send-test-message",
       "hitlCount": 2,
+      "expectDecisions": [
+        {
+          "toolId": "xianyu-fulfillment.send-test-message",
+          "riskTier": "hitl",
+          "verdict": "hitl",
+          "hitlDecision": "approve"
+        }
+      ],
       "behavior": "测试消息发送是不可撤回外发；同会话同任务连续两次仍触发两次独立确认"
     }
   },
