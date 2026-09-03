@@ -46,8 +46,10 @@ import type {
   FulfillmentCoordinatorPort,
   JsonObject,
   JsonValue,
+  LlmErrorKind,
   LlmMessage,
   LlmPort,
+  LlmToolCall,
   LlmToolSpec,
   Observation,
   PackDescriptor,
@@ -60,6 +62,7 @@ import type {
   ToolCardStatus,
   ToolDefinition,
   ToolGatePort,
+  TurnCompleteReason,
   UpstreamFrame,
   UserConfigStore,
   UserConfigSubject,
@@ -113,6 +116,8 @@ export interface GatewayDeps {
   heartbeatMs: number;
   /** agent loop 轮数上限：防 LLM 反复触发工具无法收敛而失控烧配额；dom 代操作一批页面操作固定耗 2 轮（操作+复核快照）。 */
   maxTurnRounds: number;
+  /** 同工具同因连续失败的止损上限；缺省按 env `ZA_MAX_CONSECUTIVE_FAILURES`（非正整数视为未设），再缺省 3。 */
+  maxConsecutiveFailures?: number;
   /** 等客户端 snapshot-report 的上限毫秒；缺省 15000。有界履约的复核快照另按指令剩余时限计。 */
   snapshotTimeoutMs?: number;
   /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW）。 */
@@ -244,8 +249,31 @@ const GUIDE_TOOL_SPEC: LlmToolSpec = {
 
 const GUIDE_ACTIONS: ReadonlySet<string> = new Set(['highlight', 'scroll-to']);
 
-/** invalid-tool-args 自愈重试上限（每用户回合累计）：超过即视为不可自愈、按普通错误终结。 */
-const MAX_INVALID_ARGS_RETRIES = 2;
+/** 同工具同因连续失败的软阈值：达到即在观测 JSON 里追加换路提示，止住「同一失效目标反复重试」。 */
+const CONSECUTIVE_FAILURE_SOFT_THRESHOLD = 2;
+/** 同因连续失败的硬阈值（env `ZA_MAX_CONSECUTIVE_FAILURES` 可配）：达到即终结回合，不等轮数耗尽。 */
+const DEFAULT_MAX_CONSECUTIVE_FAILURES = 3;
+const CONSECUTIVE_FAILURE_HINT =
+  '同一操作已连续失败：请先重新观察页面（page_snapshot）或改用其它做法，不要重复同一调用。';
+
+/**
+ * 上游失败类别 → 面向用户的如实文案：配置类错误不得渲染成「服务暂时不可用」（R6），
+ * 文案只含类别与配置键名、不含响应体原文与凭证形态（SEC-04）。缺省类别沿用通用降级文案。
+ */
+const UPSTREAM_FAILURE_NOTICE: Partial<Record<LlmErrorKind, string>> = {
+  auth: '模型服务配置有误：上游拒绝了服务端凭证（请检查 ZA_LLM_API_KEY）。',
+  'endpoint-invalid': '模型服务配置有误：上游端点不可用（请检查 ZA_LLM_BASE_URL）。',
+  quota: '模型服务配额已用尽，请补充额度后再试。',
+  'rate-limit': '模型服务当前限流，请稍后再试。',
+  timeout: '模型服务响应超时，本轮已停止；可以再说一次。',
+  'context-overflow': '本次对话上下文已超出模型窗口，我先停在这里；回复「继续」我会在更短的上下文里接着做。',
+};
+
+/** 上游因输出长度上限截断回答时的尾部告知：不把半截回答当作完整回答呈现（R6）。 */
+const TRUNCATED_ANSWER_NOTICE = '（上游输出长度已达上限，回答被截断；回复「继续」可接着说。）';
+
+/** 摘要不可用而按最近回合确定性截断历史时的如实告知（R6）。 */
+const HISTORY_TRUNCATED_NOTICE = '（较早的对话内容已省略以腾出上下文空间。）';
 
 /**
  * built-in 页面快照工具（adr-011 观察半程）：工具面含 dom 工具时注入；非终结动作——
@@ -1009,10 +1037,67 @@ interface AutomationRunRef {
   automationId: string;
 }
 
+/** 回合收口结果：ok 决定自动化 run 的成败，reason 是下发给客户端的终止原因（C3 闭集）。 */
+interface TurnOutcome {
+  ok: boolean;
+  reason: TurnCompleteReason;
+}
+
+/** 快照观测正文里的 evidence 块（紧凑复述）；无 evidence 或正文非 JSON（含已是存根）→ null。 */
+function snapshotEvidenceOf(content: string): string | null {
+  const newlineIdx = content.indexOf('\n');
+  const body =
+    content.startsWith(PAGE_OBS_MARKER) && newlineIdx >= 0 ? content.slice(newlineIdx + 1) : content;
+  try {
+    const parsed = JSON.parse(body) as { evidence?: unknown };
+    return parsed.evidence === undefined ? null : JSON.stringify({ evidence: parsed.evidence });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 本轮送给模型的消息视图：更早的快照观测按 history 存根瘦身（旧 ref 已随重采集失效，留全文只烧
+ * 窗口并诱导误引用），但把观测里的 evidence 采集值原样带回——履约回执确认要拿「操作前 / 操作后」
+ * 两次采集做比对，抹掉基线会让模型无从如实判断回执是否新增（R6）。evidence 是定长小对象。
+ * 落盘序列不经本函数：回合内 messages 只追加不回改，护 prompt 缓存前缀。
+ */
+function requestViewOf(messages: LlmMessage[]): LlmMessage[] {
+  const pruned = pruneStaleSnapshots(messages);
+  if (pruned === messages) return messages;
+  return pruned.map((message, index) => {
+    const original = messages[index];
+    if (original === undefined || message === original) return message;
+    const evidence = snapshotEvidenceOf(original.content);
+    return evidence === null ? message : { ...message, content: `${message.content}\n${evidence}` };
+  });
+}
+
+/** 本轮模型响应里的一个工具调用（网关侧分发单元）。 */
+interface RoundCall {
+  toolCallId: string;
+  name: string;
+  params: JsonObject;
+  /** 上游实参 JSON 非法/截断：params 无从解析，本次调用不执行、只回喂错误供模型自纠。 */
+  invalidArgs?: true;
+}
+
 const DEFAULT_SNAPSHOT_TIMEOUT_MS = 15_000;
+
+/** env 正整数解析：非正整数（含 0、负数、非数字、空串）视为未设置。 */
+function envPositiveInt(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}
 
 export function createGateway(deps: GatewayDeps): Gateway {
   const snapshotTimeoutMs = deps.snapshotTimeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS;
+  const maxConsecutiveFailures =
+    deps.maxConsecutiveFailures ??
+    envPositiveInt('ZA_MAX_CONSECUTIVE_FAILURES') ??
+    DEFAULT_MAX_CONSECUTIVE_FAILURES;
   const validateFrame = createFrameValidator();
   const validateActivationRequest = createActivationRequestValidator();
   const runtimes = new Map<string, SessionRuntime>();
@@ -1881,7 +1966,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
      * 既是判定/签发的 unattended 依据（adr-024 D1），也是本回合全部审计事件的归因键（C5）。
      */
     run: AutomationRunRef | null,
-  ): Promise<boolean> {
+  ): Promise<TurnOutcome> {
     const { sessionId } = session;
     const unattended = run !== null;
     const runtime = runtimeOf(sessionId);
@@ -2059,132 +2144,263 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // 本回合待落 history 的消息序列（含工具轮）：回合内只追加不回改，落盘边界统一瘦身。
     // 边界标记随本回合落 history（进入下回合上下文与 P1 摘要保留集）。
     const turnMessages: LlmMessage[] = [...boundaryMessages, { role: 'user', content: text }];
-    // 终结轮（纯文本/引导/未知工具/截断）的气泡文本；工具轮的 roundText 进各自 assistant 回声，不入此。
+    // 终结轮（纯文本/引导/截断）的气泡文本；工具轮的 roundText 进各自 assistant 回声，不入此。
     let tailText = '';
-    // 回合是否自然收尾（纯文本/引导/未知工具终结）；false=轮数耗尽被截断，须显式告知用户而非静默停。
+    // 回合是否自然收尾（纯文本/引导终结）；false=轮数耗尽被截断，须显式告知用户而非静默停。
     let settled = false;
-    // 本回合最近一次完整消费到 done 的 usage 实数（工具轮在 tool-call 处提前 break、不含 usage）；
+    // 回合终止原因（C3 闭集）：面板据此分流后续动作，评测按取值断言而非 grep 文案。
+    let turnReason: TurnCompleteReason = 'completed';
+    // 工具面外调用的用户播报每回合至多一次：模型反复幻觉同一工具时不刷屏。
+    let unavailableNotified = false;
+    // 同工具同因连续失败的止损计数：任一成功清零；达硬阈值终结回合（软阈值只在观测里加提示）。
+    let consecutiveFailures = 0;
+    let lastFailureKey: string | null = null;
+    let failureBudgetExhausted = false;
+    // 本回合最近一轮 done 事件透传的 usage 实数（工具轮也读到 done，故工具轮同样有值）；
     // 落盘边界压缩触发估算优先用它，缺省回退字符近似。
     let lastUsage: UsageTokens | undefined;
-
-    // invalid-tool-args 自愈重试预算：模型偶发产出截断/坏 JSON 实参时回喂修正提示重试，
-    // 连续超限则按不可自愈终结（防同因空转烧轮数；maxTurnRounds 仍是总兜底）。
-    let invalidArgsRetries = 0;
     let automationFailed = false;
     // 所有用户回合统一最多选择一个 bounded intent；客户端标识只做运行关联，不改变治理约束（U7）。
     let fulfillmentBudget: { attempted: boolean; intentId?: string } = { attempted: false };
     turnLoop: for (let round = 0; round < deps.maxTurnRounds; round += 1) {
       if (cancelled()) break;
       let roundText = '';
-      let call: { toolCallId: string; name: string; params: JsonObject } | null = null;
-      let recoverableError: string | null = null;
+      // 上游因输出长度上限截断了本轮回答（只对本轮有效）：终结轮须如实告知，不当完整回答呈现。
+      let truncatedAnswer = false;
+      // 本轮模型响应的全部 tool_calls，按 index 顺序串行分发——禁并发：多张 HITL 确认卡同时挂起
+      // 会让「用户批准的是哪一次」失去语义。终结型工具命中即停，其后的调用如实回喂 not-executed。
+      const roundCalls: RoundCall[] = [];
+      // 已应答调用与其观测：一条 assistant 回声携带全部调用，每个调用恰有一条 role:tool 观测
+      // （上游契约要求成对，缺一即整段历史被拒）。
+      const answeredCalls: LlmToolCall[] = [];
+      const roundObs: LlmMessage[] = [];
+      // 观测之后才生效的结构消息（导航后的站点边界标记）：须排在本轮全部观测之后。
+      const roundTrailing: LlmMessage[] = [];
+      let roundTextConsumed = false;
+      let invalidCall: { toolCallId: string; name: string } | null = null;
+      /** 同因连续失败计数：软阈值只在观测里加换路提示，硬阈值置位预算耗尽标志由回合收口处理。 */
+      const noteOutcome = (name: string, failureKey: string | null, content: string): string => {
+        if (failureKey === null) {
+          consecutiveFailures = 0;
+          lastFailureKey = null;
+          return content;
+        }
+        const key = `${name}:${failureKey}`;
+        consecutiveFailures = key === lastFailureKey ? consecutiveFailures + 1 : 1;
+        lastFailureKey = key;
+        if (consecutiveFailures >= maxConsecutiveFailures) failureBudgetExhausted = true;
+        if (consecutiveFailures < CONSECUTIVE_FAILURE_SOFT_THRESHOLD) return content;
+        try {
+          const parsed: unknown = JSON.parse(content);
+          if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+            return JSON.stringify({ ...(parsed as JsonObject), hint: CONSECUTIVE_FAILURE_HINT });
+          }
+        } catch {
+          // 非 JSON 观测（带页标注前缀的快照正文）不改结构，提示另起一行附加。
+        }
+        return `${content}\n${CONSECUTIVE_FAILURE_HINT}`;
+      };
+      /** 登记一条调用的观测；echoParams 缺省=回声原实参（prepare 等需要回声空实参的分支显式传入）。 */
+      const feed = (
+        target: RoundCall,
+        content: string,
+        failureKey: string | null,
+        echoParams?: JsonObject,
+      ): void => {
+        answeredCalls.push({
+          id: target.toolCallId,
+          name: target.name,
+          params: echoParams ?? target.params,
+        });
+        roundObs.push({
+          role: 'tool',
+          toolCallId: target.toolCallId,
+          content: noteOutcome(target.name, failureKey, content),
+        });
+      };
+      /** 终结型调用之后的剩余调用：零执行、如实回喂，模型下一回合据此重发而不必猜测。 */
+      const notExecutedRest = (from: number): void => {
+        for (const skipped of roundCalls.slice(from)) {
+          answeredCalls.push({ id: skipped.toolCallId, name: skipped.name, params: skipped.params });
+          roundObs.push({
+            role: 'tool',
+            toolCallId: skipped.toolCallId,
+            content: JSON.stringify({ error: 'not-executed', reason: 'preceding-call-terminal' }),
+          });
+        }
+      };
+      const flushRound = (): void => {
+        if (answeredCalls.length > 0) {
+          const echo: LlmMessage = {
+            role: 'assistant',
+            content: roundTextConsumed ? '' : roundText,
+            toolCalls: [...answeredCalls],
+          };
+          roundTextConsumed = true;
+          messages.push(echo, ...roundObs);
+          turnMessages.push(echo, ...roundObs);
+          answeredCalls.length = 0;
+          roundObs.length = 0;
+        }
+        if (roundTrailing.length > 0) {
+          messages.push(...roundTrailing);
+          turnMessages.push(...roundTrailing);
+          roundTrailing.length = 0;
+        }
+      };
+      const requestMessages = requestViewOf(messages);
       const request = tools.length > 0
-        ? { messages, tools, ...(llmRequestId !== undefined ? { requestId: llmRequestId } : {}) }
-        : { messages, ...(llmRequestId !== undefined ? { requestId: llmRequestId } : {}) };
+        ? { messages: requestMessages, tools, ...(llmRequestId !== undefined ? { requestId: llmRequestId } : {}) }
+        : { messages: requestMessages, ...(llmRequestId !== undefined ? { requestId: llmRequestId } : {}) };
       for await (const event of deps.llm.chat(request)) {
         if (cancelled()) break turnLoop;
         if (event.kind === 'text-delta') {
           roundText += event.delta;
           broadcast(sessionId, { type: 'text-delta', sessionId, delta: event.delta });
         } else if (event.kind === 'tool-call') {
-          call = { toolCallId: event.toolCallId, name: event.name, params: event.params };
-          break;
+          roundCalls.push({ toolCallId: event.toolCallId, name: event.name, params: event.params });
         } else if (event.kind === 'done') {
           if (event.usage !== undefined) lastUsage = event.usage;
+          if (event.truncated === true) truncatedAnswer = true;
           if (event.stopReason === 'error') {
             automationFailed = true;
-            if (event.errorKind === 'invalid-tool-args' && invalidArgsRetries < MAX_INVALID_ARGS_RETRIES) {
-              recoverableError = event.error ?? 'invalid-tool-args';
+            if (event.errorKind === 'invalid-tool-args' && event.invalidToolCall !== undefined) {
+              invalidCall = event.invalidToolCall;
             } else {
-              // llm-port 错误文案契约上只含键名/状态类别，不含 env 值与密钥（SEC-04）
-              const notice = `服务暂时不可用（${event.error ?? '未知错误'}）`;
+              // 分类文案只含状态类别与配置键名，不含响应体原文与凭证形态（SEC-04）；
+              // 未分类的传输层失败沿用通用降级文案。
+              const notice =
+                (event.errorKind !== undefined ? UPSTREAM_FAILURE_NOTICE[event.errorKind] : undefined) ??
+                `服务暂时不可用（${event.error ?? '未知错误'}）`;
               roundText += notice;
               notify(sessionId, notice);
+              turnReason = event.errorKind === 'timeout' ? 'llm-timeout' : 'llm-error';
             }
           }
         }
       }
       if (cancelled()) break;
-      // 可自愈错误（模型实参 JSON 非法/截断）：不终结回合——把失败与修正要求回喂，下一轮重新发起调用。
-      if (call === null && recoverableError !== null) {
-        invalidArgsRetries += 1;
-        const correction: LlmMessage = {
-          role: 'user',
-          content: `（系统提示）你上一次的工具调用未能执行：${recoverableError}。实参 JSON 无效或被截断。请重新发起该工具调用，输出完整合法的 JSON 实参；若内容过长，缩短本批内容、分多批完成。`,
-        };
-        if (roundText !== '') {
-          messages.push({ role: 'assistant', content: roundText });
-          turnMessages.push({ role: 'assistant', content: roundText });
-        }
-        messages.push(correction);
-        turnMessages.push(correction);
-        continue;
+      // 实参非法的调用按其原本次序入队：回喂走与其它调用同一条「回声 + 同 toolCallId 观测」通道
+      // （不伪造用户消息——那会让压缩把系统提示当成真实用户回合计数）。
+      if (invalidCall !== null) {
+        roundCalls.push({
+          toolCallId: invalidCall.toolCallId,
+          name: invalidCall.name,
+          params: {},
+          invalidArgs: true,
+        });
       }
       // 无工具调用（纯文本/错误收尾）：本回合终结，本轮文本即气泡。
-      if (call === null) {
+      if (roundCalls.length === 0) {
         tailText += roundText;
+        if (truncatedAnswer) {
+          tailText += TRUNCATED_ANSWER_NOTICE;
+          notify(sessionId, TRUNCATED_ANSWER_NOTICE);
+        }
         settled = true;
         break;
       }
+      callLoop: for (let callIndex = 0; callIndex < roundCalls.length; callIndex += 1) {
+        if (failureBudgetExhausted) {
+          notExecutedRest(callIndex);
+          break callLoop;
+        }
+        const call = roundCalls[callIndex]!;
+        if (call.invalidArgs === true) {
+          // 回合不终结：模型能据此重发同一调用；反复失败由连续失败预算止损。
+          feed(
+            call,
+            JSON.stringify({
+              error: 'invalid-tool-args',
+              detail:
+                '实参 JSON 无效或被截断；请重新发起该调用并输出完整合法的 JSON 实参，内容过长就分多批完成。',
+            }),
+            'invalid-tool-args',
+          );
+          continue;
+        }
 
-      if (call.name === SNAPSHOT_TOOL_NAME) {
-        // 观察半程（非终结）：等目标页回传快照，快照作 observation 回喂后继续本回合。
-        const snapshotCall = call;
-        const snapshotStartedAt = Date.now();
-        const pushSnapshotRound = (content: string): void => {
-          const snapshotEcho: LlmMessage = {
-            role: 'assistant',
-            content: roundText,
-            toolCalls: [
-              { id: snapshotCall.toolCallId, name: snapshotCall.name, params: snapshotCall.params },
-            ],
+        if (call.name === SNAPSHOT_TOOL_NAME) {
+          // 观察半程（非终结）：等目标页回传快照，快照作 observation 回喂后继续本回合。
+          const snapshotCall = call;
+          const snapshotStartedAt = Date.now();
+          const pushSnapshotRound = (content: string, failureKey: string | null = null): void => {
+            feed(snapshotCall, content, failureKey);
           };
-          const snapshotObs: LlmMessage = {
-            role: 'tool',
-            toolCallId: snapshotCall.toolCallId,
-            content,
-          };
-          messages.push(snapshotEcho, snapshotObs);
-          turnMessages.push(snapshotEcho, snapshotObs);
-        };
-        // 定向观察（adr-023 D2）：句柄只对状态表作等值比对（不解析结构，U5）；
-        // 全部拒绝判定在下发前完成（U7 fail-closed），拒绝不发帧、不回退活跃页。
-        const pageParam = call.params['targetPage'];
-        let target: { handle: string; url: string } | undefined;
-        let targetPageRef: AuditPageRef | undefined;
-        if (pageParam !== undefined) {
-          let rejection: { error: string; message: string } | null = null;
-          if (typeof pageParam !== 'string' || pageParam === '' || pageParam.length > 64) {
-            rejection = {
-              error: 'page-invalid',
-              message:
-                'targetPage 取值须为系统提示「# 任务组页面清单」中列出的句柄；请修正后重试，或缺省 targetPage 读取当前活跃页。',
-            };
-          } else {
-            const entry = session.groupPages.find((page) => page.handle === pageParam);
-            if (entry === undefined) {
-              targetPageRef = { handle: pageParam };
+          // 定向观察（adr-023 D2）：句柄只对状态表作等值比对（不解析结构，U5）；
+          // 全部拒绝判定在下发前完成（U7 fail-closed），拒绝不发帧、不回退活跃页。
+          const pageParam = call.params['targetPage'];
+          let target: { handle: string; url: string } | undefined;
+          let targetPageRef: AuditPageRef | undefined;
+          if (pageParam !== undefined) {
+            let rejection: { error: string; message: string } | null = null;
+            if (typeof pageParam !== 'string' || pageParam === '' || pageParam.length > 64) {
               rejection = {
-                error: 'page-not-in-group',
-                message: `目标页 ${pageParam} 不在当前任务组页面清单中（可能已关闭或离组）；以系统提示「# 任务组页面清单」的最新句柄为准。`,
+                error: 'page-invalid',
+                message:
+                  'targetPage 取值须为系统提示「# 任务组页面清单」中列出的句柄；请修正后重试，或缺省 targetPage 读取当前活跃页。',
               };
             } else {
-              const targetOrigin = originOf(entry.url);
-              targetPageRef = {
-                handle: entry.handle,
-                ...(targetOrigin !== '' ? { origin: targetOrigin } : {}),
-              };
-              if (entry.status === 'silent') {
+              const entry = session.groupPages.find((page) => page.handle === pageParam);
+              if (entry === undefined) {
+                targetPageRef = { handle: pageParam };
                 rejection = {
-                  error: 'page-not-interactive',
-                  message: `目标页 ${pageParam} 不可交互（silent，无内容脚本通道），无法定向读取；需先激活该页——由用户切换到该页，或经导航打开其地址——再重试。`,
+                  error: 'page-not-in-group',
+                  message: `目标页 ${pageParam} 不在当前任务组页面清单中（可能已关闭或离组）；以系统提示「# 任务组页面清单」的最新句柄为准。`,
                 };
               } else {
-                target = { handle: entry.handle, url: entry.url };
+                const targetOrigin = originOf(entry.url);
+                targetPageRef = {
+                  handle: entry.handle,
+                  ...(targetOrigin !== '' ? { origin: targetOrigin } : {}),
+                };
+                if (entry.status === 'silent') {
+                  rejection = {
+                    error: 'page-not-interactive',
+                    message: `目标页 ${pageParam} 不可交互（silent，无内容脚本通道），无法定向读取；需先激活该页——由用户切换到该页，或经导航打开其地址——再重试。`,
+                  };
+                } else {
+                  target = { handle: entry.handle, url: entry.url };
+                }
               }
             }
+            if (rejection !== null) {
+              broadcast(sessionId, {
+                type: 'tool-card',
+                sessionId,
+                toolCallId: call.toolCallId,
+                toolId: SNAPSHOT_TOOL_NAME,
+                status: 'failed',
+                mode: 'client',
+              });
+              pushSnapshotRound(JSON.stringify(rejection), rejection.error);
+              recordEvent(sessionId, claims, featureId, {
+                type: 'tool-execution',
+                data: {
+                  toolCallId: call.toolCallId,
+                  toolId: SNAPSHOT_TOOL_NAME,
+                  execution: 'client',
+                  outcome: 'skipped',
+                  durationMs: Date.now() - snapshotStartedAt,
+                },
+              }, pack, run ?? undefined, targetPageRef);
+              continue;
+            }
           }
-          if (rejection !== null) {
+          const requestId = randomUUID();
+          const reported = waitForSnapshot(sessionId, requestId);
+          broadcast(sessionId, {
+            type: 'snapshot-request',
+            sessionId,
+            requestId,
+            ...(target !== undefined ? { page: target.handle } : {}),
+            ...(call.params['includeText'] === true ? { includeText: true } : {}),
+            // 证据配方绑定活跃页 pack 语境，定向帧不带（跨页采集只产生伪证据）。
+            ...(target === undefined && evidenceRules.length > 0 ? { evidenceRules } : {}),
+          });
+          const report = await reported;
+          if (report === null) {
+            automationFailed = true;
             broadcast(sessionId, {
               type: 'tool-card',
               sessionId,
@@ -2193,605 +2409,545 @@ export function createGateway(deps: GatewayDeps): Gateway {
               status: 'failed',
               mode: 'client',
             });
-            pushSnapshotRound(JSON.stringify(rejection));
-            recordEvent(sessionId, claims, featureId, {
-              type: 'tool-execution',
-              data: {
-                toolCallId: call.toolCallId,
-                toolId: SNAPSHOT_TOOL_NAME,
-                execution: 'client',
-                outcome: 'skipped',
-                durationMs: Date.now() - snapshotStartedAt,
-              },
-            }, pack, run ?? undefined, targetPageRef);
+            pushSnapshotRound(JSON.stringify({ error: 'snapshot-timeout' }), 'snapshot-timeout');
+            if (target !== undefined) {
+              recordEvent(sessionId, claims, featureId, {
+                type: 'tool-execution',
+                data: {
+                  toolCallId: call.toolCallId,
+                  toolId: SNAPSHOT_TOOL_NAME,
+                  execution: 'client',
+                  outcome: 'timeout',
+                  durationMs: Date.now() - snapshotStartedAt,
+                },
+              }, pack, run ?? undefined, targetPageRef);
+            }
             continue;
           }
+          const trustedElements = trustedSnapshotElements(report.elements);
+          const safeElements = redactSnapshotValues(report.elements);
+          if (target === undefined) {
+            // domContext 只绑缺省观察链（活跃页 dom 签发基准）：定向快照不更新，防他页 refs 污染。
+            const runtime = runtimeOf(sessionId);
+            runtime.domContext = {
+              refs: trustedElements.map((element) => element.ref),
+              path: pathOf(report.url),
+              origin: originOf(report.url),
+              url: report.url,
+              ...(report.pageInstanceId !== undefined ? { pageInstanceId: report.pageInstanceId } : {}),
+              elements: trustedElements,
+              ...(report.evidence !== undefined ? { evidence: report.evidence } : {}),
+            };
+          } else {
+            // 定向快照写 per-handle 表（adr-023 D3）：同一 page 定向 dom 签发的判定基准；
+            // evidence 不采——证据配方绑活跃页 pack 语境，跨页采集只产生伪证据。
+            runtimeOf(sessionId).domContextByPage.set(target.handle, {
+              refs: trustedElements.map((element) => element.ref),
+              path: pathOf(report.url),
+              origin: originOf(report.url),
+              url: report.url,
+              ...(report.pageInstanceId !== undefined ? { pageInstanceId: report.pageInstanceId } : {}),
+              elements: trustedElements,
+            });
+          }
+          const reportBody = JSON.stringify({
+            url: report.url,
+            title: report.title ?? '',
+            elements: safeElements,
+            ...(report.notices !== undefined ? { notices: report.notices } : {}),
+            ...(report.text !== undefined
+              ? {
+                  text: report.text,
+                  ...(report.textTruncated === true ? { textTruncated: true } : {}),
+                  textNote:
+                    report.textTruncated === true ? PAGE_TEXT_NOTE_TRUNCATED : PAGE_TEXT_NOTE,
+                }
+              : {}),
+            ...(report.evidence !== undefined ? { evidence: report.evidence } : {}),
+          });
+          if (target === undefined) {
+            pushSnapshotRound(reportBody);
+            continue;
+          }
+          // 页标注前缀独占首行（compress/history 以首行机械识别，不解析句柄内容）；
+          // 句柄是成员上报的可控输入，消毒后才进 tag——含换行的合法句柄不得破坏首行不变量；
+          // origin 取状态表目标页 URL，取不到时退化为仅句柄。
+          const targetOrigin = originOf(target.url);
+          const tag = `${PAGE_OBS_MARKER}${sanitizeGroupPageCell(target.handle)}${targetOrigin !== '' ? ` · ${targetOrigin}` : ''}]`;
+          pushSnapshotRound(`${tag}\n${reportBody}`);
+          // 覆盖边界：page_snapshot 的 tool-execution 事件只在定向调用（含其拒绝/超时）产出——
+          // 缺省调用不落该事件，审计流据此不能重建活跃页的观察次数与时长。
+          recordEvent(sessionId, claims, featureId, {
+            type: 'tool-execution',
+            data: {
+              toolCallId: call.toolCallId,
+              toolId: SNAPSHOT_TOOL_NAME,
+              execution: 'client',
+              outcome: 'ok',
+              durationMs: Date.now() - snapshotStartedAt,
+            },
+          }, pack, run ?? undefined, targetPageRef);
+          continue;
         }
-        const requestId = randomUUID();
-        const reported = waitForSnapshot(sessionId, requestId);
-        broadcast(sessionId, {
-          type: 'snapshot-request',
-          sessionId,
-          requestId,
-          ...(target !== undefined ? { page: target.handle } : {}),
-          ...(call.params['includeText'] === true ? { includeText: true } : {}),
-          // 证据配方绑定活跃页 pack 语境，定向帧不带（跨页采集只产生伪证据）。
-          ...(target === undefined && evidenceRules.length > 0 ? { evidenceRules } : {}),
-        });
-        const report = await reported;
-        if (report === null) {
-          automationFailed = true;
+
+        const prepareTarget = prepareTargets.get(call.name);
+        if (prepareTarget !== undefined) {
           broadcast(sessionId, {
             type: 'tool-card',
             sessionId,
             toolCallId: call.toolCallId,
-            toolId: SNAPSHOT_TOOL_NAME,
-            status: 'failed',
-            mode: 'client',
+            toolId: call.name,
+            status: 'running',
+            summary: call.name,
+            mode: 'server',
           });
-          pushSnapshotRound(JSON.stringify({ error: 'snapshot-timeout' }));
-          if (target !== undefined) {
-            recordEvent(sessionId, claims, featureId, {
-              type: 'tool-execution',
-              data: {
-                toolCallId: call.toolCallId,
-                toolId: SNAPSHOT_TOOL_NAME,
-                execution: 'client',
-                outcome: 'timeout',
-                durationMs: Date.now() - snapshotStartedAt,
-              },
-            }, pack, run ?? undefined, targetPageRef);
+          const isShipmentPrepare = prepareTarget.authorization?.workflow === 'shipment';
+          const context = runtimeOf(sessionId).domContext;
+          let prepared: Awaited<ReturnType<NonNullable<typeof deps.fulfillment>['prepare']>> | null = null;
+          let prepareError: string | null = null;
+          let preparationStopped = false;
+          if (fulfillmentBudget.attempted) {
+            prepareError = 'automation-order-limit';
+          } else {
+            fulfillmentBudget = { attempted: true };
           }
-          continue;
-        }
-        const trustedElements = trustedSnapshotElements(report.elements);
-        const safeElements = redactSnapshotValues(report.elements);
-        if (target === undefined) {
-          // domContext 只绑缺省观察链（活跃页 dom 签发基准）：定向快照不更新，防他页 refs 污染。
-          const runtime = runtimeOf(sessionId);
-          runtime.domContext = {
-            refs: trustedElements.map((element) => element.ref),
-            path: pathOf(report.url),
-            origin: originOf(report.url),
-            url: report.url,
-            ...(report.pageInstanceId !== undefined ? { pageInstanceId: report.pageInstanceId } : {}),
-            elements: trustedElements,
-            ...(report.evidence !== undefined ? { evidence: report.evidence } : {}),
-          };
-        } else {
-          // 定向快照写 per-handle 表（adr-023 D3）：同一 page 定向 dom 签发的判定基准；
-          // evidence 不采——证据配方绑活跃页 pack 语境，跨页采集只产生伪证据。
-          runtimeOf(sessionId).domContextByPage.set(target.handle, {
-            refs: trustedElements.map((element) => element.ref),
-            path: pathOf(report.url),
-            origin: originOf(report.url),
-            url: report.url,
-            ...(report.pageInstanceId !== undefined ? { pageInstanceId: report.pageInstanceId } : {}),
-            elements: trustedElements,
-          });
-        }
-        const reportBody = JSON.stringify({
-          url: report.url,
-          title: report.title ?? '',
-          elements: safeElements,
-          ...(report.notices !== undefined ? { notices: report.notices } : {}),
-          ...(report.text !== undefined
-            ? {
-                text: report.text,
-                ...(report.textTruncated === true ? { textTruncated: true } : {}),
-                textNote:
-                  report.textTruncated === true ? PAGE_TEXT_NOTE_TRUNCATED : PAGE_TEXT_NOTE,
+          if (prepareError === null && deps.fulfillment !== undefined) {
+            try {
+              const derived = derivePreparedIntent({
+                claims,
+                context,
+                tool: prepareTarget,
+                siteOrigin,
+                evidenceRules,
+                productKeys: deps.fulfillmentProductKeys,
+                params: call.params,
+                now: Date.now(),
+              });
+              if (derived !== null) {
+                prepared =
+                  derived.workflow === 'shipment'
+                    ? await deps.fulfillment.prepareShipment(derived.input)
+                    : await deps.fulfillment.prepare(derived.input);
               }
-            : {}),
-          ...(report.evidence !== undefined ? { evidence: report.evidence } : {}),
-        });
-        if (target === undefined) {
-          pushSnapshotRound(reportBody);
-          continue;
-        }
-        // 页标注前缀独占首行（compress/history 以首行机械识别，不解析句柄内容）；
-        // 句柄是成员上报的可控输入，消毒后才进 tag——含换行的合法句柄不得破坏首行不变量；
-        // origin 取状态表目标页 URL，取不到时退化为仅句柄。
-        const targetOrigin = originOf(target.url);
-        const tag = `${PAGE_OBS_MARKER}${sanitizeGroupPageCell(target.handle)}${targetOrigin !== '' ? ` · ${targetOrigin}` : ''}]`;
-        pushSnapshotRound(`${tag}\n${reportBody}`);
-        // 覆盖边界：page_snapshot 的 tool-execution 事件只在定向调用（含其拒绝/超时）产出——
-        // 缺省调用不落该事件，审计流据此不能重建活跃页的观察次数与时长。
-        recordEvent(sessionId, claims, featureId, {
-          type: 'tool-execution',
-          data: {
-            toolCallId: call.toolCallId,
-            toolId: SNAPSHOT_TOOL_NAME,
-            execution: 'client',
-            outcome: 'ok',
-            durationMs: Date.now() - snapshotStartedAt,
-          },
-        }, pack, run ?? undefined, targetPageRef);
-        continue;
-      }
-
-      const prepareTarget = prepareTargets.get(call.name);
-      if (prepareTarget !== undefined) {
-        broadcast(sessionId, {
-          type: 'tool-card',
-          sessionId,
-          toolCallId: call.toolCallId,
-          toolId: call.name,
-          status: 'running',
-          summary: call.name,
-          mode: 'server',
-        });
-        const isShipmentPrepare = prepareTarget.authorization?.workflow === 'shipment';
-        const context = runtimeOf(sessionId).domContext;
-        let prepared: Awaited<ReturnType<NonNullable<typeof deps.fulfillment>['prepare']>> | null = null;
-        let prepareError: string | null = null;
-        let preparationStopped = false;
-        if (fulfillmentBudget.attempted) {
-          prepareError = 'automation-order-limit';
-        } else {
-          fulfillmentBudget = { attempted: true };
-        }
-        if (prepareError === null && deps.fulfillment !== undefined) {
-          try {
-            const derived = derivePreparedIntent({
-              claims,
-              context,
-              tool: prepareTarget,
-              siteOrigin,
-              evidenceRules,
-              productKeys: deps.fulfillmentProductKeys,
-              params: call.params,
-              now: Date.now(),
-            });
-            if (derived !== null) {
-              prepared =
-                derived.workflow === 'shipment'
-                  ? await deps.fulfillment.prepareShipment(derived.input)
-                  : await deps.fulfillment.prepare(derived.input);
+            } catch {
+              prepared = null;
             }
-          } catch {
-            prepared = null;
           }
-        }
-        if (cancelled()) {
-          preparationStopped = true;
-          if (!(await settleCancelledPreparation(prepared))) {
-            notifySafety(sessionId, '停止后的库存回填失败，自动履约已暂停，请人工核对。');
+          if (cancelled()) {
+            preparationStopped = true;
+            if (!(await settleCancelledPreparation(prepared))) {
+              notifySafety(sessionId, '停止后的库存回填失败，自动履约已暂停，请人工核对。');
+            }
           }
-        }
-        if (preparationStopped) {
-          broadcast(sessionId, {
-            type: 'tool-card', sessionId, toolCallId: call.toolCallId,
-            toolId: call.name, status: 'failed', mode: 'server',
-          });
-          automationFailed = true;
-          settled = true;
-          break;
-        }
-        if (prepared?.ok === true) fulfillmentBudget = { attempted: true, intentId: prepared.intentId };
-        else automationFailed = true;
-        const prepareEcho: LlmMessage = {
-          role: 'assistant',
-          content: roundText,
-          toolCalls: [{ id: call.toolCallId, name: call.name, params: {} }],
-        };
-        const prepareObs: LlmMessage = {
-          role: 'tool',
-          toolCallId: call.toolCallId,
-          content: JSON.stringify(
+          if (preparationStopped) {
+            broadcast(sessionId, {
+              type: 'tool-card', sessionId, toolCallId: call.toolCallId,
+              toolId: call.name, status: 'failed', mode: 'server',
+            });
+            automationFailed = true;
+            settled = true;
+            notExecutedRest(callIndex + 1);
+            flushRound();
+            break turnLoop;
+          }
+          if (prepared?.ok === true) fulfillmentBudget = { attempted: true, intentId: prepared.intentId };
+          else automationFailed = true;
+          const prepareFailure =
             prepared?.ok === true
-              ? { intentId: prepared.intentId }
-              : {
-                  error:
-                    prepareError ??
-                    prepared?.error ??
-                    (isShipmentPrepare ? 'shipping-prepare-denied' : 'fulfillment-prepare-denied'),
-                },
-          ),
-        };
-        broadcast(sessionId, {
-          type: 'tool-card',
-          sessionId,
-          toolCallId: call.toolCallId,
-          toolId: call.name,
-          status: prepared?.ok === true ? 'succeeded' : 'failed',
-          mode: 'server',
-        });
-        messages.push(prepareEcho, prepareObs);
-        turnMessages.push(prepareEcho, prepareObs);
-        continue;
-      }
-
-      if (call.name === CONFIG_DRAFT_TOOL_ID && deps.userConfig !== undefined) {
-        // teach 草稿（非终结、零副作用，U8）：服务端构造条目与 change、存会话态挂起草稿、
-        // 下发 config-draft 确认卡；observation 只回喂「已发出等待确认」，写入结果不经本工具回传。
-        const draftCall = call;
-        const feedback = (content: JsonValue): void => {
-          const draftEcho: LlmMessage = {
-            role: 'assistant',
-            content: roundText,
-            toolCalls: [{ id: draftCall.toolCallId, name: draftCall.name, params: draftCall.params }],
-          };
-          const draftObs: LlmMessage = {
-            role: 'tool',
-            toolCallId: draftCall.toolCallId,
-            content: JSON.stringify(content),
-          };
-          messages.push(draftEcho, draftObs);
-          turnMessages.push(draftEcho, draftObs);
-        };
-        if (!configDraftParamsValidator(call.params)) {
-          feedback({ error: 'config-draft-invalid-params：实参不符合 config_draft 入参契约，请修正后重试' });
-          continue;
-        }
-        const params = call.params as {
-          packId: string;
-          featureId?: string;
-          rules?: Array<{ text: string }>;
-          facts?: Array<{ text: string }>;
-          riskTierRaise?: Record<string, UserOverlayRiskTierRaise>;
-        };
-        if (params.packId === '*' && params.riskTierRaise !== undefined) {
-          feedback({ error: 'config-draft-global-scope-no-restrictions：全局作用域 "*" 无工具面可收紧，riskTierRaise 须指定具体 packId' });
-          continue;
-        }
-        // riskTierRaise 恒为 pack 级（overlay restrictions 无 feature 维度）：与 featureId 同现会使
-        // 确认卡显示范围窄于真实生效面（违反「scope 是 change 的机械投影」），草稿期即拒。
-        if (params.featureId !== undefined && params.riskTierRaise !== undefined) {
-          feedback({ error: 'config-draft-pack-level-restrictions：riskTierRaise 恒为整 pack 生效，不可与 featureId 同用；请去掉 featureId 或将规则与收紧拆为两次草稿' });
-          continue;
-        }
-        // L1 只收紧预检：base 更严（如 forbidden）时 hitl 声明必被写入期拒绝——草稿期反馈让 agent 即时纠正；
-        // 未知 toolId 同拒（写入后恒为惰性条目，纯审计噪音）。
-        if (params.riskTierRaise !== undefined) {
-          const baselineTiers = new Map(
-            deps.userConfig.l1Baseline.tools.map((tool) => [tool.id, tool.riskTier]),
-          );
-          const rank: Record<string, number> = { auto: 0, hitl: 1, forbidden: 2 };
-          const rejected = Object.entries(params.riskTierRaise).find(([toolId, tier]) => {
-            const base = baselineTiers.get(toolId);
-            return base === undefined || (rank[base] ?? 2) > (rank[tier] ?? 0);
+              ? null
+              : (prepareError ??
+                prepared?.error ??
+                (isShipmentPrepare ? 'shipping-prepare-denied' : 'fulfillment-prepare-denied'));
+          broadcast(sessionId, {
+            type: 'tool-card',
+            sessionId,
+            toolCallId: call.toolCallId,
+            toolId: call.name,
+            status: prepared?.ok === true ? 'succeeded' : 'failed',
+            mode: 'server',
           });
-          if (rejected !== undefined) {
-            const base = baselineTiers.get(rejected[0]);
-            feedback({
-              error:
-                base === undefined
-                  ? `config-draft-unknown-tool：工具 ${rejected[0]} 不在当前工具面，收紧无效`
-                  : `config-draft-not-tightening：工具 ${rejected[0]} 的基础分级已是 ${base}，声明 ${rejected[1]} 不构成收紧`,
-            });
+          // 回声实参置空：prepare 的实参由服务端派生，回喂模型的只是结果句柄。
+          feed(
+            call,
+            JSON.stringify(
+              prepared?.ok === true ? { intentId: prepared.intentId } : { error: prepareFailure },
+            ),
+            prepareFailure,
+            {},
+          );
+          continue;
+        }
+
+        if (call.name === CONFIG_DRAFT_TOOL_ID && deps.userConfig !== undefined) {
+          // teach 草稿（非终结、零副作用，U8）：服务端构造条目与 change、存会话态挂起草稿、
+          // 下发 config-draft 确认卡；observation 只回喂「已发出等待确认」，写入结果不经本工具回传。
+          const draftCall = call;
+          const feedback = (content: JsonValue): void => {
+            const error = (content as { error?: unknown }).error;
+            feed(draftCall, JSON.stringify(content), typeof error === 'string' ? error : null);
+          };
+          if (!configDraftParamsValidator(call.params)) {
+            feedback({ error: 'config-draft-invalid-params：实参不符合 config_draft 入参契约，请修正后重试' });
             continue;
           }
-        }
-        // 预览 = 落盘（R3）：当前 overlay 已 disabledTools 的键从草稿剔除（合并期本会静默跳过——
-        // 在创建期剔除使确认卡展示与真实写入一致）；剔空且无 rules/facts 即无草稿可产。
-        let riskTierRaise = params.riskTierRaise;
-        if (riskTierRaise !== undefined) {
-          try {
-            const existing = (await deps.userConfig.store.read(subjectOf(claims))).overlay;
-            const scope = existing?.packs[params.packId] as UserOverlayPackScope | undefined;
-            const disabled = new Set(scope?.restrictions?.disabledTools ?? []);
-            if (disabled.size > 0) {
-              riskTierRaise = Object.fromEntries(
-                Object.entries(riskTierRaise).filter(([toolId]) => !disabled.has(toolId)),
-              );
-              if (Object.keys(riskTierRaise).length === 0) riskTierRaise = undefined;
+          const params = call.params as {
+            packId: string;
+            featureId?: string;
+            rules?: Array<{ text: string }>;
+            facts?: Array<{ text: string }>;
+            riskTierRaise?: Record<string, UserOverlayRiskTierRaise>;
+          };
+          if (params.packId === '*' && params.riskTierRaise !== undefined) {
+            feedback({ error: 'config-draft-global-scope-no-restrictions：全局作用域 "*" 无工具面可收紧，riskTierRaise 须指定具体 packId' });
+            continue;
+          }
+          // riskTierRaise 恒为 pack 级（overlay restrictions 无 feature 维度）：与 featureId 同现会使
+          // 确认卡显示范围窄于真实生效面（违反「scope 是 change 的机械投影」），草稿期即拒。
+          if (params.featureId !== undefined && params.riskTierRaise !== undefined) {
+            feedback({ error: 'config-draft-pack-level-restrictions：riskTierRaise 恒为整 pack 生效，不可与 featureId 同用；请去掉 featureId 或将规则与收紧拆为两次草稿' });
+            continue;
+          }
+          // L1 只收紧预检：base 更严（如 forbidden）时 hitl 声明必被写入期拒绝——草稿期反馈让 agent 即时纠正；
+          // 未知 toolId 同拒（写入后恒为惰性条目，纯审计噪音）。
+          if (params.riskTierRaise !== undefined) {
+            const baselineTiers = new Map(
+              deps.userConfig.l1Baseline.tools.map((tool) => [tool.id, tool.riskTier]),
+            );
+            const rank: Record<string, number> = { auto: 0, hitl: 1, forbidden: 2 };
+            const rejected = Object.entries(params.riskTierRaise).find(([toolId, tier]) => {
+              const base = baselineTiers.get(toolId);
+              return base === undefined || (rank[base] ?? 2) > (rank[tier] ?? 0);
+            });
+            if (rejected !== undefined) {
+              const base = baselineTiers.get(rejected[0]);
+              feedback({
+                error:
+                  base === undefined
+                    ? `config-draft-unknown-tool：工具 ${rejected[0]} 不在当前工具面，收紧无效`
+                    : `config-draft-not-tightening：工具 ${rejected[0]} 的基础分级已是 ${base}，声明 ${rejected[1]} 不构成收紧`,
+              });
+              continue;
             }
-          } catch {
-            // 存储暂不可用：不阻断草稿创建（accept 时仍会读取并校验，fail-closed 在写入点）。
           }
-          if (riskTierRaise === undefined && params.rules === undefined && params.facts === undefined) {
-            feedback({ error: 'config-draft-empty：所列工具均已被用户禁用，无可写入内容' });
-            continue;
-          }
-        }
-        // packId/featureId 存在性校验（"*" 除外）：不在快照的 pack 写入后永不生效（惰性条目），
-        // 草稿期即拒让 agent 纠正；顺带取 pack.name/featureTitle 人读标签，未声明即省略、
-        // 卡片回退 packId·featureId 展示。describeInjection 不带 subject（纯 L1，不产生 L2 双读）。
-        let title: string | undefined;
-        if (params.packId !== '*') {
-          try {
-            const desc = await deps.assembly.describeInjection({
-              sessionId,
-              packId: params.packId,
-              featureId: params.featureId ?? null,
-            });
-            if (desc.packName !== undefined) {
-              title =
-                desc.featureTitle !== undefined
-                  ? `${desc.packName} · ${desc.featureTitle}`
-                  : desc.packName;
+          // 预览 = 落盘（R3）：当前 overlay 已 disabledTools 的键从草稿剔除（合并期本会静默跳过——
+          // 在创建期剔除使确认卡展示与真实写入一致）；剔空且无 rules/facts 即无草稿可产。
+          let riskTierRaise = params.riskTierRaise;
+          if (riskTierRaise !== undefined) {
+            try {
+              const existing = (await deps.userConfig.store.read(subjectOf(claims))).overlay;
+              const scope = existing?.packs[params.packId] as UserOverlayPackScope | undefined;
+              const disabled = new Set(scope?.restrictions?.disabledTools ?? []);
+              if (disabled.size > 0) {
+                riskTierRaise = Object.fromEntries(
+                  Object.entries(riskTierRaise).filter(([toolId]) => !disabled.has(toolId)),
+                );
+                if (Object.keys(riskTierRaise).length === 0) riskTierRaise = undefined;
+              }
+            } catch {
+              // 存储暂不可用：不阻断草稿创建（accept 时仍会读取并校验，fail-closed 在写入点）。
             }
-          } catch {
-            feedback({
-              error: `config-draft-unknown-scope：packId ${params.packId}${params.featureId !== undefined ? ` 或 featureId ${params.featureId}` : ''} 不在当前配置内，写入不会生效；请改用当前站点的 packId（跨站偏好用 "*"）`,
-            });
-            continue;
+            if (riskTierRaise === undefined && params.rules === undefined && params.facts === undefined) {
+              feedback({ error: 'config-draft-empty：所列工具均已被用户禁用，无可写入内容' });
+              continue;
+            }
           }
-        }
-        const createdAt = new Date().toISOString();
-        const draft: PendingConfigDraft = {
-          subject: subjectOf(claims),
-          packId: params.packId,
-          ...(params.rules !== undefined
-            ? { rules: draftEntries('r', params.rules, sessionId, params.featureId, createdAt) }
-            : {}),
-          ...(params.facts !== undefined
-            ? { facts: draftEntries('f', params.facts, sessionId, params.featureId, createdAt) }
-            : {}),
-          ...(riskTierRaise !== undefined ? { riskTierRaise: { ...riskTierRaise } } : {}),
-          expiresAt: Date.now() + (deps.userConfig.draftTtlMs ?? CONFIG_DRAFT_TTL_MS),
-        };
-        const draftId = `d-${randomUUID()}`;
-        const runtime = runtimeOf(sessionId);
-        for (const [id, pending] of runtime.pendingConfigDrafts) {
-          if (pending.expiresAt < Date.now()) runtime.pendingConfigDrafts.delete(id);
-        }
-        runtime.pendingConfigDrafts.set(draftId, draft);
-        broadcast(sessionId, {
-          type: 'config-draft',
-          sessionId,
-          draftId,
-          scope: {
+          // packId/featureId 存在性校验（"*" 除外）：不在快照的 pack 写入后永不生效（惰性条目），
+          // 草稿期即拒让 agent 纠正；顺带取 pack.name/featureTitle 人读标签，未声明即省略、
+          // 卡片回退 packId·featureId 展示。describeInjection 不带 subject（纯 L1，不产生 L2 双读）。
+          let title: string | undefined;
+          if (params.packId !== '*') {
+            try {
+              const desc = await deps.assembly.describeInjection({
+                sessionId,
+                packId: params.packId,
+                featureId: params.featureId ?? null,
+              });
+              if (desc.packName !== undefined) {
+                title =
+                  desc.featureTitle !== undefined
+                    ? `${desc.packName} · ${desc.featureTitle}`
+                    : desc.packName;
+              }
+            } catch {
+              feedback({
+                error: `config-draft-unknown-scope：packId ${params.packId}${params.featureId !== undefined ? ` 或 featureId ${params.featureId}` : ''} 不在当前配置内，写入不会生效；请改用当前站点的 packId（跨站偏好用 "*"）`,
+              });
+              continue;
+            }
+          }
+          const createdAt = new Date().toISOString();
+          const draft: PendingConfigDraft = {
+            subject: subjectOf(claims),
             packId: params.packId,
-            ...(params.featureId !== undefined ? { featureId: params.featureId } : {}),
-            ...(title !== undefined ? { title } : {}),
-          },
-          change: draftChange(draft),
-          summary: draftSummary(draft),
-        });
-        feedback({ draftId, status: 'pending-decision' });
-        continue;
-      }
-
-      if (call.name === PACK_DOC_TOOL_NAME) {
-        // 渐进披露（非终结）：服务端读当前激活 pack 的 docs/ 正文，作 observation 回喂后继续本回合。
-        const docPath = typeof call.params['path'] === 'string' ? call.params['path'] : '';
-        const doc = await deps.assembly.readPackDoc({ packId: pack.packId, docPath });
-        const docEcho: LlmMessage = {
-          role: 'assistant',
-          content: roundText,
-          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
-        };
-        const docObs: LlmMessage = {
-          role: 'tool',
-          toolCallId: call.toolCallId,
-          content: JSON.stringify(
-            doc.ok ? { content: doc.content ?? '', truncated: doc.truncated === true } : { error: doc.error ?? '读取失败' },
-          ),
-        };
-        messages.push(docEcho, docObs);
-        turnMessages.push(docEcho, docObs);
-        continue;
-      }
-
-      if (call.name === RECORD_APPLICATION_TOOL_NAME && appToolsOk) {
-        // 业务日志（非终结、record-only 旁路）：把投递落盘当天文件，结果作 observation 回喂后继续本回合。
-        const p = call.params;
-        const str = (k: string): string => (typeof p[k] === 'string' ? (p[k] as string) : '');
-        const optStr = (k: string): string | undefined =>
-          typeof p[k] === 'string' ? (p[k] as string) : undefined;
-        const result = recordApplication(deps.applicationsDir, subjectOf(claims), {
-          company: str('company'),
-          position: str('position'),
-          ...(optStr('jdDigest') !== undefined ? { jdDigest: optStr('jdDigest')! } : {}),
-          ...(optStr('score') !== undefined ? { score: optStr('score')! } : {}),
-          ...(optStr('replyOdds') !== undefined ? { replyOdds: optStr('replyOdds')! } : {}),
-          ...(optStr('reason') !== undefined ? { reason: optStr('reason')! } : {}),
-          ...(optStr('decision') !== undefined ? { decision: optStr('decision')! } : {}),
-        });
-        const recEcho: LlmMessage = {
-          role: 'assistant',
-          content: roundText,
-          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
-        };
-        const recObs: LlmMessage = {
-          role: 'tool',
-          toolCallId: call.toolCallId,
-          content: JSON.stringify(
-            result.ok
-              ? { recorded: true, date: result.date }
-              : { recorded: false, note: result.error ?? '记录失败，不影响打招呼' },
-          ),
-        };
-        messages.push(recEcho, recObs);
-        turnMessages.push(recEcho, recObs);
-        continue;
-      }
-
-      if (call.name === LIST_APPLICATIONS_TOOL_NAME && appToolsOk) {
-        // 业务日志查询（非终结）：读某天投递记录汇总回喂后继续本回合。
-        const date = typeof call.params['date'] === 'string' ? (call.params['date'] as string) : undefined;
-        const result = listApplications(deps.applicationsDir, subjectOf(claims), date);
-        const listEcho: LlmMessage = {
-          role: 'assistant',
-          content: roundText,
-          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
-        };
-        const listObs: LlmMessage = {
-          role: 'tool',
-          toolCallId: call.toolCallId,
-          content: JSON.stringify(
-            result.ok
-              ? { date: result.date, count: result.count, items: result.items }
-              : { error: result.error ?? '查询失败' },
-          ),
-        };
-        messages.push(listEcho, listObs);
-        turnMessages.push(listEcho, listObs);
-        continue;
-      }
-
-      if (call.name === GUIDE_TOOL_NAME) {
-        // 引导是终结动作：直接下发页面动作帧，本回合结束——不回喂 observation、不再等 LLM。
-        tailText += roundText;
-        const frame = guideFrame(sessionId, call.params);
-        if (frame !== null) {
-          broadcast(sessionId, frame);
-        } else {
-          const notice = '未能定位到目标元素。';
-          tailText += notice;
-          notify(sessionId, notice);
+            ...(params.rules !== undefined
+              ? { rules: draftEntries('r', params.rules, sessionId, params.featureId, createdAt) }
+              : {}),
+            ...(params.facts !== undefined
+              ? { facts: draftEntries('f', params.facts, sessionId, params.featureId, createdAt) }
+              : {}),
+            ...(riskTierRaise !== undefined ? { riskTierRaise: { ...riskTierRaise } } : {}),
+            expiresAt: Date.now() + (deps.userConfig.draftTtlMs ?? CONFIG_DRAFT_TTL_MS),
+          };
+          const draftId = `d-${randomUUID()}`;
+          const runtime = runtimeOf(sessionId);
+          for (const [id, pending] of runtime.pendingConfigDrafts) {
+            if (pending.expiresAt < Date.now()) runtime.pendingConfigDrafts.delete(id);
+          }
+          runtime.pendingConfigDrafts.set(draftId, draft);
+          broadcast(sessionId, {
+            type: 'config-draft',
+            sessionId,
+            draftId,
+            scope: {
+              packId: params.packId,
+              ...(params.featureId !== undefined ? { featureId: params.featureId } : {}),
+              ...(title !== undefined ? { title } : {}),
+            },
+            change: draftChange(draft),
+            summary: draftSummary(draft),
+          });
+          feedback({ draftId, status: 'pending-decision' });
+          continue;
         }
-        settled = true;
-        break;
-      }
 
-      if (call.name === OPEN_URL_TOOL_ID) {
-        // open_url 准入门在服务端 fail-closed（U7）：与工具注入共用 openUrlAdmittedFor 同一判定
-        // （本轮装配时定格的 openUrlOk）。注入门外会话里模型幻觉或被页面注入诱导的硬调用，此处
-        // 拒绝而非降级——注入面收在工具面之外无兜底，唯一防线只剩 HITL 卡不足以守任意 URL 导航。
-        if (!openUrlOk) {
-          const notice = '该操作暂未支持。';
-          tailText += roundText + notice;
-          notify(sessionId, notice);
-          automationFailed = true;
+        if (call.name === PACK_DOC_TOOL_NAME) {
+          // 渐进披露（非终结）：服务端读当前激活 pack 的 docs/ 正文，作 observation 回喂后继续本回合。
+          const docPath = typeof call.params['path'] === 'string' ? call.params['path'] : '';
+          const doc = await deps.assembly.readPackDoc({ packId: pack.packId, docPath });
+          feed(
+            call,
+            JSON.stringify(
+              doc.ok ? { content: doc.content ?? '', truncated: doc.truncated === true } : { error: doc.error ?? '读取失败' },
+            ),
+            doc.ok ? null : (doc.error ?? 'pack-doc-read-failed'),
+          );
+          continue;
+        }
+
+        if (call.name === RECORD_APPLICATION_TOOL_NAME && appToolsOk) {
+          // 业务日志（非终结、record-only 旁路）：把投递落盘当天文件，结果作 observation 回喂后继续本回合。
+          const p = call.params;
+          const str = (k: string): string => (typeof p[k] === 'string' ? (p[k] as string) : '');
+          const optStr = (k: string): string | undefined =>
+            typeof p[k] === 'string' ? (p[k] as string) : undefined;
+          const result = recordApplication(deps.applicationsDir, subjectOf(claims), {
+            company: str('company'),
+            position: str('position'),
+            ...(optStr('jdDigest') !== undefined ? { jdDigest: optStr('jdDigest')! } : {}),
+            ...(optStr('score') !== undefined ? { score: optStr('score')! } : {}),
+            ...(optStr('replyOdds') !== undefined ? { replyOdds: optStr('replyOdds')! } : {}),
+            ...(optStr('reason') !== undefined ? { reason: optStr('reason')! } : {}),
+            ...(optStr('decision') !== undefined ? { decision: optStr('decision')! } : {}),
+          });
+          feed(
+            call,
+            JSON.stringify(
+              result.ok
+                ? { recorded: true, date: result.date }
+                : { recorded: false, note: result.error ?? '记录失败，不影响打招呼' },
+            ),
+            result.ok ? null : (result.error ?? 'record-application-failed'),
+          );
+          continue;
+        }
+
+        if (call.name === LIST_APPLICATIONS_TOOL_NAME && appToolsOk) {
+          // 业务日志查询（非终结）：读某天投递记录汇总回喂后继续本回合。
+          const date = typeof call.params['date'] === 'string' ? (call.params['date'] as string) : undefined;
+          const result = listApplications(deps.applicationsDir, subjectOf(claims), date);
+          feed(
+            call,
+            JSON.stringify(
+              result.ok
+                ? { date: result.date, count: result.count, items: result.items }
+                : { error: result.error ?? '查询失败' },
+            ),
+            result.ok ? null : (result.error ?? 'list-applications-failed'),
+          );
+          continue;
+        }
+
+        if (call.name === GUIDE_TOOL_NAME) {
+          // 引导是终结动作：直接下发页面动作帧，本回合结束——不回喂 observation、不再等 LLM。
+          if (!roundTextConsumed) {
+            tailText += roundText;
+            roundTextConsumed = true;
+          }
+          const frame = guideFrame(sessionId, call.params);
+          if (frame !== null) {
+            broadcast(sessionId, frame);
+          } else {
+            const notice = '未能定位到目标元素。';
+            tailText += notice;
+            notify(sessionId, notice);
+          }
+          notExecutedRest(callIndex + 1);
+          flushRound();
           settled = true;
-          break;
+          break turnLoop;
         }
-      }
 
-      if (call.name === SITE_NAVIGATE_TOOL_ID || call.name === OPEN_URL_TOOL_ID) {
-        // 内建导航（非终结，按名分派工具定义）：经 toolgate 专路裁决 hitl + 一次性签名 navigate 指令，
-        // 结果 {url} 过 resultSchema 回收后回喂本回合。
-        const navToolDef = call.name === OPEN_URL_TOOL_ID ? OPEN_URL_TOOL_DEF : SITE_NAVIGATE_TOOL_DEF;
-        const observation = await runExecSubflow(
-          session,
-          claims,
-          featureId,
-          pack,
-          navToolDef,
-          call,
-          evidenceRules,
-          userConfig,
-          unattended,
-          run,
-          cancelled,
-        );
-        const navEcho: LlmMessage = {
-          role: 'assistant',
-          content: roundText,
-          toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
-        };
-        let navObsContent = JSON.stringify(
-          observation.ok ? observation.content : { error: observation.error },
-        );
-        let navBoundary: LlmMessage | null = null;
-        // 导航成功＝激活站点即刻切换：回合内按落点 URL 重新装配（规则/事实/工具面随站换出），
-        // 系统注入整段覆写、边界标记入历史——LLM 下一轮就持有新站上下文，不必等用户再发言。
-        // 定向导航（params.targetPage）不改变活跃页：不切 context、不重装配、不注边界标记（ADR-023 §5，
-        // 白名单仍按活跃页装配），观测照常回喂；目标页转 active 后由其 context-report 驱动切换。
-        if (observation.ok && typeof call.params['targetPage'] !== 'string') {
-          const landedUrl = String((observation.content as JsonObject | null)?.['url'] ?? '');
-          if (landedUrl !== '') {
-            // 围栏落地重校验：site_navigate 的目标在决策与签发两处已判围栏，但 302 可把落点带出围栏。
-            // 越界落地不按新落点装配（回落仅基座）并如实告知模型（R6）；open_url 本就无围栏、不适用。
-            const fenceEscaped =
-              call.name === SITE_NAVIGATE_TOOL_ID && !(await urlInInstalledFence(landedUrl));
-            deps.store.setContext(sessionId, landedUrl);
-            const previousPackId = pack.packId;
-            const previousGenericOrigin = pack.genericOrigin ?? null;
-            ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk, appToolsOk } =
-              await assembleFor(landedUrl, fenceEscaped));
-            messages[0] = {
-              role: 'system',
-              content: withManifest(
-                withPreference(systemContentFor(composed, pack, landedUrl)),
-                await groupPagesManifest(session, packColumnCache, tools),
-              ),
-            };
-            navBoundary = await boundaryFor(pack, previousPackId, previousGenericOrigin);
-            if (
-              pack.packId !== null &&
-              (pack.packId !== previousPackId || (pack.genericOrigin ?? null) !== previousGenericOrigin)
-            ) {
-              deps.store.setLastPackId(sessionId, pack.packId, pack.genericOrigin);
+        if (call.name === OPEN_URL_TOOL_ID) {
+          // open_url 准入门在服务端 fail-closed（U7）：与工具注入共用 openUrlAdmittedFor 同一判定
+          // （本轮装配时定格的 openUrlOk）。注入门外会话里模型幻觉或被页面注入诱导的硬调用，此处
+          // 拒绝而非降级——注入面收在工具面之外无兜底，唯一防线只剩 HITL 卡不足以守任意 URL 导航。
+          if (!openUrlOk) {
+            const notice = '该操作暂未支持。';
+            if (!roundTextConsumed) {
+              tailText += roundText;
+              roundTextConsumed = true;
             }
-            if (fenceEscaped) {
-              navObsContent +=
-                '\n实际落点与目标站点不一致（发生了跳转），已越出已安装站点围栏：本页不装配任何站点配置，仅通用能力可用。';
-            } else if (pack.packId === null) {
-              navObsContent += '\n落点站点未安装专属配置，辅助能力受限。';
-            }
+            tailText += notice;
+            notify(sessionId, notice);
+            automationFailed = true;
+            settled = true;
+            turnReason = 'tool-not-available';
+            notExecutedRest(callIndex + 1);
+            flushRound();
+            break turnLoop;
           }
         }
-        const navObs: LlmMessage = {
-          role: 'tool',
-          toolCallId: call.toolCallId,
-          content: navObsContent,
-        };
-        messages.push(navEcho, navObs);
-        turnMessages.push(navEcho, navObs);
-        if (navBoundary !== null) {
-          messages.push(navBoundary);
-          turnMessages.push(navBoundary);
-        }
-        continue;
-      }
 
-      const tool = hostToolsById.get(call.name);
-      if (tool === undefined) {
-        // 白名单外的工具名（LLM 幻觉）：如实告知不支持，回合终结、不 fail。
-        const notice = '该操作暂未支持。';
-        tailText += roundText + notice;
+        if (call.name === SITE_NAVIGATE_TOOL_ID || call.name === OPEN_URL_TOOL_ID) {
+          // 内建导航（非终结，按名分派工具定义）：经 toolgate 专路裁决 hitl + 一次性签名 navigate 指令，
+          // 结果 {url} 过 resultSchema 回收后回喂本回合。
+          const navToolDef = call.name === OPEN_URL_TOOL_ID ? OPEN_URL_TOOL_DEF : SITE_NAVIGATE_TOOL_DEF;
+          const observation = await runExecSubflow(
+            session,
+            claims,
+            featureId,
+            pack,
+            navToolDef,
+            call,
+            evidenceRules,
+            userConfig,
+            unattended,
+            run,
+            cancelled,
+          );
+          let navObsContent = JSON.stringify(
+            observation.ok ? observation.content : { error: observation.error },
+          );
+          let navBoundary: LlmMessage | null = null;
+          // 导航成功＝激活站点即刻切换：回合内按落点 URL 重新装配（规则/事实/工具面随站换出），
+          // 系统注入整段覆写、边界标记入历史——LLM 下一轮就持有新站上下文，不必等用户再发言。
+          // 定向导航（params.targetPage）不改变活跃页：不切 context、不重装配、不注边界标记（ADR-023 §5，
+          // 白名单仍按活跃页装配），观测照常回喂；目标页转 active 后由其 context-report 驱动切换。
+          if (observation.ok && typeof call.params['targetPage'] !== 'string') {
+            const landedUrl = String((observation.content as JsonObject | null)?.['url'] ?? '');
+            if (landedUrl !== '') {
+              // 围栏落地重校验：site_navigate 的目标在决策与签发两处已判围栏，但 302 可把落点带出围栏。
+              // 越界落地不按新落点装配（回落仅基座）并如实告知模型（R6）；open_url 本就无围栏、不适用。
+              const fenceEscaped =
+                call.name === SITE_NAVIGATE_TOOL_ID && !(await urlInInstalledFence(landedUrl));
+              deps.store.setContext(sessionId, landedUrl);
+              const previousPackId = pack.packId;
+              const previousGenericOrigin = pack.genericOrigin ?? null;
+              ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk, appToolsOk } =
+                await assembleFor(landedUrl, fenceEscaped));
+              messages[0] = {
+                role: 'system',
+                content: withManifest(
+                  withPreference(systemContentFor(composed, pack, landedUrl)),
+                  await groupPagesManifest(session, packColumnCache, tools),
+                ),
+              };
+              navBoundary = await boundaryFor(pack, previousPackId, previousGenericOrigin);
+              if (
+                pack.packId !== null &&
+                (pack.packId !== previousPackId || (pack.genericOrigin ?? null) !== previousGenericOrigin)
+              ) {
+                deps.store.setLastPackId(sessionId, pack.packId, pack.genericOrigin);
+              }
+              if (fenceEscaped) {
+                navObsContent +=
+                  '\n实际落点与目标站点不一致（发生了跳转），已越出已安装站点围栏：本页不装配任何站点配置，仅通用能力可用。';
+              } else if (pack.packId === null) {
+                navObsContent += '\n落点站点未安装专属配置，辅助能力受限。';
+              }
+            }
+          }
+          feed(call, navObsContent, observation.ok ? null : (observation.error ?? 'navigate-failed'));
+          // 边界标记须排在本轮全部 tool 观测之后：观测与其 assistant 回声必须连续成对。
+          if (navBoundary !== null) roundTrailing.push(navBoundary);
+          continue;
+        }
+
+        const tool = hostToolsById.get(call.name);
+        if (tool === undefined) {
+          // 工具面外的工具名（模型幻觉或被页面内容诱导）：零执行，但不终结回合——把「不支持 + 可用工具名」
+          // 作为观测回喂让模型自纠，比让用户重开一轮更准确；反复无效调用由连续失败预算止损。
+          if (!unavailableNotified) {
+            unavailableNotified = true;
+            notify(sessionId, '该操作暂未支持。');
+          }
+          automationFailed = true;
+          feed(
+            call,
+            JSON.stringify({ error: 'tool-not-available', available: tools.map((spec) => spec.name) }),
+            'tool-not-available',
+          );
+          continue;
+        }
+
+        const boundedIntentId =
+          tool.authorization?.kind === 'bounded-fulfillment' && typeof call.params['intentId'] === 'string'
+            ? call.params['intentId']
+            : null;
+        let observation: Observation;
+        if (
+          boundedIntentId !== null &&
+          fulfillmentBudget.attempted &&
+          fulfillmentBudget.intentId !== boundedIntentId
+        ) {
+          broadcast(sessionId, {
+            type: 'tool-card', sessionId, toolCallId: call.toolCallId, toolId: tool.id,
+            status: 'running', summary: tool.id, mode: tool.execution,
+          });
+          broadcast(sessionId, {
+            type: 'tool-card', sessionId, toolCallId: call.toolCallId, toolId: tool.id,
+            status: 'failed', mode: tool.execution,
+          });
+          observation = { toolCallId: call.toolCallId, ok: false, content: null, error: 'fulfillment-order-limit' };
+        } else {
+          if (boundedIntentId !== null && !fulfillmentBudget.attempted) {
+            fulfillmentBudget = { attempted: true, intentId: boundedIntentId };
+          }
+          observation = await runExecSubflow(
+            session,
+            claims,
+            featureId,
+            pack,
+            tool,
+            call,
+            evidenceRules,
+            userConfig,
+            unattended,
+            run,
+            cancelled,
+          );
+        }
+        if (!observation.ok) automationFailed = true;
+        // 回喂 agent：assistant 调用轮回声本轮 tool_calls（OpenAI 兼容 API 要求 role:tool 须有前置
+        // 带 tool_calls 的 assistant 消息，否则拒绝孤儿 tool 消息）+ observation（仅规整结果，U7）。
+        feed(
+          call,
+          JSON.stringify(observation.ok ? observation.content : { error: observation.error }),
+          observation.ok ? null : (observation.error ?? 'exec-failed'),
+        );
+      }
+      flushRound();
+      if (failureBudgetExhausted) {
+        // 同一步骤同一原因反复失败：止损优先于把 maxTurnRounds 烧完，并如实交代停在哪里（R6）。
+        const notice =
+          '同一步骤已连续失败多次，我先停在这里，避免无效重试；可以换一种做法或换个目标再说一次。';
+        tailText += notice;
         notify(sessionId, notice);
         automationFailed = true;
         settled = true;
+        turnReason = 'consecutive-failures';
         break;
       }
-
-      const boundedIntentId =
-        tool.authorization?.kind === 'bounded-fulfillment' && typeof call.params['intentId'] === 'string'
-          ? call.params['intentId']
-          : null;
-      let observation: Observation;
-      if (
-        boundedIntentId !== null &&
-        fulfillmentBudget.attempted &&
-        fulfillmentBudget.intentId !== boundedIntentId
-      ) {
-        broadcast(sessionId, {
-          type: 'tool-card', sessionId, toolCallId: call.toolCallId, toolId: tool.id,
-          status: 'running', summary: tool.id, mode: tool.execution,
-        });
-        broadcast(sessionId, {
-          type: 'tool-card', sessionId, toolCallId: call.toolCallId, toolId: tool.id,
-          status: 'failed', mode: tool.execution,
-        });
-        observation = { toolCallId: call.toolCallId, ok: false, content: null, error: 'fulfillment-order-limit' };
-      } else {
-        if (boundedIntentId !== null && !fulfillmentBudget.attempted) {
-          fulfillmentBudget = { attempted: true, intentId: boundedIntentId };
-        }
-        observation = await runExecSubflow(
-          session,
-          claims,
-          featureId,
-          pack,
-          tool,
-          call,
-          evidenceRules,
-          userConfig,
-          unattended,
-          run,
-          cancelled,
-        );
-      }
-      if (!observation.ok) automationFailed = true;
-      // 回喂 agent：assistant 调用轮回声本轮 tool_calls（OpenAI 兼容 API 要求 role:tool 须有前置
-      // 带 tool_calls 的 assistant 消息，否则拒绝孤儿 tool 消息）+ observation（仅规整结果，U7）。
-      const execEcho: LlmMessage = {
-        role: 'assistant',
-        content: roundText,
-        toolCalls: [{ id: call.toolCallId, name: call.name, params: call.params }],
-      };
-      const execObs: LlmMessage = {
-        role: 'tool',
-        toolCallId: call.toolCallId,
-        content: JSON.stringify(observation.ok ? observation.content : { error: observation.error }),
-      };
-      messages.push(execEcho, execObs);
-      turnMessages.push(execEcho, execObs);
     }
 
     if (cancelled()) {
@@ -2800,12 +2956,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
       notify(sessionId, notice);
       automationFailed = true;
       settled = true;
+      turnReason = 'stopped';
     } else if (!settled) {
       // 轮数耗尽被截断：显式收尾而非静默停（用户视角"卡住"），并留在历史里供下回合衔接。
       const notice = '本轮操作步数已达上限，我先停在这里；回复「继续」可接着做。';
       tailText += notice;
       notify(sessionId, notice);
       automationFailed = true;
+      turnReason = 'max-rounds';
     }
     if (tailText !== '') {
       turnMessages.push({ role: 'assistant', content: tailText });
@@ -2816,14 +2974,22 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const estimate = estimateHistoryTokens(
       lastUsage !== undefined ? { history: pruned, usage: lastUsage } : { history: pruned },
     );
+    // 摘要不可用且估算逼近窗口硬上限时改走确定性截断（不依赖模型可用性），并如实告知用户（R6）。
+    let historyTruncated = false;
     const toStore = !cancelled() && shouldCompress(estimate, deps.compressContextWindow, deps.compressThreshold)
       ? await compressHistory(pruned, {
           llm: deps.llm,
           ...(llmRequestId !== undefined ? { requestId: llmRequestId } : {}),
+          contextWindow: deps.compressContextWindow,
+          estimate,
+          onDegrade: (kind) => {
+            if (kind === 'hard-truncated') historyTruncated = true;
+          },
         })
       : pruned;
+    if (historyTruncated) notify(sessionId, HISTORY_TRUNCATED_NOTICE);
     deps.store.setHistory(sessionId, toStore);
-    return !automationFailed;
+    return { ok: !automationFailed, reason: turnReason };
   }
 
   /**
@@ -2840,7 +3006,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     run: { runId: string; automationId: string },
     text: string,
     messageId: string | undefined,
-  ): Promise<{ ok: boolean; summary?: string }> {
+  ): Promise<{ ok: boolean; summary?: string; reason: TurnCompleteReason }> {
     const { sessionId } = session;
     const runtime = runtimeOf(sessionId);
     const cancelled = (): boolean =>
@@ -2862,7 +3028,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const settle = (
       outcome: 'ok' | 'error' | 'timeout' | 'skipped',
       summary?: string,
-    ): { ok: boolean; summary?: string } => {
+    ): { ok: boolean; summary?: string; reason: TurnCompleteReason } => {
       recordEvent(
         sessionId,
         claims,
@@ -2883,7 +3049,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
       );
       // skipped 对客户端按成功收尾（释放单飞锁、不停用触发器），但在审计里与 ok 分开——
       // 「本轮没看成」和「看过、没变」是两回事，运行历史不能把前者渲染成后者（R6）。
-      return { ok: outcome === 'ok' || outcome === 'skipped', ...(summary !== undefined ? { summary } : {}) };
+      const ok = outcome === 'ok' || outcome === 'skipped';
+      return {
+        ok,
+        ...(summary !== undefined ? { summary } : {}),
+        reason: ok ? 'completed' : cancelled() ? 'stopped' : 'llm-error',
+      };
     };
 
     const requestId = randomUUID();
@@ -3159,6 +3330,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
         }
         runtime.pendingTurns += 1;
         if (upstream.messageId !== undefined) runtime.activeMessageIds.add(upstream.messageId);
+        // 回合终止原因随完成帧下发；回合内部异常（catch 分支）无原因可言，缺省即不标注。
+        let turnReason: TurnCompleteReason | undefined;
         runtime.turnChain = runtime.turnChain
           .then(async () => {
             runtime.runningMessageId = upstream.messageId ?? null;
@@ -3177,8 +3350,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
                 );
                 succeeded = result.ok;
                 summary = result.summary;
+                turnReason = result.reason;
               } else {
-                succeeded = await runTurn(
+                const result = await runTurn(
                   session,
                   upstream.text,
                   claims,
@@ -3186,6 +3360,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   upstream.messageId,
                   automationRun,
                 );
+                succeeded = result.ok;
+                turnReason = result.reason;
               }
               if (automationRun !== null) {
                 runtime.automationRuns.set(automationRun.runId, {
@@ -3239,6 +3415,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
               sessionId: session.sessionId,
               ...(upstream.messageId !== undefined ? { messageId: upstream.messageId } : {}),
               idle: runtime.pendingTurns === 0,
+              ...(turnReason !== undefined ? { reason: turnReason } : {}),
             });
           });
         sendJson(res, 202, {

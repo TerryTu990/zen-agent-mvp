@@ -13,11 +13,49 @@ export const BOUNDARY_MARKER = '【站点边界】';
 export const PAGE_OBS_MARKER = '[来自 ';
 
 const DEFAULT_KEEP_ROUNDS = 4;
+/** 摘要失败后仍逼近窗口时的硬上限比例：越过即改走不依赖模型的确定性截断。 */
+const DEFAULT_HARD_LIMIT_RATIO = 0.85;
+
+/** 摘要块的可信度声明：压缩产物是降级上下文，模型不得据其宣称步骤已完成（防「幻觉已完成」）。 */
+export const SUMMARY_UNVERIFIED_NOTICE =
+  '（以下为较早回合的压缩记录，属未经本回合核实的上下文；除非你在本回合亲自确认过，否则不得据此声称任何操作已完成。）';
+
+/** 确定性截断产物的头部标识：与摘要块区分，读者与再压缩都能机械识别。 */
+export const TRUNCATION_NOTICE_PREFIX = '【较早对话已省略】';
 
 const SUMMARY_SYSTEM_PROMPT =
   '你是对话历史压缩器。把给定的较早对话回合压缩为一段滚动摘要，' +
   '必须涵盖：用户的业务目标、已完成的关键步骤、关键结论与当前进展。' +
+  '仅当历史中存在明确成功回执时才写「已完成」，只发起过而未见回执的一律写「进行中」；' +
+  '禁止从上下文推断完成。' +
   '只输出摘要正文，不要额外解释或前后缀。';
+
+/**
+ * 出网与落盘共用的脱敏器：压缩是独立于主回合的一条出网 + 落盘路径，脱敏点须跟着走。
+ * URL 只留 origin+path（query/hash 常携带会话令牌与检索词）；已知 secret 形态整体替换为占位。
+ */
+const SECRET_PATTERNS: RegExp[] = [
+  /sk-ant-[A-Za-z0-9_-]{20,}/g,
+  /sk-[A-Za-z0-9]{20,}/g,
+  /ghp_[A-Za-z0-9]{36}/g,
+  /AKIA[A-Z0-9]{16}/g,
+  /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/g,
+];
+
+const URL_PATTERN = /https?:\/\/[^\s"'<>\]）)】]+/g;
+
+export function redactForLlm(text: string): string {
+  let scrubbed = text.replace(URL_PATTERN, (url) => {
+    const cut = Math.min(
+      ...[url.indexOf('?'), url.indexOf('#')].filter((index) => index >= 0),
+      url.length,
+    );
+    return url.slice(0, cut);
+  });
+  for (const pattern of SECRET_PATTERNS) scrubbed = scrubbed.replace(pattern, '[REDACTED]');
+  return scrubbed;
+}
 
 const SUMMARY_USER_PREFIX = '以下是需要压缩的较早对话回合：\n\n';
 
@@ -134,7 +172,7 @@ async function summarize(llm: LlmPort, head: LlmMessage[], requestId?: string): 
     for await (const event of llm.chat({
       messages: [
         { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
-        { role: 'user', content: SUMMARY_USER_PREFIX + serializeHead(head) },
+        { role: 'user', content: SUMMARY_USER_PREFIX + redactForLlm(serializeHead(head)) },
       ],
       ...(requestId !== undefined ? { requestId } : {}),
     })) {
@@ -149,12 +187,47 @@ async function summarize(llm: LlmPort, head: LlmMessage[], requestId?: string): 
   return trimmed === '' ? null : trimmed;
 }
 
+/** 降级层级：summary-failed=本轮摘要没生成出来；hard-truncated=已改走不依赖模型的确定性截断。 */
+export type CompressDegradation = 'summary-failed' | 'hard-truncated';
+
 export interface CompressOptions {
   llm: LlmPort;
   /** 与所属回合共用取消编号，保证停止可中断摘要流。 */
   requestId?: string;
   /** 保留原文的最近用户回合数，默认 4。 */
   keepRounds?: number;
+  /** 上下文窗口 token 数；与 estimate 同时给出才启用硬上限兜底，缺省=只有摘要一条路径（fail-open）。 */
+  contextWindow?: number;
+  /** 本次压缩前的历史 token 估算值。 */
+  estimate?: number;
+  /** 硬上限比例，默认 0.85。 */
+  hardLimitRatio?: number;
+  /** 降级通知（R6：走了兜底必须让用户知道较早对话已省略）；record-only，不影响返回值。 */
+  onDegrade?: (kind: CompressDegradation) => void;
+}
+
+/** 保真项：治理事实（站点边界 / 任务级授权 / 观测页标注）不因省 token 而消失。 */
+function preservedFacts(head: LlmMessage[]): string[] {
+  const parts: string[] = [];
+  const boundaries = head.filter(isBoundaryMarker).map((message) => message.content);
+  const tasks = extractTaskPlans(head);
+  const pageTags = extractPageObsTags(head);
+  if (boundaries.length > 0) parts.push('保留的站点边界标记：', ...boundaries);
+  if (tasks.length > 0) parts.push('保留的任务授权计划：', ...tasks);
+  if (pageTags.length > 0) {
+    parts.push('保留的观测页标注（较早回合定向读取过的页面）：', ...pageTags);
+  }
+  return parts;
+}
+
+/**
+ * 确定性截断（不调 LLM）：较早回合整体替换为一行省略存根 + 保真项，最近 K 回合原文保留。
+ * 摘要路径不可用时的唯一兜底——省 token 这件事不能依赖模型可用性。
+ */
+function fallbackTruncate(head: LlmMessage[], tail: LlmMessage[]): LlmMessage[] {
+  const parts = [`${TRUNCATION_NOTICE_PREFIX}（${head.length} 条消息未能生成摘要，已直接省略）`];
+  parts.push(...preservedFacts(head));
+  return [{ role: 'user', content: redactForLlm(parts.join('\n')) }, ...tail];
 }
 
 /**
@@ -178,19 +251,19 @@ export async function compressHistory(
   const tail = history.slice(splitIdx);
   if (head.length === 0) return history;
 
-  const preservedBoundaries = head.filter(isBoundaryMarker).map((message) => message.content);
-  const preservedTasks = extractTaskPlans(head);
-  const preservedPageTags = extractPageObsTags(head);
-
   const summaryText = await summarize(options.llm, head, options.requestId);
-  if (summaryText === null) return history;
-
-  const parts = [SUMMARY_MARKER, summaryText];
-  if (preservedBoundaries.length > 0) parts.push('保留的站点边界标记：', ...preservedBoundaries);
-  if (preservedTasks.length > 0) parts.push('保留的任务授权计划：', ...preservedTasks);
-  if (preservedPageTags.length > 0) {
-    parts.push('保留的观测页标注（较早回合定向读取过的页面）：', ...preservedPageTags);
+  if (summaryText === null) {
+    options.onDegrade?.('summary-failed');
+    const { contextWindow, estimate } = options;
+    const hardLimit = (contextWindow ?? 0) * (options.hardLimitRatio ?? DEFAULT_HARD_LIMIT_RATIO);
+    if (contextWindow === undefined || estimate === undefined || estimate < hardLimit) {
+      return history;
+    }
+    options.onDegrade?.('hard-truncated');
+    return fallbackTruncate(head, tail);
   }
-  const summaryMessage: LlmMessage = { role: 'user', content: parts.join('\n') };
+
+  const parts = [SUMMARY_MARKER, SUMMARY_UNVERIFIED_NOTICE, summaryText, ...preservedFacts(head)];
+  const summaryMessage: LlmMessage = { role: 'user', content: redactForLlm(parts.join('\n')) };
   return [summaryMessage, ...tail];
 }

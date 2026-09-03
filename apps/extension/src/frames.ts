@@ -151,11 +151,21 @@ export interface TextDeltaFrame {
   priority?: 'safety';
 }
 
+export type TurnCompleteReason =
+  | 'completed'
+  | 'stopped'
+  | 'max-rounds'
+  | 'consecutive-failures'
+  | 'llm-error'
+  | 'llm-timeout'
+  | 'tool-not-available';
+
 export interface TurnCompleteFrame {
   type: 'turn-complete';
   sessionId: string;
   messageId?: string;
   idle: boolean;
+  reason?: TurnCompleteReason;
 }
 
 export interface ToolCardFrame {

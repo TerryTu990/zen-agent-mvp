@@ -178,6 +178,13 @@ describe('C3 client-access-layer 消息帧', () => {
       messageId: 'message_001',
       idle: true,
     },
+    'turn-complete 带终止原因': {
+      type: 'turn-complete',
+      sessionId: 's-001',
+      messageId: 'message_001',
+      idle: true,
+      reason: 'consecutive-failures',
+    },
     'guide-action highlight 含 message': {
       type: 'guide-action',
       sessionId: 's-001',
@@ -231,6 +238,12 @@ describe('C3 client-access-layer 消息帧', () => {
       sessionId: 's-001',
       text: '自动扫描',
       automationRunId: 'scan_run_002',
+    },
+    'turn-complete reason 越闭集': {
+      type: 'turn-complete',
+      sessionId: 's-001',
+      idle: true,
+      reason: 'gave-up',
     },
     'context-report 缺 required url': { type: 'context-report', sessionId: 's-001' },
     '未知帧 type 被闭集拒绝': { type: 'page-reload', sessionId: 's-001' },

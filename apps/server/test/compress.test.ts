@@ -4,16 +4,20 @@ import {
   BOUNDARY_MARKER,
   PAGE_OBS_MARKER,
   SUMMARY_MARKER,
+  SUMMARY_UNVERIFIED_NOTICE,
+  TRUNCATION_NOTICE_PREFIX,
   compressHistory,
   estimateHistoryTokens,
+  redactForLlm,
   shouldCompress,
 } from '../src/compress.js';
 
 /** 产出固定摘要文本的替身；error=true 时以 done error 收尾（驱动 fail-open 路径）。 */
-function fakeLlm(reply: string, opts: { error?: boolean } = {}): LlmPort {
+function fakeLlm(reply: string, opts: { error?: boolean; seen?: string[] } = {}): LlmPort {
   return {
     cancel() {},
-    async *chat(): AsyncGenerator<LlmStreamEvent> {
+    async *chat(request): AsyncGenerator<LlmStreamEvent> {
+      opts.seen?.push(request.messages.map((m) => m.content).join('\n'));
       if (opts.error === true) {
         yield { kind: 'done', stopReason: 'error', error: 'boom' };
         return;
@@ -200,5 +204,121 @@ describe('compressHistory（回合边界压缩）', () => {
       { role: 'user', content: '问题6' },
       { role: 'assistant', content: '回答6' },
     ]);
+  });
+});
+
+/** 运行时拼出的假密钥形态（不在源文件留明文，见 ZA-C-SEC-01）。 */
+const FAKE_SECRET = `sk-${'a'.repeat(24)}`;
+
+describe('redactForLlm（压缩出网/落盘共用脱敏器）', () => {
+  it('URL 只留 origin+path，query 与 hash 整段剥除', () => {
+    expect(redactForLlm('见 https://mail.126.com/inbox?token=abc123#frag 页')).toBe(
+      '见 https://mail.126.com/inbox 页',
+    );
+  });
+
+  it('已知 secret 形态替换为占位，不留原值', () => {
+    const scrubbed = redactForLlm(`authorization=Bearer ${FAKE_SECRET}`);
+    expect(scrubbed).not.toContain(FAKE_SECRET);
+    expect(scrubbed).toContain('[REDACTED]');
+  });
+
+  it('无 URL 无 secret 的正文原样返回', () => {
+    expect(redactForLlm('用户想筛选待发货订单')).toBe('用户想筛选待发货订单');
+  });
+});
+
+describe('压缩韧性（不可信声明 / 脱敏 / 两级降级）', () => {
+  it('摘要块带不可信声明：不得据此声称步骤已完成', async () => {
+    const result = await compressHistory(turns(6), { llm: fakeLlm('这是摘要'), keepRounds: 2 });
+    expect(result[0]!.content).toContain(SUMMARY_UNVERIFIED_NOTICE);
+  });
+
+  it('摘要系统提示禁止从上下文推断完成', async () => {
+    const seen: string[] = [];
+    await compressHistory(turns(6), { llm: fakeLlm('这是摘要', { seen }), keepRounds: 2 });
+    expect(seen[0]).toContain('明确成功回执');
+  });
+
+  it('压缩输入出网前过脱敏器：query 串与 secret 值不进摘要请求', async () => {
+    const seen: string[] = [];
+    const history: LlmMessage[] = [
+      ...turns(1),
+      {
+        role: 'tool',
+        toolCallId: 'c1',
+        content: '{"url":"https://host.example/orders?session=canary-query-value"}',
+      },
+      { role: 'user', content: `密钥是 ${FAKE_SECRET}` },
+      ...turns(4),
+    ];
+    await compressHistory(history, { llm: fakeLlm('摘要正文', { seen }), keepRounds: 2 });
+    expect(seen[0]).not.toContain('canary-query-value');
+    expect(seen[0]).not.toContain(FAKE_SECRET);
+  });
+
+  it('摘要正文落盘前同样过脱敏器（模型复述回敏感串不外泄进历史）', async () => {
+    const result = await compressHistory(turns(6), {
+      llm: fakeLlm('摘要里带 https://host.example/p?token=leak-canary'),
+      keepRounds: 2,
+    });
+    expect(result[0]!.content).not.toContain('leak-canary');
+  });
+
+  it('摘要失败且未超硬上限：fail-open 原样返回（基线不变），只记降级不截断', async () => {
+    const history = turns(6);
+    const degraded: string[] = [];
+    const result = await compressHistory(history, {
+      llm: fakeLlm('', { error: true }),
+      keepRounds: 2,
+      contextWindow: 200_000,
+      estimate: 1_000,
+      onDegrade: (kind) => degraded.push(kind),
+    });
+    expect(result).toBe(history);
+    expect(degraded).toEqual(['summary-failed']);
+  });
+
+  it('摘要失败且估算超硬上限：按 keepRounds 确定性截断，三类保真项仍在', async () => {
+    const boundary = `${BOUNDARY_MARKER}\n以下对话发生在 https://mail.126.com 站点。`;
+    const tag = `${PAGE_OBS_MARKER}p-1 · https://mail.126.com]`;
+    const history: LlmMessage[] = [
+      { role: 'user', content: boundary },
+      ...turns(1),
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'x.page-operate', params: { task: '给张三发消息' } }],
+      },
+      { role: 'tool', toolCallId: 'c1', content: `${tag}\n{"url":"u","elements":[]}` },
+      ...turns(5),
+    ];
+    const result = await compressHistory(history, {
+      llm: fakeLlm('', { error: true }),
+      keepRounds: 2,
+      contextWindow: 100,
+      estimate: 95,
+    });
+    expect(result).not.toBe(history);
+    expect(result.length).toBeLessThan(history.length);
+    const head = result[0]!.content;
+    expect(head).toContain(TRUNCATION_NOTICE_PREFIX);
+    expect(head).toContain(boundary);
+    expect(head).toContain('给张三发消息');
+    expect(head).toContain(tag);
+    // 最近 keepRounds 个用户回合原文保留
+    expect(result.at(-1)).toEqual({ role: 'assistant', content: '回答5' });
+  });
+
+  it('确定性截断的通知回调如实告知用户（R6）', async () => {
+    const degraded: string[] = [];
+    await compressHistory(turns(8), {
+      llm: fakeLlm('', { error: true }),
+      keepRounds: 2,
+      contextWindow: 100,
+      estimate: 95,
+      onDegrade: (kind) => degraded.push(kind),
+    });
+    expect(degraded).toEqual(['summary-failed', 'hard-truncated']);
   });
 });

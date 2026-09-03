@@ -641,6 +641,8 @@ function decide(sys, u, body) {
   const drill = driveDrill(u, body);
   if (drill !== null) return drill;
   const obs = lastToolObs(body);
+  const orchestration = driveOrchestration(u, obs, body);
+  if (orchestration !== null) return orchestration;
   // 正文阅读剧本：首轮取带正文的快照（includeText），回喂轮把 observation 原样回显，
   // 让服务端测试能对回喂内容（正文本体与不可信数据标注）做机械断言。
   if (u.includes('读一下这页正文') && hasTool(body, TOOL_SNAPSHOT)) {
@@ -845,14 +847,6 @@ function decide(sys, u, body) {
     return { text: summarizeObs(obs) };
   }
 
-  // invalid-tool-args 自愈剧本：'模拟截断实参' 哨兵首轮产出截断 arguments（真实 LLM 输出截断的确定性替身），
-  // 网关回喂修正提示（含"实参 JSON 无效"）后本分支不再命中、走重试分支产出完整调用。
-  if (u.includes('模拟截断实参') && hasTool(body, TOOL_REFRESH)) {
-    return { toolCall: { id: 'call_broken', name: TOOL_REFRESH, arguments: '{"broken":' } };
-  }
-  if (u.includes('实参 JSON 无效') && hasTool(body, TOOL_REFRESH)) {
-    return { toolCall: { id: 'call_retry', name: TOOL_REFRESH, arguments: JSON.stringify({}) } };
-  }
 
   if (
     sys.includes(SYS_EXECUTION_PREFERENCE) &&
@@ -888,6 +882,57 @@ function decide(sys, u, body) {
     return { text: 'MOCK-NO-ANCHOR' };
   }
   return { text: pickReply(sys, u) };
+}
+
+/** 本轮请求里 role:'tool' 观测的条数（回合内已回喂几次），用于产出不重复的 toolCallId。 */
+function toolObsCount(body) {
+  const msgs = Array.isArray(body?.messages) ? body.messages : [];
+  return msgs.filter((m) => m?.role === 'tool').length;
+}
+
+/**
+ * B4 编排韧性剧本（加法式，命中即接管）：并行调用 / 未知工具 / 截断实参自愈 / 同回合多次快照。
+ * 判定只看哨兵与观测本体，不依赖任何被测措辞，避免服务端文案改写把剧本静默打飞。
+ */
+function driveOrchestration(u, obs, body) {
+  // 一次响应产出两个 tool_calls：驱动服务端「收集全部调用后按序逐个分发」的路径。
+  if (u.includes('模拟并行调用') && obs === null && hasTool(body, TOOL_REFRESH)) {
+    return {
+      toolCalls: [
+        { id: 'call_par_1', name: TOOL_REFRESH, arguments: JSON.stringify({}) },
+        { id: 'call_par_2', name: TOOL_REFRESH, arguments: JSON.stringify({}) },
+      ],
+    };
+  }
+  // 工具面外的幻觉工具名：每轮都发，驱动服务端的连续失败预算而非靠模型自觉收敛。
+  if (u.includes('模拟未知工具')) {
+    return {
+      toolCall: {
+        id: `call_ghost_${toolObsCount(body)}`,
+        name: 'ghost_tool',
+        arguments: JSON.stringify({}),
+      },
+    };
+  }
+  // invalid-tool-args 自愈：首轮产出截断 arguments（真实 LLM 输出截断的确定性替身），
+  // 服务端以 role:'tool' 观测回喂错误类别后走重试分支产出完整调用。
+  if (u.includes('模拟截断实参') && hasTool(body, TOOL_REFRESH)) {
+    if (obs === null) {
+      return { toolCall: { id: 'call_broken', name: TOOL_REFRESH, arguments: '{"broken":' } };
+    }
+    if (obs.includes('invalid-tool-args')) {
+      return { toolCall: { id: 'call_retry', name: TOOL_REFRESH, arguments: JSON.stringify({}) } };
+    }
+  }
+  // 同回合多次快照：驱动「每轮请求前裁剪旧快照」的请求视图裁剪路径。
+  if (u.includes('模拟连续快照') && hasTool(body, TOOL_SNAPSHOT)) {
+    const taken = toolObsCount(body);
+    if (taken < 3) {
+      return { toolCall: { id: `call_shot_${taken}`, name: TOOL_SNAPSHOT, arguments: JSON.stringify({}) } };
+    }
+    return { text: `MOCK-SNAPSHOT-SERIES-DONE ${taken}` };
+  }
+  return null;
 }
 
 function pickReply(sys, u) {
@@ -1026,19 +1071,21 @@ function handleChat(req, res, requests) {
       res.write(`data: ${JSON.stringify({ ...base, choices: [choice] })}\n\n`);
     };
     send({ index: 0, delta: { role: 'assistant' }, finish_reason: null });
-    if (decision.toolCall) {
-      const fragments = splitInThree(decision.toolCall.arguments);
-      fragments.forEach((arguments_, i) => {
-        const tc =
-          i === 0
-            ? {
-                index: 0,
-                id: decision.toolCall.id ?? 'call_guide',
-                type: 'function',
-                function: { name: decision.toolCall.name, arguments: arguments_ },
-              }
-            : { index: 0, function: { arguments: arguments_ } };
-        send({ index: 0, delta: { tool_calls: [tc] }, finish_reason: null });
+    const toolCalls = decision.toolCalls ?? (decision.toolCall ? [decision.toolCall] : null);
+    if (toolCalls) {
+      toolCalls.forEach((toolCall, callIndex) => {
+        splitInThree(toolCall.arguments).forEach((arguments_, i) => {
+          const tc =
+            i === 0
+              ? {
+                  index: callIndex,
+                  id: toolCall.id ?? 'call_guide',
+                  type: 'function',
+                  function: { name: toolCall.name, arguments: arguments_ },
+                }
+              : { index: callIndex, function: { arguments: arguments_ } };
+          send({ index: 0, delta: { tool_calls: [tc] }, finish_reason: null });
+        });
       });
       send({ index: 0, delta: {}, finish_reason: 'tool_calls' });
     } else {

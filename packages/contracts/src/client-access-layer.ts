@@ -171,11 +171,26 @@ export interface TextDeltaFrame {
   priority?: 'safety';
 }
 
+/**
+ * 回合终止原因闭集：面板据此分流后续动作（如 max-rounds 提示「继续」），
+ * 评测按取值断言而非 grep 文案。服务端唯一产出，客户端只渲染、不判定（U7）。
+ */
+export type TurnCompleteReason =
+  | 'completed'
+  | 'stopped'
+  | 'max-rounds'
+  | 'consecutive-failures'
+  | 'llm-error'
+  | 'llm-timeout'
+  | 'tool-not-available';
+
 export interface TurnCompleteFrame {
   type: 'turn-complete';
   sessionId: string;
   messageId?: string;
   idle: boolean;
+  /** 缺省=未标注（旧客户端兼容）。 */
+  reason?: TurnCompleteReason;
 }
 
 export interface ToolCardFrame {

@@ -303,6 +303,18 @@
         },
         "idle": {
           "type": "boolean"
+        },
+        "reason": {
+          "$comment": "回合终止原因闭集：面板据此分流后续动作（如 max-rounds 提示继续），评测按取值断言而非 grep 文案。缺省=旧客户端兼容。",
+          "enum": [
+            "completed",
+            "stopped",
+            "max-rounds",
+            "consecutive-failures",
+            "llm-error",
+            "llm-timeout",
+            "tool-not-available"
+          ]
         }
       }
     },

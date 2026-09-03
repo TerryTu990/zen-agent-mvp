@@ -765,6 +765,22 @@ export interface LlmChatRequest {
   tools?: LlmToolSpec[];
 }
 
+/**
+ * 上游失败类别闭集：消费侧据此如实分流（配置错误不得渲染成服务故障，R6），
+ * 类别本身不含任何响应体原文与凭证形态（SEC-04）。
+ * invalid-tool-args=模型产出的实参 JSON 非法/截断，可回喂重试自愈。
+ */
+export type LlmErrorKind =
+  | 'invalid-tool-args'
+  | 'context-overflow'
+  | 'rate-limit'
+  | 'quota'
+  | 'auth'
+  | 'endpoint-invalid'
+  | 'transport'
+  | 'stream-interrupted'
+  | 'timeout';
+
 export type LlmStreamEvent =
   | { kind: 'text-delta'; delta: string }
   | { kind: 'tool-call'; toolCallId: string; name: string; params: JsonObject }
@@ -772,8 +788,15 @@ export type LlmStreamEvent =
       kind: 'done';
       stopReason: 'end' | 'tool-call' | 'error';
       error?: string;
-      /** 错误类别（stopReason=error 时可选）：invalid-tool-args=模型产出的实参 JSON 非法/截断，可回喂重试自愈。 */
-      errorKind?: 'invalid-tool-args';
+      /** 错误类别（stopReason=error 时可选）。 */
+      errorKind?: LlmErrorKind;
+      /**
+       * errorKind='invalid-tool-args' 时随附出错调用的标识：消费侧据此以「同 toolCallId 的 role:tool 观测」
+       * 回喂错误让模型自纠，而不必伪造用户消息或另起 id。
+       */
+      invalidToolCall?: { toolCallId: string; name: string };
+      /** 上游因输出长度上限截断本次回答（finish_reason=length）；消费侧须如实告知用户回答不完整。 */
+      truncated?: true;
       /** 上游返回 token 用量时透传（缺省=上游未报，消费侧回退字符近似估算）。 */
       usage?: { inputTokens: number; outputTokens: number };
     };

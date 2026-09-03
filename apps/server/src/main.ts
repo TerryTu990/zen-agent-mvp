@@ -55,6 +55,22 @@ if (!Number.isFinite(compressThreshold) || compressThreshold <= 0 || compressThr
   console.error('ZA_LLM_COMPRESS_THRESHOLD 不是 (0,1] 区间小数，拒绝启动');
   process.exit(1);
 }
+// LLM 分层超时（llm-port）与同因连续失败预算（网关）由各自消费侧就地读取；此处只做启动期取值校验，
+// 把「配置写错」在启动时挡住，而不是推迟成运行期的静默不生效。未设置＝该项不启用。
+for (const name of [
+  'ZA_LLM_TIMEOUT_MS',
+  'ZA_LLM_FIRST_CHUNK_MS',
+  'ZA_LLM_IDLE_MS',
+  'ZA_MAX_CONSECUTIVE_FAILURES',
+] as const) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') continue;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    console.error(`${name} 不是正整数，拒绝启动`);
+    process.exit(1);
+  }
+}
 let genericAllowlist: string[] = [];
 try {
   genericAllowlist = parseGenericAllowlist(process.env['ZA_GENERIC_ALLOWLIST']);

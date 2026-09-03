@@ -46,6 +46,8 @@ it('服务端二次剥离快照输入值与 href query，均不进入模型', ()
 
 interface MockLlmHandle {
   port: number;
+  /** 原始请求体（JSON 字符串），供断言送到模型面前的消息序列。 */
+  requests: string[];
   close(): Promise<void>;
 }
 
@@ -3289,5 +3291,264 @@ describe('L2 用户塑形贯通注入：回答详略偏好与站点包设置进 
     expect((view.blocks ?? []).filter((b) => b.kind === 'pack-config').map((b) => b.id)).toEqual([
       'shippingTemplate',
     ]);
+  });
+});
+
+interface WireMessage {
+  role: string;
+  content?: string;
+  tool_call_id?: string;
+  tool_calls?: Array<{ id: string; function: { name: string } }>;
+}
+
+/** 自 from 起第 n 个上游请求的 messages（送到模型面前的实际视图）。 */
+function requestMessagesAt(index: number): WireMessage[] {
+  const raw = mock.requests[index];
+  if (raw === undefined) throw new Error(`第 ${index} 个上游请求不存在`);
+  return (JSON.parse(raw) as { messages: WireMessage[] }).messages;
+}
+
+function lastTurnComplete(frames: Array<Record<string, unknown>>): Record<string, unknown> {
+  const done = framesByType(frames, 'turn-complete');
+  return done[done.length - 1] ?? {};
+}
+
+describe('编排韧性：并行调用 / 未知工具 / 失败预算 / 终止原因', () => {
+  it('一次响应两个 tool_calls：按序逐个执行，回声携带全部调用，无静默丢弃', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    const requestsBefore = mock.requests.length;
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '模拟并行调用 刷新订单列表',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 1);
+      const first = framesByType(sse.frames, 'exec-instruction')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(first['nonce']),
+        ok: true,
+        status: 200,
+        body: { ok: true, count: 2 },
+      });
+      // 第二个调用不需要模型再发一轮：同一轮响应内按序继续分发。
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length === 2);
+      const second = framesByType(sse.frames, 'exec-instruction')[1]!;
+      expect(second['toolCallId']).not.toBe(first['toolCallId']);
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(second['nonce']),
+        ok: true,
+        status: 200,
+        body: { ok: true, count: 2 },
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
+      // 回喂视图：一条 assistant 回声携带两个 tool_calls，其后两条 role:tool 观测各自成对。
+      const messages = requestMessagesAt(mock.requests.length - 1);
+      const echo = messages.find((m) => (m.tool_calls?.length ?? 0) === 2);
+      expect(echo, JSON.stringify(messages.map((m) => m.role))).toBeDefined();
+      const answered = new Set(messages.filter((m) => m.role === 'tool').map((m) => m.tool_call_id));
+      for (const call of echo!.tool_calls!) expect(answered.has(call.id)).toBe(true);
+      expect(mock.requests.length).toBeGreaterThan(requestsBefore);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('工具面外的幻觉工具名：回喂 tool-not-available 观测而非终结回合，含可用工具名列表', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '模拟未知工具 帮我处理一下',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
+      // 回合内至少发生过一次「回喂后继续」：模型看到了 role:tool 的 tool-not-available 观测。
+      const withObs = mock.requests
+        .map((raw) => (JSON.parse(raw) as { messages: WireMessage[] }).messages)
+        .filter((messages) =>
+          messages.some(
+            (m) => m.role === 'tool' && (m.content ?? '').includes('tool-not-available'),
+          ),
+        );
+      expect(withObs.length).toBeGreaterThan(0);
+      const obs = withObs[0]!.find(
+        (m) => m.role === 'tool' && (m.content ?? '').includes('tool-not-available'),
+      )!;
+      const parsed = JSON.parse(obs.content ?? '{}') as { error: string; available?: string[] };
+      expect(parsed.error).toBe('tool-not-available');
+      expect(parsed.available).toContain('order-list.refresh-orders');
+      // 幻觉调用不产生任何代执行
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      expect(textOf(sse.frames)).toContain('该操作暂未支持。');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('同工具同因连续失败达硬阈值：回合终结，turn-complete.reason=consecutive-failures', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        messageId: 'msg-consecutive-fail',
+        text: '模拟未知工具 帮我处理一下',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
+      expect(lastTurnComplete(sse.frames)['reason']).toBe('consecutive-failures');
+      expect(textOf(sse.frames)).toContain('连续失败');
+      // 硬阈值 3：轮数远未耗尽（maxTurnRounds 默认 12）就已止损
+      const ghostRounds = mock.requests.filter((raw) => raw.includes('ghost_tool')).length;
+      expect(ghostRounds).toBeLessThanOrEqual(4);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('正常收尾的回合带 reason=completed', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        messageId: 'msg-completed-reason',
+        text: '这个页面显示的是什么',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
+      expect(lastTurnComplete(sse.frames)['reason']).toBe('completed');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('同回合多次快照：每轮请求视图只保留最近一份快照全文，更早的替换为存根', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '模拟连续快照 观察这一页',
+      });
+      for (let round = 1; round <= 3; round += 1) {
+        await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === round);
+        const request = framesByType(sse.frames, 'snapshot-request')[round - 1]!;
+        await postFrame(token, sessionId, {
+          type: 'snapshot-report',
+          sessionId,
+          requestId: String(request['requestId']),
+          url: ORDER_LIST_URL,
+          title: `订单列表 第${round}次`,
+          elements: [{ ref: `za-${round}`, role: 'button', label: `按钮${round}` }],
+        });
+      }
+      await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
+      const messages = requestMessagesAt(mock.requests.length - 1);
+      const snapshotObs = messages.filter(
+        (m) => m.role === 'tool' && (m.content ?? '').includes('订单列表 第'),
+      );
+      expect(snapshotObs).toHaveLength(1);
+      expect(snapshotObs[0]!.content).toContain('第3次');
+      const stubs = messages.filter((m) => m.role === 'tool' && (m.content ?? '').includes('快照已过期'));
+      expect(stubs).toHaveLength(2);
+    } finally {
+      sse.close();
+    }
+  });
+});
+
+describe('上游失败分类如实呈现（R6/SEC-04）', () => {
+  async function withUpstream(
+    handle: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void,
+    run: (sessionId: string, token: string, sse: SseHandle) => Promise<void>,
+  ): Promise<void> {
+    const upstream = createServer(handle);
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (address === null || typeof address === 'string') throw new Error('无法获取上游端口');
+    const savedBaseUrl = process.env['ZA_LLM_BASE_URL'];
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      process.env['ZA_LLM_BASE_URL'] = `http://127.0.0.1:${address.port}/v1`;
+      await run(sessionId, token, sse);
+    } finally {
+      process.env['ZA_LLM_BASE_URL'] = savedBaseUrl;
+      sse.close();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+  }
+
+  it('上游 401：告知模型服务配置问题而非「服务暂时不可用」，且不回显响应体与凭证形态', async () => {
+    await withUpstream(
+      (_req, res) => {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Incorrect API key provided: xk-canary-value' } }));
+      },
+      async (sessionId, token, sse) => {
+        await postFrame(token, sessionId, {
+          type: 'user-message',
+          sessionId,
+          messageId: 'msg-upstream-auth',
+          text: '订单能取消吗',
+        });
+        await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
+        const text = textOf(sse.frames);
+        expect(text).toContain('模型服务配置');
+        expect(text).not.toContain('服务暂时不可用');
+        expect(text).not.toContain('xk-canary-value');
+        expect(text).not.toContain('Bearer');
+        expect(lastTurnComplete(sse.frames)['reason']).toBe('llm-error');
+      },
+    );
+  });
+
+  it('上游因输出上限截断回答：尾部如实告知被截断', async () => {
+    await withUpstream(
+      (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: '这是半句' }, finish_reason: null }] })}\n\n`,
+        );
+        res.write(
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'length' }] })}\n\n`,
+        );
+        res.write('data: [DONE]\n\n');
+        res.end();
+      },
+      async (sessionId, token, sse) => {
+        await postFrame(token, sessionId, {
+          type: 'user-message',
+          sessionId,
+          messageId: 'msg-upstream-truncated',
+          text: '讲讲这个页面',
+        });
+        await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
+        const text = textOf(sse.frames);
+        expect(text).toContain('这是半句');
+        expect(text).toContain('被截断');
+        expect(lastTurnComplete(sse.frames)['reason']).toBe('completed');
+      },
+    );
   });
 });
