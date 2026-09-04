@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SignJWT } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { parseFulfillmentProductKeys, startServer, type RunningServer } from '../src/index.js';
+import { startServer, type RunningServer } from '../src/index.js';
 import { isSilentPageUrl } from '../src/gateway.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
@@ -32,16 +32,6 @@ const SILENT_URL = 'chrome://newtab/';
 const TOOL_BROWSE = 'browse.page-operate';
 /** 送达 LLM 的 wire 名（toolId 的点替换为 '__'）。 */
 const TOOL_BROWSE_WIRE = 'browse__page-operate';
-
-describe('parseFulfillmentProductKeys（服务端商品闭集）', () => {
-  it('空值关闭工具；合法对象规范化值；数组、空键值和非字符串 fail-fast', () => {
-    expect(parseFulfillmentProductKeys(undefined)).toEqual({});
-    expect(parseFulfillmentProductKeys('{"item-a":" product-a "}')).toEqual({ 'item-a': 'product-a' });
-    for (const raw of ['[]', '{"":"p"}', '{" item":"p"}', '{"item":""}', '{"item":1}']) {
-      expect(() => parseFulfillmentProductKeys(raw)).toThrow(/ZA_FULFILLMENT_PRODUCT_KEYS_JSON/);
-    }
-  });
-});
 
 interface MockLlmHandle {
   port: number;

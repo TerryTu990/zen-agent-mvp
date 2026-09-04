@@ -61,11 +61,6 @@ const LONG_NAV_URL = `${SITE_ORIGIN}/box?q=${RLO}${'a'.repeat(300)}`;
 /** 另一已安装 pack（zhipin）围栏内 URL：定向跨站导航不得把活跃站点上下文切过去。 */
 const CROSS_SITE_URL = 'https://www.zhipin.com/web/geek/job';
 
-/** 有界履约工具（authorization.kind=bounded-fulfillment）：契约上不支持定向，targetPage 是被忽略的无效实参。 */
-const BOUNDED_TOOL = 'xianyu-fulfillment.execute-intent';
-const BOUNDED_ORIGIN = 'https://seller.goofish.com';
-const BOUNDED_ACTIVE_URL = `${BOUNDED_ORIGIN}/#/im`;
-const BOUNDED_BG_HANDLE = 'xy-bg';
 
 interface DirectedMockHandle {
   port: number;
@@ -131,16 +126,6 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
         id: 'call_snap_only',
         name: SNAPSHOT_TOOL,
         arguments: JSON.stringify({ targetPage: directedSnap[1] }),
-      },
-    };
-  }
-  const boundedDirected = u.match(/有界履约带页参数\s+(\S+)/);
-  if (boundedDirected !== null) {
-    return {
-      toolCall: {
-        id: 'call_bounded_page',
-        name: BOUNDED_TOOL,
-        arguments: JSON.stringify({ intentId: 'intent-not-prepared', targetPage: boundedDirected[1] }),
       },
     };
   }
@@ -423,26 +408,6 @@ async function startGroupSession(token: string): Promise<{ sessionId: string; ss
       { handle: BG_HANDLE, url: BG_URL, title: BG_TITLE, status: 'background' },
       { handle: OUT_HANDLE, url: OUT_URL, title: '外站页', status: 'background' },
       { handle: SILENT_HANDLE, url: SILENT_URL, status: 'silent' },
-    ],
-  });
-  return { sessionId, sse };
-}
-
-/** 建会话并上报状态表：活跃页在有界履约 pack 的功能路由上，另有同站 background 页。 */
-async function startBoundedSession(token: string): Promise<{ sessionId: string; sse: SseHandle }> {
-  const sessionId = await createSession(token);
-  const sse = await openSse(token, sessionId);
-  await postFrame(token, sessionId, {
-    type: 'context-report',
-    sessionId,
-    url: BOUNDED_ACTIVE_URL,
-  });
-  await postFrame(token, sessionId, {
-    type: 'group-pages',
-    sessionId,
-    pages: [
-      { handle: 'xy-act', url: BOUNDED_ACTIVE_URL, title: '消息页', status: 'active' },
-      { handle: BOUNDED_BG_HANDLE, url: `${BOUNDED_ORIGIN}/#/im?x=1`, title: '另一消息页', status: 'background' },
     ],
   });
   return { sessionId, sse };
@@ -878,24 +843,6 @@ describe('签发时刻重校验与定向导航上下文（fail-closed 收口）'
   });
 });
 
-describe('不支持定向的工具带 targetPage：不作目标页标注', () => {
-  it('有界履约工具的 targetPage 是无效实参：审计仍按活跃页归因，不标成被传入的句柄', async () => {
-    const token = await signToken();
-    const { sessionId, sse } = await startBoundedSession(token);
-    try {
-      await driveTurn(token, sessionId, `有界履约带页参数 ${BOUNDED_BG_HANDLE}`);
-      await sse.waitFor(() => joinedText(sse).includes(OBS_ECHO_PREFIX));
-      await awaitTurnComplete(sse);
-    } finally {
-      sse.close();
-    }
-    expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
-    const decisions = eventsOf(sessionId, 'tool-decision', 'toolId', BOUNDED_TOOL);
-    expect(decisions).toHaveLength(1);
-    expect(decisions[0]!['page']).toEqual({ handle: 'xy-act', origin: BOUNDED_ORIGIN });
-  });
-});
-
 describe('HITL 卡目标 URL 与缺省零变化回归', () => {
   it('site_navigate：HITL 卡恒带 targetUrl=params.url，缺省不带 targetPage', async () => {
     const token = await signToken();
@@ -1032,11 +979,7 @@ describe('HITL 卡目标 URL 与缺省零变化回归', () => {
   });
 });
 
-/**
- * HITL 卡目标地址的取值口径（纯函数）：卡上只呈现本次将被签发执行的目标。
- * 有界履约的步骤由服务端可信意图决定、params.steps 不参与签发，故其 params 中的 URL 不得呈现——
- * 该形态在当前 toolgate 裁决下不产出 hitl 判定，只能就取值口径本身断言。
- */
+/** HITL 卡目标地址的取值口径（纯函数）：卡上只呈现本次将被签发执行的目标。 */
 describe('hitlTargetUrl 取值口径', () => {
   const domFixture: DomToolDefinition = {
     id: 'mail-126.page-operate',
@@ -1047,15 +990,6 @@ describe('hitlTargetUrl 取值口径', () => {
     execution: 'client',
     adapter: { kind: 'dom', pathPrefixes: ['/'] },
     resultSchema: {},
-  };
-  const boundedFixture: DomToolDefinition = {
-    ...domFixture,
-    id: 'xianyu-fulfillment.execute-intent',
-    authorization: {
-      kind: 'bounded-fulfillment',
-      workflow: 'delivery',
-      intentIdParam: 'intentId',
-    },
   };
   const openUrlFixture: ClientToolDefinition = {
     id: OPEN_URL_TOOL_ID,
@@ -1073,17 +1007,10 @@ describe('hitlTargetUrl 取值口径', () => {
     steps: [{ action: 'navigate', url }],
   });
 
-  it('无 authorization 的 dom 单步 navigate：取 steps[0].url 并归一后呈现', () => {
+  it('dom 单步 navigate：取 steps[0].url 并归一后呈现', () => {
     expect(hitlTargetUrl(domFixture, navParams(`${SITE_ORIGIN}/box?a=1`))).toBe(
       `${SITE_ORIGIN}/box?a=1`,
     );
-  });
-
-  it('有界履约 dom 工具：params.steps 不是签发目标，一律不呈现', () => {
-    expect(hitlTargetUrl(boundedFixture, navParams('https://evil.example/pay'))).toBeUndefined();
-    expect(
-      hitlTargetUrl(boundedFixture, { intentId: 'intent-1', url: 'https://evil.example/pay' }),
-    ).toBeUndefined();
   });
 
   it('内建导航：双向控制符与零宽字符不原样透出，超长按上限截断标注', () => {

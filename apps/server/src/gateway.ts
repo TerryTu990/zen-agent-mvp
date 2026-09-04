@@ -43,7 +43,6 @@ import type {
   HitlDecisionValue,
   HitlRequestFrame,
   IdentityClaims,
-  FulfillmentCoordinatorPort,
   JsonObject,
   JsonValue,
   LlmErrorKind,
@@ -90,7 +89,6 @@ import {
   executionPreferenceInstruction,
   selectToolsForPreference,
 } from './execution-preference.js';
-import { derivePreparedIntent, prepareToolSpecFor } from './prepare-intent.js';
 import {
   changeSummary,
   diffWatchSnapshots,
@@ -107,9 +105,6 @@ export interface GatewayDeps {
   assembly: AssemblyPort;
   llm: LlmPort;
   toolgate: ToolGatePort;
-  fulfillment?: FulfillmentCoordinatorPort;
-  /** 站点商品 id → 库存 productKey 的服务端闭集映射；客户端/模型不得覆盖。 */
-  fulfillmentProductKeys: Record<string, string>;
   audit: AuditPort;
   verifier: TokenVerifier;
   store: SessionStore;
@@ -120,7 +115,7 @@ export interface GatewayDeps {
   maxConsecutiveFailures?: number;
   /** 人工确认卡的等待上限（毫秒）；缺省按 env `ZA_HITL_TIMEOUT_MS`，两者都未设＝不启用上限（与基线逐字等价）。 */
   hitlTimeoutMs?: number;
-  /** 等客户端 snapshot-report 的上限毫秒；缺省 15000。有界履约的复核快照另按指令剩余时限计。 */
+  /** 等客户端 snapshot-report 的上限毫秒；缺省 15000。 */
   snapshotTimeoutMs?: number;
   /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW）。 */
   compressContextWindow: number;
@@ -743,8 +738,7 @@ function stripDisplayUnsafeChars(text: string): string {
 
 /**
  * HITL 卡目标地址（adr-023 D3）：只呈现本次将被签发执行的目标——内建导航取 params.url；
- * pack dom 工具取单步 navigate 批次的 steps[0].url，且仅限无 authorization 的工具：有界履约批次由服务端
- * 可信意图决定、params.steps 不参与签发，从中取值即在卡上显示一个不会被执行的地址。
+ * pack dom 工具取单步 navigate 批次的 steps[0].url。
  * 呈现前按签发/围栏同一口径（WHATWG URL）解析归一，再消毒并按上限截断；不可解析或非 http/https 一律不呈现
  * ——这类取值签发必拒，不构成本次的执行目标。
  */
@@ -752,7 +746,7 @@ export function hitlTargetUrl(tool: ToolDefinition, params: JsonObject): string 
   let raw: JsonValue | undefined;
   if (tool.id === OPEN_URL_TOOL_ID || tool.id === SITE_NAVIGATE_TOOL_ID) {
     raw = params['url'];
-  } else if (isDomTool(tool) && tool.authorization === undefined) {
+  } else if (isDomTool(tool)) {
     const steps = params['steps'];
     const step = Array.isArray(steps) && steps.length === 1 ? steps[0] : undefined;
     if (
@@ -879,7 +873,6 @@ const ISSUE_REFUSAL_PREFIXES: readonly string[] = [
   'site_navigate 签发',
   'open_url 签发',
   'issueExecInstruction 前提破坏',
-  '有界履约签发拒绝',
   'dom 定向拒签',
   'dom 批次校验未过',
 ];
@@ -947,12 +940,12 @@ function groupPagesManifestInjected(session: SessionState): boolean {
 
 /**
  * 宿主 API 工具定义 → LLM 工具面：name=toolId，装配对 agent 透明（LLM 不感知分级/通道）。
- * dom 工具（无 authorization）的 params 做与 toolgate 同构的平台级增广（可选 targetPage，adr-023 D3）；
- * LLM 面不设长度界，形状错误经 toolgate deny 回喂自愈。bounded-fulfillment 工具不增广（定向不支持）。
+ * dom 工具的 params 做与 toolgate 同构的平台级增广（可选 targetPage，adr-023 D3）；
+ * LLM 面不设长度界，形状错误经 toolgate deny 回喂自愈。
  * 定向用法只在本回合注入了页面清单时追加——无清单即无句柄可取，宣传定向只会诱发无效实参。
  */
 function toLlmToolSpec(tool: ToolDefinition, manifestInjected: boolean): LlmToolSpec {
-  if (!isDomTool(tool) || tool.authorization !== undefined) {
+  if (!isDomTool(tool)) {
     return { name: tool.id, description: tool.description, params: tool.params };
   }
   const properties = tool.params['properties'];
@@ -1028,8 +1021,8 @@ function snapshotEvidenceOf(content: string): string | null {
 
 /**
  * 本轮送给模型的消息视图：更早的快照观测按 history 存根瘦身（旧 ref 已随重采集失效，留全文只烧
- * 窗口并诱导误引用），但把观测里的 evidence 采集值原样带回——履约回执确认要拿「操作前 / 操作后」
- * 两次采集做比对，抹掉基线会让模型无从如实判断回执是否新增（R6）。evidence 是定长小对象。
+ * 窗口并诱导误引用），但把观测里的 evidence 采集值原样带回——判断动作是否生效要拿「操作前 / 操作后」
+ * 两次采集做比对，抹掉基线会让模型无从如实判断状态是否变化（R6）。evidence 是定长小对象。
  * 瘦身按观察目标（页标注）分组：重采集致 ref 失效的理由只对同一页成立，定向读到的他页最近一份
  * 须并存，否则 adr-023 的「同回合读多页后比对」在同一回合内不可达。
  * 落盘序列不经本函数：回合内 messages 只追加不回改，护 prompt 缓存前缀。
@@ -1467,28 +1460,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const finish = (status: ToolCardStatus): void => {
       broadcast(sessionId, { type: 'tool-card', sessionId, toolCallId, toolId: tool.id, status, mode });
     };
-    const boundedIntentId =
-      tool.authorization?.kind === 'bounded-fulfillment' && typeof params['intentId'] === 'string'
-        ? params['intentId']
-        : null;
-    const isShipment = tool.authorization?.workflow === 'shipment';
-    let inventoryBegun = false;
-    const settleInventory = async (
-      outcome: 'sent' | 'manual',
-      note?: string,
-    ): Promise<boolean> => {
-      if (boundedIntentId === null || deps.fulfillment === undefined) return true;
-      try {
-        const result = await deps.fulfillment.settle({
-          intentId: boundedIntentId,
-          outcome,
-          ...(note !== undefined ? { note } : {}),
-        });
-        return result.ok;
-      } catch {
-        return false;
-      }
-    };
     /**
      * 执行结局审计的在飞状态：一旦副作用可能已发生（指令已下发 / 服务端已发请求）即置 stopOutcome，
      * 停止路径据此补落 tool-execution——否则「授权了、指令发了、可能执行了」与「授权了但没发指令」
@@ -1516,14 +1487,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
     };
     const stopped = async (): Promise<Observation> => {
       if (execAudit.stopOutcome !== null) recordExecution(execAudit.stopOutcome);
-      const inventoryOk = inventoryBegun ? await settleInventory('manual', 'user-stopped') : true;
       finish('failed');
-      return {
-        toolCallId,
-        ok: false,
-        content: null,
-        error: inventoryOk ? 'user-stopped' : 'fulfillment-inventory-backfill-failed',
-      };
+      return { toolCallId, ok: false, content: null, error: 'user-stopped' };
     };
 
     // dom 工具判定上下文来自最近一次快照（未观察不操作：无快照 toolgate 即 deny）。
@@ -1538,11 +1503,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
           : (runtimeOf(sessionId).domContext ?? undefined)
         : undefined;
     const domContext = domContextNow();
-    // 定向面（与 toolgate 签发的定向解析口径同构）：只有无 authorization 的 dom 工具会解析 targetPage，
+    // 定向面（与 toolgate 签发的定向解析口径同构）：只有 dom 工具会解析 targetPage，
     // 其余工具带 targetPage 只是被忽略的无效实参——标成目标页会让用户按错误目标裁决、审计错误归因。
     const directedPage =
       isDomTool(tool) &&
-      tool.authorization === undefined &&
       typeof pageParam === 'string' &&
       pageParam !== '' &&
       pageParam.length <= 64
@@ -1641,14 +1605,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
       },
     }, pack, run ?? undefined, auditPageRef());
     if (decision.verdict === 'deny') {
-      const inventoryOk = await settleInventory('manual', 'toolgate-denied');
       finish('failed');
-      return {
-        toolCallId,
-        ok: false,
-        content: null,
-        error: inventoryOk ? (decision.reason ?? 'denied') : 'fulfillment-inventory-backfill-failed',
-      };
+      return { toolCallId, ok: false, content: null, error: decision.reason ?? 'denied' };
     }
     // 批准恢复期复核的结论（adr-024 D3）：非 null 即批准已不成立——不登记授权、不签发指令，
     // 按与签发拒绝同一形态收尾（回喂拒绝观测 + tool-execution 记 error），使 agent 如实转述（R6）。
@@ -1749,14 +1707,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (cancelled()) return stopped();
       if (verdict === 'reject') {
         const rejectReason = hitlTimedOut ? HITL_TIMEOUT_ERROR : 'user-rejected';
-        const inventoryOk = await settleInventory('manual', rejectReason);
         finish('failed');
-        return {
-          toolCallId,
-          ok: false,
-          content: null,
-          error: inventoryOk ? rejectReason : 'fulfillment-inventory-backfill-failed',
-        };
+        return { toolCallId, ok: false, content: null, error: rejectReason };
       }
       // 批准恢复期复核（adr-024 D3）：用户批准的是当时那个动作，不是一张长期通行证。挂起期间页面可能已
       // 重采（旧 ref 失配）、目标页已退役、用户刚把该工具收紧到 forbidden 或关停了 pack——签发前以当轮
@@ -1795,35 +1747,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
     }
 
-    // 浏览器副作用前先把发货/发送尝试写入飞书。写入或回读不确定即停，不签发任何指令；
-    // 该持久化闩锁让进程在点击后、回执前崩溃时重启也不能自动重放。
-    if (boundedIntentId !== null && deps.fulfillment !== undefined) {
-      if (cancelled()) return stopped();
-      let begun = false;
-      try {
-        begun = (await (isShipment
-          ? deps.fulfillment.beginShipment(boundedIntentId)
-          : deps.fulfillment.beginDelivery(boundedIntentId))).ok;
-      } catch {
-        begun = false;
-      }
-      if (!begun) {
-        finish('failed');
-        return {
-          toolCallId,
-          ok: false,
-          content: null,
-          error: 'fulfillment-inventory-backfill-failed',
-        };
-      }
-      inventoryBegun = true;
-      if (cancelled()) return stopped();
-    }
-
     execAudit.startedAt = Date.now();
     // 放行后按通道分支：client 签发一次性签名指令、等客户端回传；server 服务端直调、无 nonce/无客户端回传（U3/U7）。
     let observation: Observation;
-    let instructionExpiresAt: number | undefined;
     /** 签发被拒：零指令下发、零副作用——审计结局与「已签发并执行失败」分列（C5 issue-rejected）。 */
     let issueRejected = false;
     if (approvalStale !== null) {
@@ -1873,7 +1799,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
         observation = { toolCallId, ok: false, content: null, error: issueRefusal };
       } else {
         execAudit.nonce = instruction.nonce;
-        instructionExpiresAt = instruction.expiresAt;
         const result = waitForExec(sessionId, instruction.nonce, instruction.ttl);
         // 指令下发即副作用可能发生：在飞结局先记「已下发、结果未归」，结果归位后改判终局。
         execAudit.stopOutcome = 'dispatched-unknown';
@@ -1887,72 +1812,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
         if (cancelled()) return stopped();
       }
     }
-    // 有界履约的 DOM 成功只表示点击已发生，不表示状态已变更或消息已送达。网关立即强制取新快照，
-    // 并在原指令绝对时限内完成页面实例绑定确认；超时/换页/证据不符一律 uncertain。
-    if (tool.authorization?.kind === 'bounded-fulfillment' && observation.ok) {
-      const requestId = randomUUID();
-      const remainingMs = Math.max(1, (instructionExpiresAt ?? Date.now()) - Date.now());
-      const reported = waitForSnapshot(sessionId, requestId, remainingMs);
-      broadcast(sessionId, {
-        type: 'snapshot-request',
-        sessionId,
-        requestId,
-        ...(evidenceRules.length > 0 ? { evidenceRules } : {}),
-      });
-      const report = await reported;
-      if (cancelled()) return stopped();
-      const confirmation = await (isShipment
-        ? deps.toolgate.confirmShipmentStatus({
-            sessionId,
-            toolCallId,
-            pageUrl: report?.url ?? '',
-            pageInstanceId: report?.pageInstanceId ?? '',
-            evidence: report?.evidence ?? {},
-          })
-        : deps.toolgate.confirmFulfillmentReceipt({
-        sessionId,
-        toolCallId,
-        pageUrl: report?.url ?? '',
-        pageInstanceId: report?.pageInstanceId ?? '',
-        evidence: report?.evidence ?? {},
-          }));
-      if (cancelled()) return stopped();
-      observation = confirmation.confirmed
-        ? { toolCallId, ok: true, content: isShipment ? { shipmentConfirmed: true } : { deliveryConfirmed: true } }
-        : {
-            toolCallId,
-            ok: false,
-            content: null,
-            error: report === null
-              ? (isShipment ? 'shipment-status-timeout' : 'fulfillment-receipt-timeout')
-              : (isShipment ? 'shipment-status-unconfirmed' : 'fulfillment-receipt-unconfirmed'),
-          };
-    }
     if (execAudit.stopOutcome !== null) execAudit.stopOutcome = execOutcome(observation);
     if (cancelled()) return stopped();
-    if (boundedIntentId !== null) {
-      let inventoryOk: boolean;
-      if (isShipment && observation.ok && deps.fulfillment !== undefined) {
-        try {
-          inventoryOk = (await deps.fulfillment.confirmShipment(boundedIntentId)).ok;
-        } catch {
-          inventoryOk = false;
-        }
-      } else {
-        inventoryOk = await settleInventory(
-          observation.ok ? 'sent' : 'manual',
-          observation.ok ? undefined : (observation.error ?? 'fulfillment-unconfirmed'),
-        );
-      }
-      if (!inventoryOk) {
-        observation = {
-          toolCallId,
-          ok: false,
-          content: null,
-          error: 'fulfillment-inventory-backfill-failed',
-        };
-      }
-    }
     finish(observation.ok ? 'succeeded' : 'failed');
     recordExecution(issueRejected ? 'issue-rejected' : execOutcome(observation));
     return observation;
@@ -1975,20 +1836,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const runtime = runtimeOf(sessionId);
     const cancelled = (): boolean => messageId !== undefined && runtime.cancelledMessageIds.has(messageId);
     const llmRequestId = messageId === undefined ? undefined : `${sessionId}:${messageId}`;
-    const settleCancelledPreparation = async (
-      prepared: { ok: boolean; intentId?: string } | null,
-    ): Promise<boolean> => {
-      if (prepared?.ok !== true || prepared.intentId === undefined || deps.fulfillment === undefined) return true;
-      try {
-        return (await deps.fulfillment.settle({
-          intentId: prepared.intentId,
-          outcome: 'manual',
-          note: 'user-stopped',
-        })).ok;
-      } catch {
-        return false;
-      }
-    };
     const preferenceInstruction = executionPreferenceInstruction(executionPreference);
     const withPreference = (content: string): string =>
       preferenceInstruction === null ? content : `${content}\n\n${preferenceInstruction}`;
@@ -2076,18 +1923,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
       // config_draft 与写入通道同门：通道未组装时不给草稿入口（草稿无从确认写入）。
       const configTools: LlmToolSpec[] =
         deps.userConfig !== undefined ? [CONFIG_DRAFT_TOOL_SPEC] : [];
-      // adr-019：prepare 工具面由 pack 声明驱动（authorization.preparation），与 featureId 解耦；
-      // 履约依赖未组装（无协调器/无商品映射）时不注入，模型面不出现无法兑现的工具。
-      const prepareTargets = new Map<string, ToolDefinition>();
-      const fulfillmentPrepareTools: LlmToolSpec[] = [];
-      if (deps.fulfillment !== undefined && Object.keys(deps.fulfillmentProductKeys).length > 0) {
-        for (const tool of selectedHostTools) {
-          const spec = prepareToolSpecFor(tool);
-          if (spec === null) continue;
-          fulfillmentPrepareTools.push(spec);
-          prepareTargets.set(spec.name, tool);
-        }
-      }
       const siteOrigin =
         (await getSites()).find((site) => site.packId === pack.packId)?.origin ?? null;
       const tools: LlmToolSpec[] = [
@@ -2098,10 +1933,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...openUrlTools,
         ...appTools,
         ...configTools,
-        ...fulfillmentPrepareTools,
         ...selectedHostTools.map((tool) => toLlmToolSpec(tool, groupPagesManifestInjected(session))),
       ];
-      return { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk, appToolsOk };
+      return { pack, featureId, composed, hostToolsById, tools, evidenceRules, siteOrigin, userConfig, openUrlOk, appToolsOk };
     };
     // 站点边界标记（ADR-013）：激活 pack 或 generic 绑定 origin 变更时向历史注入一行标记，
     // 防跨站历史误导（generic pack 多 origin 间切换 packId 恒定，须并比 genericOrigin）；
@@ -2122,7 +1956,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       return { role: 'user', content: `${BOUNDARY_MARKER}\n以下对话发生在 ${origin} 站点。` };
     };
 
-    let { pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk, appToolsOk } =
+    let { pack, featureId, composed, hostToolsById, tools, evidenceRules, siteOrigin, userConfig, openUrlOk, appToolsOk } =
       await assembleFor(session.currentUrl ?? '');
     const prevPackId = session.lastPackId;
     const prevGenericOrigin = session.lastGenericOrigin;
@@ -2171,8 +2005,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // 落盘边界压缩触发估算优先用它，缺省回退字符近似。
     let lastUsage: UsageTokens | undefined;
     let automationFailed = false;
-    // 所有用户回合统一最多选择一个 bounded intent；客户端标识只做运行关联，不改变治理约束（U7）。
-    let fulfillmentBudget: { attempted: boolean; intentId?: string } = { attempted: false };
     turnLoop: for (let round = 0; round < deps.maxTurnRounds; round += 1) {
       if (cancelled()) break;
       let roundText = '';
@@ -2211,7 +2043,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         }
         return `${content}\n${CONSECUTIVE_FAILURE_HINT}`;
       };
-      /** 登记一条调用的观测；echoParams 缺省=回声原实参（prepare 等需要回声空实参的分支显式传入）。 */
+      /** 登记一条调用的观测；echoParams 缺省=回声原实参。 */
       const feed = (
         target: RoundCall,
         content: string,
@@ -2518,94 +2350,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
           continue;
         }
 
-        const prepareTarget = prepareTargets.get(call.name);
-        if (prepareTarget !== undefined) {
-          broadcast(sessionId, {
-            type: 'tool-card',
-            sessionId,
-            toolCallId: call.toolCallId,
-            toolId: call.name,
-            status: 'running',
-            summary: call.name,
-            mode: 'server',
-          });
-          const isShipmentPrepare = prepareTarget.authorization?.workflow === 'shipment';
-          const context = runtimeOf(sessionId).domContext;
-          let prepared: Awaited<ReturnType<NonNullable<typeof deps.fulfillment>['prepare']>> | null = null;
-          let prepareError: string | null = null;
-          let preparationStopped = false;
-          if (fulfillmentBudget.attempted) {
-            prepareError = 'automation-order-limit';
-          } else {
-            fulfillmentBudget = { attempted: true };
-          }
-          if (prepareError === null && deps.fulfillment !== undefined) {
-            try {
-              const derived = derivePreparedIntent({
-                claims,
-                context,
-                tool: prepareTarget,
-                siteOrigin,
-                evidenceRules,
-                productKeys: deps.fulfillmentProductKeys,
-                params: call.params,
-                now: Date.now(),
-              });
-              if (derived !== null) {
-                prepared =
-                  derived.workflow === 'shipment'
-                    ? await deps.fulfillment.prepareShipment(derived.input)
-                    : await deps.fulfillment.prepare(derived.input);
-              }
-            } catch {
-              prepared = null;
-            }
-          }
-          if (cancelled()) {
-            preparationStopped = true;
-            if (!(await settleCancelledPreparation(prepared))) {
-              notifySafety(sessionId, '停止后的库存回填失败，自动履约已暂停，请人工核对。');
-            }
-          }
-          if (preparationStopped) {
-            broadcast(sessionId, {
-              type: 'tool-card', sessionId, toolCallId: call.toolCallId,
-              toolId: call.name, status: 'failed', mode: 'server',
-            });
-            automationFailed = true;
-            settled = true;
-            notExecutedRest(callIndex + 1);
-            flushRound();
-            break turnLoop;
-          }
-          if (prepared?.ok === true) fulfillmentBudget = { attempted: true, intentId: prepared.intentId };
-          else automationFailed = true;
-          const prepareFailure =
-            prepared?.ok === true
-              ? null
-              : (prepareError ??
-                prepared?.error ??
-                (isShipmentPrepare ? 'shipping-prepare-denied' : 'fulfillment-prepare-denied'));
-          broadcast(sessionId, {
-            type: 'tool-card',
-            sessionId,
-            toolCallId: call.toolCallId,
-            toolId: call.name,
-            status: prepared?.ok === true ? 'succeeded' : 'failed',
-            mode: 'server',
-          });
-          // 回声实参置空：prepare 的实参由服务端派生，回喂模型的只是结果句柄。
-          feed(
-            call,
-            JSON.stringify(
-              prepared?.ok === true ? { intentId: prepared.intentId } : { error: prepareFailure },
-            ),
-            prepareFailure,
-            {},
-          );
-          continue;
-        }
-
         if (call.name === CONFIG_DRAFT_TOOL_ID && deps.userConfig !== undefined) {
           // teach 草稿（非终结、零副作用，U8）：服务端构造条目与 change、存会话态挂起草稿、
           // 下发 config-draft 确认卡；observation 只回喂「已发出等待确认」，写入结果不经本工具回传。
@@ -2871,7 +2615,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
               deps.store.setContext(sessionId, landedUrl);
               const previousPackId = pack.packId;
               const previousGenericOrigin = pack.genericOrigin ?? null;
-              ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, prepareTargets, siteOrigin, userConfig, openUrlOk, appToolsOk } =
+              ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, siteOrigin, userConfig, openUrlOk, appToolsOk } =
                 await assembleFor(landedUrl, fenceEscaped));
               messages[0] = {
                 role: 'system',
@@ -2918,43 +2662,19 @@ export function createGateway(deps: GatewayDeps): Gateway {
           continue;
         }
 
-        const boundedIntentId =
-          tool.authorization?.kind === 'bounded-fulfillment' && typeof call.params['intentId'] === 'string'
-            ? call.params['intentId']
-            : null;
-        let observation: Observation;
-        if (
-          boundedIntentId !== null &&
-          fulfillmentBudget.attempted &&
-          fulfillmentBudget.intentId !== boundedIntentId
-        ) {
-          broadcast(sessionId, {
-            type: 'tool-card', sessionId, toolCallId: call.toolCallId, toolId: tool.id,
-            status: 'running', summary: tool.id, mode: tool.execution,
-          });
-          broadcast(sessionId, {
-            type: 'tool-card', sessionId, toolCallId: call.toolCallId, toolId: tool.id,
-            status: 'failed', mode: tool.execution,
-          });
-          observation = { toolCallId: call.toolCallId, ok: false, content: null, error: 'fulfillment-order-limit' };
-        } else {
-          if (boundedIntentId !== null && !fulfillmentBudget.attempted) {
-            fulfillmentBudget = { attempted: true, intentId: boundedIntentId };
-          }
-          observation = await runExecSubflow(
-            session,
-            claims,
-            featureId,
-            pack,
-            tool,
-            call,
-            evidenceRules,
-            userConfig,
-            unattended,
-            run,
-            cancelled,
-          );
-        }
+        const observation = await runExecSubflow(
+          session,
+          claims,
+          featureId,
+          pack,
+          tool,
+          call,
+          evidenceRules,
+          userConfig,
+          unattended,
+          run,
+          cancelled,
+        );
         if (!observation.ok) automationFailed = true;
         // 回喂 agent：assistant 调用轮回声本轮 tool_calls（OpenAI 兼容 API 要求 role:tool 须有前置
         // 带 tool_calls 的 assistant 消息，否则拒绝孤儿 tool 消息）+ observation（仅规整结果，U7）。

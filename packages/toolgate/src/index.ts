@@ -27,15 +27,6 @@ import type {
   JsonObject,
   JsonValue,
   Observation,
-  PrepareFulfillmentIntentInput,
-  PrepareFulfillmentIntentResult,
-  PrepareShipmentIntentInput,
-  PreauthorizeFulfillmentInput,
-  PreauthorizeFulfillmentResult,
-  ConfirmFulfillmentReceiptInput,
-  ConfirmFulfillmentReceiptResult,
-  ConfirmShipmentStatusInput,
-  ConfirmShipmentStatusResult,
   SiteDescriptor,
   ToolDefinition,
   ToolGatePort,
@@ -67,22 +58,6 @@ export interface ToolGateOptions {
   resolveCredential?: (ref: string) => string | undefined;
   /** fetch 注入点，仅测试用于替身；默认全局 fetch。 */
   fetchImpl?: typeof fetch;
-  /** ADR-016：由服务端启动配置注入的、已由运营者预先批准的有界履约策略；客户端不可写。 */
-  fulfillmentPolicies?: BoundedFulfillmentPolicy[];
-}
-
-/** JSON 可序列化的有界履约策略；accountId 对应已验签 claims.hostUserId，不采信 LLM 实参。 */
-export interface BoundedFulfillmentPolicy {
-  id: string;
-  accountId: string;
-  toolId: string;
-  siteOrigin: string;
-  productIds: string[];
-  validUntil: number;
-  maxCodesPerOrder: number;
-  dailyOrderLimit: number;
-  /** 运营日相对 UTC 的分钟偏移；中国业务通常为 480。 */
-  dayBoundaryOffsetMinutes: number;
 }
 
 const DEFAULT_TTL_MS = 60000;
@@ -127,43 +102,7 @@ interface NonceRecord {
   issuedAt: number;
   ttl: number;
   consumed: boolean;
-  fulfillmentReservationKey?: string;
-  fulfillmentCallKey?: string;
 }
-
-interface FulfillmentReservation {
-  policyId: string;
-  accountId: string;
-  toolId: string;
-  orderId: string;
-  day: string;
-  state: 'authorized' | 'pending' | 'completed' | 'uncertain';
-  expiresAt: number;
-}
-
-interface FulfillmentAuthorization extends PreauthorizeFulfillmentInput {
-  authorizationId: string;
-  reservationKey: string;
-  used: boolean;
-}
-
-interface DeliveryFulfillmentIntent extends PrepareFulfillmentIntentInput {
-  kind: 'delivery';
-  intentId: string;
-  used: boolean;
-  steps: [DomStep, DomStep];
-}
-
-interface ShipmentFulfillmentIntent extends PrepareShipmentIntentInput {
-  kind: 'shipment';
-  intentId: string;
-  used: boolean;
-  steps: [DomStep];
-}
-
-type FulfillmentIntent = DeliveryFulfillmentIntent | ShipmentFulfillmentIntent;
-
-type FulfillmentCallState = 'reserved' | 'issued' | 'terminal';
 
 /**
  * nonce 登记存储抽象——MVP 进程内 Map；接口先行以便状态外置（Redis 等）。
@@ -242,10 +181,9 @@ const TARGET_PAGE_NOT_INTERACTIVE_REASON =
   '目标页不可交互（silent，无内容脚本通道），需先导航激活：可对该页定向单步 navigate，或由用户切换到该页后重试';
 
 /**
- * dom 工具入参平台级增广（adr-023 D3）：统一注入可选 targetPage，pack 制品零改动；
- * bounded-fulfillment 工具不增（固定步骤绑定活跃页意图，定向不支持）。
+ * dom 工具入参平台级增广（adr-023 D3）：统一注入可选 targetPage，pack 制品零改动。
  * targetPage 是全体 dom 工具的平台保留参数——pack 自声明它即语义被定向解析劫持，
- * 载入期 fail-fast 拒启（含不增广的 bounded-fulfillment 工具）；其余参数名（含 page）pack 自由使用。
+ * 载入期 fail-fast 拒启；其余参数名（含 page）pack 自由使用。
  */
 function withTargetPageParam(tool: ToolDefinition): JsonObject {
   if (!isDomTool(tool)) return tool.params;
@@ -256,7 +194,6 @@ function withTargetPageParam(tool: ToolDefinition): JsonObject {
   if ('targetPage' in properties) {
     throw new Error(`dom 工具 ${tool.id} 的 params 声明平台保留参数 targetPage，拒绝启动`);
   }
-  if (tool.authorization !== undefined) return tool.params;
   return { ...tool.params, properties: { ...properties, targetPage: TARGET_PAGE_PARAM_SCHEMA } };
 }
 
@@ -484,150 +421,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     }
   };
 
-  // ADR-016：自动履约额度与订单占用只存在服务端 toolgate。decide 原子预占；结果不明确时标记
-  // uncertain 并永久阻止该订单自动重试，防“没看见回执”演变成重复发货。
-  const fulfillmentPolicies = options.fulfillmentPolicies ?? [];
-  const fulfillmentReservations = new Map<string, FulfillmentReservation>();
-  const fulfillmentAuthorizations = new Map<string, FulfillmentAuthorization>();
-  const fulfillmentIntents = new Map<string, FulfillmentIntent>();
-  const intentByCall = new Map<string, string>();
-  const reservationByCall = new Map<string, string>();
-  const fulfillmentCallStates = new Map<string, FulfillmentCallState>();
-  const callKey = (sessionId: string, toolCallId: string): string => `${sessionId}\0${toolCallId}`;
-  const dayKey = (timestamp: number, offsetMinutes: number): string =>
-    new Date(timestamp + offsetMinutes * 60_000).toISOString().slice(0, 10);
-  const fulfillmentPolicyIds = new Set<string>();
-  for (const policy of fulfillmentPolicies) {
-    if (
-      policy.id.trim() === '' ||
-      fulfillmentPolicyIds.has(policy.id) ||
-      policy.accountId.trim() === '' ||
-      policy.toolId.trim() === '' ||
-      (() => {
-        try {
-          return new URL(policy.siteOrigin).origin !== policy.siteOrigin;
-        } catch {
-          return true;
-        }
-      })() ||
-      policy.productIds.length === 0 ||
-      policy.productIds.some((productId) => typeof productId !== 'string' || productId.trim() === '') ||
-      new Set(policy.productIds).size !== policy.productIds.length ||
-      !Number.isFinite(policy.validUntil) ||
-      !Number.isInteger(policy.maxCodesPerOrder) ||
-      policy.maxCodesPerOrder < 1 ||
-      !Number.isInteger(policy.dailyOrderLimit) ||
-      policy.dailyOrderLimit < 1 ||
-      !Number.isInteger(policy.dayBoundaryOffsetMinutes) ||
-      policy.dayBoundaryOffsetMinutes < -720 ||
-      policy.dayBoundaryOffsetMinutes > 840
-    ) {
-      throw new Error(`有界履约策略 ${policy.id || '<empty>'} 非法，拒绝启动`);
-    }
-    fulfillmentPolicyIds.add(policy.id);
-  }
-
-  const expirePendingReservations = (): void => {
-    for (const [reservationKey, reservation] of fulfillmentReservations) {
-      if (reservation.state === 'authorized' && now() > reservation.expiresAt) {
-        fulfillmentReservations.delete(reservationKey);
-        for (const [authorizationId, authorization] of fulfillmentAuthorizations) {
-          if (authorization.reservationKey === reservationKey && !authorization.used) {
-            fulfillmentAuthorizations.delete(authorizationId);
-          }
-        }
-        continue;
-      }
-      if (reservation.state === 'pending' && now() > reservation.expiresAt) {
-        reservation.state = 'uncertain';
-      }
-    }
-  };
-
-  const reserveBoundedFulfillment = (
-    tool: ToolDefinition,
-    input: GateDecisionInput,
-  ): { allowed: boolean; reason?: string } => {
-    const mapping = tool.authorization;
-    if (mapping?.kind !== 'bounded-fulfillment') return { allowed: false };
-    expirePendingReservations();
-    const keyForCall = callKey(input.sessionId, input.toolCallId);
-    if (fulfillmentCallStates.has(keyForCall)) {
-      return { allowed: false, reason: 'bounded-call-already-used' };
-    }
-    const rawIntentId = input.params[mapping.intentIdParam];
-    if (typeof rawIntentId !== 'string') return { allowed: false, reason: 'bounded-intent-missing' };
-    const intent = fulfillmentIntents.get(rawIntentId);
-    if (intent === undefined || intent.used || intent.expiresAt < now()) {
-      return { allowed: false, reason: 'bounded-intent-invalid' };
-    }
-    if (mapping.workflow !== intent.kind) {
-      return { allowed: false, reason: 'bounded-intent-workflow-mismatch' };
-    }
-    if (
-      input.claims.hostUserId !== intent.accountId ||
-      input.toolId !== intent.toolId ||
-      input.domContext?.url !== intent.pageUrl ||
-      input.domContext?.pageInstanceId !== intent.pageInstanceId
-    ) {
-      return { allowed: false, reason: 'bounded-intent-context-mismatch' };
-    }
-    if (intent.kind === 'delivery') {
-      const messageElement = input.domContext.elements?.find((element) => element.ref === intent.messageRef);
-      const sendElement = input.domContext.elements?.find((element) => element.ref === intent.sendRef);
-      const sendLabel = sendElement?.label.replace(/\s+/g, '').toLowerCase();
-      if (
-        messageElement === undefined ||
-        !['textarea', 'input:text', 'contenteditable'].includes(messageElement.role) ||
-        messageElement.disabled === true ||
-        sendElement?.role !== 'button' ||
-        (sendLabel !== '发送' && sendLabel !== 'send')
-      ) {
-        return { allowed: false, reason: 'bounded-intent-target-mismatch' };
-      }
-    } else {
-      const actionElement = input.domContext.elements?.find((element) => element.ref === intent.actionRef);
-      const actionLabel = actionElement?.label.replace(/\s+/g, '');
-      if (actionElement?.role !== 'button' || actionElement.disabled === true || actionLabel !== '发货') {
-        return { allowed: false, reason: 'bounded-intent-target-mismatch' };
-      }
-    }
-    const validatedIntentSteps = validateDomSteps(
-      tool as DomToolDefinition,
-      {
-        task: 'bounded-fulfillment',
-        steps: intent.steps as unknown as JsonValue,
-        summary: 'trusted-fulfillment-intent',
-      },
-      input.domContext,
-      input.packOrigin,
-      urlInFence,
-    );
-    if ('reason' in validatedIntentSteps) {
-      return { allowed: false, reason: `bounded-intent-steps:${validatedIntentSteps.reason}` };
-    }
-    const authorization = fulfillmentAuthorizations.get(intent.authorizationId);
-    const reservation = authorization === undefined
-      ? undefined
-      : fulfillmentReservations.get(authorization.reservationKey);
-    if (
-      authorization === undefined ||
-      !authorization.used ||
-      authorization.expiresAt < now() ||
-      reservation?.state !== 'authorized'
-    ) {
-      return { allowed: false, reason: 'bounded-authorization-invalid' };
-    }
-    const reservationKey = authorization.reservationKey;
-    reservation.state = 'pending';
-    reservation.expiresAt = now() + ttlMs;
-    reservationByCall.set(callKey(input.sessionId, input.toolCallId), reservationKey);
-    intentByCall.set(callKey(input.sessionId, input.toolCallId), intent.intentId);
-    fulfillmentCallStates.set(keyForCall, 'reserved');
-    intent.used = true;
-    return { allowed: true };
-  };
-
   const toolsById = new Map<string, ToolDefinition>();
   const paramsValidators = new Map<string, ValidateFunction>();
   const resultValidators = new Map<string, ValidateFunction>();
@@ -637,35 +430,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     // dom 工具入参按平台级增广 schema 校验（可选 targetPage，adr-023 D3）；pack 制品与其余通道不变。
     paramsValidators.set(tool.id, ajv.compile(withTargetPageParam(tool)));
     resultValidators.set(tool.id, ajv.compile(tool.resultSchema));
-  }
-  // 策略、工具和参数 schema 联合校验：不支持的组合在启动期 fail-fast，不能等到一次真实发货才暴露。
-  for (const tool of options.tools) {
-    const mapping = tool.authorization;
-    if (mapping === undefined) continue;
-    const properties = tool.params['properties'];
-    const required = tool.params['required'];
-    const intentSchema =
-      properties !== null && typeof properties === 'object' && !Array.isArray(properties)
-        ? (properties as JsonObject)[mapping.intentIdParam]
-        : undefined;
-    if (
-      tool.riskTier !== 'hitl' ||
-      tool.hitlMode !== 'every-call' ||
-      !isDomTool(tool) ||
-      !Array.isArray(required) ||
-      !required.includes(mapping.intentIdParam) ||
-      intentSchema === null ||
-      typeof intentSchema !== 'object' ||
-      Array.isArray(intentSchema) ||
-      (intentSchema as JsonObject)['type'] !== 'string'
-    ) {
-      throw new Error(`工具 ${tool.id} 的有界履约授权契约非法，拒绝启动`);
-    }
-  }
-  for (const policy of fulfillmentPolicies) {
-    if (toolsById.get(policy.toolId)?.authorization?.kind !== 'bounded-fulfillment') {
-      throw new Error(`有界履约策略 ${policy.id} 未绑定受支持工具，拒绝启动`);
-    }
   }
   // 内建跨站导航工具（ADR-013 渐进披露）：不在 options.tools 闭集内，专路裁决/签发；此处只备其入/出参校验器。
   const siteNavigateParamsValidator = ajv.compile(SITE_NAVIGATE_PARAMS_SCHEMA);
@@ -686,17 +450,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   }
 
   const sites = options.sites ?? [];
-  for (const policy of fulfillmentPolicies) {
-    const ownerPackId = packOfTool.get(policy.toolId);
-    const ownedSites = sites.filter((site) => site.packId === ownerPackId);
-    if (
-      ownerPackId === undefined ||
-      ownedSites.length !== 1 ||
-      ownedSites[0]?.origin !== policy.siteOrigin
-    ) {
-      throw new Error(`有界履约策略 ${policy.id} 与工具所属站点不一致，拒绝启动`);
-    }
-  }
   /** navigate 目标 URL 是否落在某已安装 pack 的 site 围栏内（origin 精确 + location 前缀）。 */
   const urlInFence = (url: string): boolean => {
     let origin: string;
@@ -822,7 +575,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
    * 判定链的校验段（fail-closed，U7）：工具闭集 → 分级（含 L2 定格收紧终值）→ 通道 → 实参 →
    * 身份 → 围栏与 dom 批次（ref 出自入参给的最近快照）。reason 只述依据、不含实参值（SEC-04）。
    * decide 与 reconfirmApproval 共用本实现，使批准恢复期的复核与首次判定逐条同源。
-   * 不含任务级授权复用、有界履约预占与无人值守收口——那些是各自调用点的语义。
+   * 不含任务级授权复用与无人值守收口——那些是各自调用点的语义。
    */
   const validateCall = (
     input: GateDecisionInput,
@@ -851,11 +604,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
             : 'forbidden',
       };
     }
-    // bounded-fulfillment 固定步骤绑定活跃页意图，不支持定向（fail-closed：带 targetPage 即拒）。
-    if (tool.authorization?.kind === 'bounded-fulfillment' && input.params['targetPage'] !== undefined) {
-      return { reason: 'invalid-params' };
-    }
-    if (isDomTool(tool) && tool.authorization?.kind !== 'bounded-fulfillment') {
+    if (isDomTool(tool)) {
       const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
       if ('reason' in resolvedTarget) return { reason: resolvedTarget.reason };
       const validated = validateDomSteps(
@@ -899,16 +648,12 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       ...(targetPage !== undefined ? { targetPage } : {}),
       request: request as unknown as JsonValue,
     });
-    const keyForCall = callKey(input.sessionId, input.toolCallId);
-    const fulfillmentReservationKey = reservationByCall.get(keyForCall);
     store.put(nonce, {
       toolId: input.toolId,
       toolCallId: input.toolCallId,
       issuedAt,
       ttl: ttlMs,
       consumed: false,
-      ...(fulfillmentReservationKey !== undefined ? { fulfillmentReservationKey } : {}),
-      ...(fulfillmentReservationKey !== undefined ? { fulfillmentCallKey: keyForCall } : {}),
     });
     return {
       type: 'exec-instruction',
@@ -927,260 +672,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
   return {
     async getExecVerificationKey() {
       return { algorithm: 'Ed25519', publicKey: execVerificationKey };
-    },
-
-    async preauthorizeFulfillment(
-      input: PreauthorizeFulfillmentInput,
-    ): Promise<PreauthorizeFulfillmentResult> {
-      expirePendingReservations();
-      const tool = toolsById.get(input.toolId);
-      if (tool?.authorization?.kind !== 'bounded-fulfillment' || !isDomTool(tool)) {
-        throw new Error('履约预授权目标工具不支持有界授权');
-      }
-      let pageOrigin: string;
-      try {
-        pageOrigin = new URL(input.pageUrl).origin;
-      } catch {
-        throw new Error('履约预授权页面 URL 非法');
-      }
-      const canonicalOrderId = input.orderId.trim();
-      if (
-        input.accountId.trim() === '' ||
-        input.productId.trim() === '' ||
-        canonicalOrderId === '' ||
-        !Number.isInteger(input.quantity) ||
-        input.quantity < 1 ||
-        input.expiresAt <= now()
-      ) {
-        throw new Error('履约预授权字段非法');
-      }
-      const eligible = fulfillmentPolicies.filter(
-        (policy) =>
-          policy.accountId === input.accountId &&
-          policy.toolId === input.toolId &&
-          policy.siteOrigin === pageOrigin &&
-          policy.validUntil >= input.expiresAt &&
-          policy.productIds.includes(input.productId) &&
-          input.quantity <= policy.maxCodesPerOrder,
-      );
-      if (eligible.length !== 1) throw new Error('履约预授权未唯一命中策略');
-      const policy = eligible[0]!;
-      const reservationKey = `${policy.siteOrigin}\0${input.accountId}\0${input.toolId}\0${canonicalOrderId}`;
-      if (fulfillmentReservations.has(reservationKey)) throw new Error('履约订单已占用');
-      const today = dayKey(now(), policy.dayBoundaryOffsetMinutes);
-      const usedToday = [...fulfillmentReservations.values()].filter(
-        (reservation) => reservation.policyId === policy.id && reservation.day === today,
-      ).length;
-      if (usedToday >= policy.dailyOrderLimit) throw new Error('履约日额度已用尽');
-      const authorizationId = randomUUID();
-      fulfillmentReservations.set(reservationKey, {
-        policyId: policy.id,
-        accountId: input.accountId,
-        toolId: input.toolId,
-        orderId: canonicalOrderId,
-        day: today,
-        state: 'authorized',
-        expiresAt: input.expiresAt,
-      });
-      fulfillmentAuthorizations.set(authorizationId, {
-        ...input,
-        orderId: canonicalOrderId,
-        authorizationId,
-        reservationKey,
-        used: false,
-      });
-      return { authorizationId };
-    },
-
-    async releaseFulfillmentAuthorization(authorizationId: string): Promise<void> {
-      const authorization = fulfillmentAuthorizations.get(authorizationId);
-      if (authorization === undefined || authorization.used) return;
-      const reservation = fulfillmentReservations.get(authorization.reservationKey);
-      if (reservation?.state === 'authorized') {
-        fulfillmentReservations.delete(authorization.reservationKey);
-      }
-      fulfillmentAuthorizations.delete(authorizationId);
-    },
-
-    async prepareFulfillmentIntent(
-      input: PrepareFulfillmentIntentInput,
-    ): Promise<PrepareFulfillmentIntentResult> {
-      const tool = toolsById.get(input.toolId);
-      if (tool?.authorization?.kind !== 'bounded-fulfillment' ||
-        tool.authorization.workflow !== 'delivery' || !isDomTool(tool)) {
-        throw new Error('履约意图目标工具不支持有界授权');
-      }
-      let pageOrigin: string;
-      try {
-        pageOrigin = new URL(input.pageUrl).origin;
-      } catch {
-        throw new Error('履约意图页面 URL 非法');
-      }
-      if (
-        input.accountId.trim() === '' ||
-        input.productId.trim() === '' ||
-        input.orderId.trim() === '' ||
-        input.pageInstanceId.trim() === '' ||
-        input.messageRef.trim() === '' ||
-        input.sendRef.trim() === '' ||
-        input.messageRef === input.sendRef ||
-        input.message === '' ||
-        !/^[a-z][a-z0-9-]{0,63}$/.test(input.receiptEvidenceId) ||
-        !Number.isInteger(input.receiptBaselineCount) ||
-        input.receiptBaselineCount < 0 ||
-        input.receiptSuccessStatuses.length === 0 ||
-        input.receiptSuccessStatuses.some((status) => status.trim() === '') ||
-        new Set(input.receiptSuccessStatuses).size !== input.receiptSuccessStatuses.length ||
-        !Number.isInteger(input.quantity) ||
-        input.quantity < 1 ||
-        input.expiresAt <= now()
-      ) {
-        throw new Error('履约意图字段非法');
-      }
-      const eligible = fulfillmentPolicies.filter(
-        (policy) =>
-          policy.accountId === input.accountId &&
-          policy.toolId === input.toolId &&
-          policy.siteOrigin === pageOrigin &&
-          policy.validUntil >= input.expiresAt &&
-          policy.productIds.includes(input.productId) &&
-          input.quantity <= policy.maxCodesPerOrder,
-      );
-      if (eligible.length !== 1) throw new Error('履约意图未唯一命中预批准策略');
-      const authorization = fulfillmentAuthorizations.get(input.authorizationId);
-      const reservation = authorization === undefined
-        ? undefined
-        : fulfillmentReservations.get(authorization.reservationKey);
-      if (
-        authorization === undefined ||
-        authorization.used ||
-        authorization.expiresAt < now() ||
-        reservation?.state !== 'authorized' ||
-        authorization.accountId !== input.accountId ||
-        authorization.toolId !== input.toolId ||
-        authorization.productId !== input.productId ||
-        authorization.orderId !== input.orderId.trim() ||
-        authorization.quantity !== input.quantity ||
-        authorization.pageUrl !== input.pageUrl ||
-        authorization.expiresAt !== input.expiresAt
-      ) {
-        throw new Error('履约预授权与意图不匹配');
-      }
-      authorization.used = true;
-      const intentId = randomUUID();
-      fulfillmentIntents.set(intentId, {
-        ...input,
-        kind: 'delivery',
-        orderId: input.orderId.trim(),
-        intentId,
-        used: false,
-        steps: [
-          { action: 'fill', ref: input.messageRef, value: input.message },
-          { action: 'click', ref: input.sendRef },
-        ],
-      });
-      return { intentId };
-    },
-
-    async prepareShipmentIntent(
-      input: PrepareShipmentIntentInput,
-    ): Promise<PrepareFulfillmentIntentResult> {
-      const tool = toolsById.get(input.toolId);
-      if (tool?.authorization?.kind !== 'bounded-fulfillment' ||
-        tool.authorization.workflow !== 'shipment' || !isDomTool(tool)) {
-        throw new Error('发货意图目标工具不支持有界授权');
-      }
-      let pageOrigin: string;
-      try {
-        pageOrigin = new URL(input.pageUrl).origin;
-      } catch {
-        throw new Error('发货意图页面 URL 非法');
-      }
-      if (
-        input.accountId.trim() === '' || input.productId.trim() === '' || input.orderId.trim() === '' ||
-        input.pageInstanceId.trim() === '' || input.actionRef.trim() === '' ||
-        !/^[a-z][a-z0-9-]{0,63}$/.test(input.statusEvidenceId) || input.statusBaseline.trim() === '' ||
-        input.statusSuccessStatuses.length === 0 || input.statusSuccessStatuses.some((status) => status.trim() === '') ||
-        input.statusSuccessStatuses.includes(input.statusBaseline) ||
-        new Set(input.statusSuccessStatuses).size !== input.statusSuccessStatuses.length ||
-        !Number.isInteger(input.quantity) || input.quantity < 1 || input.expiresAt <= now()
-      ) {
-        throw new Error('发货意图字段非法');
-      }
-      const eligible = fulfillmentPolicies.filter(
-        (policy) => policy.accountId === input.accountId && policy.toolId === input.toolId &&
-          policy.siteOrigin === pageOrigin && policy.validUntil >= input.expiresAt &&
-          policy.productIds.includes(input.productId) && input.quantity <= policy.maxCodesPerOrder,
-      );
-      if (eligible.length !== 1) throw new Error('发货意图未唯一命中预批准策略');
-      const authorization = fulfillmentAuthorizations.get(input.authorizationId);
-      const reservation = authorization === undefined ? undefined : fulfillmentReservations.get(authorization.reservationKey);
-      if (
-        authorization === undefined || authorization.used || authorization.expiresAt < now() ||
-        reservation?.state !== 'authorized' || authorization.accountId !== input.accountId ||
-        authorization.toolId !== input.toolId || authorization.productId !== input.productId ||
-        authorization.orderId !== input.orderId.trim() || authorization.quantity !== input.quantity ||
-        authorization.pageUrl !== input.pageUrl || authorization.expiresAt !== input.expiresAt
-      ) {
-        throw new Error('发货预授权与意图不匹配');
-      }
-      authorization.used = true;
-      const intentId = randomUUID();
-      fulfillmentIntents.set(intentId, {
-        ...input,
-        kind: 'shipment',
-        orderId: input.orderId.trim(),
-        intentId,
-        used: false,
-        steps: [{ action: 'click', ref: input.actionRef }],
-      });
-      return { intentId };
-    },
-
-    async confirmFulfillmentReceipt(
-      input: ConfirmFulfillmentReceiptInput,
-    ): Promise<ConfirmFulfillmentReceiptResult> {
-      const keyForCall = callKey(input.sessionId, input.toolCallId);
-      const reservationKey = reservationByCall.get(keyForCall);
-      const intentId = intentByCall.get(keyForCall);
-      const reservation = reservationKey === undefined ? undefined : fulfillmentReservations.get(reservationKey);
-      const intent = intentId === undefined ? undefined : fulfillmentIntents.get(intentId);
-      if (reservation?.state !== 'pending' || intent?.kind !== 'delivery') {
-        return { confirmed: false, state: 'uncertain' };
-      }
-      if (input.pageUrl !== intent.pageUrl || input.pageInstanceId !== intent.pageInstanceId) {
-        reservation.state = 'uncertain';
-        return { confirmed: false, state: 'uncertain' };
-      }
-      const receipt = input.evidence[intent.receiptEvidenceId];
-      const confirmed =
-        receipt !== undefined &&
-        receipt.count === intent.receiptBaselineCount + 1 &&
-        intent.receiptSuccessStatuses.includes(receipt.latest);
-      reservation.state = confirmed ? 'completed' : 'uncertain';
-      return { confirmed, state: reservation.state };
-    },
-
-    async confirmShipmentStatus(
-      input: ConfirmShipmentStatusInput,
-    ): Promise<ConfirmShipmentStatusResult> {
-      const keyForCall = callKey(input.sessionId, input.toolCallId);
-      const reservationKey = reservationByCall.get(keyForCall);
-      const intentId = intentByCall.get(keyForCall);
-      const reservation = reservationKey === undefined ? undefined : fulfillmentReservations.get(reservationKey);
-      const intent = intentId === undefined ? undefined : fulfillmentIntents.get(intentId);
-      if (reservation?.state !== 'pending' || intent?.kind !== 'shipment') {
-        return { confirmed: false, state: 'uncertain' };
-      }
-      if (input.pageUrl !== intent.pageUrl || input.pageInstanceId !== intent.pageInstanceId) {
-        reservation.state = 'uncertain';
-        return { confirmed: false, state: 'uncertain' };
-      }
-      const status = input.evidence[intent.statusEvidenceId];
-      const confirmed = status !== undefined && status.count === 1 &&
-        status.latest !== intent.statusBaseline && intent.statusSuccessStatuses.includes(status.latest);
-      reservation.state = confirmed ? 'completed' : 'uncertain';
-      return { confirmed, state: reservation.state };
     },
 
     async decide(input: GateDecisionInput): Promise<GateDecision> {
@@ -1230,14 +721,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         consumeGrant(input, grantTask)
       ) {
         return { verdict: 'allow' };
-      }
-      // ADR-016：every-call 对自由文本仍次次确认；只有声明了 bounded-fulfillment 且本次调用
-      // 完整命中服务端预批准策略时才自动放行。decide 同步完成订单预占，日限额并发下不超卖。
-      // 有界履约的批准来自运营者预置策略而非在场用户，故不受无人值守收口影响。
-      if (riskTier === 'hitl' && tool.authorization?.kind === 'bounded-fulfillment') {
-        const bounded = reserveBoundedFulfillment(tool, input);
-        if (bounded.allowed) return { verdict: 'allow' };
-        return deny(bounded.reason ?? 'bounded-authorization-denied');
       }
       // R7 的服务端落点：无人在场时需确认档一律拒绝，不广播确认卡、不无界挂起等待。
       if (riskTier === 'hitl' && input.unattended === true) return deny(HITL_UNATTENDED_REASON);
@@ -1308,67 +791,21 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         throw new Error('签发拒绝：工具在 L2 定格面为 forbidden');
       }
       // 无人值守收口在签发处独立复述（adr-024 D1）：需确认档不签发，不依赖 decide 已拒的假设。
-      // 有界履约的批准来自运营者预置策略而非在场用户，不在收口范围内。
-      if (
-        input.unattended === true &&
-        effectiveRiskTier(tool, input.userConfig) === 'hitl' &&
-        tool.authorization?.kind !== 'bounded-fulfillment'
-      ) {
+      if (input.unattended === true && effectiveRiskTier(tool, input.userConfig) === 'hitl') {
         throw new Error(`签发拒绝：${HITL_UNATTENDED_REASON}`);
-      }
-      const keyForCall = callKey(input.sessionId, input.toolCallId);
-      if (
-        tool.authorization?.kind === 'bounded-fulfillment' &&
-        fulfillmentCallStates.get(keyForCall) !== 'reserved'
-      ) {
-        throw new Error('有界履约签发拒绝：调用未预占或已签发');
       }
       let request: ExecRequest | DomExecRequest;
       let targetPageHandle: string | undefined;
       if (isDomTool(tool)) {
-        // 有界工具只执行可信连接器登记的固定步骤；模型参数中的业务键或 steps 均不参与签发。
-        const intentId = intentByCall.get(callKey(input.sessionId, input.toolCallId));
-        const intent = intentId === undefined ? undefined : fulfillmentIntents.get(intentId);
-        const domParams =
-          tool.authorization?.kind === 'bounded-fulfillment'
-            ? {
-                task: 'bounded-fulfillment',
-                steps: (intent?.steps ?? []) as unknown as JsonValue,
-                summary: 'trusted-fulfillment-intent',
-              }
-            : input.params;
-        if (tool.authorization?.kind === 'bounded-fulfillment' && intent === undefined) {
-          throw new Error('有界履约签发拒绝：无可信意图预占');
-        }
-        if (intent !== undefined && tool.authorization?.kind === 'bounded-fulfillment' &&
-          tool.authorization.workflow !== intent.kind) {
-          throw new Error('有界履约签发拒绝：工具工作流与可信意图不一致');
-        }
-        if (
-          intent !== undefined &&
-          (input.claims.hostUserId !== intent.accountId ||
-            input.domContext?.url !== intent.pageUrl ||
-            input.domContext?.pageInstanceId !== intent.pageInstanceId)
-        ) {
-          throw new Error('有界履约签发拒绝：账号或页面已变化');
-        }
-        // 有界履约固定步骤绑定活跃页意图，定向不支持：与 decide 的 deny('invalid-params') 同口径显式拒签，
-        // 不静默忽略 targetPage（签发是治理终点，U7 fail-closed）。
-        if (tool.authorization?.kind === 'bounded-fulfillment' && input.params['targetPage'] !== undefined) {
-          throw new Error('有界履约签发拒绝：不支持定向到组内其他页（invalid-params）');
-        }
         // 签发是治理终点：签名前独立重校验（含定向目标解析），不依赖 decide 已通过的假设（U7 fail-closed）。
-        const resolvedTarget: { target?: GroupPageEntry } | { reason: string } =
-          tool.authorization?.kind === 'bounded-fulfillment'
-            ? {}
-            : resolveTargetPage(input.params, input.groupPages);
+        const resolvedTarget = resolveTargetPage(input.params, input.groupPages);
         if ('reason' in resolvedTarget) {
           throw new Error(`dom 定向拒签：${resolvedTarget.reason}`);
         }
         targetPageHandle = resolvedTarget.target?.handle;
         const validated = validateDomSteps(
           tool,
-          domParams,
+          input.params,
           input.domContext,
           input.packOrigin,
           urlInFence,
@@ -1387,12 +824,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         request = {
           kind: 'dom',
           steps: validated.steps,
-          ...(intent !== undefined
-            ? {
-                expectedPageUrl: intent.pageUrl,
-                expectedPageInstanceId: intent.pageInstanceId,
-              }
-            : {}),
           ...(targetPageUrl !== undefined ? { expectedPageUrl: targetPageUrl } : {}),
         };
       } else {
@@ -1419,11 +850,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
             : {}),
         };
       }
-      const instruction = signInstruction(input, request, targetPageHandle);
-      if (tool.authorization?.kind === 'bounded-fulfillment') {
-        fulfillmentCallStates.set(keyForCall, 'issued');
-      }
-      return instruction;
+      return signInstruction(input, request, targetPageHandle);
     },
 
     async acceptExecResult(input: AcceptExecResultInput): Promise<Observation> {
@@ -1436,24 +863,10 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       }
       if (now() - record.issuedAt > record.ttl) {
         store.markConsumed(result.nonce);
-        if (record.fulfillmentCallKey !== undefined) {
-          fulfillmentCallStates.set(record.fulfillmentCallKey, 'terminal');
-        }
-        if (record.fulfillmentReservationKey !== undefined) {
-          const reservation = fulfillmentReservations.get(record.fulfillmentReservationKey);
-          if (reservation?.state === 'pending') reservation.state = 'uncertain';
-        }
         return { toolCallId: record.toolCallId, ok: false, content: null, error: 'timeout' };
       }
       store.markConsumed(result.nonce);
-      if (record.fulfillmentCallKey !== undefined) {
-        fulfillmentCallStates.set(record.fulfillmentCallKey, 'terminal');
-      }
       if (!result.ok) {
-        if (record.fulfillmentReservationKey !== undefined) {
-          const reservation = fulfillmentReservations.get(record.fulfillmentReservationKey);
-          if (reservation?.state === 'pending') reservation.state = 'uncertain';
-        }
         // 用户点停止＝收回自动执行授权：吊销本会话全部任务 grant，后续批次回到 hitl。
         if (result.error === USER_STOPPED_ERROR) revokeGrants(input.sessionId);
         return {
@@ -1472,10 +885,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
             : resultValidators.get(record.toolId);
       const body = result.body ?? null;
       if (!validateResult || !validateResult(body)) {
-        if (record.fulfillmentReservationKey !== undefined) {
-          const reservation = fulfillmentReservations.get(record.fulfillmentReservationKey);
-          if (reservation?.state === 'pending') reservation.state = 'uncertain';
-        }
         return { toolCallId: record.toolCallId, ok: false, content: null, error: 'invalid-result' };
       }
       return { toolCallId: record.toolCallId, ok: true, content: body };

@@ -5,7 +5,6 @@ import { OPEN_URL_TOOL_ID, SITE_NAVIGATE_TOOL_ID } from '@zen-agent/contracts';
 import {
   computeExecSignature,
   createToolGatePort,
-  type BoundedFulfillmentPolicy,
 } from '../src/index.js';
 
 // 仅测试固定值，非真实密钥（真实密钥运行时经 env 注入，ZA-C-SEC-02）。
@@ -221,42 +220,6 @@ const httpTaskHitlTool: ToolDefinition = {
   },
 };
 
-const boundedFulfillmentTool: ToolDefinition = {
-  id: 'xianyu.send-delivery',
-  featureIds: ['order-list'],
-  description: '发送确定性履约通知',
-  params: {
-    type: 'object',
-    required: ['intentId'],
-    properties: {
-      intentId: { type: 'string' },
-    },
-    additionalProperties: false,
-  },
-  execution: 'client',
-  riskTier: 'hitl',
-  hitlMode: 'every-call',
-  authorization: {
-    kind: 'bounded-fulfillment',
-    workflow: 'delivery',
-    intentIdParam: 'intentId',
-  },
-  adapter: { kind: 'dom', pathPrefixes: ['/console'] },
-  resultSchema: {
-    type: 'object',
-    required: ['ok'],
-    properties: { ok: { type: 'boolean' } },
-    additionalProperties: false,
-  },
-};
-
-const boundedShippingTool: ToolDefinition = {
-  ...boundedFulfillmentTool,
-  id: 'xianyu.ship-order',
-  description: '更新确定性订单发货状态',
-  authorization: { kind: 'bounded-fulfillment', workflow: 'shipment', intentIdParam: 'intentId' },
-};
-
 /** dom 判定上下文夹具：快照页在围栏内、含 za-1/za-2 两个 ref。 */
 const domContext = {
   refs: ['za-1', 'za-2'],
@@ -283,8 +246,6 @@ const allTools: ToolDefinition[] = [
   domTool,
   domHitlTool,
   httpTaskHitlTool,
-  boundedFulfillmentTool,
-  boundedShippingTool,
 ];
 
 interface PortOverrides {
@@ -292,14 +253,13 @@ interface PortOverrides {
   now?: () => number;
   resolveCredential?: (ref: string) => string | undefined;
   fetchImpl?: typeof fetch;
-  fulfillmentPolicies?: BoundedFulfillmentPolicy[];
 }
 
 function makePort(overrides?: PortOverrides) {
   return createToolGatePort({
     tools: allTools,
     sites: [{ packId: 'seller-pack', origin: 'https://seller.example', locations: ['/console'] }],
-    toolOwnership: [boundedFulfillmentTool, boundedShippingTool].map((tool) => ({
+    toolOwnership: [domTool, domHitlTool].map((tool) => ({
       packId: 'seller-pack', toolId: tool.id,
     })),
     signingSecret: SIGN_FIXTURE,
@@ -309,9 +269,6 @@ function makePort(overrides?: PortOverrides) {
       ? { resolveCredential: overrides.resolveCredential }
       : {}),
     ...(overrides?.fetchImpl !== undefined ? { fetchImpl: overrides.fetchImpl } : {}),
-    ...(overrides?.fulfillmentPolicies !== undefined
-      ? { fulfillmentPolicies: overrides.fulfillmentPolicies }
-      : {}),
   });
 }
 
@@ -1096,550 +1053,6 @@ describe('toolgate 任务级 HITL 授权（grant，一任务一确认）', () =>
   });
 });
 
-describe('toolgate ADR-016 有界自动履约授权', () => {
-  const policy: BoundedFulfillmentPolicy = {
-    id: 'seller-main-product-a',
-    accountId: 'host-1',
-    toolId: boundedFulfillmentTool.id,
-    siteOrigin: 'https://seller.example',
-    productIds: ['product-a'],
-    validUntil: 2_000_000,
-    maxCodesPerOrder: 1,
-    dailyOrderLimit: 1,
-    dayBoundaryOffsetMinutes: 480,
-  };
-  const shippingPolicy: BoundedFulfillmentPolicy = {
-    ...policy,
-    id: 'seller-main-product-a-shipping',
-    toolId: boundedShippingTool.id,
-  };
-  const contextFor = (orderId: string) => ({
-    ...domContext,
-    url: `https://seller.example/console/token?order=${orderId}`,
-  });
-  const prepare = async (
-    port: ReturnType<typeof makePort>,
-    orderId: string,
-    overrides: Partial<Parameters<typeof port.prepareFulfillmentIntent>[0]> = {},
-  ) => {
-    const baseIntent = {
-      accountId: 'host-1',
-      toolId: boundedFulfillmentTool.id,
-      productId: 'product-a',
-      orderId,
-      quantity: 1,
-      pageUrl: contextFor(orderId).url,
-      pageInstanceId: 'page-instance-1',
-      messageRef: 'za-1',
-      sendRef: 'za-2',
-      message: '固定履约内容',
-      receiptEvidenceId: 'message-receipts',
-      receiptBaselineCount: 1,
-      receiptSuccessStatuses: ['未读', '已读'],
-      expiresAt: 1_500_000,
-      ...overrides,
-    };
-    const authorizationId = overrides.authorizationId ?? (await port.preauthorizeFulfillment({
-      accountId: baseIntent.accountId,
-      toolId: baseIntent.toolId,
-      productId: baseIntent.productId,
-      orderId: baseIntent.orderId,
-      quantity: baseIntent.quantity,
-      pageUrl: baseIntent.pageUrl,
-      expiresAt: baseIntent.expiresAt,
-    })).authorizationId;
-    try {
-      return await port.prepareFulfillmentIntent({ ...baseIntent, authorizationId });
-    } catch (error) {
-      await port.releaseFulfillmentAuthorization(authorizationId);
-      throw error;
-    }
-  };
-  const input = (orderId: string, intentId: string, toolCallId = `call-${orderId}`) => ({
-    sessionId: 's-bounded',
-    toolCallId,
-    toolId: boundedFulfillmentTool.id,
-    params: { intentId },
-    claims: validClaims,
-    domContext: contextFor(orderId),
-  });
-
-  it('发货意图只签发唯一“发货”单击，并以新快照唯一“已发货”状态确认', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...shippingPolicy, dailyOrderLimit: 3 }] });
-    const orderId = 'order-shipping';
-    const pageUrl = contextFor(orderId).url;
-    const authorization = await port.preauthorizeFulfillment({
-      accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a',
-      orderId, quantity: 1, pageUrl, expiresAt: 1_500_000,
-    });
-    const prepared = await port.prepareShipmentIntent({
-      authorizationId: authorization.authorizationId,
-      accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a',
-      orderId, quantity: 1, pageUrl, pageInstanceId: 'page-instance-1', actionRef: 'za-2',
-      statusEvidenceId: 'order-shipment-status', statusBaseline: '待发货',
-      statusSuccessStatuses: ['已发货'], expiresAt: 1_500_000,
-    });
-    const call = {
-      ...input(orderId, prepared.intentId, 'shipping-call'),
-      toolId: boundedShippingTool.id,
-      domContext: {
-        ...contextFor(orderId),
-        elements: [{ ref: 'za-2', role: 'button', label: '发 货' }],
-      },
-    };
-    await expect(port.decide(call)).resolves.toEqual({ verdict: 'allow' });
-    const instruction = await port.issueExecInstruction(call);
-    expect(instruction.request).toEqual({
-      kind: 'dom', expectedPageUrl: pageUrl, expectedPageInstanceId: 'page-instance-1',
-      steps: [{ action: 'click', ref: 'za-2' }],
-    });
-    await port.acceptExecResult({
-      sessionId: call.sessionId,
-      result: { type: 'exec-result', sessionId: call.sessionId, nonce: instruction.nonce, ok: true, body: { ok: true } },
-    });
-    await expect(port.confirmShipmentStatus({
-      sessionId: call.sessionId, toolCallId: call.toolCallId, pageUrl,
-      pageInstanceId: 'page-instance-1', evidence: { 'order-shipment-status': { count: 1, latest: '已发货' } },
-    })).resolves.toEqual({ confirmed: true, state: 'completed' });
-  });
-
-  it('发货按钮语义或状态证据不唯一时 fail-closed', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...shippingPolicy, dailyOrderLimit: 3 }] });
-    const orderId = 'order-shipping-denied';
-    const pageUrl = contextFor(orderId).url;
-    const authorization = await port.preauthorizeFulfillment({
-      accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a',
-      orderId, quantity: 1, pageUrl, expiresAt: 1_500_000,
-    });
-    const prepared = await port.prepareShipmentIntent({
-      authorizationId: authorization.authorizationId,
-      accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a', orderId,
-      quantity: 1, pageUrl, pageInstanceId: 'page-instance-1', actionRef: 'za-2',
-      statusEvidenceId: 'order-shipment-status', statusBaseline: '待发货',
-      statusSuccessStatuses: ['已发货'], expiresAt: 1_500_000,
-    });
-    await expect(port.decide({
-      ...input(orderId, prepared.intentId, 'shipping-denied-call'),
-      toolId: boundedShippingTool.id,
-      domContext: { ...contextFor(orderId), elements: [{ ref: 'za-2', role: 'button', label: '确认发货' }] },
-    })).resolves.toEqual({ verdict: 'deny', reason: 'bounded-intent-target-mismatch' });
-  });
-
-  it('shipment 与 delivery 工具工作流不可交叉登记 intent', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [
-      { ...policy, dailyOrderLimit: 3 }, { ...shippingPolicy, dailyOrderLimit: 3 },
-    ] });
-    const pageUrl = contextFor('order-workflow').url;
-    const deliveryAuth = await port.preauthorizeFulfillment({
-      accountId: 'host-1', toolId: boundedFulfillmentTool.id, productId: 'product-a',
-      orderId: 'order-workflow', quantity: 1, pageUrl, expiresAt: 1_500_000,
-    });
-    await expect(port.prepareShipmentIntent({
-      authorizationId: deliveryAuth.authorizationId,
-      accountId: 'host-1', toolId: boundedFulfillmentTool.id, productId: 'product-a',
-      orderId: 'order-workflow', quantity: 1, pageUrl, pageInstanceId: 'page-instance-1',
-      actionRef: 'za-2', statusEvidenceId: 'order-shipment-status', statusBaseline: '待发货',
-      statusSuccessStatuses: ['已发货'], expiresAt: 1_500_000,
-    })).rejects.toThrow(/不支持有界授权/);
-  });
-
-  it('发货后旧状态或多个允许状态同时存在均不得确认', async () => {
-    for (const [suffix, evidence] of [
-      ['stale', { count: 1, latest: '待发货' }],
-      ['ambiguous', { count: 2, latest: '已发货' }],
-    ] as const) {
-      const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...shippingPolicy, dailyOrderLimit: 3 }] });
-      const orderId = `order-shipping-${suffix}`;
-      const pageUrl = contextFor(orderId).url;
-      const authorization = await port.preauthorizeFulfillment({
-        accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a',
-        orderId, quantity: 1, pageUrl, expiresAt: 1_500_000,
-      });
-      const prepared = await port.prepareShipmentIntent({
-        authorizationId: authorization.authorizationId,
-        accountId: 'host-1', toolId: boundedShippingTool.id, productId: 'product-a', orderId,
-        quantity: 1, pageUrl, pageInstanceId: 'page-instance-1', actionRef: 'za-2',
-        statusEvidenceId: 'order-shipment-status', statusBaseline: '待发货',
-        statusSuccessStatuses: ['已发货'], expiresAt: 1_500_000,
-      });
-      const call = {
-        ...input(orderId, prepared.intentId, `shipping-${suffix}-call`), toolId: boundedShippingTool.id,
-        domContext: { ...contextFor(orderId), elements: [{ ref: 'za-2', role: 'button', label: '发货' }] },
-      };
-      expect(await port.decide(call)).toEqual({ verdict: 'allow' });
-      const instruction = await port.issueExecInstruction(call);
-      await port.acceptExecResult({
-        sessionId: call.sessionId,
-        result: { type: 'exec-result', sessionId: call.sessionId, nonce: instruction.nonce, ok: true, body: { ok: true } },
-      });
-      await expect(port.confirmShipmentStatus({
-        sessionId: call.sessionId, toolCallId: call.toolCallId, pageUrl,
-        pageInstanceId: 'page-instance-1', evidence: { 'order-shipment-status': evidence },
-      })).resolves.toEqual({ confirmed: false, state: 'uncertain' });
-    }
-  });
-
-  it('库存前预授权原子占住订单与日额度，释放后可重试且授权不可跨订单使用', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
-    const authorization = await port.preauthorizeFulfillment({
-      accountId: 'host-1',
-      toolId: boundedFulfillmentTool.id,
-      productId: 'product-a',
-      orderId: 'order-preauthorized',
-      quantity: 1,
-      pageUrl: contextFor('order-preauthorized').url,
-      expiresAt: 1_500_000,
-    });
-    await expect(
-      port.preauthorizeFulfillment({
-        accountId: 'host-1',
-        toolId: boundedFulfillmentTool.id,
-        productId: 'product-a',
-        orderId: 'order-other',
-        quantity: 1,
-        pageUrl: contextFor('order-other').url,
-        expiresAt: 1_500_000,
-      }),
-    ).rejects.toThrow(/日额度/);
-    await expect(
-      prepare(port, 'order-other', { authorizationId: authorization.authorizationId }),
-    ).rejects.toThrow(/不匹配/);
-    await port.releaseFulfillmentAuthorization(authorization.authorizationId);
-
-    const retried = await port.preauthorizeFulfillment({
-      accountId: 'host-1',
-      toolId: boundedFulfillmentTool.id,
-      productId: 'product-a',
-      orderId: 'order-other',
-      quantity: 1,
-      pageUrl: contextFor('order-other').url,
-      expiresAt: 1_500_000,
-    });
-    const registered = await prepare(port, 'order-other', { authorizationId: retried.authorizationId });
-    await expect(port.decide(input('order-other', registered.intentId))).resolves.toEqual({ verdict: 'allow' });
-  });
-
-  it('可信意图绑定账号、精确页面与固定步骤；模型只传 opaque intentId', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
-    const { intentId } = await prepare(port, 'order-1');
-    const call = input('order-1', intentId);
-    await expect(port.decide(call)).resolves.toEqual({ verdict: 'allow' });
-    const instruction = await port.issueExecInstruction(call);
-    expect(instruction.request).toEqual({
-      kind: 'dom',
-      expectedPageUrl: contextFor('order-1').url,
-      expectedPageInstanceId: 'page-instance-1',
-      steps: [
-        { action: 'fill', ref: 'za-1', value: '固定履约内容' },
-        { action: 'click', ref: 'za-2' },
-      ],
-    });
-    expect(call.params).toEqual({ intentId });
-
-    const other = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
-    const { intentId: otherIntent } = await prepare(other, 'order-2');
-    const wrongPage = await other.decide({
-      ...input('order-2', otherIntent),
-      domContext: contextFor('different-order'),
-    });
-    expect(wrongPage).toEqual({ verdict: 'deny', reason: 'bounded-intent-context-mismatch' });
-    const wrongAccount = await other.decide({
-      ...input('order-2', otherIntent, 'call-wrong-account'),
-      claims: { ...validClaims, hostUserId: 'other-account' },
-    });
-    expect(wrongAccount).toEqual({ verdict: 'deny', reason: 'bounded-intent-context-mismatch' });
-  });
-
-  it('允许发送按钮在填充消息前处于 disabled，仍只签发固定 fill→click 并依赖新回执确认', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
-    const { intentId } = await prepare(port, 'order-send-initially-disabled');
-    const call = {
-      ...input('order-send-initially-disabled', intentId),
-      domContext: {
-        ...contextFor('order-send-initially-disabled'),
-        elements: [
-          { ref: 'za-1', role: 'textarea', label: '请输入消息' },
-          { ref: 'za-2', role: 'button', label: '发送', disabled: true },
-        ],
-      },
-    };
-    await expect(port.decide(call)).resolves.toEqual({ verdict: 'allow' });
-    const instruction = await port.issueExecInstruction(call);
-    expect(instruction.request).toMatchObject({
-      kind: 'dom',
-      steps: [
-        { action: 'fill', ref: 'za-1', value: '固定履约内容' },
-        { action: 'click', ref: 'za-2' },
-      ],
-    });
-  });
-
-  it('同一 call key 在预占、签发和终态均不可再次放行或签发', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }] });
-    const { intentId } = await prepare(port, 'order-call-state');
-    const call = input('order-call-state', intentId, 'same-call');
-    expect(await port.decide(call)).toEqual({ verdict: 'allow' });
-    await expect(port.decide(call)).resolves.toEqual({
-      verdict: 'deny',
-      reason: 'bounded-call-already-used',
-    });
-    const instruction = await port.issueExecInstruction(call);
-    await expect(port.issueExecInstruction(call)).rejects.toThrow(/已签发/);
-    await expect(port.decide(call)).resolves.toEqual({
-      verdict: 'deny',
-      reason: 'bounded-call-already-used',
-    });
-    await port.acceptExecResult({
-      sessionId: call.sessionId,
-      result: {
-        type: 'exec-result',
-        sessionId: call.sessionId,
-        nonce: instruction.nonce,
-        ok: true,
-        body: { ok: true },
-      },
-    });
-    await expect(
-      port.confirmFulfillmentReceipt({
-        sessionId: call.sessionId,
-        toolCallId: call.toolCallId,
-        pageUrl: contextFor('order-call-state').url,
-        pageInstanceId: 'page-instance-1',
-        evidence: { 'message-receipts': { count: 2, latest: '未读' } },
-      }),
-    ).resolves.toEqual({ confirmed: true, state: 'completed' });
-    await expect(port.decide(call)).resolves.toEqual({
-      verdict: 'deny',
-      reason: 'bounded-call-already-used',
-    });
-
-    const uncertainPort = makePort({
-      now: () => 1_000_000,
-      fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }],
-    });
-    const uncertainIntent = await prepare(uncertainPort, 'order-call-uncertain');
-    const uncertainCall = input('order-call-uncertain', uncertainIntent.intentId, 'same-call-uncertain');
-    expect(await uncertainPort.decide(uncertainCall)).toEqual({ verdict: 'allow' });
-    const uncertainInstruction = await uncertainPort.issueExecInstruction(uncertainCall);
-    await uncertainPort.acceptExecResult({
-      sessionId: uncertainCall.sessionId,
-      result: {
-        type: 'exec-result',
-        sessionId: uncertainCall.sessionId,
-        nonce: uncertainInstruction.nonce,
-        ok: false,
-        error: 'ambiguous',
-      },
-    });
-    await expect(uncertainPort.decide(uncertainCall)).resolves.toEqual({
-      verdict: 'deny',
-      reason: 'bounded-call-already-used',
-    });
-  });
-
-  it('DOM 两步成功不等于送达；只有回执数恰增 1 才 completed，否则 uncertain', async () => {
-    const completedPort = makePort({
-      now: () => 1_000_000,
-      fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }],
-    });
-    const completedIntent = await prepare(completedPort, 'order-receipt-success');
-    const completedCall = input('order-receipt-success', completedIntent.intentId, 'receipt-success-call');
-    expect(await completedPort.decide(completedCall)).toEqual({ verdict: 'allow' });
-    const completedInstruction = await completedPort.issueExecInstruction(completedCall);
-    await completedPort.acceptExecResult({
-      sessionId: completedCall.sessionId,
-      result: {
-        type: 'exec-result',
-        sessionId: completedCall.sessionId,
-        nonce: completedInstruction.nonce,
-        ok: true,
-        body: { ok: true },
-      },
-    });
-    await expect(
-      completedPort.confirmFulfillmentReceipt({
-        sessionId: completedCall.sessionId,
-        toolCallId: completedCall.toolCallId,
-        pageUrl: contextFor('order-receipt-success').url,
-        pageInstanceId: 'page-instance-1',
-        evidence: { 'message-receipts': { count: 2, latest: '已读' } },
-      }),
-    ).resolves.toEqual({ confirmed: true, state: 'completed' });
-
-    const uncertainPort = makePort({
-      now: () => 1_000_000,
-      fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }],
-    });
-    const uncertainIntent = await prepare(uncertainPort, 'order-receipt-stale');
-    const uncertainCall = input('order-receipt-stale', uncertainIntent.intentId, 'receipt-stale-call');
-    expect(await uncertainPort.decide(uncertainCall)).toEqual({ verdict: 'allow' });
-    const uncertainInstruction = await uncertainPort.issueExecInstruction(uncertainCall);
-    await uncertainPort.acceptExecResult({
-      sessionId: uncertainCall.sessionId,
-      result: {
-        type: 'exec-result',
-        sessionId: uncertainCall.sessionId,
-        nonce: uncertainInstruction.nonce,
-        ok: true,
-        body: { ok: true },
-      },
-    });
-    await expect(
-      uncertainPort.confirmFulfillmentReceipt({
-        sessionId: uncertainCall.sessionId,
-        toolCallId: uncertainCall.toolCallId,
-        pageUrl: contextFor('order-receipt-stale').url,
-        pageInstanceId: 'page-instance-1',
-        evidence: { 'message-receipts': { count: 1, latest: '未读' } },
-      }),
-    ).resolves.toEqual({ confirmed: false, state: 'uncertain' });
-  });
-
-  it('回执证据即使匹配，来自换页或刷新后的页面实例也不得确认', async () => {
-    const port = makePort({
-      now: () => 1_000_000,
-      fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }],
-    });
-    const prepared = await prepare(port, 'order-receipt-context');
-    const call = input('order-receipt-context', prepared.intentId, 'receipt-context-call');
-    expect(await port.decide(call)).toEqual({ verdict: 'allow' });
-    const instruction = await port.issueExecInstruction(call);
-    await port.acceptExecResult({
-      sessionId: call.sessionId,
-      result: {
-        type: 'exec-result',
-        sessionId: call.sessionId,
-        nonce: instruction.nonce,
-        ok: true,
-        body: { ok: true },
-      },
-    });
-    await expect(
-      port.confirmFulfillmentReceipt({
-        sessionId: call.sessionId,
-        toolCallId: call.toolCallId,
-        pageUrl: contextFor('different-order').url,
-        pageInstanceId: 'page-instance-after-refresh',
-        evidence: { 'message-receipts': { count: 2, latest: '已读' } },
-      }),
-    ).resolves.toEqual({ confirmed: false, state: 'uncertain' });
-  });
-
-  it('页面生命周期与输入/发送控件语义不符时拒绝自动履约', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 5 }] });
-    const first = await prepare(port, 'order-page-instance');
-    await expect(
-      port.decide({
-        ...input('order-page-instance', first.intentId),
-        domContext: { ...contextFor('order-page-instance'), pageInstanceId: 'other-page' },
-      }),
-    ).resolves.toEqual({ verdict: 'deny', reason: 'bounded-intent-context-mismatch' });
-
-    const second = await prepare(port, 'order-wrong-target');
-    await expect(
-      port.decide({
-        ...input('order-wrong-target', second.intentId, 'wrong-target-call'),
-        domContext: {
-          ...contextFor('order-wrong-target'),
-          elements: [
-            { ref: 'za-1', role: 'button', label: '不是输入框' },
-            { ref: 'za-2', role: 'button', label: '删除' },
-          ],
-        },
-      }),
-    ).resolves.toEqual({ verdict: 'deny', reason: 'bounded-intent-target-mismatch' });
-  });
-
-  it('跨策略按站点+账号+工具+规范化订单全局去重，且日限额含预占', async () => {
-    const policyB = { ...policy, id: 'seller-main-product-b', productIds: ['product-b'], dailyOrderLimit: 3 };
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 3 }, policyB] });
-    const { intentId } = await prepare(port, 'order-1', { orderId: ' order-1 ' });
-    const firstInput = input('order-1', intentId);
-    expect(await port.decide(firstInput)).toEqual({ verdict: 'allow' });
-    await expect(prepare(port, 'order-1', { productId: 'product-b' })).rejects.toThrow(/订单已占用/);
-  });
-
-  it('执行失败或回执不明确将订单标为 uncertain，禁止自动重发', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 3 }] });
-    const { intentId } = await prepare(port, 'order-ambiguous');
-    const firstInput = input('order-ambiguous', intentId);
-    expect(await port.decide(firstInput)).toEqual({ verdict: 'allow' });
-    const instruction = await port.issueExecInstruction(firstInput);
-    await port.acceptExecResult({
-      sessionId: firstInput.sessionId,
-      result: {
-        type: 'exec-result',
-        sessionId: firstInput.sessionId,
-        nonce: instruction.nonce,
-        ok: false,
-        error: 'page-result-ambiguous',
-      },
-    });
-    await expect(prepare(port, 'order-ambiguous')).rejects.toThrow(/订单已占用/);
-  });
-
-  it('策略范围在可信意图登记时校验，模型无法自报商品或数量', async () => {
-    const port = makePort({ now: () => 1_000_000, fulfillmentPolicies: [policy] });
-    await expect(prepare(port, 'order-x', { productId: 'product-b' })).rejects.toThrow(/未唯一命中/);
-    await expect(prepare(port, 'order-x', { quantity: 2 })).rejects.toThrow(/未唯一命中/);
-    await expect(prepare(port, 'order-x', { expiresAt: 2_000_001 })).rejects.toThrow(/未唯一命中/);
-    await expect(prepare(port, 'order-x', { messageRef: 'za-2', sendRef: 'za-2' })).rejects.toThrow(
-      /字段非法/,
-    );
-    await expect(prepare(port, 'order-x', { receiptSuccessStatuses: [] })).rejects.toThrow(/字段非法/);
-  });
-
-  it('重复策略 id、非法产品与非法边界在启动期 fail-fast', () => {
-    expect(() =>
-      makePort({ fulfillmentPolicies: [policy, { ...policy }] }),
-    ).toThrow(/有界履约策略/);
-    expect(() =>
-      makePort({ fulfillmentPolicies: [{ ...policy, dailyOrderLimit: 0 }] }),
-    ).toThrow(/有界履约策略/);
-    expect(() =>
-      makePort({ fulfillmentPolicies: [{ ...policy, productIds: [''] }] }),
-    ).toThrow(/有界履约策略/);
-  });
-
-  it('运营日跨界后重置日额度，策略站点与工具所属 pack 不一致则拒绝启动', async () => {
-    let clock = Date.parse('2026-07-21T15:59:00Z');
-    const boundaryPolicy = {
-      ...policy,
-      validUntil: Date.parse('2026-07-23T00:00:00Z'),
-      dailyOrderLimit: 1,
-    };
-    const port = makePort({ now: () => clock, fulfillmentPolicies: [boundaryPolicy] });
-    const before = await prepare(port, 'order-before-boundary', { expiresAt: clock + 60_000 });
-    expect(await port.decide(input('order-before-boundary', before.intentId))).toEqual({ verdict: 'allow' });
-    clock = Date.parse('2026-07-21T16:01:00Z');
-    const after = await prepare(port, 'order-after-boundary', { expiresAt: clock + 60_000 });
-    expect(await port.decide(input('order-after-boundary', after.intentId))).toEqual({ verdict: 'allow' });
-
-    expect(() =>
-      createToolGatePort({
-        tools: [boundedFulfillmentTool],
-        signingSecret: SIGN_FIXTURE,
-        sites: [{ packId: 'seller-pack', origin: 'https://other.example', locations: ['/'] }],
-        toolOwnership: [{ packId: 'seller-pack', toolId: boundedFulfillmentTool.id }],
-        fulfillmentPolicies: [policy],
-      }),
-    ).toThrow(/工具所属站点不一致/);
-  });
-
-  it('工具分级、通道、every-call 与 intentId params 联合契约非法时拒绝启动', () => {
-    const create = (tool: ToolDefinition) =>
-      createToolGatePort({ tools: [tool], signingSecret: SIGN_FIXTURE });
-    expect(() => create({ ...boundedFulfillmentTool, riskTier: 'auto' })).toThrow(/授权契约非法/);
-    expect(() => create({ ...boundedFulfillmentTool, hitlMode: undefined })).toThrow(/授权契约非法/);
-    expect(() =>
-      create({
-        ...boundedFulfillmentTool,
-        params: { type: 'object', properties: { intentId: { type: 'string' } } },
-      }),
-    ).toThrow(/授权契约非法/);
-  });
-});
-
 // ---- ADR-013 批次④：任务组治理面（per-origin 身份 / origin 围栏 / navigate / every-call / 命名空间纪律） ----
 
 /** codeflow http 工具（相对 URL，site pack 锚定 pack origin）：per-origin 身份口径测试对象。 */
@@ -1724,6 +1137,7 @@ function makeSitePort(overrides?: PortOverrides) {
     ...(overrides?.now !== undefined ? { now: overrides.now } : {}),
   });
 }
+
 
 describe('toolgate ADR-013 — per-origin 身份口径（http/server 按目标 pack origin fail-closed）', () => {
   const httpBase = { sessionId: 's', toolCallId: 'c', toolId: siteHttpTool.id, params: { name: 'k' } };
@@ -2159,76 +1573,6 @@ describe('toolgate adr-023 D3 — 定向副作用（目标页解析/围栏/通�
     expect(plain.request).toEqual({ kind: 'dom', steps: [{ action: 'click', ref: 'za-2' }] });
   });
 
-  it('bounded-fulfillment 已预占调用在签发时带 targetPage → 显式拒签（签发终点与 decide 同口径，不静默忽略）', async () => {
-    const port = makePort({
-      now: () => 1_000_000,
-      fulfillmentPolicies: [
-        {
-          id: 'seller-d3-bounded',
-          accountId: 'host-1',
-          toolId: boundedFulfillmentTool.id,
-          siteOrigin: 'https://seller.example',
-          productIds: ['product-a'],
-          validUntil: 2_000_000,
-          maxCodesPerOrder: 1,
-          dailyOrderLimit: 1,
-          dayBoundaryOffsetMinutes: 480,
-        },
-      ],
-    });
-    const { authorizationId } = await port.preauthorizeFulfillment({
-      accountId: 'host-1',
-      toolId: boundedFulfillmentTool.id,
-      productId: 'product-a',
-      orderId: 'order-1',
-      quantity: 1,
-      pageUrl: domContext.url,
-      expiresAt: 1_500_000,
-    });
-    const { intentId } = await port.prepareFulfillmentIntent({
-      authorizationId,
-      accountId: 'host-1',
-      toolId: boundedFulfillmentTool.id,
-      productId: 'product-a',
-      orderId: 'order-1',
-      quantity: 1,
-      pageUrl: domContext.url,
-      pageInstanceId: 'page-instance-1',
-      messageRef: 'za-1',
-      sendRef: 'za-2',
-      message: '固定履约内容',
-      receiptEvidenceId: 'message-receipts',
-      receiptBaselineCount: 1,
-      receiptSuccessStatuses: ['未读'],
-      expiresAt: 1_500_000,
-    });
-    const call = {
-      sessionId: 's-d3',
-      toolCallId: 'c-d3-bounded-issue',
-      toolId: boundedFulfillmentTool.id,
-      params: { intentId },
-      claims: validClaims,
-      domContext,
-      groupPages,
-    };
-    await expect(port.decide(call)).resolves.toEqual({ verdict: 'allow' });
-    await expect(
-      port.issueExecInstruction({ ...call, params: { intentId, targetPage: 'p2' } }),
-    ).rejects.toThrow(/不支持定向/);
-    // 拒的是定向不是这次调用：预占未被消耗，缺省参数仍按可信意图签发。
-    const frame = await port.issueExecInstruction(call);
-    expect('page' in frame).toBe(false);
-    expect(frame.request).toEqual({
-      kind: 'dom',
-      expectedPageUrl: domContext.url,
-      expectedPageInstanceId: 'page-instance-1',
-      steps: [
-        { action: 'fill', ref: 'za-1', value: '固定履约内容' },
-        { action: 'click', ref: 'za-2' },
-      ],
-    });
-  });
-
   it('句柄未命中状态表 → deny page-not-in-group；未传 groupPages 而带 targetPage → 同拒（fail-closed 禁回退活跃页）', async () => {
     const port = makePort();
     const miss = await port.decide({ ...domBase, params: { ...refBatch, targetPage: 'p404' } });
@@ -2347,19 +1691,6 @@ describe('toolgate adr-023 D3 — 定向副作用（目标页解析/围栏/通�
     });
   });
 
-  it('bounded-fulfillment 工具带 targetPage → deny（固定步骤绑定活跃页意图，定向不支持）', async () => {
-    const decision = await makePort().decide({
-      sessionId: 's-d3',
-      toolCallId: 'c-d3-bounded',
-      toolId: boundedFulfillmentTool.id,
-      params: { intentId: 'i-1', targetPage: 'p2' },
-      claims: validClaims,
-      domContext,
-      groupPages,
-    });
-    expect(decision.verdict).toBe('deny');
-  });
-
   it('异形句柄等值命中即可定向（服务端不解析句柄结构，U5）', async () => {
     const decision = await makePort().decide({
       ...domBase,
@@ -2434,26 +1765,6 @@ describe('toolgate adr-023 D3 — 定向副作用（目标页解析/围栏/通�
     expect(() =>
       createToolGatePort({ tools: [conflictingTool], signingSecret: SIGN_FIXTURE }),
     ).toThrow(/保留参数 targetPage/);
-  });
-
-  it('bounded-fulfillment dom 工具自声明 targetPage → 同样载入期拒启（该类不增广，仍是平台保留参数）', () => {
-    const conflictingBounded: ToolDefinition = {
-      ...boundedFulfillmentTool,
-      id: 'xianyu.send-delivery-target-page-conflict',
-      params: {
-        type: 'object',
-        required: ['intentId'],
-        properties: { intentId: { type: 'string' }, targetPage: { type: 'string' } },
-        additionalProperties: false,
-      },
-    };
-    expect(() =>
-      createToolGatePort({ tools: [conflictingBounded], signingSecret: SIGN_FIXTURE }),
-    ).toThrow(/保留参数 targetPage/);
-    // 不声明 targetPage 的 bounded 工具照旧可启动：增广面不变（params 仍不含 targetPage，带值调用由 schema 拦）。
-    expect(() =>
-      createToolGatePort({ tools: [boundedFulfillmentTool], signingSecret: SIGN_FIXTURE }),
-    ).not.toThrow();
   });
 
   it('pack 自由声明业务参数 page：载入放行、按业务实参过 schema，与平台定向面互不干涉', async () => {
