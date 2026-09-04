@@ -44,6 +44,8 @@ const SYS_GENERAL_ASSISTANT = '通用助手';
 const SYS_GOVERNANCE_STRICT = '治理边界不随对话放宽';
 const SYS_PERSONAL_PRECEDENCE = '以个人规则为准';
 const SYS_STRICTER_SIDE = '更严的一方';
+const SYS_FACT_BOUNDARY = '如实说明未能确认';
+const SYS_GENERAL_UNRESTRICTED = '与站点无关的通用请求不受本条限制';
 const SYS_BASE_ONLY_NOTICE = '无专属功能配置（仅基座）';
 const SYS_EXECUTION_PREFERENCE = '【执行偏好】';
 const FACTS_UNVERIFIED_MARK = '⚠待核';
@@ -78,6 +80,8 @@ export const PROBE_LITERALS = [
   { literal: SYS_GOVERNANCE_STRICT, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-02 治理边界不随对话放宽；被改写成可放宽表述即失守' },
   { literal: SYS_PERSONAL_PRECEDENCE, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-08 偏好类以个人规则为准（优先级口径的前一半）' },
   { literal: SYS_STRICTER_SIDE, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-08 治理类取更严的一方（优先级口径的后一半）' },
+  { literal: SYS_FACT_BOUNDARY, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-04 事实边界（R8 前一半）：站点事实未覆盖须说未能确认，被改回拒答口径即失配' },
+  { literal: SYS_GENERAL_UNRESTRICTED, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-04 事实边界（R8 后一半）：通用请求不受站点事实边界限制，缺失即与 ZA-SYS-01 重新冲突' },
   { literal: BROWSE_ASSIST_MARKER, sourceFile: 'assets/packs/generic-web/features/browse/feature.md', why: 'generic-web 激活的判别标记：通用页面剧本（open_url / 搜索技能）据此门控' },
   { literal: WEB_SEARCH_SKILL_MARKER, sourceFile: 'assets/packs/generic-web/skills/web-search/SKILL.md', why: 'web-search skill 随装配注入的独有 marker' },
   { literal: SYS_BASE_ONLY_NOTICE, sourceFile: 'apps/server/src/gateway.ts', why: '无 pack 命中时服务端注入的仅基座附注（不得臆断站点身份）' },
@@ -1019,6 +1023,13 @@ function pickReply(sys, u) {
     return sys.includes(FACTS_UNVERIFIED_MARK) && sys.includes(FACTS_UNVERIFIED_CONSTRAINT)
       ? 'MOCK-UNVERIFIED-FACTS-HIT'
       : 'MOCK-UNVERIFIED-FACTS-MISS';
+  }
+  if (u.includes('报告站点事实边界口径')) {
+    // 注入内容探针：ZA-SYS-04 两半须同时在场——站点事实未覆盖说未能确认、通用请求不受此限；
+    // 任一半被删或改回「明确回答配置未覆盖」的拒答口径即失配（R8 事实边界）。
+    return sys.includes(SYS_FACT_BOUNDARY) && sys.includes(SYS_GENERAL_UNRESTRICTED)
+      ? 'MOCK-FACT-BOUNDARY-HIT'
+      : 'MOCK-FACT-BOUNDARY-MISS';
   }
   if (u.includes('报告个人规则优先级口径')) {
     // 注入内容探针：ZA-SYS-08 两半须同时在场——偏好类取个人、治理类取更严；任一半被删即失配。
