@@ -173,6 +173,10 @@
           "$comment": "被关停的 packId（随 packDisabled 一同记录）：关停轮事件顶层 packId 已回落缺省，追溯『哪个 pack 被关停』只此一处；缺省=非关停回落。",
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "siteDenied": {
+          "$comment": "true = 当前页 origin 命中用户 L2 站点黑名单而回落仅基座；与 packDisabled 分列——「用户不让 Zen 出现在这个站点」与「用户关停了这个 pack」是两种归因，缺省=非黑名单回落。",
+          "const": true
         }
       }
     },

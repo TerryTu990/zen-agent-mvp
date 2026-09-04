@@ -17,6 +17,7 @@ import {
 } from './auto-scan.js';
 import { EXECUTION_PREFERENCE_OPTIONS } from './execution-preference.js';
 import type { ExecutionPreference } from './frames.js';
+import { isSiteDenyEntry, MAX_SITE_DENYLIST_ENTRIES, siteDeniesUrl } from './site-denylist.js';
 
 export type RiskTier = 'auto' | 'hitl' | 'forbidden';
 export type PackSource = 'official' | 'community' | 'local';
@@ -75,9 +76,13 @@ export interface OverlayAutomationPreferenceView {
   minutes?: number;
 }
 
-/** 站点作用域与 "*" 全局作用域的合并投影：全局作用域结构上不出现 enabled/restrictions/packConfig。 */
+/**
+ * 站点作用域与 "*" 全局作用域的合并投影：全局作用域结构上不出现 enabled/restrictions/packConfig，
+ * siteDenylist 则只出现在全局作用域（黑名单跨站点，不锚定任何 pack）。
+ */
 export interface OverlayScopeView {
   enabled?: false;
+  siteDenylist?: string[];
   rules?: OverlayEntryView[];
   facts?: OverlayEntryView[];
   restrictions?: {
@@ -128,6 +133,11 @@ export interface ConfigCenterDeps {
   localAutomations?: Record<string, { enabled?: boolean; minutes?: number }>;
   /** 把面板上的自动化偏好全量镜像回本地调度存储；缺省 = 只写 L2。 */
   saveAutomations?(prefs: Record<string, { enabled: boolean; minutes: number }>): Promise<void>;
+  /**
+   * 把保存后的站点黑名单全量镜像回本机存储（background 激活判定的数据源）；缺省 = 只写 L2，
+   * 本机侧要等下次冷启动重拉才收紧。
+   */
+  saveSiteDenylist?(entries: string[]): Promise<void>;
 }
 
 export interface ConfigCenterHandle {
@@ -308,6 +318,8 @@ interface CenterState {
   foreignWatches: UserOverlayWatchView[];
   /** 空串 = 未设置，跟随站点包默认。 */
   verbosity: Verbosity | '';
+  /** "*" 作用域的站点黑名单待保存态；空数组 = 无名单（写回时省略该键）。 */
+  siteDenylist: string[];
   loadError: string | null;
 }
 
@@ -413,6 +425,10 @@ function buildOverlay(state: CenterState, subject: UserConfigSubjectView): UserO
     globalScope.preferences = { ...globalScope.preferences, verbosity: state.verbosity };
   }
 
+  // 删空时省略该键：契约 minItems=1，空数组会被写入期拒收。
+  if (state.siteDenylist.length === 0) delete packs[GLOBAL_SCOPE]?.siteDenylist;
+  else ensureScope(packs, GLOBAL_SCOPE).siteDenylist = [...state.siteDenylist];
+
   for (const [key, scope] of Object.entries(packs)) {
     if (Object.keys(scope).length === 0) delete packs[key];
   }
@@ -446,6 +462,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     watches: [],
     foreignWatches: [],
     verbosity: '',
+    siteDenylist: [],
     loadError: null,
   };
   const authToken = deps.authToken;
@@ -764,7 +781,8 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       notice('无人值守任务不允许自动执行不可撤销的写操作——平台底线，不可配置。', 'lock'),
       notice(
         '周期自动化只唤醒已打开且已加入会话组的声明工作页，不会自动新建页面。' +
-          '你自建的触发器在目标页未打开、或当前地址与监测地址不一致时只跳过本轮；站点包自动化在离开工作流后会自动停止。',
+          '你自建的触发器在目标页未打开、或当前地址与监测地址不一致时只跳过本轮；站点包自动化在离开工作流后会自动停止。' +
+          '落在「不辅助的站点」名单内的页面上，两类触发器到点一律不跑，也不发提示——触发器仍显示为启用，等的是你把该站点移出名单。',
       ),
     );
     if (state.loadError !== null) {
@@ -900,6 +918,16 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'),
       );
     }
+    // 启用态 + 名单内地址 = 到点静默不跑：不标注则这一行等于承诺了一份永远不来的周期汇报。
+    if (siteDeniesUrl(state.siteDenylist, draft.url)) {
+      row.append(
+        badge(
+          'za-cc-badge-warn',
+          '因站点名单暂不运行',
+          '监测地址在「不辅助的站点」名单内：到点不跑，也不发提示；把该站点移出名单即恢复',
+        ),
+      );
+    }
     return row;
   }
 
@@ -954,6 +982,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
 
   let baseUrlInput: HTMLInputElement | null = null;
   let executionPreferenceSelect: HTMLSelectElement | null = null;
+  let siteDenySection: HTMLElement | null = null;
 
   /** 身份只读展示：形态 + hostUserId 指纹前 8 位；完整标识经复制按钮取用（排障时报给运维）。 */
   function identityField(): HTMLElement {
@@ -1054,7 +1083,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
 
     const pending = section('尚未开放');
     for (const item of [
-      { label: '站点授权管理', anchor: 'P3 商店上架权限模型' },
       { label: '模型与密钥（BYOK）', anchor: 'P4 账号与配额' },
       { label: '数据披露与审计保留期', anchor: 'P4 托管形态' },
       { label: '导出我的配置', anchor: 'P3.5 pack 导入导出' },
@@ -1073,7 +1101,100 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     }
     locked.append(el('p', 'za-cc-hint', '这些是平台底线能力，任何配置不可关闭。'));
 
-    panel.append(connection, execution, preferences, pending, locked);
+    siteDenySection = buildSiteDenySection();
+    panel.append(connection, execution, preferences, siteDenySection, pending, locked);
+  }
+
+  /** 名单增删只换本节点：全局设置页的地址与执行偏好是未提交的输入值，整页重渲会把它们抹掉。 */
+  function refreshSiteDenySection(): void {
+    const next = buildSiteDenySection();
+    siteDenySection?.replaceWith(next);
+    siteDenySection = next;
+  }
+
+  /**
+   * 站点黑名单编辑面：写 "*" 全局作用域的 siteDenylist。
+   * 面板只做就地文法自检与增删，不宣称本机拦下了什么——命中站点上不装配任何站点包的判定在服务端。
+   */
+  function buildSiteDenySection(): HTMLElement {
+    const wrap = section('不辅助的站点');
+    wrap.classList.add('za-cc-site-deny');
+    wrap.append(
+      el(
+        'p',
+        'za-cc-hint',
+        '加进名单的站点上，Zen 不装配任何站点包，只留平台基座——判定在服务端，保存后下一轮装配即生效。' +
+          '保存成功后插件同步这份名单：名单内的站点不再激活会话、不再上报页面上下文、不进任务组页面清单，' +
+          '该站点上的站点包自动化与自建触发器到点也一律不跑，且不发提示。' +
+          '一处前提：服务端或本机读不到配置的那一轮不做拦截，该轮照常装配站点包、页面信息照常上行——' +
+          '配置读取失败时以「照常辅助」兜底，不假装名单已经生效。',
+      ),
+    );
+
+    for (const entry of state.siteDenylist) {
+      const row = el('div', 'za-cc-site-deny-entry');
+      row.dataset['zaSiteDeny'] = entry;
+      const remove = el('button', 'za-cc-btn za-cc-btn-danger za-cc-site-deny-remove', '移出名单');
+      remove.type = 'button';
+      remove.addEventListener('click', () => {
+        state.siteDenylist = state.siteDenylist.filter((candidate) => candidate !== entry);
+        refreshSiteDenySection();
+      });
+      row.append(
+        el('span', 'za-cc-site-deny-text', entry),
+        el(
+          'span',
+          'za-cc-hint',
+          entry.includes('://*.') ? '该域及其全部子域' : '该站点（scheme 与端口须完全一致）',
+        ),
+        remove,
+      );
+      wrap.append(row);
+    }
+    if (state.siteDenylist.length === 0) {
+      wrap.append(el('p', 'za-cc-empty', '名单为空：Zen 在所有站点上照常按站点包辅助。'));
+    }
+
+    const input = el('input', 'za-cc-site-deny-input');
+    input.type = 'text';
+    input.placeholder = 'https://example.com';
+    input.setAttribute('aria-label', '要加入不辅助名单的站点');
+    const add = el('button', 'za-cc-btn za-cc-site-deny-add', '加入名单');
+    add.type = 'button';
+    add.addEventListener('click', () => {
+      const value = input.value.trim();
+      if (!isSiteDenyEntry(value)) {
+        setStatus(
+          '站点格式不正确：请填 https://example.com（可带端口）或 https://*.example.com（该域及子域），' +
+            '不支持通配整个网络',
+          true,
+        );
+        return;
+      }
+      if (state.siteDenylist.includes(value)) {
+        setStatus(`${value} 已在名单里`, true);
+        return;
+      }
+      if (state.siteDenylist.length >= MAX_SITE_DENYLIST_ENTRIES) {
+        setStatus(`名单最多 ${MAX_SITE_DENYLIST_ENTRIES} 条`, true);
+        return;
+      }
+      state.siteDenylist = [...state.siteDenylist, value];
+      setStatus(`${value} 已加入待保存的名单，点「保存」后生效`);
+      refreshSiteDenySection();
+    });
+    const form = el('div', 'za-cc-field-inline');
+    form.append(input, add);
+    wrap.append(
+      form,
+      el(
+        'p',
+        'za-cc-hint',
+        '两种写法：https://example.com 只匹配该站点（scheme 与端口精确，www 与裸域互认）；' +
+          'https://*.example.com 匹配该域及其全部子域。',
+      ),
+    );
+    return wrap;
   }
 
   function renderAll(): void {
@@ -1149,6 +1270,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     );
     state.removedEntries = new Set();
     state.verbosity = state.basePacks[GLOBAL_SCOPE]?.preferences?.verbosity ?? '';
+    state.siteDenylist = [...(state.basePacks[GLOBAL_SCOPE]?.siteDenylist ?? [])];
     adoptWatches(overlay?.watches ?? []);
 
     state.tiers = new Map();
@@ -1290,6 +1412,12 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     await deps.saveAutomations(prefs);
   }
 
+  /** 站点黑名单的本机镜像（background 激活判定的数据源）：与自动化同律，仅在 L2 写入成功后落盘。 */
+  async function persistSiteDenylistMirror(): Promise<void> {
+    if (deps.saveSiteDenylist === undefined) return;
+    await deps.saveSiteDenylist([...state.siteDenylist]);
+  }
+
   async function save(): Promise<void> {
     const invalid = invalidAutomation();
     if (invalid !== null) {
@@ -1364,8 +1492,9 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       revisionLabel.textContent = `配置版本 ${state.revision}`;
       try {
         await persistAutomationMirror();
+        await persistSiteDenylistMirror();
       } catch {
-        setStatus('个人配置已保存，但本机自动化调度镜像写入失败（重开本页可重试）', true);
+        setStatus('个人配置已保存，但本机镜像写入失败（重开本页可重试）', true);
         return;
       }
       setStatus('已保存');

@@ -55,7 +55,6 @@ import {
   type AutoScanRecoveryStatus,
   type AutoScanRun,
   type AutomationDescriptor,
-  type WatchInstance,
   normalizeAutoScanMinutes,
   parseAutoScanRun,
   parseAutomationDescriptors,
@@ -71,6 +70,15 @@ import {
   AUTOMATION_DESCRIPTORS_KEY,
   WATCH_DESCRIPTOR_PACK_ID,
 } from './auto-scan.js';
+import {
+  parseSiteDenylist,
+  siteDeniesUrl,
+  siteDenylistFromUserConfig,
+  siteDeniedSkipKey,
+  siteDeniedSkipTabId,
+  SITE_DENYLIST_KEY,
+  tabUrlOf,
+} from './site-denylist.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
 // 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
@@ -215,6 +223,18 @@ interface GroupPagesMessage {
 type BridgeUpstreamMessage = UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage | GroupPagesMessage;
 
 /**
+ * 上行帧所属的页面（不变量 SD 的判据）。
+ * `null` = 该帧不归属任何单个页面：面板发起的会话消息、background 自产的回执、
+ * 以及逐条已过滤的组级清单——它们不因某一页被拉黑而消失。
+ * tabId 与 url 同时给出时任一命中即拦：tab 记录与页面自述各有滞后窗口，取并集只会更严
+ * （客户端只收紧、不放宽）。
+ */
+type UpstreamOrigin = { tabId?: number | undefined; url?: string | undefined } | null;
+
+/** 命中页被拒执行的下行指令回执错误码（回执由 background 自产，不归属任何页面）。 */
+const SITE_DENIED_ERROR = 'site-denied';
+
+/**
  * 一个 zen 标签页组的会话桥（ADR-013 批次④：键=tabGroup id，组内共享一个服务端会话、一条 SSE）；
  * 下行帧按 routeForFrame 路由（叙事/HITL → Side Panel；exec/guide/snapshot 缺省 → 活跃执行页；
  * 带 page 句柄时 → 目标成员页单播，adr-023 D2/D3）。
@@ -297,6 +317,23 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   const postToPanels = (message: BackgroundToSidePanelMessage): void => {
     for (const panel of panels) postPanel(panel, message);
   };
+  /**
+   * 不变量 ST 的唯一权威状态：本组当前是否处于停止态。停止手势置位、明确的新回合复位。
+   * 一切会产生页面副作用的路径（帧落页、background 自执行的导航、成员页端口接入）在动手前查它，
+   * 而不是各通路各自持有一段闩——每加一条通路就要记得再加一道防线，正是「停止没停住」反复复发的形状。
+   */
+  let operationStopped = false;
+  /**
+   * 明确的新回合开始：解除停止态，并把它宣告到各成员页（页面侧的闩同样只由新回合复位）。
+   * 与停止手势同为同步广播、不等上行往返——等往返则本回合的第一条指令会被上一次停止挡下，
+   * 而那条指令已经带着服务端签名到达页面，不执行既不上报即是静默失败。
+   */
+  const beginTurn = (): void => {
+    operationStopped = false;
+    for (const member of contentMembers.members()) {
+      postContent(member, { kind: 'resume-operation' });
+    }
+  };
   const updateHistory = (update: (history: SidePanelUiEvent[]) => SidePanelUiEvent[]): void => {
     historyChain = historyChain.then(async () => {
       panelHistory = update(panelHistory);
@@ -311,6 +348,54 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     updateHistory((history) => reducePanelHistory(history, event));
     postToPanels(event);
   };
+  /**
+   * 下行帧落到具体页面的统一出口，不变量 SD 第二句的唯一闸门：命中页不执行任何下行指令。
+   * exec-instruction 另回一条 site-denied 拒绝回执——没有回执，服务端只能把「已下发未回」
+   * 当成超时，用户会以为拉黑生效而实际看不出指令被本机拒了。
+   * 串行链保证两帧的先后序不被闸门的异步取址打乱（页面副作用对顺序敏感）。
+   * 同时是不变量 ST 的落页闸门：停止态查询发生在闸门取址之后、副作用发生之前，
+   * 故「已排队尚未落页」的帧与停止之后才到达的帧一并短路，两者无需分别设防。
+   */
+  let landing: Promise<void> = Promise.resolve();
+  const landOnPage = (frame: DownstreamFrame, tabId: number | undefined, execute: () => void): void => {
+    landing = landing
+      .then(async () => {
+        const denied = await isSiteDeniedPage({ tabId });
+        if (operationStopped) return;
+        if (!denied) {
+          execute();
+          return;
+        }
+        if (frame.type !== 'exec-instruction') return;
+        pipeline = pipeline.then(async () => {
+          await forward({
+            kind: 'exec-result',
+            result: {
+              type: 'exec-result',
+              sessionId: frame.sessionId,
+              nonce: frame.nonce,
+              ok: false,
+              error: SITE_DENIED_ERROR,
+            },
+          }, null);
+        });
+      })
+      .catch(() => {});
+  };
+
+  /**
+   * 活跃执行页登记的统一出口，不变量 SD 第三句的唯一闸门：命中页不得成为活跃页——
+   * 否则下行帧全部路由到一个只会被下行闸门丢掉的页，同组未命中页反而失联。
+   * 有页面自报地址时一并判（上行闸门同口径）：tab 记录的地址在导航途中可能还是旧值。
+   * 返回 false = 该页被拒，调用方按「本组当下没有可用执行页」处置。
+   */
+  async function admitActivePage(port: chrome.runtime.Port, reportedUrl?: string): Promise<boolean> {
+    const page = { tabId: port.sender?.tab?.id, ...(reportedUrl !== undefined ? { url: reportedUrl } : {}) };
+    if (await isSiteDeniedPage(page)) return false;
+    contentMembers.markActive(port);
+    return true;
+  }
+
   const postFrame = (route: FrameRoute, frame: DownstreamFrame): void => {
     if (suppressedTurnId !== null) {
       const stoppedTurnCompleted = frame.type === 'turn-complete' &&
@@ -359,7 +444,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       if (frame.type === 'hitl-request') {
         // 自动回合本不应进入人工确认；安全拒绝可让服务端回合收尾并发出明确完成帧，避免单飞锁悬挂。
         pipeline = pipeline.then(async () => {
-          await forward({ kind: 'hitl-decision', hitlId: frame.hitlId, decision: 'reject' });
+          await forward({ kind: 'hitl-decision', hitlId: frame.hitlId, decision: 'reject' }, null);
         });
       }
     }
@@ -381,7 +466,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       // 可改投同源他页并夺焦），违反「批准的目标页＝被导航的那一页」。
       const direct = decideTargetedNavigate(frame, pageHandles);
       if (direct.execute) {
-        void executeNavigateToTab(direct.frame, direct.url, direct.tabId);
+        landOnPage(frame, direct.tabId, () => void executeNavigateToTab(direct.frame, direct.url, direct.tabId));
         return;
       }
       const members = resolveTargetPageMembers(
@@ -391,17 +476,21 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         (candidate) => candidate.sender?.tab?.id,
       );
       // 目标成员不可达或形状不获准（silent 页非 navigate 批次、guide-action 无端口）：丢帧，禁改投。
-      for (const member of members) postContent(member, { kind: 'frame', frame });
+      for (const member of members) {
+        landOnPage(frame, member.sender?.tab?.id, () => postContent(member, { kind: 'frame', frame }));
+      }
       return;
     }
     const targets = contentMembers.targets('active-page');
     const direct = decideBackgroundNavigate(frame, targets.length);
     if (direct.execute) {
-      void executeNavigateWithoutPage(direct.frame, direct.url);
+      // 组内无 content 成员的冷启动 open_url：没有落地页可判，目标 URL 的治理在服务端签发前（D-2）；
+      // 仍经同一闸门落地，副作用由谁执行不改变它受不变量 ST 约束这件事。
+      landOnPage(frame, undefined, () => void executeNavigateWithoutPage(direct.frame, direct.url));
       return;
     }
     for (const member of targets) {
-      postContent(member, { kind: 'frame', frame });
+      landOnPage(frame, member.sender?.tab?.id, () => postContent(member, { kind: 'frame', frame }));
     }
   };
   const postStatus = (message: string): void => emitUi({ kind: 'status', message });
@@ -680,7 +769,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
                     ok: false,
                     error: verified.error,
                   },
-                });
+                }, null);
                 continue;
               }
               nonceHistory = nonceHistory.filter((entry) => entry.expiresAt >= Date.now());
@@ -698,7 +787,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
                     ok: false,
                     error: 'instruction-nonce-store-failed',
                   },
-                });
+                }, null);
                 continue;
               }
             }
@@ -755,8 +844,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  async function forward(message: BridgeUpstreamMessage): Promise<boolean> {
-    return (await deliver(message)).accepted;
+  async function forward(message: BridgeUpstreamMessage, origin: UpstreamOrigin): Promise<boolean> {
+    return (await deliver(message, origin)).accepted;
   }
 
   async function stopTurn(messageId: string): Promise<boolean> {
@@ -775,7 +864,16 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  async function deliver(message: BridgeUpstreamMessage): Promise<MessageDeliveryResult> {
+  /**
+   * 全部上行帧的统一出口，不变量 SD 第一句的唯一闸门：来源页命中用户站点黑名单的帧不出本机。
+   * 判定先于 ensureSession——命中页连一次建会话都不该在服务端留下痕迹。
+   * 无按形态放行的例外：连拒绝回执也不是从页面来的（background 自产、origin=null），
+   * 任何「某种形状可以过」的口子都等于给页面侧留一条夹带通道。
+   */
+  async function deliver(message: BridgeUpstreamMessage, origin: UpstreamOrigin): Promise<MessageDeliveryResult> {
+    if (origin !== null && (await isSiteDeniedPage(origin))) {
+      return { accepted: false, failure: 'site-denied' };
+    }
     const session = await ensureSession();
     if (session === null) return { accepted: false, ...lastSessionFailure };
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
@@ -861,18 +959,19 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     tabs: chrome.tabs,
     markMemberActive: (tabId) => {
       const member = contentMembers.members().find((candidate) => candidate.sender?.tab?.id === tabId);
-      if (member !== undefined) {
-        contentMembers.markActive(member);
-        scheduleGroupPagesReport();
-      }
+      if (member === undefined) return;
+      void admitActivePage(member).then((admitted) => {
+        if (admitted) scheduleGroupPagesReport();
+      });
     },
     noteExpectedActiveTab: (tabId) => {
       expectedActiveTabId = tabId;
     },
     sendActivate: (tabId) => sendActivate(tabId),
+    // background 自产的导航回执：只含服务端签发时已定值的 URL，不归属任何页面（origin=null）。
     forwardExecResult: (result) => {
       pipeline = pipeline.then(async () => {
-        await forward({ kind: 'exec-result', result });
+        await forward({ kind: 'exec-result', result }, null);
       });
     },
   });
@@ -881,11 +980,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     port: chrome.runtime.Port,
     request: Extract<ContentToBackgroundMessage, { kind: 'navigate-request' }>,
   ): Promise<void> {
-    const outcome = await performNavigate(
-      request.url,
-      port.sender?.tab?.windowId,
-      port.sender?.tab?.id,
-    );
+    // 停止态下不开页（不变量 ST）：发出请求的那条批次可能是停止之前就已落到页面上的，
+    // 页面侧的步间检查点管不到这一步——它的副作用由 background 执行。
+    const outcome = operationStopped
+      ? ({ ok: false, error: 'user-stopped' } as const)
+      : await performNavigate(request.url, port.sender?.tab?.windowId, port.sender?.tab?.id);
     postContent(
       port,
       outcome.ok
@@ -906,11 +1005,15 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
    * 采集本组全量成员页快照（经 tabs API，含无 content 端口的 silent 页）并对齐句柄表。
    * 隔离负数组键（groupIdOf 合成）无法经 tabs.query 枚举 → 不上报；
    * URL 尚不可得的成员先入句柄表（保持句柄稳定）、本帧暂缺行（空 url 帧不合法）。
+   * 落在用户站点黑名单内的成员整条剔除——清单的 url/title 会进注入面被 LLM 读到，
+   * 「别让 Zen 看见这个站点」的意图在这条路上同样成立；剔除先于句柄对齐，不留指向已剔除页的悬空句柄。
    */
   async function collectGroupPages(): Promise<GroupPageEntry[] | null> {
     if (groupId < 0) return null;
-    const tabs = await chrome.tabs.query({ groupId }).catch(() => null);
-    if (tabs === null) return null;
+    const queried = await chrome.tabs.query({ groupId }).catch(() => null);
+    if (queried === null) return null;
+    const denylist = await readSiteDenylist();
+    const tabs = queried.filter((tab) => !siteDeniesUrl(denylist, tabUrlOf(tab)));
     await pageHandlesReady;
     const reconciled = reconcilePageHandles(
       pageHandles,
@@ -922,7 +1025,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
     const members: MemberPageInfo[] = [];
     for (const tab of tabs) {
-      const url = tab.url !== undefined && tab.url !== '' ? tab.url : tab.pendingUrl;
+      const url = tabUrlOf(tab);
       if (tab.id === undefined || url === undefined || url === '') continue;
       members.push({
         tabId: tab.id,
@@ -939,17 +1042,25 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     return deriveGroupPages(pageHandles, members, portTabIds, activeTabId);
   }
 
+  async function reportGroupPages(): Promise<void> {
+    if (abort.signal.aborted) return;
+    const pages = await collectGroupPages();
+    if (pages === null || abort.signal.aborted) return;
+    // 组级清单不归属任何单页（origin=null）：命中页的条目已在 collectGroupPages 逐条剔除。
+    pipeline = pipeline
+      .then(async () => {
+        await forward({ kind: 'group-pages', pages }, null);
+      })
+      .catch(() => {});
+  }
+
   // 防抖 300ms 合并突发（开组/批量导航），到期才采集最终全量快照组帧；单页也上报（≥2 页
   // 门槛是服务端注入门槛，审计活跃页标注仍需状态表）。投递走既有串行管线保证与 context-report
   // 的先后序；失败不重试不阻塞——下个触发点自然带来新全量帧。
+  // 到期时宿主可能已不在（SW 回收后定时器仍到期，其捕获的 chrome/fetch 已失效）：采集的同步抛出
+  // 与拒绝一并止于本帧，既不外溢成未处理拒绝，也不让一次失败毒化整条上行串行链。
   const scheduleGroupPagesReport = createTrailingDebounce(300, () => {
-    if (abort.signal.aborted) return;
-    void collectGroupPages().then((pages) => {
-      if (pages === null || abort.signal.aborted) return;
-      pipeline = pipeline.then(async () => {
-        await forward({ kind: 'group-pages', pages });
-      });
-    });
+    void reportGroupPages().catch(() => {});
   });
   // 桥建立（含 SW 重启重建、面板先于 content 接入）即补一帧全量：
   // 服务端状态表不滞留桥空窗期间已关闭/离组的旧页。
@@ -979,10 +1090,13 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
 
   function attachContent(port: chrome.runtime.Port): void {
     contentMembers.add(port);
+    // 接入即取当前停止态，而不是指望曾经广播过什么：停止后才接入的页拿不到那次广播，
+    // 重连窗口里错过复位广播的页则会永久停摆——两者都是「曾经广播过」这个前提本身不成立。
+    postContent(port, { kind: operationStopped ? 'stop-operation' : 'resume-operation' });
     // navigate 新开页接入即标为活跃：后续 exec/HITL 路由跟随导航到新站点页。
     if (expectedActiveTabId !== null && port.sender?.tab?.id === expectedActiveTabId) {
-      contentMembers.markActive(port);
       expectedActiveTabId = null;
+      void admitActivePage(port);
     }
     scheduleGroupPagesReport();
     port.onMessage.addListener((raw) => {
@@ -1004,19 +1118,30 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       // 保活心跳：其到达已重置 SW 空闲计时器，不转发、不入管线。
       if (message.kind === 'ping') return;
       if (!UPSTREAM_KINDS.has(message.kind)) return;
-      // 上下文上报/用户发言都来自用户视线所在页：即组内活跃页（HITL/exec/guide 的路由目标）。
-      if (message.kind === 'context-report') {
-        contentMembers.markActive(port);
-        scheduleGroupPagesReport();
-        postToPanels({
-          kind: 'task-context',
-          groupId,
-          authorized: true,
-          url: message.url,
-          ...(message.title !== '' ? { title: message.title } : {}),
-        });
-      }
-      pipeline = pipeline.then(async () => { await forward(message); });
+      // 帧与来源页的对应关系随帧带到统一出口：判定只在 deliver 里做一次，此处不做第二次。
+      const senderTabId = port.sender?.tab?.id;
+      const origin: UpstreamOrigin =
+        message.kind === 'context-report'
+          ? { tabId: senderTabId, url: message.url }
+          : message.kind === 'snapshot-report'
+            ? { tabId: senderTabId, url: message.report.url }
+            : { tabId: senderTabId };
+      pipeline = pipeline.then(async () => {
+        // 上下文上报来自用户视线所在页：登记为组内活跃页（HITL/exec/guide 的路由目标）。
+        // 登记与面板抬头恒在闸门之后（命中页既不成为执行落点，也不冒充「任务页面已连接」），
+        // 但不等上行往返：那段窗口内到达的 active-page 下行帧会落到用户刚离开的上一页。
+        if (message.kind === 'context-report' && (await admitActivePage(port, message.url))) {
+          scheduleGroupPagesReport();
+          postToPanels({
+            kind: 'task-context',
+            groupId,
+            authorized: true,
+            url: message.url,
+            ...(message.title !== '' ? { title: message.title } : {}),
+          });
+        }
+        await deliver(message, origin);
+      });
     });
     port.onDisconnect.addListener(() => detachContent(port));
   }
@@ -1094,8 +1219,12 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
       if (message.kind === 'stop-operation') {
         const messageId = message.messageId ?? autoScanRun?.runId ?? undefined;
+        // 置位同步先于一切等待：此刻还在落页串行链上的帧不得再送到页面执行。
+        operationStopped = true;
         void disableAllAutomations();
-        for (const member of contentMembers.targets('active-page')) {
+        // 广播到全部成员端口，不只活跃页：定向批次按帧上句柄反查 tabId 投递，
+        // 落点与谁是活跃页无关，只通知活跃页等于放任其余页把剩余步骤跑完。
+        for (const member of contentMembers.members()) {
           postContent(member, { kind: 'stop-operation' });
         }
         if (messageId === undefined) {
@@ -1111,14 +1240,21 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
               (event) => !(event.kind === 'frame' && event.frame.type === 'hitl-request'),
             ));
           }
-          postStatus(accepted ? '已停止当前任务。' : '停止请求未被服务端接受，请稍后重试。');
+          // 被拒时本机页面侧其实已不可逆地停住（停止态只由新回合复位）：文案须把
+          // 「服务端没停」与「本机已停」分开说，否则用户按「没停下来」去处置一个已经停住的本机。
+          postStatus(
+            accepted
+              ? '已停止当前任务。'
+              : '本机页面操作已停止；服务端未接受停止请求，该任务可能仍在服务端继续，可稍后重试。',
+          );
           postToPanels({ kind: 'stop-result', messageId, accepted });
         });
         return;
       }
       if (message.kind === 'user-message') {
+        beginTurn();
         pipeline = pipeline.then(async () => {
-          const result = await deliver(message);
+          const result = await deliver(message, null);
           if (result.accepted) emitUi({ kind: 'user-echo', text: message.displayText ?? message.text, messageId: message.messageId });
           postToPanels({ kind: 'message-result', messageId: message.messageId, ...result });
         });
@@ -1126,7 +1262,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
       if (message.kind === 'hitl-decision') {
         pipeline = pipeline.then(async () => {
-          const accepted = await forward(message);
+          const accepted = await forward(message, null);
           if (accepted) updateHistory((history) => removeSettledHitl(history, message.hitlId));
           else postPanel(port, { kind: 'history-replay', events: panelHistory });
           postToPanels({ kind: 'hitl-result', hitlId: message.hitlId, accepted });
@@ -1135,7 +1271,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
       if (message.kind === 'config-decision') {
         pipeline = pipeline.then(async () => {
-          const result = await deliver(message);
+          const result = await deliver(message, null);
           const terminal = result.accepted || result.httpStatus === 409 || result.httpStatus === 400;
           if (terminal) {
             // 裁决送达或服务端终态拒绝（409 已消费/过期、400 校验不过）：出历史，卡片不再重现可操作态。
@@ -1153,7 +1289,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         });
         return;
       }
-      pipeline = pipeline.then(async () => { await forward(message); });
+      // 面板发起的会话消息不归属任何页面（origin=null）：面板不是被拉黑的那个页。
+      pipeline = pipeline.then(async () => { await forward(message, null); });
     });
     port.onDisconnect.addListener(() => detachPanel(port));
   }
@@ -1192,6 +1329,13 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     return 'settled';
   }
 
+  /** 单飞锁释放：未产生完成帧的轮次必须就地释放，否则悬挂到下周期被恢复判定当成异常。 */
+  async function releaseAutoScanRun(run: AutoScanRun): Promise<void> {
+    if (autoScanRun?.runId !== run.runId) return;
+    autoScanRun = null;
+    await chrome.storage.session.remove(autoScanRunKey);
+  }
+
   async function triggerAutoScan(
     descriptor: AutomationDescriptor,
     tabId: number,
@@ -1205,39 +1349,41 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     if (autoScanRun !== null) return recoverAutoScanRun(autoScanRun);
     const target = contentMembers.members().find((member) => member.sender?.tab?.id === tabId);
     if (target === undefined) return 'unavailable';
-    contentMembers.markActive(target);
-    scheduleGroupPagesReport();
     const run: AutoScanRun = { runId: crypto.randomUUID(), automationId: descriptor.automation.id };
     autoScanRun = run;
     await chrome.storage.session.set({ [autoScanRunKey]: run });
-    postStatus(`自动化「${run.automationId}」已触发。`);
     pipeline = pipeline.then(async () => {
       const current = await chrome.storage.local.get(enabledKey);
       if (current[enabledKey] !== true || autoScanRun?.runId !== run.runId) {
-        if (autoScanRun?.runId === run.runId) {
-          autoScanRun = null;
-          await chrome.storage.session.remove(autoScanRunKey);
-        }
+        await releaseAutoScanRun(run);
         return;
       }
       const [contextMessage, scanMessage] = autoScanDispatch(descriptor, tabUrl, tabTitle, run.runId);
-      if (!(await forward(contextMessage))) {
-        if (autoScanRun?.runId === run.runId) {
-          autoScanRun = null;
-          await chrome.storage.session.remove(autoScanRunKey);
-        }
+      // 自动化的两帧与人工回合走同一个上行出口，闸门因此对无人值守回合同样成立。
+      const origin: UpstreamOrigin = { tabId, url: tabUrl };
+      const context = await deliver(contextMessage, origin);
+      if (context.failure === 'site-denied') {
+        // 命中页：整轮不跑，触发器保持启用（把该站移出名单即恢复）。不发提示——
+        // 用户要的就是「别在这个站点上动」，一条「已暂停」提示本身也是打扰。
+        await releaseAutoScanRun(run);
+        return;
+      }
+      if (!context.accepted) {
+        await releaseAutoScanRun(run);
         await chrome.storage.local.set({ [enabledKey]: false });
         postStatus(`自动化「${run.automationId}」工作页上下文同步失败，已暂停。`);
         return;
       }
+      // 活跃执行页登记与「已触发」提示恒在闸门之后。
+      await admitActivePage(target);
+      scheduleGroupPagesReport();
+      postStatus(`自动化「${run.automationId}」已触发。`);
+      beginTurn();
       // 服务端可拒绝自动回合（adr-021 fail-closed）。被拒的轮次不会有完成帧，
       // 锁必须就地释放，否则悬挂到下周期被恢复判定当成异常并关停触发器。
-      const delivery = await deliver(scanMessage);
+      const delivery = await deliver(scanMessage, origin);
       if (delivery.accepted) return;
-      if (autoScanRun?.runId === run.runId) {
-        autoScanRun = null;
-        await chrome.storage.session.remove(autoScanRunKey);
-      }
+      await releaseAutoScanRun(run);
       if (decideAutoScanDelivery(delivery.httpStatus) === 'pause') {
         await chrome.storage.local.set({ [enabledKey]: false });
         postStatus(
@@ -1282,7 +1428,84 @@ function bridgeFor(groupId: number): GroupBridge {
   return bridge;
 }
 
+/**
+ * 本机站点黑名单缓存读回（来自 refreshAutomationDescriptors 的那次 /v1/user-config）。
+ * 缓存缺失/读失败一律回空名单：治理终判在服务端 compose，客户端不确定时不拦（U7）。
+ */
+async function readSiteDenylist(): Promise<string[]> {
+  const items: Record<string, unknown> = await chrome.storage.local
+    .get(SITE_DENYLIST_KEY)
+    .catch(() => ({}) as Record<string, unknown>);
+  return parseSiteDenylist(items[SITE_DENYLIST_KEY]);
+}
+
+/**
+ * 不变量 SD 的唯一判定：该页是否落在用户站点黑名单内。三处闸门（上行出口 / 下行落页 /
+ * 活跃页登记）与激活闸门共用它，判定逻辑因此只有一份。
+ * tabId 与 url 同时给出时任一命中即拦：tab 记录与页面自述各有滞后窗口，取并集只会更严。
+ * 名单为空时不查 tab：绝大多数用户名单为空，省掉每次一趟 tabs.get。
+ * 取址口径与组页面清单同源（tabUrlOf）：导航尚未提交的新页地址只在 pendingUrl 上。
+ */
+async function isSiteDeniedPage(page: { tabId?: number | undefined; url?: string | undefined }): Promise<boolean> {
+  const denylist = await readSiteDenylist();
+  if (denylist.length === 0) return false;
+  if (siteDeniesUrl(denylist, page.url)) return true;
+  if (page.tabId === undefined) return false;
+  const tab = await chrome.tabs.get(page.tabId).catch(() => null);
+  return tab !== null && siteDeniesUrl(denylist, tabUrlOf(tab));
+}
+
+/**
+ * 「本机确实跳过了这一页的激活」的事实登记/撤销。
+ * 面板的客户端自述只认这条事实——按「当前 URL 命中名单」推断会在「拉黑前已激活、
+ * 地址早已上报」这条最常见流程上说假话，而那一轮服务端确实见过该页、它的 site-denied
+ * 抬头比客户端的猜测权威。
+ */
+async function noteActivationSkipped(tabId: number, skipped: boolean): Promise<void> {
+  const key = siteDeniedSkipKey(tabId);
+  await (skipped
+    ? chrome.storage.session.set({ [key]: true })
+    : chrome.storage.session.remove(key)
+  ).catch(() => {});
+}
+
+/**
+ * 撤销不再成立的「跳过激活」登记。面板的客户端自述只认这条事实：名单条目被移出、
+ * 或该页早已导航离开命中站点之后仍留着它，面板就会对着一个照常辅助的页说「本站不辅助」。
+ * 不确定一律撤销（tab 已关闭 / 名单读不到）：多撤一次只是让服务端描述照常呈现，留着才是说假话。
+ */
+async function revokeStaleActivationSkip(tabId: number): Promise<void> {
+  const key = siteDeniedSkipKey(tabId);
+  const items = await chrome.storage.session.get(key).catch(() => ({}) as Record<string, unknown>);
+  if (items[key] !== true) return;
+  if (await isSiteDeniedPage({ tabId })) return;
+  await noteActivationSkipped(tabId, false);
+}
+
+/** 名单变更后逐条复核全部登记：变更事件不带受影响的 tab 集，只能全表过一遍。 */
+async function revokeStaleActivationSkips(): Promise<void> {
+  const items = await chrome.storage.session.get(null).catch(() => ({}) as Record<string, unknown>);
+  for (const [key, value] of Object.entries(items)) {
+    const tabId = siteDeniedSkipTabId(key);
+    if (tabId !== null && value === true) await revokeStaleActivationSkip(tabId);
+  }
+}
+
+/**
+ * 通知该页挂面板连接（content 侧 activate 幂等）。
+ * 本函数内的黑名单判定是**兜底**：它在全部激活入口（握手 / 工具栏图标 / 组内导航补发 /
+ * 拖入已映射组 / navigate 代执行开页）的最后一步，保证任何入口都发不出激活。
+ * 用户可见副作用（建组、登记 zen 组、绑面板）发生在各入口更早处，故握手与图标两个入口
+ * 另有一处早退判定（见 handleRequestActivate / handleIconClick）——那处管副作用，这处管激活，
+ * 两处职责不同，不是重复判定（判定逻辑仍只有 isSiteDeniedPage 一份）。
+ * 每条路径都就地登记/撤销「本机跳过了这一页的激活」的事实，面板的客户端自述只认它。
+ */
 async function sendActivate(tabId: number): Promise<void> {
+  if (await isSiteDeniedPage({ tabId })) {
+    await noteActivationSkipped(tabId, true);
+    return;
+  }
+  await noteActivationSkipped(tabId, false);
   const message: BackgroundRuntimeMessage = { kind: 'activate' };
   await chrome.tabs.sendMessage(tabId, message).catch(() => {});
 }
@@ -1327,6 +1550,12 @@ async function handleRequestActivate(
   const tab = sender.tab;
   if (tab?.id === undefined) return;
   const tabId = tab.id;
+  // 早退管副作用：下面的建组 / 登记 zen 组 / 绑面板都会被用户看见，判定必须先于它们发生
+  // （dev/demo 的 autoActivate 场景即经此路把命中站点的页拉进新建的 Zen 组）。
+  if (await isSiteDeniedPage({ tabId })) {
+    await noteActivationSkipped(tabId, true);
+    return;
+  }
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
   const origin = originOf(tab.url);
   // zen 组登记先于会话建立：会话尚未映射时组内导航的新页也须重连，否则该页 content 永久沉默。
@@ -1377,6 +1606,12 @@ async function handleRequestActivate(
 /** 图标点击：未分组 tab 新建独立 zen 组（同 origin 多组独立）；已属某组则采用该组当会话组。 */
 async function handleIconClick(tab: chrome.tabs.Tab): Promise<void> {
   if (tab.id === undefined) return;
+  // 同 handleRequestActivate：早退管副作用（建组/登记/绑面板），激活本身仍由 sendActivate 兜底。
+  // 工具栏手势自身的面板 enable/open 不在此判定内——那两步必须在手势内同步发出，中间不得 await。
+  if (await isSiteDeniedPage({ tabId: tab.id })) {
+    await noteActivationSkipped(tab.id, true);
+    return;
+  }
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
   const groupId = tabGroupId === TAB_GROUP_ID_NONE ? await createZenGroup(tab.id) : tabGroupId;
   await migrateLegacyGroupTitle(groupId);
@@ -1467,15 +1702,18 @@ async function disableAllAutomations(): Promise<void> {
   if (Object.keys(entries).length > 0) await chrome.storage.local.set(entries);
 }
 
-/** 用户自建触发器（overlay.watches）：任一环节失败即回空——宁可不调度，绝不按不确定的实例发起无人值守回合。 */
-async function fetchWatchInstances(baseUrl: string, token: string): Promise<WatchInstance[]> {
+/**
+ * L2 个人配置的单次拉取：自建触发器与站点黑名单同源于这一次响应，不为任一项另发请求。
+ * 任一环节失败即回 null，由各派生方按自身的不确定语义处置。
+ */
+async function fetchUserConfig(baseUrl: string, token: string): Promise<unknown> {
   try {
     const response = await fetch(`${baseUrl}/v1/user-config`, {
       headers: { authorization: `Bearer ${token}` },
     });
-    return response.ok ? watchesFromUserConfig(await response.json()) : [];
+    return response.ok ? await response.json() : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -1487,10 +1725,16 @@ async function refreshAutomationDescriptors(): Promise<void> {
   try {
     const baseUrl = await readServerBaseUrl();
     const token = await identity.getToken(baseUrl);
-    const [response, watches] = await Promise.all([
+    const [response, userConfig] = await Promise.all([
       fetch(`${baseUrl}/v1/automation-descriptors`, { headers: { authorization: `Bearer ${token}` } }),
-      fetchWatchInstances(baseUrl, token),
+      fetchUserConfig(baseUrl, token),
     ]);
+    // 站点黑名单缓存只在本轮确实拿到 L2 配置时覆写；拉取失败保留上次名单——
+    // 名单是隐私开关，网络抖动不该把它静默清空（宁可多挡一站）。应答成功但无该键即用户已清空，照实写空。
+    if (userConfig !== null) {
+      await chrome.storage.local.set({ [SITE_DENYLIST_KEY]: siteDenylistFromUserConfig(userConfig) });
+    }
+    const watches = watchesFromUserConfig(userConfig);
     if (!response.ok) return;
     const body = await response.json() as { descriptors?: unknown };
     const descriptors = parseAutomationDescriptors(body.descriptors);
@@ -1604,6 +1848,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     void syncAutoScanAlarms();
     return;
   }
+  if (changes[SITE_DENYLIST_KEY] !== undefined) {
+    // 名单变更即重报组页面清单：服务端持有的旧清单里，命中页的 url/title 仍在按 active 优先
+    // 进模型注入面——不重报则用户拉黑之后那条记录仍旧一直被读到。
+    for (const bridge of groups.values()) bridge.notifyGroupTabsChanged();
+    void revokeStaleActivationSkips();
+    return;
+  }
   if (Object.keys(changes).some((key) => key.startsWith('za.autoScan.'))) {
     // 配置中心保存后本机调度镜像先落盘：顺带重取描述符，新建的用户触发器无需重启即可排程。
     void refreshAutomationDescriptors().then(() => syncAutoScanAlarms());
@@ -1633,6 +1884,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       });
     }
   }
+  // 该页可能已导航离开命中站点：跳过登记随事实撤销，面板不再对着照常辅助的页说「本站不辅助」。
+  if (changeInfo.url !== undefined) void revokeStaleActivationSkip(tabId);
   // 同文档导航（url 变而无 status）：整页加载会带 status，故 url-only 专指 SPA 子路由切换；
   // 促已激活页重报上下文让服务端重新装配。hash/back-forward 另有 content 侧 window 监听即时补报，
   // 此路对其为幂等重报（同 url 的 context-report 无副作用），主要覆盖 pushState/replaceState。
@@ -1666,7 +1919,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 // 关闭的 tab 可能是某组成员（事件不带组号）：广播全部在场桥重报清单。
-chrome.tabs.onRemoved.addListener(() => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void chrome.storage.session.remove(siteDeniedSkipKey(tabId)).catch(() => {});
   for (const bridge of groups.values()) bridge.notifyGroupTabsChanged();
 });
 

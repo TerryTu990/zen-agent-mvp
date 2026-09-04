@@ -135,6 +135,18 @@ describe('pageEffectView：面板「本页生效」块（A-UX-02）', () => {
     expect(view.headline).toContain('关停');
   });
 
+  it('站点在用户黑名单内：headline 说明是本站被自己列入不辅助名单，且不冒充命中站点包（边界）', () => {
+    const view = pageEffectView({
+      ...base,
+      packId: null,
+      featureId: null,
+      reason: 'site-denied',
+    });
+    expect(view.headline).toContain('不辅助');
+    expect(view.headline).toContain('配置中心');
+    expect(view.headline).not.toContain('站点包，已按该包装配');
+  });
+
   it('存储降级导致全部工具 forbidden：收紧来源如实标注为读取失败（异常）', () => {
     const view = pageEffectView({
       ...base,

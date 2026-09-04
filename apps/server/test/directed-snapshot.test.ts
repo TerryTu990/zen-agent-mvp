@@ -235,7 +235,6 @@ beforeAll(async () => {
     systemPromptPath,
     allowedProviders: ['openai-compatible'],
     heartbeatMs: 60_000,
-    genericAllowlist: [GENERIC_ORIGIN],
   };
   server = await startServer({ ...options, auditSinkPath: AUDIT_SINK });
   // 快照时限缩短的第二实例：超时路径不能靠等 15s 默认值，且独立 sink 免与主实例交错落盘。

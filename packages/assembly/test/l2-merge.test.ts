@@ -16,7 +16,7 @@ import type {
   UserOverlay,
   UserOverlayEntry,
 } from '@zen-agent/contracts';
-import { createAssemblyPort, type AssemblyOptions } from '../src/index.js';
+import { createAssemblyPort, siteDenylistMatches, type AssemblyOptions } from '../src/index.js';
 
 const fixturesDir = new URL('./fixtures/', import.meta.url).pathname;
 const fixturePromptPath = join(fixturesDir, 'base-prompt.md');
@@ -713,5 +713,186 @@ describe('describeInjection.reason：本页只有基座的原因闭集（A-UX-02
     const description = await l2Port(tmp, store).describeInjection(composeShop);
     expect(description.reason).toBe('pack-disabled');
     expect(description.disabledPackId).toBe('shop');
+  });
+
+  it('origin 命中站点黑名单 → reason=site-denied 且 packId 回落 null（边界）', async () => {
+    const store = new MemoryUserConfigStore();
+    store.seed(subjectA, overlayOf(subjectA, { '*': { siteDenylist: ['http://shop.example'] } }));
+    const description = await l2Port(tmp, store).describeInjection({
+      ...composeShop,
+      origin: 'http://shop.example',
+    });
+    expect(description.reason).toBe('site-denied');
+    expect(description.packId).toBeNull();
+    expect(description.toolIds).toEqual([]);
+  });
+
+  it('黑名单覆盖本站但调用方未传 origin → reason 仍为 pack（缺省即维持基线，加法不改旧调用点）', async () => {
+    const store = new MemoryUserConfigStore();
+    store.seed(subjectA, overlayOf(subjectA, { '*': { siteDenylist: ['http://shop.example'] } }));
+    const description = await l2Port(tmp, store).describeInjection(composeShop);
+    expect(description.reason).toBe('pack');
+  });
+});
+
+/**
+ * 回落仅基座的两条路径上，透明视图不得报一条本轮根本没装配的功能——
+ * 载体说谎与「站点包 X 激活中」是同一性质（R6）。compose 的回合归属与审计口径不在此列。
+ */
+describe('describeInjection.featureId：回落仅基座时一并置 null', () => {
+  const tmp = shopSnapshot();
+
+  it('用户关停 pack → featureId 随 packId 一并置 null（边界）', async () => {
+    const store = new MemoryUserConfigStore();
+    store.seed(subjectA, overlayOf(subjectA, { shop: { enabled: false } }));
+    const description = await l2Port(tmp, store).describeInjection(composeShop);
+    expect(description.packId).toBeNull();
+    expect(description.featureId).toBeNull();
+  });
+
+  it('origin 命中站点黑名单 → featureId 随 packId 一并置 null（边界）', async () => {
+    const store = new MemoryUserConfigStore();
+    store.seed(subjectA, overlayOf(subjectA, { '*': { siteDenylist: ['http://shop.example'] } }));
+    const description = await l2Port(tmp, store).describeInjection({
+      ...composeShop,
+      origin: 'http://shop.example',
+    });
+    expect(description.packId).toBeNull();
+    expect(description.featureId).toBeNull();
+  });
+
+  it('未回落时 featureId 原样回传（对照：只在回落轮收紧）', async () => {
+    const description = await l2Port(tmp).describeInjection(composeShop);
+    expect(description.featureId).toBe('f');
+  });
+});
+
+
+const SHOP_ORIGIN = 'http://shop.example';
+
+describe('L2 站点黑名单单条比对文法（siteDenylistMatches）', () => {
+  it('精确 origin 命中，且 www 与裸域互认（正常）', () => {
+    expect(siteDenylistMatches('https://bank.example', 'https://bank.example')).toBe(true);
+    expect(siteDenylistMatches('https://bank.example', 'https://www.bank.example')).toBe(true);
+    expect(siteDenylistMatches('https://www.bank.example', 'https://bank.example')).toBe(true);
+  });
+
+  it('scheme 与端口精确比对，不互认（边界）', () => {
+    expect(siteDenylistMatches('https://bank.example', 'http://bank.example')).toBe(false);
+    expect(siteDenylistMatches('http://bank.example:8080', 'http://bank.example')).toBe(false);
+    expect(siteDenylistMatches('http://bank.example:8080', 'http://bank.example:8080')).toBe(true);
+  });
+
+  it('scheme://*.host 命中该域及其子域，其余子域形态不外溢（边界）', () => {
+    expect(siteDenylistMatches('https://*.corp.example', 'https://corp.example')).toBe(true);
+    expect(siteDenylistMatches('https://*.corp.example', 'https://mail.corp.example')).toBe(true);
+    expect(siteDenylistMatches('https://*.corp.example', 'https://a.b.corp.example')).toBe(true);
+    expect(siteDenylistMatches('https://*.corp.example', 'https://corp.example.evil')).toBe(false);
+    expect(siteDenylistMatches('https://*.corp.example', 'https://notcorp.example')).toBe(false);
+    expect(siteDenylistMatches('https://*.corp.example', 'http://mail.corp.example')).toBe(false);
+  });
+
+  it('全通配不在文法内：绕过 schema 写入的 "*" 不命中任何 origin（异常）', () => {
+    expect(siteDenylistMatches('*', 'https://bank.example')).toBe(false);
+    expect(siteDenylistMatches('*', SHOP_ORIGIN)).toBe(false);
+  });
+
+  it('origin 不可解析（静默页/空串）不命中（边界）', () => {
+    expect(siteDenylistMatches('https://bank.example', '')).toBe(false);
+    expect(siteDenylistMatches('https://*.corp.example', 'about:blank')).toBe(false);
+  });
+});
+
+describe('L2 站点黑名单命中回落仅基座（compose 终判，R1 只收紧）', () => {
+  const tmp = shopSnapshot();
+
+  function denyStore(list: string[]): MemoryUserConfigStore {
+    const store = new MemoryUserConfigStore();
+    store.seed(
+      subjectA,
+      overlayOf(subjectA, {
+        '*': { siteDenylist: list, rules: [entry('g-1', '跨站个人规则')] },
+        shop: {
+          rules: [entry('p-1', 'pack 作用域个人规则')],
+          restrictions: { riskTierRaise: { 'shop.list': 'hitl' } },
+        },
+      }),
+    );
+    return store;
+  }
+
+  it('origin 命中 → packId=null、无 skills/docs/工具面，并标注 siteDenied（正常）', async () => {
+    const result = await composeL2(l2Port(tmp, denyStore([SHOP_ORIGIN])), {
+      ...composeShop,
+      origin: SHOP_ORIGIN,
+    });
+    expect(result.siteDenied).toBe(true);
+    expect(result.packId).toBeNull();
+    expect(result.packVersion).toBeNull();
+    expect(result.featureRules).toBeNull();
+    expect(result.facts).toBeNull();
+    expect(result.skills).toEqual([]);
+    expect(result.tools).toEqual([]);
+    expect(result.docsIndex).toBeNull();
+  });
+
+  it('命中时走的是 enabled:false 那条回落：全局条目仍注入、pack 作用域条目与收紧面一并回落（边界）', async () => {
+    const result = await composeL2(l2Port(tmp, denyStore([SHOP_ORIGIN])), {
+      ...composeShop,
+      origin: SHOP_ORIGIN,
+    });
+    expect(entriesText(result.userRules)).toContain('跨站个人规则');
+    expect(entriesText(result.userRules)).not.toContain('pack 作用域个人规则');
+    expect(result.effectiveTools).toEqual([]);
+    // 关停标注只属 enabled:false：黑名单命中不冒充「用户关停了这个 pack」。
+    expect(result.packDisabled).toBeUndefined();
+    expect(result.disabledPackId).toBeUndefined();
+  });
+
+  it('*.host 条目命中子域 origin（边界）', async () => {
+    const result = await composeL2(l2Port(tmp, denyStore(['http://*.shop.example'])), {
+      ...composeShop,
+      origin: 'http://m.shop.example',
+    });
+    expect(result.siteDenied).toBe(true);
+    expect(result.packId).toBeNull();
+  });
+
+  it('origin 未命中 → 结果与不传 origin 严格等价（加法不改基线）', async () => {
+    const port = l2Port(tmp, denyStore(['https://bank.example']));
+    const withOrigin = await composeL2(port, { ...composeShop, origin: SHOP_ORIGIN });
+    const withoutOrigin = await composeL2(port, composeShop);
+    expect(withOrigin).toEqual(withoutOrigin);
+    expect(withOrigin.siteDenied).toBeUndefined();
+    expect(withOrigin.packId).toBe('shop');
+  });
+
+  it('调用方不传 origin → 即便黑名单覆盖本站也照常装配（缺省即维持基线行为）', async () => {
+    const denied = l2Port(tmp, denyStore([SHOP_ORIGIN]));
+    const clean = l2Port(tmp, new MemoryUserConfigStore());
+    const result = await composeL2(denied, composeShop);
+    expect(result.siteDenied).toBeUndefined();
+    expect(result.packId).toBe('shop');
+    expect(result.tools.map((tool) => tool.id)).toEqual(
+      (await composeL2(clean, composeShop)).tools.map((tool) => tool.id),
+    );
+  });
+
+  it('无 L2 参与（无 subject）时传 origin 不改变任何产出（边界）', async () => {
+    const port = l2Port(tmp, denyStore([SHOP_ORIGIN]));
+    const input: ComposeInput = { sessionId: 's1', packId: 'shop', featureId: 'f' };
+    const withOrigin = await port.compose({ ...input, origin: SHOP_ORIGIN });
+    expect(withOrigin).toEqual(await port.compose(input));
+    expect(withOrigin.packId).toBe('shop');
+  });
+
+  it('L2 读失败降级时黑名单读不到 → 不冒充治理已生效（异常：存储故障）', async () => {
+    const result = await composeL2(l2Port(tmp, new ThrowingUserConfigStore()), {
+      ...composeShop,
+      origin: SHOP_ORIGIN,
+    });
+    expect(result.siteDenied).toBeUndefined();
+    expect(result.packId).toBe('shop');
+    expect(result.userConfigDegraded).toBe('fail-open-closed');
   });
 });

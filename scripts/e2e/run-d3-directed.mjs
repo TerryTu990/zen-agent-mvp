@@ -376,7 +376,7 @@ function startScriptedLlm(siteOrigin) {
   });
 }
 
-/** 真实 gateway 子进程：ZA_GENERIC_ALLOWLIST='*' 使本地测试站激活 generic-web pack。 */
+/** 真实 gateway 子进程：本地测试站无专属 pack，按 generic 兜底装配 generic-web。 */
 function spawnServer({ llmPort, auditPath, stateRoot }) {
   const child = spawn('node', [SERVER_MAIN], {
     cwd: REPO_ROOT,
@@ -395,7 +395,6 @@ function spawnServer({ llmPort, auditPath, stateRoot }) {
       ZA_SESSION_DIR: join(stateRoot, 'sessions'),
       ZA_USER_CONFIG_DIR: join(stateRoot, 'user-config'),
       ZA_APPLICATIONS_DIR: join(stateRoot, 'applications'),
-      ZA_GENERIC_ALLOWLIST: '*',
     },
   });
   const exited = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)));
@@ -432,7 +431,7 @@ async function main() {
       await run('pnpm', ['--filter', '@zen-agent/extension', 'run', 'build']);
     }
 
-    console.log('[2/9] 起本地测试站、脚本化 mock LLM 与真实 gateway（ZA_GENERIC_ALLOWLIST=*）…');
+    console.log('[2/9] 起本地测试站、脚本化 mock LLM 与真实 gateway…');
     const site = await startTargetSite();
     cleanups.push(() => site.close());
     const mock = await startScriptedLlm(site.origin);

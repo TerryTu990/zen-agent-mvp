@@ -59,6 +59,8 @@ const FEATURE_ORDER_ADMIN = '订单管理员';
 const PACK_XIANYU_ORDERS = 'xianyu-orders';
 const PACK_XIANYU_FULFILLMENT = 'xianyu-fulfillment';
 const UNATTENDED_DENY_NOTICE = '本轮是无人值守的只读监测回合';
+// 站点边界标记：服务端在回合内换站时以 user 角色注入的上下文，不是用户发言——取轮次意图时须跳过。
+const BOUNDARY_MARKER = '【站点边界】';
 
 /**
  * 注入内容探针字面登记表（PC-EVAL-05 自检面）。
@@ -94,6 +96,7 @@ export const PROBE_LITERALS = [
   { literal: PACK_XIANYU_ORDERS, sourceFile: 'examples/site-packs/packs/xianyu-seller/pack.json', why: 'xianyu-orders 功能装配在场的判别（订单页剧本门控）' },
   { literal: PACK_XIANYU_FULFILLMENT, sourceFile: 'examples/site-packs/packs/xianyu-seller/pack.json', why: 'xianyu-fulfillment 功能装配在场的判别（履约剧本门控）' },
   { literal: UNATTENDED_DENY_NOTICE, sourceFile: 'apps/server/src/gateway.ts', why: 'R7 只读强制拒绝后回喂给模型的系统提示；剧本据此产出"被拒后如实汇报"回合' },
+  { literal: BOUNDARY_MARKER, sourceFile: 'apps/server/src/compress.ts', why: '回合内换站注入的边界标记（user 角色）；取用户发言时据此跳过，字面漂移会让剧本把它误当用户新指令' },
 ];
 
 /** 清单行首列（句柄）序列；system 无清单返回 null——探针据此区分「有清单」与「无上报不注入」。 */
@@ -137,16 +140,24 @@ function hasToolCall(body, name) {
 }
 
 /**
- * 代执行回喂轮的 observation 文本——仅当消息尾部就是 role:tool（其后无更新 user 消息）才成立。
+ * 代执行回喂轮的 observation 文本——仅当消息尾部就是 role:tool（其后无更新 user 指令）才成立。
  * 契约感知：服务端把 execEcho(assistant)+observation(role:tool) 追加在末尾后立即再调本轮，
  * 故回喂轮的最后一条必是 role:tool；而 history 现持久化历史工具轮，新 user 回合的尾部是 role:user，
  * 若只取"数组中最后一条 role:tool"会误把上一回合的陈旧观测当作本回合回喂，令新 user 指令走不到工具触发。
+ * 尾部的站点边界标记是服务端在回合内换站时注入的上下文（user 角色但非用户指令），跳过后再判尾部。
  * 非 null 即"回喂轮"，据此产出总结文本而非再次触发工具。
  */
 function lastToolObs(body) {
   const msgs = Array.isArray(body?.messages) ? body.messages : [];
-  const last = msgs[msgs.length - 1];
+  let index = msgs.length - 1;
+  while (index >= 0 && isBoundaryMarkerMessage(msgs[index])) index -= 1;
+  const last = msgs[index];
   return last?.role === 'tool' ? String(last.content ?? '') : null;
+}
+
+/** 站点边界标记消息：服务端换站注入的 user 角色上下文，取用户指令与判回喂轮时都须跳过。 */
+function isBoundaryMarkerMessage(message) {
+  return message?.role === 'user' && String(message?.content ?? '').startsWith(BOUNDARY_MARKER);
 }
 
 /** 首轮工具触发：按关键词 + 工具可见性产出 tool_call；无命中返回 null。 */
@@ -1062,7 +1073,9 @@ function handleChat(req, res, requests) {
       .filter((m) => m?.role === 'system')
       .map((m) => String(m.content ?? ''))
       .join('\n');
-    const lastUser = [...body.messages].reverse().find((m) => m?.role === 'user');
+    const lastUser = [...body.messages]
+      .reverse()
+      .find((m) => m?.role === 'user' && !isBoundaryMarkerMessage(m));
     const u = String(lastUser?.content ?? '');
     const decision = decide(sys, u, body);
 

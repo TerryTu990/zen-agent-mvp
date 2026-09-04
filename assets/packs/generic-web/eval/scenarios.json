@@ -8,19 +8,35 @@
       "toolIncludes": [
         "browse.page-operate"
       ],
-      "behavior": "127.0.0.1:4173 不在任何站点 pack 围栏内且在 ZA_GENERIC_ALLOWLIST 内 → 兜底激活 generic-web，featureIdRules(.*) 判为 browse；工具面仅 browse.page-operate"
+      "behavior": "127.0.0.1:4173 不在任何站点 pack 围栏内 → 无条件兜底激活 generic-web，featureIdRules(.*) 判为 browse；工具面仅 browse.page-operate"
     }
   },
   {
-    "id": "generic-assembly-allowlist-miss",
+    "id": "generic-assembly-unregistered-site",
     "dimension": "assembly",
     "url": "https://unknown-site.example/home",
     "expect": {
-      "featureId": null,
+      "packId": "generic-web",
+      "featureId": "browse",
+      "toolIncludes": [
+        "browse.page-operate"
+      ],
+      "behavior": "任意未登记站点同样兜底：generic 的激活不再取决于任何部署级准入名单，只要无站点 pack 命中且页面有 http(s) origin 即激活 generic-web、判为 browse。是否辅助本站的开关归用户（L2 站点黑名单），不归运营者"
+    }
+  },
+  {
+    "id": "generic-assembly-site-denied",
+    "dimension": "assembly",
+    "url": "https://unknown-site.example/home",
+    "siteDenylist": [
+      "https://unknown-site.example"
+    ],
+    "expect": {
+      "packId": null,
       "toolExcludesPrefixes": [
         "browse."
       ],
-      "behavior": "无站点 pack 命中且 origin 不在服务端准入名单 → 网关按 packId=null 仅基座（fail-closed），generic 不激活、无工具面"
+      "behavior": "与 generic-assembly-unregistered-site 同一 URL，唯一差别是用户把本站写进 L2 站点黑名单（globalScope.siteDenylist）→ 服务端 compose 终判回落仅基座：generic 兜底也不激活，packId=null、无任何站点工具面。终判在服务端，客户端跳过激活只是不上报、不构成治理生效"
     }
   },
   {

@@ -56,7 +56,11 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 | 快照 | `ZA_SNAPSHOT_ROOT=/app/snapshot` | 指向只读卷挂载点 |
 | 已在镜像固化（可覆盖） | `ZA_HOST=0.0.0.0` `ZA_PORT=8787` `ZA_AUDIT_SINK=/data/za/events.jsonl` `ZA_SESSION_DIR=/data/za/sessions` `ZA_SYSTEM_PROMPT_PATH=/app/snapshot/system-prompt.md` | prompt 与 registry/pack 成为同一不可变快照；绝对路径规避 cwd 陷阱 |
 | 未固化的数据路径（须显式设） | `ZA_USER_CONFIG_DIR` `ZA_APPLICATIONS_DIR` | 缺省 `.za/user-config` / `.za/applications`（相对 cwd）；容器内落在 `/app/server` 镜像层不可写也不持久，启用 L2 须设为 `/data/za/user-config` / `/data/za/applications` |
-| 按需 | `ZA_CORS_ORIGIN` `ZA_JWT_ISS_ALLOWLIST` `ZA_MAX_TURN_ROUNDS` `ZA_MAX_CONSECUTIVE_FAILURES` `ZA_LLM_TIMEOUT_MS` `ZA_LLM_FIRST_CHUNK_MS` `ZA_LLM_IDLE_MS` `ZA_GENERIC_ALLOWLIST` `ZA_CRED_*` | 见配置参考；四项编排韧性旋钮（连续失败止损上限 + LLM 三层超时）均须正整数，写错拒启，缺省为不启用超时；`ZA_GENERIC_ALLOWLIST` 决定通用兜底 pack 在哪些站点激活（缺省不激活，`*` 另放行静默页冷启动开页）；`ZA_JWT_ISS_ALLOWLIST` 只管外部签发方——匿名激活的 iss 由服务端无条件并入白名单，既有 `.env` 留旧值也不会让服务端拒绝自己签发的令牌 |
+| 按需 | `ZA_CORS_ORIGIN` `ZA_JWT_ISS_ALLOWLIST` `ZA_MAX_TURN_ROUNDS` `ZA_MAX_CONSECUTIVE_FAILURES` `ZA_LLM_TIMEOUT_MS` `ZA_LLM_FIRST_CHUNK_MS` `ZA_LLM_IDLE_MS` `ZA_CRED_*` | 见配置参考；四项编排韧性旋钮（连续失败止损上限 + LLM 三层超时）均须正整数，写错拒启，缺省为不启用超时；`ZA_JWT_ISS_ALLOWLIST` 只管外部签发方——匿名激活的 iss 由服务端无条件并入白名单，既有 `.env` 留旧值也不会让服务端拒绝自己签发的令牌 |
+
+**没有「通用兜底包在哪些站点激活」的部署开关**：generic pack 在无站点 pack 命中且页面有 http(s) origin 时无条件激活，
+「不让 Zen 出现在本站」由用户自己的 L2 站点黑名单（`siteDenylist`，配置中心「不辅助的站点」面板增删）决定，终判在服务端 compose。
+既有 `.env` 里残留的 `ZA_GENERIC_ALLOWLIST` 不再被读取，删掉即可，留着也不影响启动。
 
 ## 5. 站点配置的发布与回滚
 

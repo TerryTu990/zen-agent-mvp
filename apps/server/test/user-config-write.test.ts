@@ -139,6 +139,32 @@ describe('PUT /v1/user-config（面板结构化编辑，R3）', () => {
     expect(data['overlay']).toEqual(overlay);
   });
 
+  /**
+   * 配置中心的站点黑名单编辑面写出的形态：整份 overlay 带 "*" 作用域 siteDenylist。
+   * 写入通道收得下这一形态，compose 的终判才有数据可判——两侧任一处不通，编辑面就是个装饰。
+   */
+  it('站点黑名单：合法两形态 200 落盘并可读回；全通配当场 400 拒收（写入期校验实际看这个字段）', async () => {
+    const hostUserId = 'ucw-site-deny';
+    const token = await signToken(hostUserId);
+    const overlayWith = (siteDenylist: string[]): unknown => ({
+      schemaVersion: 1,
+      subject: { tenant: TENANT, hostUserId },
+      packs: { '*': { siteDenylist } },
+    });
+
+    const ok = await putOverlay(token, overlayWith(['https://bank.example', 'https://*.corp.example']));
+    expect(ok.status).toBe(200);
+    expect((await getOverlay(token)).overlay?.packs['*']?.siteDenylist).toEqual([
+      'https://bank.example',
+      'https://*.corp.example',
+    ]);
+
+    const wildcard = await putOverlay(token, overlayWith(['*']));
+    expect(wildcard.status).toBe(400);
+    // 拒收不得损坏已落盘的名单。
+    expect((await getOverlay(token)).overlay?.packs['*']?.siteDenylist).toHaveLength(2);
+  });
+
   it('body.subject 与 JWT claims 推导值不一致 → 400 且不落盘', async () => {
     const hostUserId = 'ucw-subject-mismatch';
     const token = await signToken(hostUserId);

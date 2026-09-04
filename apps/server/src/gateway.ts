@@ -132,8 +132,6 @@ export interface GatewayDeps {
   activationJwtSecret: string;
   /** 投递记录（求职 agent 业务日志）落盘根目录：record_application 按 subject 分账写 `<dir>/<tenant 段>/<user 段>/<date>.jsonl`。 */
   applicationsDir: string;
-  /** generic 兜底 pack 准入名单（origin 精确值）；空 = generic 永不激活（fail-closed）。 */
-  genericAllowlist: string[];
   /**
    * L2 写入通道（adr-014 §5，P2.5-c）：缺省 = 通道关闭（config_draft 不注入、config-decision 与
    * /v1/user-config 均拒）。l1Baseline/configSchemas 取自装配快照（不可变），组装期定格一次。
@@ -397,7 +395,7 @@ const SITE_NAVIGATE_TOOL_SPEC: LlmToolSpec = {
 
 /**
  * built-in 通用页面导航工具（generic pack 配套）：不入 pack tools.json，仅当 generic pack 激活
- * （活跃页 origin 过服务端准入）且执行偏好允许 dom 时注入。经 toolgate 专路裁决
+ * （活跃页是 http/https）或静默页冷启动，且执行偏好允许 dom 时注入。经 toolgate 专路裁决
  * （协议闭集 http/https + 禁内嵌凭证，每次必弹卡不复用授权）与一次性签名下发，
  * 构造 navigate dom 指令复用客户端跨窗口开页入组（U7）。
  */
@@ -578,44 +576,6 @@ function pathOf(url: string): string {
   } catch {
     return '';
   }
-}
-
-/**
- * 准入名单比对用 origin 归一：仅 www 与裸域互认（剥一层前导 www.），其余子域不互认——
- * 站点常以两种形态对外服务，精确匹配会各挡一半；scheme/port 仍须精确。
- * 只用于名单比对；dom 围栏与 genericOrigin 保持页面真实 origin。
- */
-export function canonicalizeOrigin(origin: string): string {
-  try {
-    const url = new URL(origin);
-    url.hostname = url.hostname.replace(/^www\./, '');
-    return url.origin;
-  } catch {
-    return origin;
-  }
-}
-
-/**
- * generic 准入名单单条比对：`*` 放行任意 origin；`scheme://*.host` 放行该域及其子域（scheme 仍须精确）；
- * 其余按 canonicalizeOrigin 精确比对。origin 解析失败一律不放行（fail-closed）。
- */
-export function genericAllowlistAdmits(entry: string, origin: string): boolean {
-  if (entry === '*') return true;
-  const wildcard = entry.match(/^([a-z][a-z0-9+.-]*):\/\/\*\.(.+)$/i);
-  if (wildcard !== null) {
-    const [, scheme = '', suffix = ''] = wildcard;
-    let parsed: URL;
-    try {
-      parsed = new URL(origin);
-    } catch {
-      return false;
-    }
-    if (parsed.protocol !== `${scheme.toLowerCase()}:`) return false;
-    const host = parsed.hostname.toLowerCase();
-    const domain = suffix.toLowerCase();
-    return host === domain || host.endsWith(`.${domain}`);
-  }
-  return canonicalizeOrigin(entry) === canonicalizeOrigin(origin);
 }
 
 /** 快照 URL → origin（dom origin 围栏比对用）；解析失败返回 ''（围栏必不匹配，fail-closed）。 */
@@ -1142,8 +1102,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
   const watchBaselines = new Map<string, WatchSnapshot>();
 
   /**
-   * generic 兜底的服务端准入（U7 fail-closed）：活跃页无 http/https origin（静默页）或 origin
-   * 不在名单内即回落仅基座——`*` 名单也不把 generic pack 绑到非 http/https origin 上。
+   * generic 兜底装配：活跃页是 http/https 即激活，packOrigin 绑活跃页 origin。
+   * 静默页（无 http/https origin）不激活——generic pack 的围栏必须落在真实站点 origin 上。
    */
   function gateGeneric(
     resolved: ResolveFeatureResult,
@@ -1156,14 +1116,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
   } {
     const { packId, packVersion, featureId } = resolved;
     if (resolved.generic !== true) return { packId, packVersion, featureId };
-    const origin = originOf(url);
-    const admitted =
-      !isSilentPageUrl(url) &&
-      deps.genericAllowlist.some((entry) => genericAllowlistAdmits(entry, origin));
-    if (!admitted) {
+    if (isSilentPageUrl(url)) {
       return { packId: null, packVersion: null, featureId: null };
     }
-    return { packId, packVersion, featureId, genericOrigin: origin };
+    return { packId, packVersion, featureId, genericOrigin: originOf(url) };
   }
 
   /**
@@ -1256,8 +1212,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
 
   /**
    * open_url 的注入门与调用准入门共用本谓词（单一判定点，防两门漂移）：
-   * generic pack 激活（genericOrigin 已绑定）即可用；静默页冷启动仅当会话仍是仅基座且名单含
-   * 字面 '*' 条目时可用——保持仅基座装配，只放通用开页；执行偏好不容 dom 时一律不可用。
+   * generic pack 激活（genericOrigin 已绑定）即可用；静默页冷启动在仅基座会话上同样可用——
+   * 保持仅基座装配，只放通用开页；执行偏好不容 dom 时一律不可用。
    */
   function openUrlAdmittedFor(
     pack: PackRef,
@@ -1266,9 +1222,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
   ): boolean {
     if (executionPreference !== 'auto' && executionPreference !== 'dom-only') return false;
     if (pack.genericOrigin !== undefined) return true;
-    return (
-      pack.packId === null && isSilentPageUrl(activeUrl) && deps.genericAllowlist.includes('*')
-    );
+    return pack.packId === null && isSilentPageUrl(activeUrl);
   }
 
   /**
@@ -1625,12 +1579,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (!builtinNavigation) {
         if (pack.packId === null) return APPROVAL_STALE_ERROR;
         let recomposed: ComposeResult;
+        const currentOrigin = originOf(session.currentUrl ?? '');
         try {
           recomposed = await deps.assembly.compose({
             sessionId,
             packId: pack.packId,
             featureId,
             subject: subjectOf(claims),
+            ...(currentOrigin !== '' ? { origin: currentOrigin } : {}),
           });
         } catch {
           return APPROVAL_STALE_ERROR;
@@ -2045,11 +2001,18 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ? { packId: null, packVersion: null, featureId: null, genericOrigin: undefined }
         : gateGeneric(resolved, url);
       const subject = subjectOf(claims);
+      const pageOrigin = originOf(url);
       // 每回合对 L2 单次读取定格（adr-014 §4）：本轮全部视图/判定/审计只用这一次 compose 的产出，
-      // 不另调 describeInjection（其独立读取会破坏单次定格）。
-      const composed = await deps.assembly.compose({ sessionId, packId, featureId, subject });
-      // enabled:false（用户关停 pack）时 compose 已回落仅基座：回合归属/附注/审计一律按 composed.packId，
-      // 不用 resolve 结果——审计以 packDisabled 区分「无 pack」与「已关停」。
+      // 不另调 describeInjection（其独立读取会破坏单次定格）。站点黑名单的终判同在此次 compose（U7）。
+      const composed = await deps.assembly.compose({
+        sessionId,
+        packId,
+        featureId,
+        subject,
+        ...(pageOrigin !== '' ? { origin: pageOrigin } : {}),
+      });
+      // enabled:false（用户关停 pack）与站点黑名单命中时 compose 已回落仅基座：回合归属/附注/审计
+      // 一律按 composed.packId，不用 resolve 结果——审计以 packDisabled / siteDenied 区分回落归因。
       const pack: PackRef =
         composed.packId === null
           ? { packId: null, packVersion: null }
@@ -2073,6 +2036,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             : {}),
           ...(composed.packDisabled === true ? { packDisabled: true as const } : {}),
           ...(composed.disabledPackId !== undefined ? { disabledPackId: composed.disabledPackId } : {}),
+          ...(composed.siteDenied === true ? { siteDenied: true as const } : {}),
         },
       }, pack, run ?? undefined);
       // L2 定格面（封 TOCTOU）：本轮 compose 冻结的生效面贯穿全部判定与签发；
@@ -2100,7 +2064,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ? [SITE_NAVIGATE_TOOL_SPEC]
           : [];
       // open_url 注入门＝调用准入门（openUrlAdmittedFor）：generic pack 激活或静默页冷启动
-      // （名单含 '*'）才给通用导航入口；站点 pack / 其余仅基座会话不注入。
+      // 才给通用导航入口；站点 pack 会话不注入。
       const openUrlOk = openUrlAdmittedFor(pack, url, executionPreference);
       const openUrlTools: LlmToolSpec[] = openUrlOk ? [OPEN_URL_TOOL_SPEC] : [];
       // 投递记录（业务日志）注入门＝激活 pack 的 capabilities.builtinTools 声明（缺省即不注入）：
@@ -2896,7 +2860,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           // 导航成功＝激活站点即刻切换：回合内按落点 URL 重新装配（规则/事实/工具面随站换出），
           // 系统注入整段覆写、边界标记入历史——LLM 下一轮就持有新站上下文，不必等用户再发言。
           // 定向导航（params.targetPage）不改变活跃页：不切 context、不重装配、不注边界标记（ADR-023 §5，
-          // 白名单仍按活跃页装配），观测照常回喂；目标页转 active 后由其 context-report 驱动切换。
+          // 装配仍按活跃页），观测照常回喂；目标页转 active 后由其 context-report 驱动切换。
           if (observation.ok && typeof call.params['targetPage'] !== 'string') {
             const landedUrl = String((observation.content as JsonObject | null)?.['url'] ?? '');
             if (landedUrl !== '') {
@@ -3079,11 +3043,13 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // 装配按 watch 的目标 URL（而非会话活跃页）解析：watch 跨站点，报告依据的是被监测页的配置面。
     const resolved = await deps.assembly.resolveFeature({ url: watch.url });
     const { packId, packVersion, featureId, genericOrigin } = gateGeneric(resolved, watch.url);
+    const watchOrigin = originOf(watch.url);
     const composed = await deps.assembly.compose({
       sessionId,
       packId,
       featureId,
       subject: subjectOf(claims),
+      ...(watchOrigin !== '' ? { origin: watchOrigin } : {}),
     });
     const pack: PackRef =
       composed.packId === null
@@ -3185,6 +3151,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             : {}),
           ...(composed.packDisabled === true ? { packDisabled: true as const } : {}),
           ...(composed.disabledPackId !== undefined ? { disabledPackId: composed.disabledPackId } : {}),
+          ...(composed.siteDenied === true ? { siteDenied: true as const } : {}),
         },
       },
       pack,
@@ -3678,11 +3645,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const url = session.currentUrl ?? '';
     const resolved = await deps.assembly.resolveFeature({ url });
     const { packId, featureId } = gateGeneric(resolved, url);
+    // 站点黑名单命中轮实际已是仅基座：自省不传 origin 就会报出「站点包激活中」这条不存在的事实。
+    const origin = originOf(url);
     const description = await deps.assembly.describeInjection({
       sessionId: session.sessionId,
       packId,
       featureId,
       subject: subjectOf(claims),
+      ...(origin !== '' ? { origin } : {}),
     });
     sendJson(res, 200, description);
   }

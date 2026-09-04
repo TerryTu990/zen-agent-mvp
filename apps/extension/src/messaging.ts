@@ -60,7 +60,7 @@ export interface InjectionDescriptionView {
   /** 用户关停 pack 的轮次：packId 已回落 null，据此呈现「已关停」而非「无站点包」。 */
   disabledPackId?: string | undefined;
   /** 服务端判定的本轮装配原因闭集；客户端只呈现不推断（U7）。 */
-  reason?: 'pack' | 'generic' | 'base-only' | 'pack-disabled' | undefined;
+  reason?: 'pack' | 'generic' | 'base-only' | 'pack-disabled' | 'site-denied' | undefined;
 }
 
 export type SidePanelUiEvent =
@@ -75,6 +75,8 @@ export const SESSION_PORT_NAME = 'za-session';
 export const SIDE_PANEL_PORT_NAME = 'za-side-panel';
 
 export type MessageDeliveryFailure =
+  // 本机站点黑名单闸门拦下：该帧所属页面在用户的「不辅助的站点」名单内，未出本机。
+  | 'site-denied'
   | 'configuration'
   | 'unauthorized'
   | 'session-expired'
@@ -102,6 +104,9 @@ export type ContentToBackgroundMessage =
 export type BackgroundToContentMessage =
   | { kind: 'frame'; frame: DownstreamFrame }
   | { kind: 'stop-operation' }
+  // 新回合开始：解除页面侧的停止闩。停止是回合级事实，闩在一次停止后保持置位，
+  // 只有这条显式信号（用户发新消息 / 自动回合起跑）才复位它。
+  | { kind: 'resume-operation' }
   // navigate-request 的回执：ok 时 url 为新开页目标地址，供 content 组 exec-result。
   | { kind: 'navigate-result'; requestId: string; ok: boolean; url?: string; error?: string };
 

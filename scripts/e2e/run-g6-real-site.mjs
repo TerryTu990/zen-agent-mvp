@@ -238,8 +238,6 @@ async function startRealServer({ auditPath, sessionDir, userConfigDir }) {
     systemPromptPath: join(REPO_ROOT, 'assets/system-prompt.md'),
     auditSinkPath: auditPath, sessionDir, userConfigDir, heartbeatMs: 60_000,
     allowedProviders: ['openai-compatible'],
-    // 真实站点两端都无专属 pack：须显式准入 generic 兜底（缺省 fail-closed 永不激活）。
-    genericAllowlist: [GOOFISH_ORIGIN, new URL(FEISHU_DOC_URL).origin],
   });
 }
 

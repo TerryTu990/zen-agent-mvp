@@ -2995,6 +2995,55 @@ describe('adr-024 治理决策链完整性（无人值守收口 / 停止吊销 /
       await disabledServer.close();
     }
   });
+
+  it('批准恢复期复核：挂起期间用户把本站写进站点黑名单 → approval-stale 拒绝且不签发指令', async () => {
+    const userConfigDir = mkdtempSync(join(tmpdir(), 'za-adr024-deny-'));
+    const deniedServer = await startServer(
+      serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 3, userConfigDir }),
+    );
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${deniedServer.port}`;
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_MANAGE_URL });
+      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: ORDERS_PROMPT });
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
+      await reportSnapshot(
+        token, sessionId,
+        String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
+        ORDER_MANAGE_URL, ORDER_ELEMENTS,
+      );
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length === 1);
+      // 「不让 Zen 出现在这个站点」与关停 pack 同样收紧：批准的动作所在的工具面已不存在。
+      await createFsUserConfigStore({ dir: userConfigDir }).write(
+        { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+        {
+          schemaVersion: 1,
+          subject: { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+          packs: { '*': { siteDenylist: ['https://seller.goofish.com'] } },
+        },
+      );
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(framesByType(sse.frames, 'hitl-request')[0]!['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => lastCardStatus(sse.frames, ORDERS_TOOL) === 'failed');
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      const decisions = toolDecisions(sessionId, ORDERS_TOOL);
+      expect(decisions[decisions.length - 1]).toMatchObject({
+        verdict: 'deny',
+        reason: 'approval-stale',
+      });
+    } finally {
+      sse.close();
+      baseUrl = previousBaseUrl;
+      await deniedServer.close();
+    }
+  });
 });
 
 describe('B3b — HITL 卡真实性（服务端反解的机械摘要 + R4 五要素）', () => {
@@ -3406,6 +3455,128 @@ describe('L2 用户塑形贯通注入：回答详略偏好与站点包设置进 
     expect((view.blocks ?? []).filter((b) => b.kind === 'pack-config').map((b) => b.id)).toEqual([
       'shippingTemplate',
     ]);
+  });
+});
+
+/**
+ * L2 站点黑名单的服务端终判（R3/R8）：用户把某站点写进黑名单后，该 origin 上不装配任何站点包。
+ * 判定只在 compose（U7 决策服务端），客户端跳过激活至多是少上报一次；审计以 siteDenied 标注归因，
+ * 使「本页治理面为何是空的」在审计流里与「本站没有 pack」区分得开。
+ */
+describe('L2 站点黑名单：命中站点回落仅基座并落审计标注（R3/R8）', () => {
+  const userConfigDir = mkdtempSync(join(tmpdir(), 'za-site-deny-'));
+  // 名单只收紧命中的 origin：快照根在 host-demo（命中侧）之外再放一个不同 origin 的站点包，
+  // 未命中侧才有「确实装出了 pack 与工具面」可断言——否则装配整体崩掉时该用例同样会绿。
+  const deniedSnapshotRoot = mkdtempSync(join(tmpdir(), 'za-site-deny-config-'));
+  const ALLOWED_PACK_URL = 'https://www.zhipin.com/web/geek/job?query=backend';
+  let deniedServer: RunningServer;
+
+  beforeAll(async () => {
+    cpSync(snapshotRoot, deniedSnapshotRoot, { recursive: true });
+    cpSync(join(acceptanceRoot, 'packs/zhipin'), join(deniedSnapshotRoot, 'packs/zhipin'), { recursive: true });
+    const manifestPath = join(deniedSnapshotRoot, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      packs: Array<{ packId: string; version: string }>;
+    };
+    manifest.packs.push({ packId: 'zhipin', version: '0.1.0' });
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    await createFsUserConfigStore({ dir: userConfigDir }).write(
+      { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+      {
+        schemaVersion: 1,
+        subject: { tenant: 'demo-tenant', hostUserId: 'host-u1' },
+        packs: { '*': { siteDenylist: ['http://127.0.0.1:4173'] } },
+      },
+    );
+    deniedServer = await startServer(serverOptions({ userConfigDir, snapshotRoot: deniedSnapshotRoot }));
+  });
+
+  afterAll(async () => {
+    await deniedServer?.close();
+  });
+
+  /** 跑一轮人工回合并取本轮 assembly 审计事件（装配面的唯一可判读产物）。 */
+  async function assemblyEventOf(token: string, url: string): Promise<Record<string, unknown>> {
+    const sessionId = await createSession(token);
+    await postFrame(token, sessionId, { type: 'context-report', sessionId, url });
+    await postFrame(token, sessionId, { type: 'user-message', sessionId, text: '这个页面能做什么' });
+    const deadline = Date.now() + 8000;
+    for (;;) {
+      const found = auditEventsFor(sessionId).find((event) => event['type'] === 'assembly');
+      if (found !== undefined) return found;
+      if (Date.now() > deadline) throw new Error('等待 assembly 审计事件超时');
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
+  it('黑名单站点：packId 回落 null、工具面为空、assembly 事件带 siteDenied', async () => {
+    const token = await signToken();
+    const baseline = await assemblyEventOf(token, ORDER_LIST_URL);
+    // 对照组（无 L2 黑名单的共享 server）：同一 URL 本应装出站点工具面，否则本用例恒真。
+    expect((baseline['data'] as { toolIds: string[] }).toolIds.length).toBeGreaterThan(0);
+    expect(baseline['packId']).toBeTruthy();
+
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${deniedServer.port}`;
+    try {
+      const denied = await assemblyEventOf(token, ORDER_LIST_URL);
+      const data = denied['data'] as Record<string, unknown>;
+      expect(data['siteDenied']).toBe(true);
+      expect(data['toolIds']).toEqual([]);
+      // 「不让 Zen 出现在这个站点」不是「用户关停了这个 pack」：两种归因不可互相冒充。
+      expect(data['packDisabled']).toBeUndefined();
+      expect(data['disabledPackId']).toBeUndefined();
+      expect(denied['packId']).toBeUndefined();
+    } finally {
+      baseUrl = previousBaseUrl;
+    }
+  });
+
+  /**
+   * 注入自省是面板「本页生效」块的唯一数据源：黑名单命中轮实际已是仅基座，
+   * 该端点若仍报 reason='pack'，面板会显示一条不存在的事实（R6 如实呈现）。
+   */
+  it('注入自省端点如实标注 site-denied（面板不显示「站点包激活中」）', async () => {
+    const token = await signToken();
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${deniedServer.port}`;
+    try {
+      const sessionId = await createSession(token);
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      const denied = await getInjection(token, sessionId);
+      expect(denied['reason']).toBe('site-denied');
+      expect(denied['packId']).toBeNull();
+      expect(denied['toolIds']).toEqual([]);
+      // 功能行同守：本轮没装配任何功能，报一条 featureId 与报「站点包激活中」同属载体说谎。
+      expect(denied['featureId']).toBeNull();
+    } finally {
+      baseUrl = previousBaseUrl;
+    }
+    // 对照组（无黑名单的共享 server）：同一 URL 的自省本应报站点包，否则上面的断言恒真。
+    const sessionId = await createSession(token);
+    await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+    const baseline = await getInjection(token, sessionId);
+    expect(baseline['reason']).toBe('pack');
+    expect(baseline['featureId']).toBe('order-list');
+    expect((baseline['toolIds'] as string[]).length).toBeGreaterThan(0);
+  });
+
+  it('未落在黑名单的站点照常装配（黑名单只收紧命中的 origin）', async () => {
+    const token = await signToken();
+    const previousBaseUrl = baseUrl;
+    baseUrl = `http://127.0.0.1:${deniedServer.port}`;
+    try {
+      const event = await assemblyEventOf(token, ALLOWED_PACK_URL);
+      const data = event['data'] as Record<string, unknown>;
+      expect(data['siteDenied']).toBeUndefined();
+      // 正向断言：同一台带名单的 server 上，未命中 origin 确实装出了该站点包与它的工具面。
+      // 只断言 siteDenied 缺省时，装配整体崩掉（无 pack 命中、工具面为空）同样会绿。
+      expect(event['packId']).toBe('zhipin');
+      expect(event['featureId']).toBe('job-search');
+      expect((data['toolIds'] as string[]).length).toBeGreaterThan(0);
+    } finally {
+      baseUrl = previousBaseUrl;
+    }
   });
 });
 

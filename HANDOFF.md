@@ -25,7 +25,7 @@
 | 评测 | `pnpm eval` | 89 组场景 × 3 跑全过；审计完整性 PASS |
 | 评测判据自检 | `node scripts/evals/run.mjs --check` | 绿（探针在位 + 89 条判据均可被证伪） |
 | 浏览器 E2E（mock LLM） | `test:e2e` `:m2` `:m3` `:d3` `:coldstart` `:automation` `:explain-pack` `:user-config` | **八项全绿** |
-| 面板 E2E | `pnpm test:e2e:sidepanel` | **绿**（2026-09-03 复核连跑 14 次，含 3 次满单测负载） |
+| 面板 E2E | `pnpm test:e2e:sidepanel` | **不稳定**：2026-09-03 连跑 14 次全绿；2026-09-04 同一 commit 独立 worktree 里 3/3 红（401 阶段）。已单独立项 |
 
 **已知未绿（如实记录）**：
 - `pnpm test:e2e:real`（真实 LLM）与 `test:e2e:real-site`（真实站点 + 飞书）**BLOCKED，未执行**。
@@ -84,7 +84,7 @@
 
 | 事项 | 锚点 |
 |---|---|
-| ~~`test:e2e:sidepanel` 红~~ **误判，已更正**：复核连跑 14 次全绿；原「404 重试请求未发出」不可复现 | 已了结（2026-09-03 复核） |
+| `test:e2e:sidepanel` **不稳定门**（14 次全绿与 3/3 红出现在同一 commit 上），根因未查明，疑为 401 令牌续期竞态 | 单独立项专项诊断；不计入批次成败 |
 | 真实 LLM / 真实站点 E2E 未执行（BLOCKED） | 提供凭证与已登录 profile 后按 §2 解除命令执行 |
 | `run-real-llm.mjs` 的新判据兼容未经实跑验证 | 同上 |
 | ~~8 项待 Terry 裁决~~ **已于 2026-09-03 全部裁决**；改写与实施尚未落地 | 裁决原文与下一轮工作序列见 `docs/plans/2026-09-03-terry-rulings-and-next-round.md` |
@@ -110,8 +110,8 @@
 
 ## 七、下一步建议
 
-1. ~~修 `test:e2e:sidepanel`~~ **已了结**：复核发现它并不红（连跑 14 次全绿），原记录是误判，三处文档已更正。
-2. 按 `docs/plans/2026-09-03-terry-rulings-and-next-round.md` §2 的 N1-N5 序列推进八项裁决的落地：N1（R8 事实边界 + 不可信内容定界，合并共用一次全量评测）、
+1. **诊断 `test:e2e:sidepanel` 的不确定性**：它在同一 commit 上既出现过 14 次全绿、也出现过 3/3 红（失败点 401 阶段「重试未使用重新激活的令牌」）。先前判它为「误判、实为绿」的结论**已更正为「不稳定门」**——复跑全绿只能证明"此时此环境绿"，不足以证明门是稳定的。
+2. **N2 已交付**（2026-09-04，见裁决记录 §2）。继续按 `docs/plans/2026-09-03-terry-rulings-and-next-round.md` §2 推进：N1（R8 事实边界 + 不可信内容定界，合并共用一次全量评测）、
    N2（删 `ZA_GENERIC_ALLOWLIST` + 补 L2 站点黑名单）、N3（垂直履约语义移出 C6，先出 ADR）、
    N4（R4 条文改写 + 快捷指令库）、N5（权限最小化注入）。
 3. r2 的 12 条 partial 里挑「进 describeInjection」与「domContext 同步」两条收口（都是本轮改动的残余面）。

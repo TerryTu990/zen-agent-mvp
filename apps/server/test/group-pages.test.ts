@@ -23,8 +23,9 @@ const ISS = 'zen-agent-demo';
 const key = new TextEncoder().encode(JWT_SECRET);
 
 const ORDER_LIST_URL = 'http://127.0.0.1:4173/order-list.html';
-const GENERIC_ORIGIN = 'http://127.0.0.1:4173';
 const OUTSIDE_URL = 'https://outside.example/page';
+/** 静默页（非 http/https）：generic 兜底不绑此类 origin，装配回落仅基座。 */
+const SILENT_URL = 'chrome://newtab/';
 
 const MANIFEST_HEADER = '# 任务组页面清单';
 const MANIFEST_NOTE =
@@ -68,11 +69,7 @@ beforeAll(async () => {
     heartbeatMs: 60_000,
   };
   server = await startServer({ ...options, snapshotRoot: hostDemoRoot });
-  accServer = await startServer({
-    ...options,
-    snapshotRoot: acceptanceRoot,
-    genericAllowlist: [GENERIC_ORIGIN],
-  });
+  accServer = await startServer({ ...options, snapshotRoot: acceptanceRoot });
   baseUrl = `http://127.0.0.1:${server.port}`;
   accBaseUrl = `http://127.0.0.1:${accServer.port}`;
 });
@@ -481,16 +478,18 @@ describe('group-pages 帧受理与清单注入（host-demo 快照）', () => {
   it('附注条件化：无快照工具但注入了内建导航时，不宣称所有工具都作用于活跃页', async () => {
     const token = await signToken();
     const sessionId = await createSession(accBaseUrl, token);
+    // 活跃页取静默页：http/https 页会激活 generic 兜底并带入 dom 工具面（连同 page_snapshot），
+    // 撑不起"无快照工具"这一前提。
     await postFrame(accBaseUrl, token, sessionId, {
       type: 'context-report',
       sessionId,
-      url: OUTSIDE_URL,
+      url: SILENT_URL,
     });
     await postFrame(accBaseUrl, token, sessionId, {
       type: 'group-pages',
       sessionId,
       pages: [
-        { handle: 'p1', url: OUTSIDE_URL, status: 'active' },
+        { handle: 'p1', url: SILENT_URL, status: 'active' },
         { handle: 'p2', url: 'https://a.example/one', status: 'background' },
       ],
     });
@@ -558,8 +557,8 @@ describe('group-pages 帧受理与清单注入（host-demo 快照）', () => {
   });
 });
 
-describe('清单 pack 列经 resolveFeature+gateGeneric（acceptance 快照 + generic 名单）', () => {
-  it('generic 准入行显 generic-web、名单外行显 -、站点 pack 行显其 packId', async () => {
+describe('清单 pack 列经 resolveFeature+gateGeneric（acceptance 快照）', () => {
+  it('http 行显 generic-web、静默页行显 -、站点 pack 行显其 packId', async () => {
     const token = await signToken();
     const sessionId = await createSession(accBaseUrl, token);
     await postFrame(accBaseUrl, token, sessionId, {
@@ -574,14 +573,17 @@ describe('清单 pack 列经 resolveFeature+gateGeneric（acceptance 快照 + ge
         { handle: 'g1', url: ORDER_LIST_URL, title: '订单', status: 'active' },
         { handle: 'g2', url: OUTSIDE_URL, status: 'background' },
         { handle: 'g3', url: 'https://codeflow.asia/console/tokens', status: 'silent' },
+        { handle: 'g4', url: SILENT_URL, status: 'background' },
       ],
     });
     const manifest = manifestOf(await systemSentToLlm(accBaseUrl, token, sessionId));
     expect(manifest).not.toBeNull();
     const lines = manifest!.split('\n');
     expect(lines[2]).toBe(`g1 | 订单 | ${ORDER_LIST_URL} | active | generic-web`);
-    expect(lines[3]).toBe(`g2 | - | ${OUTSIDE_URL} | background | -`);
+    expect(lines[3]).toBe(`g2 | - | ${OUTSIDE_URL} | background | generic-web`);
     expect(lines[4]).toBe('g3 | - | https://codeflow.asia/console/tokens | silent | codeflow-console');
+    // 非 http/https 页按 URL 规范无 origin（列文本 'null/'），pack 列回落 '-'。
+    expect(lines[5]).toBe('g4 | - | null/ | background | -');
   });
 });
 

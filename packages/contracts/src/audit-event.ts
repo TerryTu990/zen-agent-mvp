@@ -104,6 +104,8 @@ export interface AssemblyEvent extends AuditEventBase {
     packDisabled?: true;
     /** 被关停的 packId（随 packDisabled 一同记录）：关停轮事件顶层 packId 已回落缺省，追溯「哪个 pack 被关停」只此一处。 */
     disabledPackId?: string;
+    /** true = 当前页 origin 命中用户 L2 站点黑名单而回落仅基座；与 packDisabled 分列归因。缺省 = 非黑名单回落。 */
+    siteDenied?: true;
   };
 }
 

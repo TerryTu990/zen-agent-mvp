@@ -48,6 +48,11 @@ export interface ComposeInput {
    * revision，合并个人规则/事实与工具面收紧；缺省 = 纯 L1 装配（无 L2 参与）。
    */
   subject?: UserConfigSubject;
+  /**
+   * 当前页 origin（scheme://host[:port]）：提供时按 L2 全局作用域 siteDenylist 判定站点黑名单，
+   * 命中即回落仅基座并置 siteDenied；缺省 = 不做站点判定，装配面与不带本字段时严格等价。
+   */
+  origin?: string;
 }
 
 export interface SkillAsset {
@@ -116,6 +121,12 @@ export interface ComposeResult {
   packDisabled?: true;
   /** 被关停的 packId（随 packDisabled 一同产出）：关停轮 packId 已回落 null，审计与配置中心据此追溯是哪个 pack 被关停；缺省 = 非关停轮。 */
   disabledPackId?: string;
+  /**
+   * true = 入参 origin 命中用户 L2 站点黑名单，本轮按仅基座装配（packId 已为 null）——
+   * 与 packDisabled 分列：前者是「用户不让 Zen 出现在这个站点」，后者是「用户关停了这个 pack」。
+   * 缺省 = 未传 origin、未命中黑名单或 L2 未参与。
+   */
+  siteDenied?: true;
   /**
    * 工具面逐项生效分级（与 describeInjection 的 tools 同源同值）：disabledTools 条目从 agent 可见
    * tools 移除但在此保留并置 effectiveTier:'forbidden'（幻觉调用仍被拒）；缺省 = 无 L2 参与。
@@ -195,10 +206,13 @@ export interface InjectionDescription {
   disabledPackId?: string;
   /**
    * 本轮装配面之所以如此的原因闭集（R4 透明性）：'pack' 站点包命中 / 'generic' 通用兜底包 /
-   * 'base-only' 无 pack 命中仅基座 / 'pack-disabled' 用户关停后回落仅基座。
+   * 'base-only' 无 pack 命中仅基座 / 'pack-disabled' 用户关停后回落仅基座 /
+   * 'site-denied' 本页 origin 命中用户站点黑名单后回落仅基座。后两者同属「用户主动导致的回落」，
+   * 分列使透明视图能说清是关停了哪个 pack 还是整站不辅助；黑名单命中优先——
+   * 纵使该 pack 同时被关停，本站也仍会回落仅基座。
    * 服务端判定，客户端只呈现不推断（U7）；缺省 = 旧版本服务端未标注。
    */
-  reason?: 'pack' | 'generic' | 'base-only' | 'pack-disabled';
+  reason?: 'pack' | 'generic' | 'base-only' | 'pack-disabled' | 'site-denied';
 }
 
 /** pack docs 正文按需读取（渐进披露的 pack_doc 内建工具后端）：只读当前激活 pack 的 docs/。 */

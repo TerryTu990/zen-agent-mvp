@@ -1,7 +1,7 @@
 /**
  * 空白组冷启动 open_url E2E：真实 Chromium + MV3 extension + 真实 gateway 子进程 + 脚本化 mock LLM。
- * 会话组内只有一个静默页（chrome://newtab，无 content script 成员），服务端以
- * ZA_GENERIC_ALLOWLIST='*' 启动——静默页冷启动保持仅基座装配、只注入 open_url。
+ * 会话组内只有一个静默页（chrome://newtab，无 content script 成员）：静默页冷启动
+ * 保持仅基座装配、只注入 open_url。
  *
  * 组的建立：Playwright 无法点真实工具栏图标，此处在 service worker 里复刻 handleIconClick 的
  * 可观察产物（tabs.group 建组 + za.zenGroup / za.panelGroup 登记），面板经既有 storage 绑定路径
@@ -206,7 +206,7 @@ function startScriptedLlm(targetUrl, successReply) {
   });
 }
 
-/** 真实 gateway 子进程：静默页冷启动的准入名单经进程 env 下发（ZA_GENERIC_ALLOWLIST 含字面 '*'）。 */
+/** 真实 gateway 子进程：静默页冷启动的 open_url 注入门在服务端判定，无需部署侧配置。 */
 function spawnServer({ llmPort, auditPath, stateRoot }) {
   const child = spawn('node', [SERVER_MAIN], {
     cwd: REPO_ROOT,
@@ -225,7 +225,6 @@ function spawnServer({ llmPort, auditPath, stateRoot }) {
       ZA_SESSION_DIR: join(stateRoot, 'sessions'),
       ZA_USER_CONFIG_DIR: join(stateRoot, 'user-config'),
       ZA_APPLICATIONS_DIR: join(stateRoot, 'applications'),
-      ZA_GENERIC_ALLOWLIST: '*',
     },
   });
   const exited = new Promise((resolveExit) => child.once('exit', (code) => resolveExit(code)));
@@ -263,7 +262,7 @@ async function main() {
       await run('pnpm', ['--filter', '@zen-agent/extension', 'run', 'build']);
     }
 
-    console.log('[2/6] 起目标站夹具、脚本化 mock LLM 与真实 gateway（ZA_GENERIC_ALLOWLIST=*）…');
+    console.log('[2/6] 起目标站夹具、脚本化 mock LLM 与真实 gateway…');
     const site = await startTargetSite();
     cleanups.push(() => site.close());
     const targetUrl = `${site.origin}/landing`;

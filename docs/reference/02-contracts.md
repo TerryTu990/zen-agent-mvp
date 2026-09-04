@@ -30,7 +30,7 @@
 - `hitlMode`（可选，仅 riskTier=hitl 有意义）：`per-task`（缺省）——同会话同任务首批确认后跨工具自动放行；`every-call`——对外不可撤回动作（发信/删除等）次次挂起单独确认、不复用授权。
 - `resultSchema`：结果契约；回传 body 校验不过即 `invalid-result`、不回喂 agent。
 
-**平台内建工具（不入 tools.json）**：`guide_highlight`（UI 引导）、`page_snapshot`（dom 观察半程；`includeText` 分支取页面正文，无独立正文工具）、`pack_doc`（站点文档按需读）、`site_navigate`（跨站导航，结构契约在 `tool-definition.ts` 的 `SITE_NAVIGATE_*`）、`open_url`（通用开页，`OPEN_URL_*`；注入门＝调用准入门：generic pack 已激活，或静默页冷启动且 `ZA_GENERIC_ALLOWLIST` 含 `*`）——由网关按装配条件注入（渐进披露），治理各有专路（snapshot/pack_doc 只读不经 toolgate；navigate 类专路裁决）。`page_snapshot` 与两个 navigate 内建工具同样接受可选 `targetPage`（定向到组内其他页，adr-023）。
+**平台内建工具（不入 tools.json）**：`guide_highlight`（UI 引导）、`page_snapshot`（dom 观察半程；`includeText` 分支取页面正文，无独立正文工具）、`pack_doc`（站点文档按需读）、`site_navigate`（跨站导航，结构契约在 `tool-definition.ts` 的 `SITE_NAVIGATE_*`）、`open_url`（通用开页，`OPEN_URL_*`；注入门＝调用准入门：generic pack 已激活，或静默页冷启动——静默页无 http(s) origin，generic 不激活，故单开这一个通用开页入口）——由网关按装配条件注入（渐进披露），治理各有专路（snapshot/pack_doc 只读不经 toolgate；navigate 类专路裁决）。`page_snapshot` 与两个 navigate 内建工具同样接受可选 `targetPage`（定向到组内其他页，adr-023）。
 
 **升级不变量关联**：U3（execution 闭集；双通道已实现，通道仍是配置维度）、U7（riskTier/dom 校验/围栏判定服务端 fail-closed；结果回传经 schema 校验才回喂）、U1。
 
@@ -110,7 +110,7 @@
 **职责**：模块间唯一调用契约（TS 类型，`src/ports.ts`）。模块 = 包、组装唯一在 `apps/server`（U2）；全部端口方法出入参均为 JSON 可序列化值（U1），拆服务时端口 → RPC 不改契约。
 
 **端口语义**（方法闭集以 `ports.ts` 为准，此处为语义导览）：
-- `AssemblyPort`（②网关 ← ⑤配置中心）：`resolveFeature`（url → pack 激活 + featureId，返回含 packId/packVersion/snapshotVersion）、`compose`（每轮换出：基座 + 站点索引 + feature.md + facts.md + skills + 工具白名单 + docs 索引）、`describeInjection`（注入自省，与 compose 同源，喂审计 assembly 事件）、`readPackDoc`（pack_doc 渐进披露正文，路径穿越 fail-closed）、`allTools`/`listSites`/`listToolOwnership`（启动期汇总：toolgate 判定闭集 / site 围栏 / 命名空间纪律）。
+- `AssemblyPort`（②网关 ← ⑤配置中心）：`resolveFeature`（url → pack 激活 + featureId，返回含 packId/packVersion/snapshotVersion）、`compose`（每轮换出：基座 + 站点索引 + feature.md + facts.md + skills + 工具白名单 + docs 索引；可选入参 `origin` = 活跃页 origin，命中 L2 `siteDenylist` 即回落仅基座并标 `siteDenied`——不传即维持基线行为）、`describeInjection`（注入自省，与 compose 同源，喂审计 assembly 事件；`reason` 闭集 `pack`/`generic`/`base-only`/`pack-disabled`/`site-denied` 说清本轮装配面之所以如此，黑名单命中优先于 pack 关停）、`readPackDoc`（pack_doc 渐进披露正文，路径穿越 fail-closed）、`allTools`/`listSites`/`listToolOwnership`（启动期汇总：toolgate 判定闭集 / site 围栏 / 命名空间纪律）。
 - `ToolGatePort`（③工具执行层）：`decide`（唯一决策点：分级矩阵 + 身份/实参/dom 步骤/围栏校验 + 任务级授权复用，fail-closed；入参含 packOrigin/claimsForOrigin/domContext，及 `groupPages` 组页面状态表快照——定向调用的目标解析基准，入参带 `targetPage` 而表内未命中一律拒、禁回退活跃页）、`grantHitl`（HITL 批准后登记 `(sessionId,task)` 授权）、`getExecVerificationKey`（只读 Ed25519 公钥）、`issueExecInstruction`（签发带绝对时限的一次性指令，前提 = decide 放行；同收 `groupPages`，签名前独立重解析定向目标，不依赖 decide 已通过的假设）、`acceptExecResult`（核销 nonce + 验 ttl + resultSchema 校验 → 规整 observation）、`confirmFulfillmentReceipt`（发送后结构化回执确认 `completed/uncertain`）、`executeServer`（server 通道直调：渲染 + credentialRef 凭证注入 + 结果校验）。
 - `CardInventoryPort`（飞书库存边界）：`reserve` 先按订单复用，否则领取一条 available 并写 reserved；`settle` 只允许 reserved → sent/manual 或同终态幂等。卡密值虽为 JSON 字符串，但仅在服务端端口内流转，禁止进入模型/审计/日志。
 - `FulfillmentCoordinatorPort`（履约编排）：`prepare` 先预占库存，再把固定通知登记为 toolgate opaque intent；`settle` 按网关的最终页面回执回填库存，失败进入阻断状态。
@@ -127,7 +127,8 @@
 **职责**：L2 用户级配置覆盖层——`subject=(tenant, hostUserId)` 维度的运行期覆盖，经 `UserConfigStore` 端口读写、`revision`（内容 hash）可追溯。与 C4 快照（L1）构成 U4 的双源：L2 **显式排除**在快照同构/不可变约束之外，另守只收紧 / 可审计 / 可追溯三约束。
 
 **结构**（`{schemaVersion, subject, packs, watches?}`，全程 `additionalProperties:false`）：
-- `packs` 是作用域表：键 `"*"` = 全局作用域（跨站规则/事实与 `verbosity` 偏好，零配置站点的个人定制载体；结构上无 `enabled`/`restrictions`/`packConfig`——无对应工具面可收紧）；其余键 = packId，走 pack 级作用域。
+- `packs` 是作用域表：键 `"*"` = 全局作用域（跨站规则/事实、`verbosity` 偏好与 `siteDenylist`，零配置站点的个人定制载体；结构上无 `enabled`/`restrictions`/`packConfig`——无对应工具面可收紧）；其余键 = packId，走 pack 级作用域。
+- `siteDenylist`（用户级站点黑名单）只居全局作用域——它跨站点、不锚定任何 pack。条目文法两形态：`scheme://host[:port]` 精确 origin（比对时 www 与裸域互认，scheme/port 精确）、`scheme://*.host` 该域及其子域（scheme 精确，通配形态不比对端口）；`uniqueItems`，上限 200 条。**刻意不设 `*` 全通配**：那等价于关停整个产品，是危险且无意义的表达，文法层即拒。语义只收紧：命中 origin 上不装配任何站点包（含通用兜底包），回落仅基座——与 pack 级 `enabled:false` 共用同一条回落通路，两者以各自标注区分归因。**终判在服务端 compose**（U7）：客户端据同一份名单跳过激活只是隐私侧不上报，不构成治理生效；L2 读失败降级时读不到名单即不回落（存储故障不得让治理看起来已生效）。
 - pack 级作用域：`enabled`（只允许 `const false`，即 pack 级关停；缺省 = 启用）、`rules`/`facts`（条目带 `origin` = `manual` 面板录入 / `teach` 对话草稿确认写入，`featureId` 缺省 = 整 pack 生效）、`restrictions`、`packConfig`、`preferences`。
 - `restrictions` 是权限只收紧矩阵：`riskTierRaise` 值域闭集仅 `{hitl, forbidden}`（无 `auto`，结构上无放宽表达力）、`disabledTools` 从工具面移除不展示。
 - `preferences`：`verbosity` 闭集 `concise|standard|detailed`；`automations` 键 = 该 pack 声明的 automation id（adr-019），`enabled:false` 关停、`minutes` 写入期校验 ≥ pack 预设周期且 ≥ 平台下限（频率同属收紧维度）。

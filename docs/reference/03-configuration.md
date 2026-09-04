@@ -12,6 +12,27 @@
 | 用户覆盖层（L2） | `ZA_USER_CONFIG_DIR`（默认 `.za/user-config`） | subject=(tenant, hostUserId) 维度的运行期覆盖；契约与只收紧语义见 `02-contracts.md` C7，本文只列落点与 env |
 | 服务端 env | `ZA_*` 环境变量 | 端口/密钥/LLM 上游/落盘路径等运行参数（§4 全表） |
 
+**「在哪些站点辅助」的开关归用户，不归运营者**：generic 兜底包无部署级准入名单——无站点 pack 命中且页面有 http(s) origin 即激活；
+要让 Zen 不出现在某站点，走 L2 全局作用域的 `siteDenylist`（配置中心「不辅助的站点」面板可增删）。
+命中即回落仅基座（站点包与通用兜底包都不装配），**终判在服务端 compose**：客户端据同一份名单跳过激活只是隐私侧不上报，不构成治理生效。
+客户端侧不是若干点状判定，而是一条可陈述、可验收的**不变量 SD**：*URL 命中名单的页面对服务端完全惰性——
+不发出任何上行帧、不接受任何下行指令的执行、不被登记为活跃执行页，也不激活*。
+它由三处统一出口施加、共用同一份判定：上行帧的统一出口（覆盖 `context-report` / `snapshot-report` /
+`exec-result` / 自动化回合的 `user-message` 等全部种类，无论来自 content 端口还是周期自动化）、
+下行帧落到页面的统一出口（`exec-instruction` / `guide-action` / `snapshot-request`）、活跃执行页登记。
+只掐上行而不管下行等于「照做但不告诉你」，故两个方向都收。
+**唯一允许自命中页上行的例外**是 `{ok:false, error:'site-denied'}` 形态的拒绝回执（不含任何页面数据）——
+没有它，服务端只能把「已下发未回」当超时，用户会以为拉黑生效却看不出指令其实被本机拒了。
+面板「本页生效」块在**本机确实跳过了该页激活**（background 在跳过当刻登记的事实）时改显示客户端自述，
+且自述只陈述当下与此后、不断言过去；该页若在拉黑前已激活、服务端确实见过它，则照常显示服务端的
+`site-denied` 抬头——那是更权威的事实，不得被客户端的猜测顶掉。
+拉黑前已上报的地址仍留在服务端会话上下文里，故下一轮 compose 仍按该 origin 判 `site-denied`。
+**尚未收进不变量的边界**：`site_navigate` 与站点索引仍不认名单（模型仍可能提到该站点、仍可导航过去，
+只是到了那里发不出帧也执行不了指令）；扩展在该页仍注入 content script、仍监听，UI 层面并未彻底消失。
+**降级语义（fail-open）**：L2 读失败（用户配置存储不可用）的那一轮读不到名单，黑名单整体不生效、该站点照常装配——
+黑名单是隐私偏好而非安全边界（内容脚本本就 `<all_urls>` 全站注入），存储抖动期让整个产品停摆代价更大；
+该轮在审计 assembly 事件里带 `userConfigDegraded` 可判读。同轮的工具面另按 fail-closed 一律 `forbidden`——那是执行授权，与此不同类。
+
 **快照根当前事实（2026-09-03）**：生产快照根 = `assets/`（`manifest.json` registry 2.0.0），**只登记通用兜底包 `generic-web`**；
 站点包 `xianyu-seller` / `yinxiang` 已下线到 `examples/site-packs/`（完整可装配的快照根，测试与评测继续覆盖），
 重新上架＝把 pack 目录放回 `assets/packs/` 并登记进 `assets/manifest.json`（版本须与 `pack.json` 一致，否则拒载）。
@@ -80,7 +101,7 @@
 | `packId` / `version` | ✅ | 须与目录名、registry 登记一致 |
 | `name` | ⬜ | pack 人读名（packs 页 / 注入透明视图 / 确认卡展示，如"闲鱼卖家"）；缺省=展示回退 packId |
 | `summary` | ⬜ | 一句话站点用途——进"已安装站点索引"（跨站发现层），缺省回退 packId |
-| `generic` | ⬜ | `const true`：声明本 pack 为"无站点 pack 命中"时的兜底包；**与 `site` 互斥**、禁声明 `automations`（schema allOf 强制），不参与 origin/location 匹配与站点索引，激活由网关按 `ZA_GENERIC_ALLOWLIST` 以活跃页 origin 运行时绑定；registry 至多登记一个 |
+| `generic` | ⬜ | `const true`：声明本 pack 为"无站点 pack 命中"时的兜底包；**与 `site` 互斥**、禁声明 `automations`（schema allOf 强制），不参与 origin/location 匹配与站点索引；无站点 pack 命中且页面有 http(s) origin 即**无条件激活**（无部署级准入名单；用户可用 L2 站点黑名单按站点关停），激活时以活跃页 origin 运行时绑定；registry 至多登记一个 |
 | `site` | 条件 | **非 generic 时必填；`generic: true` 时 MUST 省略**（schema allOf 强制，写了即拒载） |
 | `site.origin` | ✅（有 `site` 时） | 激活围栏：`scheme://host[:port]` 精确匹配（无路径无尾斜杠）；同时是 http/server 工具请求与 navigate 目标的 origin 围栏 |
 | `site.locations` | ⬜ | 路径前缀数组（最长前缀胜出）；省略=整站 `["/"]` |
@@ -197,7 +218,6 @@
 | `ZA_JWT_ISS_ALLOWLIST` | `zen-agent-anon` | 外部签发方的 iss 白名单（逗号分隔）；匿名激活签发的 `zen-agent-anon` 由服务端在组装时无条件并入，覆盖或漏填此项都不会让服务端拒绝自己签发的令牌 |
 | `ZA_MAX_TURN_ROUNDS` | `12` | agent loop 单回合轮数上限（跨站任务建议 40） |
 | `ZA_MAX_CONSECUTIVE_FAILURES` | `3` | 同工具同因连续失败的止损上限：达此值即终结回合（`turn-complete.reason=consecutive-failures`），任一次成功清零；与 `ZA_MAX_TURN_ROUNDS` 并列，先到者生效。取值须为正整数，写错拒启 |
-| `ZA_GENERIC_ALLOWLIST` | 空（generic 兜底永不激活） | 通用兜底 pack 的准入名单（逗号分隔），条目三形态：`*`（任意站点）/ `scheme://*.host`（该域及其子域）/ origin 精确值；非法条目启动期拒启。活跃页 origin 命中才激活 generic pack（无 http/https origin 的静默页一律不激活，`*` 也不例外）。名单含 `*` 时另放行**静默页冷启动**的 `open_url` 内建工具：会话保持仅基座装配，只多一个通用开页入口 |
 
 ### LLM 上游（openai 兼容；调用时惰性读取）
 

@@ -1217,6 +1217,18 @@ describe('C5 audit L2 事件（adr-014：user-config-write + userConfigRevision�
         packDisabled: true,
       },
     },
+    'assembly 事件标注用户站点黑名单（siteDenied 区分「本站没 pack」与「用户不让 Zen 出现」）': {
+      ...base,
+      type: 'assembly',
+      data: {
+        snapshotVersion: '0.2.0',
+        featureId: null,
+        toolIds: [],
+        skillIds: [],
+        userConfigRevision: 'rev-3f6a2c',
+        siteDenied: true,
+      },
+    },
   };
 
   it.each(Object.keys(validEvents))('合法事件 %s 通过校验', (label) => {

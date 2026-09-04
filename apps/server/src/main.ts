@@ -3,7 +3,7 @@
  * ZA_LLM_BASE_URL / ZA_LLM_API_KEY / ZA_LLM_MODEL 由 llm-port 在调用时读取，此处只做启动期提示。
  */
 import { ANON_ISS } from './activation.js';
-import { parseFulfillmentProductKeys, parseGenericAllowlist, startServer } from './index.js';
+import { parseFulfillmentProductKeys, startServer } from './index.js';
 import type { BoundedFulfillmentPolicy } from '@zen-agent/toolgate';
 
 function requireEnv(name: string): string {
@@ -83,13 +83,6 @@ function positiveIntEnv(name: string): number | undefined {
 
 const maxConsecutiveFailures = positiveIntEnv('ZA_MAX_CONSECUTIVE_FAILURES');
 const hitlTimeoutMs = positiveIntEnv('ZA_HITL_TIMEOUT_MS');
-let genericAllowlist: string[] = [];
-try {
-  genericAllowlist = parseGenericAllowlist(process.env['ZA_GENERIC_ALLOWLIST']);
-} catch (cause) {
-  console.error(`${cause instanceof Error ? cause.message : String(cause)}，拒绝启动`);
-  process.exit(1);
-}
 let fulfillmentPolicies: BoundedFulfillmentPolicy[] = [];
 try {
   const raw = process.env['ZA_FULFILLMENT_POLICIES_JSON'];
@@ -144,7 +137,6 @@ startServer({
   sessionDir: process.env['ZA_SESSION_DIR'] ?? '.za/sessions',
   applicationsDir: process.env['ZA_APPLICATIONS_DIR'] ?? '.za/applications',
   userConfigDir: process.env['ZA_USER_CONFIG_DIR'] ?? '.za/user-config',
-  genericAllowlist,
   fulfillmentPolicies,
   fulfillmentProductKeys,
   ...(cardBaseToken && cardTableId && cardGuideUrl

@@ -16,6 +16,7 @@ import {
   type SidePanelUiEvent,
   type SidePanelToBackgroundMessage,
 } from './messaging.js';
+import { siteDeniedSkipKey } from './site-denylist.js';
 
 type PendingUserMessage = Extract<SidePanelToBackgroundMessage, { kind: 'user-message' }>;
 
@@ -42,7 +43,7 @@ interface LocalEcho {
 type TaskContextMessage = Extract<BackgroundToSidePanelMessage, { kind: 'task-context' }>;
 
 export interface ContextHeaderView {
-  state: 'waiting' | 'ready' | 'outside';
+  state: 'waiting' | 'ready' | 'outside' | 'denied';
   title: string;
   detail: string;
 }
@@ -79,10 +80,40 @@ const PACK_SOURCE_LABELS: Record<'official' | 'community' | 'local', string> = {
 const PAGE_EFFECT_NOTE =
   '以上只是本页站点包的注入面（数据源：服务端注入自省）；平台内建工具与网关按页追加的说明不在此列。';
 
-const PAGE_EFFECT_HEADLINES: Record<'pack' | 'generic' | 'base-only', string> = {
+const PAGE_EFFECT_HEADLINES: Record<'pack' | 'generic' | 'base-only' | 'site-denied', string> = {
   pack: '本页命中站点包，已按该包装配规则、知识与工具面。',
   generic: '本页没有专属站点包，已用通用兜底包辅助；站点专属知识与代操作工具不可用。',
   'base-only': '本页没有可用站点包，本轮只注入平台基座。',
+  'site-denied':
+    '你把本站加进了「不辅助的站点」名单，本轮不装配任何站点包、只注入平台基座；' +
+    '要恢复请在配置中心「全局设置」里移除该条目。',
+};
+
+/**
+ * 客户端自述：只陈述**当下与此后**，不断言过去——「拉黑前该页早已激活并上报过」是最常见的流程，
+ * 任何形如「没有激活过 / 没有上报过」的说法在那条流程上都是假话。
+ * 承诺范围到闸门实际拦下的两件事为止：本机不再自动上报本页信息、下发到本页的操作指令不落页。
+ * 闸门拦不住的三件事必须一并写明——用户主动发送的内容以 origin=null 上行（右键选区入口即经此
+ * 把本页正文送进输入框），组级 open_url 仍可能把本页导航到别处，两侧读不到名单的那一轮
+ * 一律 fail-open（不确定不拦，见 site-denylist 模块头）；说成「不做任何操作」即是假话。
+ * 与 PAGE_EFFECT_HEADLINES['site-denied'] 分工不同、措辞不得混用：那条是服务端确实见过该页
+ * 并按 site-denied 装配的结论（U7 治理终判仍在服务端），本条不推断任何服务端结论。
+ */
+export const SITE_DENIED_CLIENT_NOTICE =
+  '本站在你的「不辅助的站点」名单内：读到这份名单的每一轮，Zen 不再自动向服务端发送本页信息，' +
+  '也不在本页执行下发的操作指令。仍会发生的是：你主动发送的内容（含右键引用的选区正文）仍会上行，' +
+  '本页也仍可能被导航到别的地址；配置读取失败的那一轮不做拦截，本页照常装配站点包、页面信息照常上行。' +
+  '要恢复请在配置中心「全局设置」里移除该条目。';
+
+/**
+ * 本机跳过了本页激活时的抬头：与「本页生效」块内的自述同一条事实、同一段措辞。
+ * 服务端上下文照常送达（该页拉黑前可能早已入组），但把它按「已连接的任务页面」
+ * 连标题带完整 URL 加绿点地摆出来，与同一面板里的自述直接冲突。
+ */
+export const SITE_DENIED_HEADER_VIEW: ContextHeaderView = {
+  state: 'denied',
+  title: '本站不辅助',
+  detail: SITE_DENIED_CLIENT_NOTICE,
 };
 
 export interface PageEffectRow {
@@ -441,17 +472,46 @@ export function startSidePanel(elements: SidePanelElements): void {
     elements.pageEffectBody.append(rows, note);
   };
 
-  const requestPageEffect = (): void => {
-    setPageEffectMessage('正在读取本页生效的装配…');
-    if (!send({ kind: 'injection-request' })) {
-      setPageEffectMessage('面板尚未连接，稍后重新展开此块即可重试。');
-    }
+  /**
+   * 本机是否**确实跳过了**当前活动页的激活（background 在跳过当刻登记的事实）。
+   * 判据不用「当前 URL 命中名单」：拉黑前已激活的页，本轮服务端确实见过它并已按 site-denied
+   * 回落仅基座，那条抬头是服务端说的真话，不得被客户端的猜测顶掉。
+   * 读不到窗口/标签页/登记一律按未跳过，让服务端描述照常呈现。
+   */
+  const activationSkippedHere = async (): Promise<boolean> => {
+    if (windowId === null) return false;
+    const [tab] = await chrome.tabs.query({ active: true, windowId }).catch(() => []);
+    if (tab?.id === undefined) return false;
+    const key = siteDeniedSkipKey(tab.id);
+    const items: Record<string, unknown> = await chrome.storage.session
+      .get(key)
+      .catch(() => ({}) as Record<string, unknown>);
+    return items[key] === true;
   };
 
+  const requestPageEffect = (): void => {
+    setPageEffectMessage('正在读取本页生效的装配…');
+    void activationSkippedHere().then((skipped) => {
+      if (skipped) {
+        setPageEffectMessage(SITE_DENIED_CLIENT_NOTICE);
+        return;
+      }
+      if (!send({ kind: 'injection-request' })) {
+        setPageEffectMessage('面板尚未连接，稍后重新展开此块即可重试。');
+      }
+    });
+  };
+
+  // 抬头判定要读一次「跳过激活」的登记，故是异步的；只有最后一条上下文的判定结果作数。
+  let contextSeq = 0;
   const updateContext = (message: TaskContextMessage): void => {
-    applyContextHeader(contextHeaderView(message, message.groupId));
-    // 换页即换装配面：仅在块展开时重取，收起状态不产生建会话副作用。
-    if (elements.pageEffect.open) requestPageEffect();
+    const seq = (contextSeq += 1);
+    void activationSkippedHere().then((skipped) => {
+      if (seq !== contextSeq) return;
+      applyContextHeader(skipped ? SITE_DENIED_HEADER_VIEW : contextHeaderView(message, message.groupId));
+      // 换页即换装配面：仅在块展开时重取，收起状态不产生建会话副作用。
+      if (elements.pageEffect.open) requestPageEffect();
+    });
   };
 
   /** 选区引用块：标记与网关对页面正文的不可信标注同口径——选区是页面数据，不是指令。 */
@@ -588,7 +648,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     } else if (message.kind === 'stop-result') {
       if (!message.accepted) {
         stopRequested = false;
-        elements.composerNotice.textContent = '停止请求未被接受，请重试';
+        elements.composerNotice.textContent = '本机页面操作已停止；服务端未接受停止请求，可重试';
         updateComposer();
       } else {
         if (message.messageId !== undefined && !renderedMessageIds.has(message.messageId)) {
@@ -845,6 +905,14 @@ export function startSidePanel(elements: SidePanelElements): void {
       const changed = changes[key]?.newValue;
       if (typeof changed === 'number') bindGroup(changed);
     });
+    // 跳过激活的事实先于组绑定判读：窗口绑定键只被 zen 组成员页写入，命中页永不更新它，
+    // 窗口里曾开过 Zen 组时它留着旧值——绑过去既盖掉自述，又把别的组的上下文摆到用户面前。
+    // 图标/右键入口在命中站点上仍会把面板打开（open 必须在手势内同步发出，中间不得 await），
+    // 此时再给一遍建组引导等于要求用户重做他刚做过的动作；这里陈述本机为什么没有激活。
+    if (await activationSkippedHere()) {
+      applyContextHeader(SITE_DENIED_HEADER_VIEW);
+      return;
+    }
     const stored = (await chrome.storage.session.get(key))[key];
     const fallback = tab.groupId ?? TAB_GROUP_ID_NONE;
     const initialGroupId = typeof stored === 'number' ? stored : fallback;

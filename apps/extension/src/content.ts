@@ -25,7 +25,18 @@ function activate(): void {
   const pageAction = createPageActionRunner(
     createDomGuidePage(document, (ref) => snapshot.resolve(ref)),
   );
+  /**
+   * 停止闩：一次停止之后保持置位，直到 background 明确宣告新回合（resume-operation）。
+   * 不在每次批次开头复位——停止之后放行的第一条 exec-instruction 会因此抹掉已置位的状态并照常执行，
+   * 而页面上是否还能动作是回合级的事实，不是单条批次的事实。
+   */
   let stopRequested = false;
+  /**
+   * 在跑批次自己的中止位：入场时取当刻的闩，此后只由停止置位、不随新回合复位。
+   * 用户按下停止后随即发新消息，那条复位只该放行新批次；上一次停止里的批次不得从半程续跑。
+   * 单个标志即可——同一时刻至多一条批次在跑（服务端逐条签发、background 落页串行）。
+   */
+  let runAborted = false;
   let port: chrome.runtime.Port | null = null;
   let reconnectTimer: number | null = null;
   const pendingNavigations = new Map<string, (result: { ok: boolean; url?: string; error?: string }) => void>();
@@ -62,12 +73,12 @@ function activate(): void {
   const domRunner = createDomStepRunner(
     (ref) => snapshot.resolve(ref),
     undefined,
-    () => stopRequested,
+    () => stopRequested || runAborted,
     navigate,
   );
   const executor = createDelegatedExecutor(fetch, {
     async run(steps) {
-      stopRequested = false;
+      runAborted = stopRequested;
       send({ kind: 'operation-state', running: true });
       try {
         return await domRunner.run(steps);
@@ -81,6 +92,11 @@ function activate(): void {
     const message = raw as BackgroundToContentMessage;
     if (message.kind === 'stop-operation') {
       stopRequested = true;
+      runAborted = true;
+      return;
+    }
+    if (message.kind === 'resume-operation') {
+      stopRequested = false;
       return;
     }
     if (message.kind === 'navigate-result') {

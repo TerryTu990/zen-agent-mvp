@@ -517,6 +517,34 @@ describe('自动化页 · 用户自建触发器（adr-021）', () => {
     expect(mirrored[0]?.['watch-1']).toEqual({ enabled: true, minutes: 30 });
   });
 
+  /**
+   * 触发器停在名单站点上时到点静默不跑（连一条「已暂停」提示都不发，那是刻意的）。
+   * 「自动化」页若仍把它显示成启用、按周期汇报，用户会一直等一份永远不来的报告。
+   */
+  it('监测地址落在不辅助名单内的触发器标注「因站点名单暂不运行」（N2-COPY-03）', async () => {
+    const harness = createHarness();
+    harness.stored.overlay = {
+      ...overlayFixture(),
+      packs: { '*': { siteDenylist: ['https://bank.example'] } },
+      watches: [{ ...WATCH, id: 'watch-9', url: 'https://bank.example/accounts' }],
+    };
+    await mounted(harness);
+    const row = watchRows(harness).find((candidate) => candidate.dataset['zaWatchId'] === 'watch-9');
+    expect(row?.textContent ?? '').toContain('因站点名单暂不运行');
+  });
+
+  it('监测地址不在名单内的触发器不带该标注（对照）', async () => {
+    const harness = createHarness();
+    harness.stored.overlay = {
+      ...overlayFixture(),
+      packs: { '*': { siteDenylist: ['https://bank.example'] } },
+      watches: [{ ...WATCH }],
+    };
+    await mounted(harness);
+    const row = watchRows(harness).find((candidate) => candidate.dataset['zaWatchId'] === WATCH.id);
+    expect(row?.textContent ?? '').not.toContain('因站点名单暂不运行');
+  });
+
   it('监测地址非 http/https 时禁止提交并给出可定位提示', async () => {
     const harness = createHarness();
     const handle = await mounted(harness);
@@ -605,6 +633,195 @@ describe('全局设置页（身份只读展示 + verbosity 偏好）', () => {
     setValue(harness.root.querySelector<HTMLSelectElement>('.za-cc-verbosity')!, 'concise');
     await handle.save();
     expect(lastPutOverlay(harness).packs['*']?.preferences?.verbosity).toBe('concise');
+  });
+});
+
+/**
+ * 站点黑名单编辑面（R3/R8「不让 Zen 出现在这些站点」）：写 "*" 全局作用域的 siteDenylist。
+ * 面板只做就地文法自检与增删，判定权在服务端 compose（U7）——UI 不宣称本机已拦下任何站点。
+ */
+describe('全局设置页 · 不辅助的站点（L2 站点黑名单）', () => {
+  function denyEntries(root: HTMLElement): string[] {
+    return [...root.querySelectorAll<HTMLElement>('.za-cc-site-deny-entry')].map(
+      (row) => row.dataset['zaSiteDeny'] ?? '',
+    );
+  }
+
+  function addEntry(root: HTMLElement, value: string): void {
+    const input = root.querySelector<HTMLInputElement>('.za-cc-site-deny-input')!;
+    input.value = value;
+    root.querySelector<HTMLButtonElement>('.za-cc-site-deny-add')!.click();
+  }
+
+  function status(root: HTMLElement): string {
+    return root.querySelector('.za-cc-status')?.textContent ?? '';
+  }
+
+  it('原「站点授权管理」占位已换成可用编辑面，文案说明这是不让 Zen 出现在这些站点', async () => {
+    const harness = createHarness();
+    await mounted(harness);
+    const global = panel(harness.root, 'global');
+    expect(global.textContent).not.toContain('站点授权管理');
+    expect(global.querySelector('.za-cc-site-deny-input')).not.toBeNull();
+    expect(global.textContent).toContain('不辅助');
+    // 客户端不是判定方：文案须点明服务端为准，不得暗示本机已拦下。
+    expect(global.textContent).toContain('服务端');
+  });
+
+  /**
+   * 本机效果的枚举必须与实际发生的事一一对应：漏掉一条，用户就会按「只有这三件事」
+   * 去理解名单，而第四件事（自动化到点静默不跑）恰好发生在他看不见的地方。
+   */
+  it('本机效果写全四条：不激活 / 不上报上下文 / 不进页面清单 / 自动化到点不跑且不发提示（N2-COPY-03）', async () => {
+    const harness = createHarness();
+    await mounted(harness);
+    const global = panel(harness.root, 'global');
+    const text = global.textContent ?? '';
+    expect(text).toContain('不再激活会话');
+    expect(text).toContain('不再上报页面上下文');
+    expect(text).toContain('页面清单');
+    expect(text).toContain('自动化');
+    expect(text).toContain('不发提示');
+  });
+
+  // D-1 裁定「配置读取失败那一轮 fail-open」：无条件句会让用户以为名单是绝对保证。
+  it('承诺带前提：配置读取失败的那一轮退回照常处理（N2-COPY-04）', async () => {
+    const harness = createHarness();
+    await mounted(harness);
+    const text = panel(harness.root, 'global').textContent ?? '';
+    expect(text).toContain('配置读取失败');
+    expect(text).toContain('照常');
+  });
+
+  it('文案与真实同步时机一致：承诺保存后即刻生效，不推给浏览器重启', async () => {
+    const harness = createHarness();
+    await mounted(harness);
+    const global = panel(harness.root, 'global');
+    expect(global.textContent).not.toContain('浏览器重启');
+    expect(global.textContent).toContain('保存成功后');
+  });
+
+  it('保存成功即把名单镜像进本机（背地里的 background 激活判定据此立刻收紧）', async () => {
+    const mirrored: string[][] = [];
+    const harness = createHarness({ saveSiteDenylist: async (entries) => void mirrored.push(entries) });
+    const handle = await mounted(harness);
+    addEntry(harness.root, 'https://bank.example');
+    await handle.save();
+    expect(mirrored).toEqual([['https://bank.example']]);
+  });
+
+  it('本机镜像只在 PUT 成功后落盘：保存失败不得让本机先挡住站点（异常）', async () => {
+    const mirrored: string[][] = [];
+    const harness = createHarness({ saveSiteDenylist: async (entries) => void mirrored.push(entries) });
+    const handle = await mounted(harness);
+    addEntry(harness.root, 'https://bank.example');
+    harness.putQueue.push({ status: 503, body: { error: '用户配置存储不可用' } });
+    await handle.save();
+    expect(mirrored).toEqual([]);
+
+    await handle.save();
+    expect(mirrored).toEqual([['https://bank.example']]);
+  });
+
+  it('删空名单同样镜像回本机（否则本机会一直挡着已被移出名单的站点，边界）', async () => {
+    const mirrored: string[][] = [];
+    const harness = createHarness({ saveSiteDenylist: async (entries) => void mirrored.push(entries) });
+    harness.stored.overlay = {
+      ...overlayFixture(),
+      packs: { '*': { siteDenylist: ['https://bank.example'] } },
+    };
+    const handle = await mounted(harness);
+    harness.root.querySelector<HTMLButtonElement>('.za-cc-site-deny-remove')!.click();
+    await handle.save();
+    expect(mirrored).toEqual([[]]);
+  });
+
+  it('服务端已有条目逐条回显（正常）', async () => {
+    const harness = createHarness();
+    harness.stored.overlay = {
+      ...overlayFixture(),
+      packs: { '*': { siteDenylist: ['https://bank.example', 'https://*.corp.example'] } },
+    };
+    await mounted(harness);
+    expect(denyEntries(harness.root)).toEqual(['https://bank.example', 'https://*.corp.example']);
+  });
+
+  it('新增条目写入 "*" 作用域 siteDenylist（正常）', async () => {
+    const harness = createHarness();
+    const handle = await mounted(harness);
+    addEntry(harness.root, 'https://bank.example');
+    expect(denyEntries(harness.root)).toEqual(['https://bank.example']);
+
+    await handle.save();
+    const overlay = lastPutOverlay(harness);
+    expect(overlay.packs['*']?.siteDenylist).toEqual(['https://bank.example']);
+    // 同轮既有的全局规则不得被这次编辑吞掉。
+    expect(overlay.packs['*']?.rules?.[0]?.id).toBe('r-global');
+  });
+
+  it('删除条目从 PUT 移除；删空即省略该键（契约 minItems=1，空数组会被写入期拒收）', async () => {
+    const harness = createHarness();
+    harness.stored.overlay = {
+      ...overlayFixture(),
+      packs: { '*': { siteDenylist: ['https://bank.example', 'https://shop.example'] } },
+    };
+    const handle = await mounted(harness);
+    harness.root
+      .querySelector<HTMLButtonElement>('.za-cc-site-deny-entry[data-za-site-deny="https://bank.example"] .za-cc-site-deny-remove')!
+      .click();
+    await handle.save();
+    expect(lastPutOverlay(harness).packs['*']?.siteDenylist).toEqual(['https://shop.example']);
+
+    for (const remove of [
+      ...harness.root.querySelectorAll<HTMLButtonElement>('.za-cc-site-deny-remove'),
+    ]) {
+      remove.click();
+    }
+    await handle.save();
+    expect(lastPutOverlay(harness).packs['*']?.siteDenylist).toBeUndefined();
+  });
+
+  it('非法文法与全通配当场拒绝，不进 PUT（异常：黑名单里的 "*" 等于关停整个产品）', async () => {
+    const harness = createHarness();
+    const handle = await mounted(harness);
+    addEntry(harness.root, '*');
+    expect(denyEntries(harness.root)).toEqual([]);
+    expect(status(harness.root)).toContain('格式');
+
+    addEntry(harness.root, 'bank.example');
+    expect(denyEntries(harness.root)).toEqual([]);
+
+    await handle.save();
+    expect(lastPutOverlay(harness).packs['*']?.siteDenylist).toBeUndefined();
+  });
+
+  it('重复条目不重复入列（契约 uniqueItems，边界）', async () => {
+    const harness = createHarness();
+    await mounted(harness);
+    addEntry(harness.root, 'https://bank.example');
+    addEntry(harness.root, 'https://bank.example');
+    expect(denyEntries(harness.root)).toEqual(['https://bank.example']);
+    expect(status(harness.root)).toContain('已在名单');
+  });
+
+  it('409 → 名单回到服务端最新态并提示复核，不静默覆盖别处的编辑（异常：乐观并发）', async () => {
+    const harness = createHarness();
+    const handle = await mounted(harness);
+    addEntry(harness.root, 'https://bank.example');
+    harness.putQueue.push({ status: 409, body: { error: 'revision 不符' } });
+    harness.stored.overlay = {
+      ...overlayFixture(),
+      packs: { '*': { siteDenylist: ['https://elsewhere.example'] } },
+    };
+    harness.stored.revision = 'rev-9';
+
+    await handle.save();
+    expect(status(harness.root)).toContain('配置已在别处更新');
+    expect(denyEntries(harness.root)).toEqual(['https://elsewhere.example']);
+
+    await handle.save();
+    expect(new URL(putCalls(harness)[1]!.url).searchParams.get('expectedRevision')).toBe('rev-9');
+    expect(lastPutOverlay(harness).packs['*']?.siteDenylist).toEqual(['https://elsewhere.example']);
   });
 });
 

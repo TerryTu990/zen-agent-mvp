@@ -84,8 +84,6 @@ export interface ServerOptions {
   userConfigDir?: string;
   /** 配置草稿（teach 流）有效期毫秒；缺省 10 分钟。 */
   configDraftTtlMs?: number;
-  /** generic 兜底 pack 的服务端准入名单（origin 精确值闭集）；缺省/空 = generic 永不激活（fail-closed，U7）。 */
-  genericAllowlist?: string[];
   /** ADR-016：运营者预批准的服务端有界履约策略；不从客户端或模型上下文接受。 */
   fulfillmentPolicies?: BoundedFulfillmentPolicy[];
   /** Phase 3：可选飞书轻量卡密库存；未配置时不组装连接器，既有人工 intent 测试路径不变。 */
@@ -120,32 +118,6 @@ export function parseFulfillmentProductKeys(raw: string | undefined): Record<str
     result[normalizedId] = normalizedKey;
   }
   return result;
-}
-
-/**
- * ZA_GENERIC_ALLOWLIST 解析：逗号分隔，三种条目形态——`*`（任意站点）、`scheme://*.host`（该域及其子域）、
- * origin 精确值。空/未设 → []（generic 永不激活）；非法条目抛错（启动期 fail-fast）。
- * www/裸域互认在比对点归一（canonicalizeOrigin），此处只验值形。
- */
-export function parseGenericAllowlist(raw: string | undefined): string[] {
-  const entries = (raw ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
-  for (const entry of entries) {
-    if (entry === '*') continue;
-    let valid = false;
-    try {
-      // `scheme://*.host` 的 `*.` 不是合法 hostname，验值形时以占位 label 代入再校验其余部分。
-      const probe = entry.replace('://*.', '://wildcard-probe.');
-      valid = new URL(probe).origin === probe;
-    } catch {
-      valid = false;
-    }
-    if (!valid) {
-      throw new Error(
-        `ZA_GENERIC_ALLOWLIST 含非法条目：${entry}（须为 * / scheme://*.host / scheme://host[:port]，逗号分隔）`,
-      );
-    }
-  }
-  return entries;
 }
 
 export interface ServerPorts {
@@ -295,7 +267,6 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     compressThreshold: options.compressThreshold ?? 0.6,
     corsOrigin: options.corsOrigin ?? '*',
     applicationsDir: options.applicationsDir ?? '.za/applications',
-    genericAllowlist: options.genericAllowlist ?? [],
     activationJwtSecret: options.jwtSecret,
     ...(userConfig !== undefined ? { userConfig } : {}),
   });

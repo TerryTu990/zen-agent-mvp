@@ -1,6 +1,6 @@
 /**
- * generic-web 兜底 pack 的服务端准入闭环（U7 fail-closed）：
- * 活跃页 origin 在准入名单内才激活 generic pack；名单外/未设名单/取不到 origin 一律回落仅基座。
+ * generic-web 兜底 pack 的服务端装配闭环：无站点 pack 命中且活跃页是 http/https 即无条件激活 generic pack；
+ * 静默页（非 http/https、无活跃页）回落仅基座——那是协议判定，不是部署级名单。
  * 激活后 packOrigin 以活跃页 origin 动态绑定——快照 origin 越界由 toolgate deny，
  * every-call 工具逐批独立确认、授权不复用。用 acceptance 快照（含 generic-web pack）驱动。
  */
@@ -11,13 +11,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SignJWT } from 'jose';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  parseFulfillmentProductKeys,
-  parseGenericAllowlist,
-  startServer,
-  type RunningServer,
-} from '../src/index.js';
-import { canonicalizeOrigin, genericAllowlistAdmits, isSilentPageUrl } from '../src/gateway.js';
+import { parseFulfillmentProductKeys, startServer, type RunningServer } from '../src/index.js';
+import { isSilentPageUrl } from '../src/gateway.js';
 
 const repoRoot = new URL('../../../', import.meta.url).pathname;
 const snapshotRoot = join(repoRoot, 'examples/acceptance');
@@ -32,6 +27,8 @@ const key = new TextEncoder().encode(JWT_SECRET);
 const GENERIC_ORIGIN = 'http://127.0.0.1:4173';
 const GENERIC_URL = `${GENERIC_ORIGIN}/order-list.html`;
 const OUTSIDE_URL = 'https://outside.example/page';
+/** 静默页（非 http/https）：generic 不绑非 http/https origin，回落仅基座。 */
+const SILENT_URL = 'chrome://newtab/';
 const TOOL_BROWSE = 'browse.page-operate';
 /** 送达 LLM 的 wire 名（toolId 的点替换为 '__'）。 */
 const TOOL_BROWSE_WIRE = 'browse__page-operate';
@@ -55,9 +52,7 @@ interface MockLlmHandle {
 
 let mock: MockLlmHandle;
 let server: RunningServer;
-let bareServer: RunningServer;
 let baseUrl = '';
-let bareBaseUrl = '';
 
 beforeAll(async () => {
   const mockLlmUrl = pathToFileURL(join(repoRoot, 'scripts/mock-llm/server.mjs')).href;
@@ -67,7 +62,7 @@ beforeAll(async () => {
   mock = await mockModule.startMockLlm({ port: 0 });
   process.env['ZA_LLM_BASE_URL'] = `http://127.0.0.1:${mock.port}/v1`;
   process.env['ZA_LLM_MODEL'] = 'mock-model';
-  const options = {
+  server = await startServer({
     port: 0,
     jwtSecret: JWT_SECRET,
     signingSecret: SIGNING_SECRET,
@@ -77,16 +72,12 @@ beforeAll(async () => {
     auditSinkPath: AUDIT_SINK,
     allowedProviders: ['openai-compatible'],
     heartbeatMs: 60_000,
-  };
-  server = await startServer({ ...options, genericAllowlist: [GENERIC_ORIGIN] });
-  bareServer = await startServer(options);
+  });
   baseUrl = `http://127.0.0.1:${server.port}`;
-  bareBaseUrl = `http://127.0.0.1:${bareServer.port}`;
 });
 
 afterAll(async () => {
   await server?.close();
-  await bareServer?.close();
   await mock?.close();
 });
 
@@ -304,78 +295,6 @@ async function approveAndFinish(
   return instr;
 }
 
-describe('parseGenericAllowlist（ZA_GENERIC_ALLOWLIST 解析）', () => {
-  it('空/未设 → []（generic 永不激活）', () => {
-    expect(parseGenericAllowlist(undefined)).toEqual([]);
-    expect(parseGenericAllowlist('')).toEqual([]);
-  });
-
-  it('逗号分隔 + 空白容忍 → origin 精确值列表', () => {
-    expect(parseGenericAllowlist(' http://127.0.0.1:8080 , https://example.com ')).toEqual([
-      'http://127.0.0.1:8080',
-      'https://example.com',
-    ]);
-  });
-
-  it('非 origin 精确值（带路径/非 URL）→ 启动期抛错 fail-fast', () => {
-    expect(() => parseGenericAllowlist('https://example.com/')).toThrow(/ZA_GENERIC_ALLOWLIST/);
-    expect(() => parseGenericAllowlist('not-a-url')).toThrow(/ZA_GENERIC_ALLOWLIST/);
-  });
-
-  it('通配条目：`*` 与 scheme://*.host 均为合法值形', () => {
-    expect(parseGenericAllowlist('*')).toEqual(['*']);
-    expect(parseGenericAllowlist('https://*.example.com, https://exact.example')).toEqual([
-      'https://*.example.com',
-      'https://exact.example',
-    ]);
-  });
-
-  it('通配形似但非法（缺 scheme / 带路径 / 裸 *.host）→ 抛错', () => {
-    expect(() => parseGenericAllowlist('*.example.com')).toThrow(/ZA_GENERIC_ALLOWLIST/);
-    expect(() => parseGenericAllowlist('https://*.example.com/')).toThrow(/ZA_GENERIC_ALLOWLIST/);
-  });
-});
-
-describe('genericAllowlistAdmits（通配准入比对）', () => {
-  it('`*` 放行任意可解析 origin', () => {
-    expect(genericAllowlistAdmits('*', 'https://anything.example')).toBe(true);
-    expect(genericAllowlistAdmits('*', 'http://127.0.0.1:9999')).toBe(true);
-  });
-
-  it('scheme://*.host 放行该域与任意子域，scheme 仍须精确', () => {
-    expect(genericAllowlistAdmits('https://*.example.com', 'https://example.com')).toBe(true);
-    expect(genericAllowlistAdmits('https://*.example.com', 'https://app.example.com')).toBe(true);
-    expect(genericAllowlistAdmits('https://*.example.com', 'https://a.b.example.com')).toBe(true);
-    expect(genericAllowlistAdmits('https://*.example.com', 'http://app.example.com')).toBe(false);
-  });
-
-  it('子域通配不误放行同后缀的相邻域名', () => {
-    expect(genericAllowlistAdmits('https://*.example.com', 'https://notexample.com')).toBe(false);
-    expect(genericAllowlistAdmits('https://*.example.com', 'https://example.com.evil.test')).toBe(
-      false,
-    );
-  });
-
-  it('非通配条目沿用 canonicalizeOrigin 精确比对；origin 不可解析一律不放行', () => {
-    expect(genericAllowlistAdmits('https://www.example.com', 'https://example.com')).toBe(true);
-    expect(genericAllowlistAdmits('https://example.com', 'https://m.example.com')).toBe(false);
-    expect(genericAllowlistAdmits('https://*.example.com', 'not-a-url')).toBe(false);
-  });
-});
-
-describe('canonicalizeOrigin（准入比对 www/裸域互认）', () => {
-  it('剥一层前导 www.，scheme/port 保留', () => {
-    expect(canonicalizeOrigin('https://www.example.com')).toBe('https://example.com');
-    expect(canonicalizeOrigin('https://example.com')).toBe('https://example.com');
-    expect(canonicalizeOrigin('http://www.example.com:8080')).toBe('http://example.com:8080');
-  });
-
-  it('非 www 子域不互认；解析失败原样返回', () => {
-    expect(canonicalizeOrigin('https://m.example.com')).toBe('https://m.example.com');
-    expect(canonicalizeOrigin('not-a-url')).toBe('not-a-url');
-  });
-});
-
 describe('isSilentPageUrl（静默页判定）', () => {
   it('空串 / 不可解析 / 非 http-https scheme 一律静默', () => {
     expect(isSilentPageUrl('')).toBe(true);
@@ -392,8 +311,8 @@ describe('isSilentPageUrl（静默页判定）', () => {
   });
 });
 
-describe('generic 准入判定（服务端 fail-closed，U7）', () => {
-  it('活跃页 origin 在名单内 → 激活 generic-web/browse，工具面含 browse.page-operate', async () => {
+describe('generic 装配判定（http/https 无条件激活；静默页仍回落仅基座）', () => {
+  it('活跃页是 http/https → 激活 generic-web/browse，工具面含 browse.page-operate', async () => {
     const token = await signToken();
     const sessionId = await createSession(baseUrl, token);
     const report = await postFrame(baseUrl, token, sessionId, {
@@ -408,7 +327,7 @@ describe('generic 准入判定（服务端 fail-closed，U7）', () => {
     expect(injection['toolIds']).toContain(TOOL_BROWSE);
   });
 
-  it('活跃页 origin 不在名单内 → 回落仅基座（packId=null、无工具面）', async () => {
+  it('任意站点 origin（无任何部署侧准入配置）→ 同样激活 generic-web/browse', async () => {
     const token = await signToken();
     const sessionId = await createSession(baseUrl, token);
     await postFrame(baseUrl, token, sessionId, {
@@ -417,12 +336,12 @@ describe('generic 准入判定（服务端 fail-closed，U7）', () => {
       url: OUTSIDE_URL,
     });
     const injection = await getInjection(baseUrl, token, sessionId);
-    expect(injection['packId']).toBeNull();
-    expect(injection['featureId']).toBeNull();
-    expect(injection['toolIds']).toEqual([]);
+    expect(injection['packId']).toBe('generic-web');
+    expect(injection['featureId']).toBe('browse');
+    expect(injection['toolIds']).toContain(TOOL_BROWSE);
   });
 
-  it('仅基座回合的 system 附注当前站点上下文（防从站点索引臆断所在站点）', async () => {
+  it('仅基座回合（静默页）的 system 附注仅基座上下文（防从站点索引臆断所在站点）', async () => {
     const token = await signToken();
     const sessionId = await createSession(baseUrl, token);
     const sse = await openSse(baseUrl, token, sessionId);
@@ -430,7 +349,7 @@ describe('generic 准入判定（服务端 fail-closed，U7）', () => {
       await postFrame(baseUrl, token, sessionId, {
         type: 'context-report',
         sessionId,
-        url: OUTSIDE_URL,
+        url: SILENT_URL,
       });
       await postFrame(baseUrl, token, sessionId, {
         type: 'user-message',
@@ -449,53 +368,21 @@ describe('generic 准入判定（服务端 fail-closed，U7）', () => {
     }
   });
 
-  it('名单配 www 形态可放行裸域页面（互认），非 www 子域仍拒', async () => {
-    const wwwServer = await startServer({
-      port: 0,
-      jwtSecret: JWT_SECRET,
-      signingSecret: SIGNING_SECRET,
-      issAllowlist: [ISS],
-      snapshotRoot,
-      systemPromptPath,
-      auditSinkPath: AUDIT_SINK,
-      allowedProviders: ['openai-compatible'],
-      heartbeatMs: 60_000,
-      genericAllowlist: ['https://www.canon-test.example'],
-    });
-    const wwwBase = `http://127.0.0.1:${wwwServer.port}`;
-    try {
-      const token = await signToken();
-      const probe = async (url: string): Promise<unknown> => {
-        const sessionId = await createSession(wwwBase, token);
-        await postFrame(wwwBase, token, sessionId, { type: 'context-report', sessionId, url });
-        return (await getInjection(wwwBase, token, sessionId))['packId'];
-      };
-      expect(await probe('https://canon-test.example/page')).toBe('generic-web');
-      expect(await probe('https://www.canon-test.example/page')).toBe('generic-web');
-      expect(await probe('https://m.canon-test.example/page')).toBeNull();
-    } finally {
-      await wwwServer.close();
-    }
-  });
-
-  it('未设名单的 server：名单内同 URL 也永不激活 generic', async () => {
+  it('静默页（chrome://newtab）→ 不把 generic pack 绑到非 http/https origin，回落仅基座', async () => {
     const token = await signToken();
-    const sessionId = await createSession(bareBaseUrl, token);
-    const report = await fetch(
-      `${bareBaseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/frames`,
-      {
-        method: 'POST',
-        headers: authHeaders(token, { 'content-type': 'application/json' }),
-        body: JSON.stringify({ type: 'context-report', sessionId, url: GENERIC_URL }),
-      },
-    );
-    expect(report.status).toBe(204);
-    const injection = await getInjection(bareBaseUrl, token, sessionId);
+    const sessionId = await createSession(baseUrl, token);
+    await postFrame(baseUrl, token, sessionId, {
+      type: 'context-report',
+      sessionId,
+      url: SILENT_URL,
+    });
+    const injection = await getInjection(baseUrl, token, sessionId);
     expect(injection['packId']).toBeNull();
     expect(injection['featureId']).toBeNull();
+    expect(injection['toolIds']).toEqual([]);
   });
 
-  it('无活跃页（未上报 context）→ 取不到 origin，fail-closed 仅基座', async () => {
+  it('无活跃页（未上报 context）→ 按静默页判定回落仅基座', async () => {
     const token = await signToken();
     const sessionId = await createSession(baseUrl, token);
     const injection = await getInjection(baseUrl, token, sessionId);
@@ -526,84 +413,42 @@ async function toolNamesSentToLlm(url: string | null, base = baseUrl): Promise<s
   return (request.tools ?? []).map((tool) => tool.function?.name ?? tool.name ?? '');
 }
 
-describe('open_url 注入门（与 generic 准入同门）', () => {
-  it('generic 激活回合：送达 LLM 的工具面含 open_url', async () => {
+describe('open_url 注入门（与 generic 装配同门）', () => {
+  it('generic 激活回合：送达 LLM 的工具面含 open_url 与 pack 工具', async () => {
     const toolNames = await toolNamesSentToLlm(GENERIC_URL);
     expect(toolNames).toContain('open_url');
+    expect(toolNames).toContain(TOOL_BROWSE_WIRE);
   });
 
-  it('活跃页 origin 不在准入名单 → 仅基座回合，工具面不含 open_url', async () => {
+  it('任意站点 origin 同样激活 generic → 工具面含 open_url', async () => {
     const toolNames = await toolNamesSentToLlm(OUTSIDE_URL);
-    expect(toolNames).not.toContain('open_url');
-  });
-
-  it('静默页（无 context / chrome://newtab）+ 名单不含 `*` → 工具面不含 open_url', async () => {
-    expect(await toolNamesSentToLlm(null)).not.toContain('open_url');
-    expect(await toolNamesSentToLlm('chrome://newtab/')).not.toContain('open_url');
+    expect(toolNames).toContain('open_url');
   });
 });
 
-describe('静默页冷启动 open_url 注入门（名单含字面 `*`）', () => {
-  let starServer: RunningServer;
-  let starBase = '';
-
-  beforeAll(async () => {
-    starServer = await startServer({
-      port: 0,
-      jwtSecret: JWT_SECRET,
-      signingSecret: SIGNING_SECRET,
-      issAllowlist: [ISS],
-      snapshotRoot,
-      systemPromptPath,
-      auditSinkPath: AUDIT_SINK,
-      allowedProviders: ['openai-compatible'],
-      heartbeatMs: 60_000,
-      genericAllowlist: ['*'],
-    });
-    starBase = `http://127.0.0.1:${starServer.port}`;
-  });
-
-  afterAll(async () => {
-    await starServer?.close();
-  });
-
+describe('静默页冷启动 open_url 注入门（无条件放行，仅基座装配不变）', () => {
   it('静默页（未上报 context）：保持仅基座装配（packId=null、无 pack 工具），但工具面含 open_url', async () => {
     const token = await signToken();
-    const sessionId = await createSession(starBase, token);
-    const injection = await getInjection(starBase, token, sessionId);
+    const sessionId = await createSession(baseUrl, token);
+    const injection = await getInjection(baseUrl, token, sessionId);
     expect(injection['packId']).toBeNull();
     expect(injection['toolIds']).toEqual([]);
-    const toolNames = await toolNamesSentToLlm(null, starBase);
+    const toolNames = await toolNamesSentToLlm(null);
     expect(toolNames).toContain('open_url');
-    expect(toolNames).not.toContain('browse__page-operate');
+    expect(toolNames).not.toContain(TOOL_BROWSE_WIRE);
   });
 
   it('静默页（chrome://newtab 上报）：不把 generic pack 绑到非 http/https origin，仍只注入 open_url', async () => {
-    const token = await signToken();
-    const sessionId = await createSession(starBase, token);
-    await postFrame(starBase, token, sessionId, {
-      type: 'context-report',
-      sessionId,
-      url: 'chrome://newtab/',
-    });
-    const injection = await getInjection(starBase, token, sessionId);
-    expect(injection['packId']).toBeNull();
-    expect(injection['toolIds']).toEqual([]);
-    const toolNames = await toolNamesSentToLlm('chrome://newtab/', starBase);
+    const toolNames = await toolNamesSentToLlm(SILENT_URL);
     expect(toolNames).toContain('open_url');
-    expect(toolNames).not.toContain('browse__page-operate');
-  });
-
-  it('http 页既有路径回归：`*` 名单下照常激活 generic pack，open_url 与 pack 工具同在', async () => {
-    const toolNames = await toolNamesSentToLlm(GENERIC_URL, starBase);
-    expect(toolNames).toContain('open_url');
-    expect(toolNames).toContain('browse__page-operate');
+    expect(toolNames).not.toContain(TOOL_BROWSE_WIRE);
   });
 });
 
 /**
- * open_url 全链路专用脚本化 mock LLM：首轮（无 tool 观察）产出 open_url 调用；
- * 回喂轮把 observation 原样回显（MOCK-OPEN-OBS 前缀），供机械断言回喂内容与落点受限附注。
+ * open_url 全链路专用脚本化 mock LLM：历史中尚无 tool 观察时产出 open_url 调用；
+ * 回喂轮把最后一条 observation 原样回显（MOCK-OPEN-OBS 前缀），供机械断言回喂内容。
+ * 按「历史含 tool 观察」而非「末条是 tool」判轮次：落点换 pack 时观测后还会追加站点边界标记（user 角色）。
  */
 function startScriptedOpenUrlMock(targetUrl: string): Promise<{ port: number; close(): Promise<void> }> {
   const httpServer = createServer((req, res) => {
@@ -623,7 +468,7 @@ function startScriptedOpenUrlMock(targetUrl: string): Promise<{ port: number; cl
         body = {};
       }
       const messages = body.messages ?? [];
-      const last = messages[messages.length - 1];
+      const lastObservation = [...messages].reverse().find((m) => m.role === 'tool');
       res.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache',
@@ -634,10 +479,10 @@ function startScriptedOpenUrlMock(targetUrl: string): Promise<{ port: number; cl
         res.write(`data: ${JSON.stringify({ ...base, choices: [choice] })}\n\n`);
       };
       send({ index: 0, delta: { role: 'assistant' }, finish_reason: null });
-      if (last?.role === 'tool') {
+      if (lastObservation !== undefined) {
         send({
           index: 0,
-          delta: { content: `MOCK-OPEN-OBS ${String(last.content ?? '')}` },
+          delta: { content: `MOCK-OPEN-OBS ${String(lastObservation.content ?? '')}` },
           finish_reason: null,
         });
         send({ index: 0, delta: {}, finish_reason: 'stop' });
@@ -699,7 +544,6 @@ describe('generic open_url 全链路（任意 http/https 开页，每次确认�
       auditSinkPath: AUDIT_SINK,
       allowedProviders: ['openai-compatible'],
       heartbeatMs: 60_000,
-      genericAllowlist: [GENERIC_ORIGIN],
     });
     openUrlBase = `http://127.0.0.1:${openUrlServer.port}`;
   });
@@ -710,7 +554,7 @@ describe('generic open_url 全链路（任意 http/https 开页，每次确认�
     if (prevBaseUrl !== undefined) process.env['ZA_LLM_BASE_URL'] = prevBaseUrl;
   });
 
-  it('调用 → hitl 确认 → 单步 navigate 签名指令 → {url} 结果回收 → observation 回喂（落点无 pack 附注受限提示）', async () => {
+  it('调用 → hitl 确认 → 单步 navigate 签名指令 → {url} 结果回收 → observation 回喂（落点按 generic 重绑）', async () => {
     const token = await signToken();
     const sessionId = await createSession(openUrlBase, token);
     const sse = await openSse(openUrlBase, token, sessionId);
@@ -756,7 +600,10 @@ describe('generic open_url 全链路（任意 http/https 开页，每次确认�
           .join('');
       await sse.waitFor(() => joined().includes('MOCK-OPEN-OBS'));
       expect(joined()).toContain(OPEN_TARGET);
-      expect(joined()).toContain('落点站点未安装专属配置');
+      // 落点是 http/https：generic 无条件激活并按落点 origin 重绑围栏，不再附「未安装专属配置」。
+      expect(joined()).not.toContain('落点站点未安装专属配置');
+      const injection = await getInjection(openUrlBase, token, sessionId);
+      expect(injection['packId']).toBe('generic-web');
     } finally {
       sse.close();
     }
@@ -766,17 +613,15 @@ describe('generic open_url 全链路（任意 http/https 开页，每次确认�
 describe('静默页冷启动 open_url 调用门（与注入门共用同一谓词）', () => {
   const OPEN_TARGET = 'https://coldstart.example/article?id=1';
   let scripted: { port: number; close(): Promise<void> };
-  let starServer: RunningServer;
-  let noStarServer: RunningServer;
-  let starBase = '';
-  let noStarBase = '';
+  let coldServer: RunningServer;
+  let coldBase = '';
   let prevBaseUrl: string | undefined;
 
   beforeAll(async () => {
     scripted = await startScriptedOpenUrlMock(OPEN_TARGET);
     prevBaseUrl = process.env['ZA_LLM_BASE_URL'];
     process.env['ZA_LLM_BASE_URL'] = `http://127.0.0.1:${scripted.port}/v1`;
-    const options = {
+    coldServer = await startServer({
       port: 0,
       jwtSecret: JWT_SECRET,
       signingSecret: SIGNING_SECRET,
@@ -786,26 +631,22 @@ describe('静默页冷启动 open_url 调用门（与注入门共用同一谓词
       auditSinkPath: AUDIT_SINK,
       allowedProviders: ['openai-compatible'],
       heartbeatMs: 60_000,
-    };
-    starServer = await startServer({ ...options, genericAllowlist: ['*'] });
-    noStarServer = await startServer({ ...options, genericAllowlist: [GENERIC_ORIGIN] });
-    starBase = `http://127.0.0.1:${starServer.port}`;
-    noStarBase = `http://127.0.0.1:${noStarServer.port}`;
+    });
+    coldBase = `http://127.0.0.1:${coldServer.port}`;
   });
 
   afterAll(async () => {
-    await starServer?.close();
-    await noStarServer?.close();
+    await coldServer?.close();
     await scripted?.close();
     if (prevBaseUrl !== undefined) process.env['ZA_LLM_BASE_URL'] = prevBaseUrl;
   });
 
-  it('名单含 `*`：静默页调用过门直到 HITL，批准后签发单步 navigate 指令', async () => {
+  it('静默页调用过门直到 HITL，批准后签发单步 navigate 指令', async () => {
     const token = await signToken();
-    const sessionId = await createSession(starBase, token);
-    const sse = await openSse(starBase, token, sessionId);
+    const sessionId = await createSession(coldBase, token);
+    const sse = await openSse(coldBase, token, sessionId);
     try {
-      await postFrame(starBase, token, sessionId, {
+      await postFrame(coldBase, token, sessionId, {
         type: 'user-message',
         sessionId,
         text: '帮我打开那篇外部文章',
@@ -814,7 +655,7 @@ describe('静默页冷启动 open_url 调用门（与注入门共用同一谓词
       const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
       expect(hitl['toolId']).toBe('open_url');
       expect((hitl['params'] as Record<string, unknown>)['url']).toBe(OPEN_TARGET);
-      await postFrame(starBase, token, sessionId, {
+      await postFrame(coldBase, token, sessionId, {
         type: 'hitl-decision',
         sessionId,
         hitlId: String(hitl['hitlId']),
@@ -827,29 +668,6 @@ describe('静默页冷启动 open_url 调用门（与注入门共用同一谓词
         steps: [{ action: 'navigate', url: OPEN_TARGET }],
       });
       expect(instr['signature']).toBeTruthy();
-    } finally {
-      sse.close();
-    }
-  });
-
-  it('名单不含 `*`：静默页调用被拒（无 HITL、无签发），回「该操作暂未支持」', async () => {
-    const token = await signToken();
-    const sessionId = await createSession(noStarBase, token);
-    const sse = await openSse(noStarBase, token, sessionId);
-    try {
-      await postFrame(noStarBase, token, sessionId, {
-        type: 'user-message',
-        sessionId,
-        text: '帮我打开那篇外部文章',
-      });
-      const joined = (): string =>
-        sse.frames
-          .filter((f) => f['type'] === 'text-delta')
-          .map((f) => String(f['delta']))
-          .join('');
-      await sse.waitFor(() => joined().includes('该操作暂未支持'));
-      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
-      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
     } finally {
       sse.close();
     }
@@ -1069,8 +887,6 @@ describe('site_navigate 落地后围栏重校验（PC-GOV-04：捕 302 逃逸）
       auditSinkPath: AUDIT_SINK,
       allowedProviders: ['openai-compatible'],
       heartbeatMs: 60_000,
-      // 落点 origin 在 generic 准入名单内：不做落地重校验时它会被重绑为 generic pack 的围栏。
-      genericAllowlist: [GENERIC_ORIGIN],
     });
     navBase = `http://127.0.0.1:${navServer.port}`;
   });

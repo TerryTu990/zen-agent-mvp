@@ -22,8 +22,8 @@ const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
 // 装配快照根（server 载入）+ pack 级评测发现根（ADR-013 §4：扫 packs 各 eval/scenarios.json 逐 pack 跑）。
 // 四根分阶段各起一台 server（同端口先后独占）——各根的 pack origin 互不相同，须独立载入。当前分布：
 //   host-demo   evals/scenarios.json 的 17 条主场景（该根下无 pack 级 eval 集）
-//   acceptance  5 个验收 pack 共 38 条：codeflow-console 2 / generic-web 9 / mail-126 3 / xianyu-seller 19 / zhipin 5
-//   assets      生产 pack generic-web 9 条
+//   acceptance  5 个验收 pack 共 39 条：codeflow-console 2 / generic-web 10 / mail-126 3 / xianyu-seller 19 / zhipin 5
+//   assets      生产 pack generic-web 10 条
 //   site-packs  已下线站点包 25 条：xianyu-seller 18 / yinxiang 7
 const SNAPSHOT_ROOT = join(REPO_ROOT, 'examples', 'host-demo', 'config');
 const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
@@ -188,7 +188,6 @@ function startServer(snapshotRoot = SNAPSHOT_ROOT) {
       ZA_LLM_MODEL: 'mock-model',
       ZA_AUDIT_SINK: AUDIT_SINK_PATH,
       ZA_USER_CONFIG_DIR: USER_CONFIG_DIR,
-      ZA_GENERIC_ALLOWLIST: HOST_BASE,
     },
   });
   child.stdout.on('data', (d) => process.stdout.write(`[server] ${d}`));
@@ -729,12 +728,17 @@ function discoverPackScenarios(root) {
 
 /**
  * pack 级「装配」维度（ADR-013 §4 验收）：只经 /injection 自省端口断言装配结果，不驱动 LLM。
- * scenario.url 为完整 URL（含 pack origin），context-report 后拉取注入描述断言 featureId 与工具面投影
+ * scenario.url 为完整 URL（含 pack origin），context-report 后拉取注入描述断言 packId/featureId 与工具面投影
  * （toolIncludes 须命中、toolExcludesPrefixes 前缀不得出现——后者证跨 pack 隔离与 fail-safe 回落）。
+ * packId 断言用于"站点 pack 不命中→落到哪"的判别：仅基座（null）与通用兜底包是两种不同结局，
+ * 只断 featureId 分不开。
  */
 function judgeInjection(expect, injection) {
   const toolIds = Array.isArray(injection.toolIds) ? injection.toolIds : [];
   const reasons = [];
+  if ('packId' in expect && injection.packId !== expect.packId) {
+    reasons.push(`装配 packId 期望 ${JSON.stringify(expect.packId)}，实际 ${JSON.stringify(injection.packId)}`);
+  }
   if ('featureId' in expect && injection.featureId !== expect.featureId) {
     reasons.push(`装配 featureId 期望 ${JSON.stringify(expect.featureId)}，实际 ${JSON.stringify(injection.featureId)}`);
   }
@@ -752,17 +756,27 @@ function judgeInjection(expect, injection) {
   return reasons;
 }
 
+/**
+ * scenario.siteDenylist 声明本场景的前置 L2 站点黑名单：先写入 overlay 再上报页面，
+ * 断言完毕无论成败都写回空态——黑名单是 subject 级持久状态，泄漏出去会静默改变后续场景的装配面。
+ */
 async function runAssemblyInjection(scenario, token) {
   const auth = { authorization: `Bearer ${token}` };
-  const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
-  const sessionId = created.sessionId;
-  await postFrame(sessionId, token, { type: 'context-report', sessionId, url: scenario.url });
-  await sleep(100);
-  const injection = await (
-    await fetch(`${SERVER_BASE}/v1/sessions/${sessionId}/injection`, { headers: auth })
-  ).json();
-  const reasons = judgeInjection(scenario.expect ?? {}, injection);
-  return { pass: reasons.length === 0, reasons };
+  const siteDenylist = scenario.siteDenylist ?? [];
+  if (siteDenylist.length > 0) await putUserConfig(token, [], siteDenylist);
+  try {
+    const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
+    const sessionId = created.sessionId;
+    await postFrame(sessionId, token, { type: 'context-report', sessionId, url: scenario.url });
+    await sleep(100);
+    const injection = await (
+      await fetch(`${SERVER_BASE}/v1/sessions/${sessionId}/injection`, { headers: auth })
+    ).json();
+    const reasons = judgeInjection(scenario.expect ?? {}, injection);
+    return { pass: reasons.length === 0, reasons };
+  } finally {
+    if (siteDenylist.length > 0) await putUserConfig(token, []);
+  }
 }
 
 /**
@@ -804,17 +818,18 @@ async function runHitlNoReuse(scenario, token) {
 }
 
 /**
- * 写 L2 用户配置（面板写入面）：automation 维度要先有用户自建触发器，服务端才认这个 automationId。
- * watches 为空即写回空态——跑完不给后续场景留状态（overlay 会随 subject 落盘、跨场景可见）。
+ * 写 L2 用户配置（面板写入面）：automation 维度要先有用户自建触发器，服务端才认这个 automationId；
+ * assembly 维度的站点黑名单场景要先有 globalScope.siteDenylist，服务端 compose 才会回落仅基座。
+ * 两者都为空即写回空态——跑完不给后续场景留状态（overlay 会随 subject 落盘、跨场景可见）。
  */
-async function putUserConfig(token, watches) {
+async function putUserConfig(token, watches, siteDenylist = []) {
   const res = await fetch(`${SERVER_BASE}/v1/user-config`, {
     method: 'PUT',
     headers: authHeaders(token),
     body: JSON.stringify({
       schemaVersion: 1,
       subject: { tenant: JWT_TENANT, hostUserId: JWT_HOST_USER_ID },
-      packs: {},
+      packs: siteDenylist.length > 0 ? { '*': { siteDenylist } } : {},
       ...(watches.length > 0 ? { watches } : {}),
     }),
   });
@@ -1223,8 +1238,12 @@ async function main() {
 
 // ---- --check：判据自检（PC-EVAL-05）。不起 server、不跑 LLM，纯静态+空输入推演 ----
 
-/** 哨兵注入：featureId 与工具面都取不可能命中的值，使任何真装配判据都必红。 */
-const CHECK_SENTINEL_INJECTION = { featureId: '__za-check-no-feature__', toolIds: ['__za-check-no-tool__'] };
+/** 哨兵注入：packId/featureId 与工具面都取不可能命中的值，使任何真装配判据都必红。 */
+const CHECK_SENTINEL_INJECTION = {
+  packId: '__za-check-no-pack__',
+  featureId: '__za-check-no-feature__',
+  toolIds: ['__za-check-no-tool__'],
+};
 /** 空回合结局：无文本、无引导帧、无任何下行帧（timedOut 置 false，免超时兜底判据掩盖恒真判据）。 */
 const CHECK_EMPTY_OUTCOME = { text: '', guideFrame: null, frames: [], timedOut: false };
 

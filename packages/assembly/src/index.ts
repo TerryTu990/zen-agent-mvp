@@ -30,6 +30,7 @@ import type {
   UserInjectionEntry,
   UserOverlay,
   UserOverlayEntry,
+  UserOverlayGlobalScope,
   UserOverlayPackScope,
   UserOverlayRestrictions,
   UserOverlayVerbosity,
@@ -682,6 +683,44 @@ async function readL2(
   }
 }
 
+/**
+ * origin 归一（黑名单比对用）：仅 www 与裸域互认（剥一层前导 www.），其余子域不互认——
+ * 站点常以两种形态对外服务，精确匹配会各漏一半；scheme/port 仍须精确。
+ */
+function canonicalizeOrigin(origin: string): string {
+  try {
+    const url = new URL(origin);
+    url.hostname = url.hostname.replace(/^www\./, '');
+    return url.origin;
+  } catch {
+    return origin;
+  }
+}
+
+/**
+ * L2 站点黑名单单条比对（文法与 C7 siteDenyEntry 同源）：`scheme://*.host` 命中该域及其子域
+ * （scheme 精确、不比对端口），其余按归一 origin 精确比对。文法无全通配——纵使绕过写入期校验
+ * 存下 `*`，此处也只当普通条目比对而不命中，黑名单不可能一条关停全部站点。
+ * 通配形态下 origin 不可解析（静默页/空串）即不命中。
+ */
+export function siteDenylistMatches(entry: string, origin: string): boolean {
+  const wildcard = entry.match(/^([a-z][a-z0-9+.-]*):\/\/\*\.(.+)$/i);
+  if (wildcard !== null) {
+    const [, scheme = '', suffix = ''] = wildcard;
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      return false;
+    }
+    if (parsed.protocol !== `${scheme.toLowerCase()}:`) return false;
+    const host = parsed.hostname.toLowerCase();
+    const domain = suffix.toLowerCase();
+    return host === domain || host.endsWith(`.${domain}`);
+  }
+  return canonicalizeOrigin(entry) === canonicalizeOrigin(origin);
+}
+
 const RISK_TIER_RANK: Record<RiskTier, number> = { auto: 0, hitl: 1, forbidden: 2 };
 
 function maxTier(a: RiskTier, b: RiskTier): RiskTier {
@@ -830,6 +869,7 @@ function assembleInjection(
   packId: string | null,
   featureId: string | null,
   l2?: L2Context,
+  pageOrigin?: string,
 ): AssembledInjection {
   const bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
   const l2Active = l2 !== undefined;
@@ -839,8 +879,19 @@ function assembleInjection(
       ? l2.overlay.packs[packId]
       : undefined;
   const packDisabled = (requestedScope as UserOverlayPackScope | undefined)?.enabled === false;
+  // L2 站点黑名单命中：与 enabled:false 共用同一条回落（仅基座），两者以各自标注区分归因。
+  // 读失败降级时读不到名单，故不回落——存储故障不得让治理看起来已生效（标注只随真判定产出）。
+  const siteDenied =
+    l2Active &&
+    !l2.degraded &&
+    l2.overlay !== null &&
+    pageOrigin !== undefined &&
+    ((l2.overlay.packs['*'] as UserOverlayGlobalScope | undefined)?.siteDenylist ?? []).some(
+      (entry) => siteDenylistMatches(entry, pageOrigin),
+    );
+  const baseOnlyFallback = packDisabled || siteDenied;
   const disabledPackId = packDisabled ? packId : null;
-  const activePackId = packDisabled ? null : packId;
+  const activePackId = baseOnlyFallback ? null : packId;
 
   // 站点索引跨功能稳定（不随 featureId 变），全局计算、只按当前激活 pack 标注（当前）；<2 site → null。
   const sitesIndex = buildSitesIndex(snapshot, activePackId);
@@ -939,7 +990,7 @@ function assembleInjection(
         }),
       );
     } else {
-      const restrictions = packDisabled
+      const restrictions = baseOnlyFallback
         ? undefined
         : (requestedScope as UserOverlayPackScope | undefined)?.restrictions;
       const packToolIds = new Set(
@@ -964,6 +1015,7 @@ function assembleInjection(
         ...(allInvalidRefs.length > 0 ? { invalidRefs: allInvalidRefs } : {}),
         ...(l2.stale === true ? { userConfigStale: true as const } : {}),
         ...(disabledPackId !== null ? { packDisabled: true as const, disabledPackId } : {}),
+        ...(siteDenied ? { siteDenied: true as const } : {}),
       }
     : {};
 
@@ -985,7 +1037,10 @@ function assembleInjection(
     description: {
       snapshotVersion: snapshot.version,
       packId: pack === null ? null : pack.packId,
-      featureId,
+      // 回落仅基座的轮次里本功能根本没装配：透明视图随 packId 一并置 null，
+      // 否则「本页生效」块会报一条本轮不存在的功能（R6 载体不许说谎）。
+      // 只收紧这份视图——compose 的回合归属与审计口径仍以 packDisabled/siteDenied 标注区分归因。
+      featureId: baseOnlyFallback ? null : featureId,
       blocks,
       toolIds: visibleTools.map((tool) => tool.id),
       ...(pack !== null ? { packVersion: pack.version, packSource: pack.source } : {}),
@@ -994,8 +1049,10 @@ function assembleInjection(
       ...(effectiveTools !== undefined ? { tools: structuredClone(effectiveTools) } : {}),
       ...(l2Active && l2.revision !== undefined ? { userConfigRevision: l2.revision } : {}),
       ...(disabledPackId !== null ? { disabledPackId } : {}),
-      reason:
-        disabledPackId !== null
+      // 黑名单先于关停判读：命中站点上纵使该 pack 未被关停也仍回落仅基座，站点判定才是主因。
+      reason: siteDenied
+        ? 'site-denied'
+        : disabledPackId !== null
           ? 'pack-disabled'
           : pack === null
             ? 'base-only'
@@ -1025,13 +1082,13 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
         ...(pack.generic ? { generic: true } : {}),
       };
     },
-    async compose({ packId, featureId, subject }) {
+    async compose({ packId, featureId, subject, origin }) {
       const l2 = await readL2(options.userConfigStore, subject);
-      return assembleInjection(getSnapshot(), packId, featureId, l2).compose;
+      return assembleInjection(getSnapshot(), packId, featureId, l2, origin).compose;
     },
-    async describeInjection({ packId, featureId, subject }) {
+    async describeInjection({ packId, featureId, subject, origin }) {
       const l2 = await readL2(options.userConfigStore, subject);
-      return assembleInjection(getSnapshot(), packId, featureId, l2).description;
+      return assembleInjection(getSnapshot(), packId, featureId, l2, origin).description;
     },
     async readPackDoc({ packId, docPath }): Promise<ReadPackDocResult> {
       if (packId === null) return { ok: false, error: '无激活 pack，无可读文档' };

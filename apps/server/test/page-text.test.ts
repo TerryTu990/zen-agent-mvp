@@ -68,7 +68,6 @@ beforeAll(async () => {
     auditSinkPath: AUDIT_SINK,
     allowedProviders: ['openai-compatible'],
     heartbeatMs: 60_000,
-    genericAllowlist: [GENERIC_ORIGIN],
   });
   baseUrl = `http://127.0.0.1:${server.port}`;
 });

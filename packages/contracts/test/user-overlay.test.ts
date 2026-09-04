@@ -78,6 +78,15 @@ describe('C7 user-overlay schema（adr-014 §2）', () => {
       subject,
       packs: { 'xianyu-seller': { rules: [rule] } },
     },
+    '"*" 作用域含 siteDenylist（精确 origin + 子域通配 + 带端口）': {
+      schemaVersion: 1,
+      subject,
+      packs: {
+        '*': {
+          siteDenylist: ['https://bank.example.com', 'https://*.corp.example', 'http://localhost:3000'],
+        },
+      },
+    },
   };
 
   it.each(Object.keys(validOverlays))('合法 overlay 通过校验：%s', (label) => {
@@ -94,6 +103,36 @@ describe('C7 user-overlay schema（adr-014 §2）', () => {
       schemaVersion: 1,
       subject,
       packs: { '*': { packConfig: { greeting: '您好' } } },
+    },
+    'siteDenylist 含 "*" 全通配被拒（等于关停整个产品，文法层就不给这个表达）': {
+      schemaVersion: 1,
+      subject,
+      packs: { '*': { siteDenylist: ['*'] } },
+    },
+    'siteDenylist 含裸通配 host（scheme://* 不在两形态内）': {
+      schemaVersion: 1,
+      subject,
+      packs: { '*': { siteDenylist: ['https://*'] } },
+    },
+    'siteDenylist 条目缺 scheme（非 origin 文法）': {
+      schemaVersion: 1,
+      subject,
+      packs: { '*': { siteDenylist: ['bank.example.com'] } },
+    },
+    'siteDenylist 条目带路径（origin 之外的成分不参与判定，拒收）': {
+      schemaVersion: 1,
+      subject,
+      packs: { '*': { siteDenylist: ['https://bank.example.com/login'] } },
+    },
+    'siteDenylist 条目重复（uniqueItems）': {
+      schemaVersion: 1,
+      subject,
+      packs: { '*': { siteDenylist: ['https://bank.example.com', 'https://bank.example.com'] } },
+    },
+    'pack 级作用域含 siteDenylist（黑名单只有全局语义）': {
+      schemaVersion: 1,
+      subject,
+      packs: { 'xianyu-seller': { siteDenylist: ['https://bank.example.com'] } },
     },
     'enabled:true 越 const false（R1 只收紧，缺省即启用）': {
       schemaVersion: 1,

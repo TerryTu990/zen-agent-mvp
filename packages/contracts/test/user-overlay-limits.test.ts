@@ -74,6 +74,26 @@ describe('entryList 规模上界（rules/facts 各 200 条）', () => {
   });
 });
 
+describe('siteDenylist 规模上界（200 条）', () => {
+  const validate = compileOverlay();
+
+  function denylist(count: number): string[] {
+    return Array.from({ length: count }, (_, index) => `https://site-${index}.example`);
+  }
+
+  it('200 条通过（上界内）', () => {
+    const overlay = overlayWith({ '*': { siteDenylist: denylist(200) } });
+    expect(validate(overlay), JSON.stringify(validate.errors)).toBe(true);
+    expect(validateUserOverlay(overlay).ok).toBe(true);
+  });
+
+  it('201 条被拒（越界）', () => {
+    const overlay = overlayWith({ '*': { siteDenylist: denylist(201) } });
+    expect(validate(overlay)).toBe(false);
+    expect(validateUserOverlay(overlay).ok).toBe(false);
+  });
+});
+
 describe('packs 作用域键规模上界（maxProperties=100，含 "*"）', () => {
   const validate = compileOverlay();
 

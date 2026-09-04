@@ -72,6 +72,12 @@ export interface UserOverlayGlobalScope {
   rules?: UserOverlayEntry[];
   facts?: UserOverlayEntry[];
   preferences?: { verbosity?: UserOverlayVerbosity };
+  /**
+   * 站点黑名单（R1 只收紧）：命中的 origin 上不装配任何站点包，回落仅基座。
+   * 条目两形态——"scheme://host[:port]" 精确 origin 或 "scheme://*.host" 该域及子域；
+   * 文法不含全通配（schema 层拒 "*"）。终判在服务端 compose（U7），客户端跳过激活不构成治理生效。
+   */
+  siteDenylist?: string[];
 }
 
 export interface UserOverlayPackScope {
