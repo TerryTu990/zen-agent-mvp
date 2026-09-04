@@ -182,6 +182,11 @@ export interface ConfigCenterDeps {
   requestOriginAccess?(origin: string): Promise<boolean>;
   /** 撤销该 origin 的浏览器访问权限（chrome.permissions.remove）。 */
   revokeOriginAccess?(origin: string): Promise<boolean>;
+  /**
+   * 该 origin 当下是否真的持有浏览器访问权限（chrome.permissions.contains）。
+   * 缺省 = 视同已授予（无浏览器宿主的降级环境不凭空报未授权）。
+   */
+  hasOriginAccess?(origin: string): Promise<boolean>;
 }
 
 export interface ConfigCenterHandle {
@@ -1130,7 +1135,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     // 自动化是无手势唤醒：未授权该站点时到点根本注入不进去，这一行必须就地给出授权入口，
     // 否则它等于承诺了一份永远不来的周期汇报。
     const watchOrigin = originOfUrl(draft.url);
-    if (watchOrigin !== null && !state.grantedOrigins.includes(watchOrigin)) {
+    if (watchOrigin !== null && !originAuthorized(watchOrigin)) {
       const grant = el('button', 'za-cc-btn za-cc-watch-grant', '授权此站点');
       grant.type = 'button';
       grant.dataset['zaWatchId'] = draft.id;
@@ -1435,6 +1440,37 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     return wrap;
   }
 
+  /**
+   * 本机浏览器对某 origin 的实际授权态。只登记探测到的结果：未登记项视同已授予——
+   * 宿主不提供探测面时，本页不得凭空把一个用得好好的站点报成未授权。
+   */
+  const localOriginAccess = new Map<string, boolean>();
+
+  /**
+   * 授权判定的唯一出口：L2 声明 ∩ 本机浏览器权限。
+   * 两者之一缺席，该站点当下就不会被注入——只认 L2 会把「已授权」显示成一个自动化其实跑不起来的状态，
+   * 且不给出任何补回授权的线索（浏览器侧的撤销不通知本页）。
+   */
+  function originAuthorized(origin: string): boolean {
+    return state.grantedOrigins.includes(origin) && localOriginAccess.get(origin) !== false;
+  }
+
+  /** 已授权集在本机的实际状态重探；有变动才重渲（授权面与自动化页同判据，须一并更新）。 */
+  async function syncLocalOriginAccess(): Promise<void> {
+    const probe = deps.hasOriginAccess;
+    if (probe === undefined) return;
+    let changed = false;
+    for (const origin of state.grantedOrigins) {
+      const has = await probe(origin).catch(() => true);
+      if (localOriginAccess.get(origin) === has) continue;
+      localOriginAccess.set(origin, has);
+      changed = true;
+    }
+    if (!changed) return;
+    refreshGrantSection();
+    renderAutomationPanel();
+  }
+
   /** watch 监测地址 → origin；地址尚未填好或不可解析时为 null（此时不给授权入口）。 */
   function originOfUrl(value: string): string | null {
     try {
@@ -1459,6 +1495,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       setStatus(`浏览器未授予 ${origin} 的访问权限：Zen 不会在该站点常驻，自动化到点也跑不起来`, true);
       return false;
     }
+    localOriginAccess.set(origin, true);
     if (!state.grantedOrigins.includes(origin)) state.grantedOrigins = [...state.grantedOrigins, origin];
     setStatus(`${origin} 已授权，点「保存」后自动化即可在该站点唤醒工作页`);
     return true;
@@ -1467,6 +1504,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
   /** 撤销：浏览器权限与 L2 声明一并撤，二者不对称会留下一个自己也说不清的中间态。 */
   async function revokeOrigin(origin: string): Promise<void> {
     await deps.revokeOriginAccess?.(origin);
+    localOriginAccess.delete(origin);
     state.grantedOrigins = state.grantedOrigins.filter((candidate) => candidate !== origin);
     setStatus(`${origin} 的授权已撤销，点「保存」后 Zen 不再在该站点常驻`);
   }
@@ -1501,6 +1539,25 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         });
       });
       row.append(el('span', 'za-cc-site-grant-text', origin), remove);
+      if (localOriginAccess.get(origin) === false) {
+        const regrant = el('button', 'za-cc-btn za-cc-site-grant-regrant', '重新授权');
+        regrant.type = 'button';
+        regrant.addEventListener('click', () => {
+          void grantOrigin(origin).then((granted) => {
+            if (!granted) return;
+            refreshGrantSection();
+            renderAutomationPanel();
+          });
+        });
+        row.append(
+          badge(
+            'za-cc-badge-warn',
+            '浏览器已撤销访问',
+            '这条声明仍在，但浏览器当下没有给 Zen 该站点的访问权限：自动化到点跑不起来，点「重新授权」即可补回',
+          ),
+          regrant,
+        );
+      }
       if (siteDeniesUrl(state.siteDenylist, origin)) {
         row.append(
           badge('za-cc-badge-warn', '被名单挡住', '该站点同时在「不辅助的站点」名单内：黑名单优先，不注入'),
@@ -1524,7 +1581,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         setStatus('站点格式不正确：请填精确地址 https://example.com（可带端口），不支持通配', true);
         return;
       }
-      if (state.grantedOrigins.includes(value)) {
+      if (originAuthorized(value)) {
         setStatus(`${value} 已在授权列表里`, true);
         return;
       }
@@ -1874,9 +1931,10 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       state.loadError = '无法连接服务端，配置中心只显示本机设置。';
       adoptOverlay(null);
     })
-    .then(() => {
+    .then(async () => {
       renderAll();
       if (state.loadError !== null) setStatus(state.loadError, true);
+      await syncLocalOriginAccess();
     });
 
   return { ready, save };

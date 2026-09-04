@@ -411,12 +411,14 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   /**
    * 定向帧落到未注入目标页的通路：先注入，端口接入后再投递。
    * 注入失败或端口始终不来即丢帧——与「目标成员不可达」同一处置，禁改投他页。
+   * 注入与端口接入之间最长隔着 CONTENT_ATTACH_TIMEOUT_MS，这段窗口里停止手势与站点拉黑都可能发生：
+   * 真正的投递因此重新排回 landOnPage，闸门恒在副作用发生的那一刻判，而非取址那一刻判过就一路放行。
    */
   async function injectAndPostToTab(frame: DownstreamFrame, tabId: number): Promise<void> {
     if (!(await injectContentScript(tabId))) return;
     const member = await awaitContentMember(tabId);
     if (member === undefined) return;
-    postContent(member, { kind: 'frame', frame });
+    landOnPage(frame, tabId, () => postContent(member, { kind: 'frame', frame }));
   }
 
   /**

@@ -260,9 +260,12 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
   用户手势 / 服务端定向帧到达 ─► ①插件 background 句柄→tabId 解析
     → 站点黑名单闸门 → chrome.scripting.executeScript(dist/content.js) → 既有 port 通道
   注入与激活同出一口（sendActivate），组内导航补发 / 拖入已映射组 / navigate 开页由此继承
+  定向帧到达时目标页未注入：注入 → 等端口接入 → 投递重新排回落页闸门（停止/黑名单在副作用那一刻判）
 轨二 watch 自动化的显式 origin 授权
   配置中心「授权此站点」→ chrome.permissions.request({origins}) → L2 grantedOrigins
   注册面 = L2 投影 ∩ 本机 chrome.permissions − 站点黑名单
+  配置中心显示的授权态同取交集（chrome.permissions.contains 逐条对账）：
+    本机缺失即标「浏览器已撤销访问」+「重新授权」，自动化页「站点未授权」同口径
     → chrome.scripting.registerContentScripts（确定性 id，注册前按 id 注销即幂等）
   撤销授权 / 落进黑名单 → unregisterContentScripts（对称注销）
 ```

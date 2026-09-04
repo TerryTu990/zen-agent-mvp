@@ -10,7 +10,8 @@
  * 副作用以 background 侧可观察的两件事为准：把活交到某个成员页端口（页面据此动手），
  * 以及 background 自己改宿主 tab 的地址/开新页。
  * 每条路径三判：停止后不发生（不变量本体）、未停止时确实发生（否则用例空转）、
- * 新回合开始后恢复（停止不把本组永久停摆）。
+ * 新回合开始后恢复（停止不把本组永久停摆）。副作用被异步前置步骤推迟的路径（轨一注入等端口接入）
+ * 多一判：闸门之后、副作用之前停止，副作用仍不得发生——闸门查过就放行等于把判定停在了错误的时刻。
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { pageHandlesKeyForGroup, sessionKeyForGroup, zenGroupKey } from '../src/activation.js';
@@ -79,6 +80,26 @@ async function groupWithPages(): Promise<Scene> {
   return { h, panel, pages, effects: () => effectsOf(h, pages) };
 }
 
+/**
+ * 定向目标页在组内、有句柄、但当刻没有 content 端口：按需注入模型下这是组内成员的常态。
+ * 该形态的帧要先注入目标页、等端口接入，投递因此发生在推送之后的某个异步时刻。
+ */
+async function groupWithDetachedTargetPage(): Promise<Scene> {
+  const h = await loadBackground({ tabs: [activeTab, sideTab], storageSession: { ...mappedGroup } });
+  const active = h.connectContent(activeTab);
+  const panel = h.connectPanel(GROUP_ID);
+  active.emit({ kind: 'context-report', url: activeTab.url, title: activeTab.title });
+  await settle();
+  const pages = [active];
+  return { h, panel, pages, effects: () => effectsOf(h, pages) };
+}
+
+/** 注入落地、目标页端口接入：等在那里的定向帧在这一刻才真正交到页面手上。 */
+async function attachTargetPage(scene: Scene): Promise<void> {
+  scene.pages.push(scene.h.connectContent(sideTab));
+  await settle(20);
+}
+
 /** 组内无任何 content 成员的冷启动形态：会话由面板的第一条消息建立。 */
 async function groupWithoutPages(): Promise<Scene> {
   const h = await loadBackground({ tabs: [], storageSession: { ...mappedGroup } });
@@ -123,6 +144,11 @@ interface PathCase {
   id: string;
   scene(): Promise<Scene>;
   fire(scene: Scene): Promise<void>;
+  /**
+   * 副作用的落地被异步前置步骤推迟时，兑现那一步（如轨一注入后目标页端口接入）。
+   * 声明它的路径多一判：fire 与本步之间发生的停止同样必须挡住副作用。
+   */
+  settleArrival?(scene: Scene): Promise<void>;
 }
 
 /**
@@ -141,6 +167,12 @@ const DELIVERED_PATHS: Record<PageDownstreamFrame['type'], PathCase[]> = {
       id: 'dom 批次 → 定向非活跃成员页',
       scene: groupWithPages,
       fire: (scene) => pushExec(scene, { page: SIDE_HANDLE }),
+    },
+    {
+      id: 'dom 批次 → 定向成员页无 content 端口（注入后投递）',
+      scene: groupWithDetachedTargetPage,
+      fire: (scene) => pushExec(scene, { page: SIDE_HANDLE }),
+      settleArrival: attachTargetPage,
     },
     {
       id: 'http 代执行 → 活跃页（content 侧的闩本就不覆盖这一形态）',
@@ -167,6 +199,17 @@ const DELIVERED_PATHS: Record<PageDownstreamFrame['type'], PathCase[]> = {
         await settle(20);
       },
     },
+    {
+      id: '引导高亮 → 定向成员页无 content 端口（注入后投递）',
+      scene: groupWithDetachedTargetPage,
+      fire: async (scene) => {
+        scene.h.pushDownstream({
+          type: 'guide-action', sessionId: SESSION_ID, action: 'highlight', selector: '#pay', page: SIDE_HANDLE,
+        });
+        await settle(20);
+      },
+      settleArrival: attachTargetPage,
+    },
   ],
   'snapshot-request': [
     {
@@ -184,6 +227,15 @@ const DELIVERED_PATHS: Record<PageDownstreamFrame['type'], PathCase[]> = {
         scene.h.pushDownstream({ type: 'snapshot-request', sessionId: SESSION_ID, requestId: 'req-2', page: SIDE_HANDLE });
         await settle(20);
       },
+    },
+    {
+      id: '页面快照 → 定向成员页无 content 端口（注入后投递）',
+      scene: groupWithDetachedTargetPage,
+      fire: async (scene) => {
+        scene.h.pushDownstream({ type: 'snapshot-request', sessionId: SESSION_ID, requestId: 'req-3', page: SIDE_HANDLE });
+        await settle(20);
+      },
+      settleArrival: attachTargetPage,
     },
   ],
 };
@@ -232,6 +284,7 @@ describe('不变量 ST：停止之后、新回合之前不再发生页面副作�
       await stopOperation(scene);
       const before = scene.effects();
       await path.fire(scene);
+      await path.settleArrival?.(scene);
       expect(scene.effects()).toEqual(before);
     });
 
@@ -239,6 +292,7 @@ describe('不变量 ST：停止之后、新回合之前不再发生页面副作�
       const scene = await path.scene();
       const before = scene.effects();
       await path.fire(scene);
+      await path.settleArrival?.(scene);
       expect(scene.effects()).not.toEqual(before);
     });
 
@@ -248,7 +302,19 @@ describe('不变量 ST：停止之后、新回合之前不再发生页面副作�
       await beginNewTurn(scene);
       const before = scene.effects();
       await path.fire(scene);
+      await path.settleArrival?.(scene);
       expect(scene.effects()).not.toEqual(before);
+    });
+
+    const settleArrival = path.settleArrival;
+    if (settleArrival === undefined) continue;
+    it(`副作用落地前的一刻停止，副作用仍不发生 — ${path.id}`, async () => {
+      const scene = await path.scene();
+      const before = scene.effects();
+      await path.fire(scene);
+      await stopOperation(scene);
+      await settleArrival(scene);
+      expect(scene.effects()).toEqual(before);
     });
   }
 });

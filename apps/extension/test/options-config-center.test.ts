@@ -1244,6 +1244,97 @@ describe('全局设置页 · 已授权常驻的站点（L2 grantedOrigins）', (
   });
 });
 
+/**
+ * 授权态的判据是「L2 声明 ∩ 本机浏览器权限」：浏览器侧的撤销（chrome://extensions 把站点访问
+ * 改回「点击时」）不通知本页，只认 L2 会把一个自动化其实跑不起来的站点显示成「已授权」。
+ * 两处判据必须同口径——自动化行的未授权标注与授权列表的就地标注。
+ */
+describe('全局设置页 · 授权态以本机浏览器权限对账', () => {
+  /** 授权按钮回调是 void 起的异步链（申请权限 → 重渲）：跨一次宏任务边界即全部落定。 */
+  const settled = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  function grantedOverlay(): UserOverlayView {
+    return {
+      schemaVersion: 1,
+      subject: SUBJECT,
+      packs: { '*': { grantedOrigins: ['https://shop.example'] } },
+      watches: [
+        { id: 'watch-1', templateId: 'page-watch', url: 'https://shop.example/orders', minutes: 30, enabled: true },
+      ],
+    };
+  }
+
+  it('L2 已授权但浏览器侧已撤销：自动化行仍标「站点未授权」并给出授权入口', async () => {
+    const harness = createHarness({ hasOriginAccess: async () => false });
+    harness.stored.overlay = grantedOverlay();
+    await mounted(harness);
+    const automation = panel(harness.root, 'automation');
+    expect(automation.textContent).toContain('自动化需先授权站点');
+    expect(
+      automation.querySelector('.za-cc-watch-grant'),
+      '本机权限缺失时该行必须给出可点的授权入口',
+    ).not.toBeNull();
+  });
+
+  it('L2 与本机都在：不误报未授权（对照，判据不是恒为真）', async () => {
+    const harness = createHarness({ hasOriginAccess: async () => true });
+    harness.stored.overlay = grantedOverlay();
+    await mounted(harness);
+    expect(panel(harness.root, 'automation').querySelector('.za-cc-watch-grant')).toBeNull();
+    expect(panel(harness.root, 'global').querySelector('.za-cc-site-grant-regrant')).toBeNull();
+  });
+
+  it('授权列表就地标注本机缺失，且可直接补回授权（不必先撤销）', async () => {
+    const local = new Set<string>();
+    const requested: string[] = [];
+    const harness = createHarness({
+      hasOriginAccess: async (origin) => local.has(origin),
+      requestOriginAccess: async (origin) => {
+        requested.push(origin);
+        local.add(origin);
+        return true;
+      },
+    });
+    harness.stored.overlay = grantedOverlay();
+    await mounted(harness);
+    const entry = harness.root.querySelector<HTMLElement>('.za-cc-site-grant-entry')!;
+    expect(entry.textContent).toContain('浏览器已撤销访问');
+    const regrant = entry.querySelector<HTMLButtonElement>('.za-cc-site-grant-regrant');
+    expect(regrant, '本机缺失的条目必须能就地补回授权').not.toBeNull();
+    regrant!.click();
+    await settled();
+    expect(requested).toEqual(['https://shop.example']);
+    expect(harness.root.querySelector('.za-cc-site-grant-regrant')).toBeNull();
+    expect(panel(harness.root, 'automation').querySelector('.za-cc-watch-grant')).toBeNull();
+  });
+
+  it('本机缺失时重复输入该 origin 走重新申请，而不是回「已在授权列表里」', async () => {
+    const requested: string[] = [];
+    const harness = createHarness({
+      hasOriginAccess: async () => false,
+      requestOriginAccess: async (origin) => {
+        requested.push(origin);
+        return true;
+      },
+    });
+    harness.stored.overlay = grantedOverlay();
+    await mounted(harness);
+    const input = harness.root.querySelector<HTMLInputElement>('.za-cc-site-grant-input')!;
+    input.value = 'https://shop.example';
+    harness.root.querySelector<HTMLButtonElement>('.za-cc-site-grant-add')!.click();
+    await settled();
+    expect(requested).toEqual(['https://shop.example']);
+  });
+
+  it('宿主未提供本机权限探测（无浏览器的测试/降级环境）：一律视同已授予', async () => {
+    const harness = createHarness();
+    harness.stored.overlay = grantedOverlay();
+    await mounted(harness);
+    expect(panel(harness.root, 'automation').querySelector('.za-cc-watch-grant')).toBeNull();
+    expect(harness.root.querySelector('.za-cc-site-grant-regrant')).toBeNull();
+  });
+});
+
 /** 自动化页的授权入口：无手势唤醒的触发器必须就地说明「需先授权站点」并给出入口。 */
 describe('自动化页 · 站点授权入口', () => {
   it('未授权的触发器行标注「站点未授权」并给出授权按钮；授权后标注消失', async () => {
