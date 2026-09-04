@@ -173,8 +173,8 @@ export type BackgroundToSidePanelMessage =
  * 显式发起模型下，content 加载不自动连会话，须经此握手由 background 决定是否激活（ADR-013 批次④ §5）。
  */
 export type ContentRuntimeMessage =
-  // content 加载完成：autoActivate 为该页 origin 是否命中 za.autoActivate 开关（配置级 dev/demo）。
-  | { kind: 'request-activate'; autoActivate: boolean };
+  // content 加载完成（adr-027：脚本出现在本页即 background 注入或已授权 origin 的动态注册所致）。
+  | { kind: 'request-activate' };
 
 export type BackgroundRuntimeMessage =
   // background 决定激活：content 据此挂面板并连接会话端口。

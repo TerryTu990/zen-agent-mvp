@@ -52,11 +52,11 @@ describe('站点黑名单守住全部激活入口（判定下沉到 sendActivate
       tabs: [deniedTab, allowedTab],
       storageSession: mappedGroup,
     });
-    h.emitMessage({ kind: 'request-activate', autoActivate: false }, deniedTab);
+    h.emitMessage({ kind: 'request-activate' }, deniedTab);
     await settle();
     expect(h.activated).toEqual([]);
 
-    h.emitMessage({ kind: 'request-activate', autoActivate: false }, allowedTab);
+    h.emitMessage({ kind: 'request-activate' }, allowedTab);
     await settle();
     expect(h.activated).toEqual([allowedTab.id]);
   });
@@ -240,21 +240,15 @@ describe('激活入口的用户可见副作用不先于黑名单判定发生', (
     expect(h.activated).toEqual([looseAllowedTab.id]);
   });
 
-  it('autoActivate 握手（dev/demo 配置）：命中站点不建组、不激活（边界）', async () => {
-    const h = await loadBackground({ denylist: [DENIED_ENTRY], tabs: [looseDeniedTab] });
-    h.emitMessage({ kind: 'request-activate', autoActivate: true }, looseDeniedTab);
+  it('激活握手一律不建组：脚本在页内不构成开会话的理由，未分组页命不命中都一样（边界）', async () => {
+    const h = await loadBackground({ denylist: [DENIED_ENTRY], tabs: [looseDeniedTab, looseAllowedTab] });
+    h.emitMessage({ kind: 'request-activate' }, looseDeniedTab);
+    h.emitMessage({ kind: 'request-activate' }, looseAllowedTab);
     await settle();
     expect(h.tabs.get(looseDeniedTab.id)?.groupId).toBe(TAB_GROUP_ID_NONE);
+    expect(h.tabs.get(looseAllowedTab.id)?.groupId).toBe(TAB_GROUP_ID_NONE);
     expect(Object.keys(h.session).some((key) => key.startsWith('za.zenGroup'))).toBe(false);
     expect(h.activated).toEqual([]);
-  });
-
-  it('autoActivate 握手：未命中页照常建组并激活（对照）', async () => {
-    const h = await loadBackground({ denylist: [DENIED_ENTRY], tabs: [looseAllowedTab] });
-    h.emitMessage({ kind: 'request-activate', autoActivate: true }, looseAllowedTab);
-    await settle();
-    expect(h.tabs.get(looseAllowedTab.id)?.groupId).not.toBe(TAB_GROUP_ID_NONE);
-    expect(h.activated).toEqual([looseAllowedTab.id]);
   });
 });
 
