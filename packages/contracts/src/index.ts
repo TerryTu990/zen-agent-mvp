@@ -79,6 +79,8 @@ export type {
   PackEngines,
   PackAnchor,
   PackBuiltinTool,
+  QuickActionContext,
+  QuickAction,
   PackCapabilities,
   PackIntegrity,
   PackManifest,

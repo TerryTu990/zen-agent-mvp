@@ -36,6 +36,9 @@ const TOOL_OPEN_URL = 'open_url';
 // generic-web browse feature 独有文案：命中即走通用页面剧本（open_url / 搜索技能探针），站点 pack 的 sys 不含。
 const BROWSE_ASSIST_MARKER = '没有专属站点配置';
 const WEB_SEARCH_SKILL_MARKER = '技能：网页搜索（web-search）';
+// 快捷提问（R-5）展开后的模板头：出现在用户轮 = 网关确实按 quickActionId 查表展开了；
+// 同时出现在 sys = 展开物漏进系统注入面（U8 失守）。两种结局在下方分流为不同回答文本。
+const QUICK_ACTION_SUMMARIZE_HEAD = '请总结当前页面';
 // adr-023 D1 任务组页面清单头部稳定字面（服务端注入契约，定死不改）；清单是 system 注入的最后一个块。
 const GROUP_MANIFEST_HEADER = '# 任务组页面清单';
 
@@ -74,6 +77,7 @@ const BOUNDARY_MARKER = '【站点边界】';
  * 判定处使用的常量同值——新增 sys.includes 门控时同步登记，否则 --check 覆盖不到它。
  */
 export const PROBE_LITERALS = [
+  { literal: QUICK_ACTION_SUMMARIZE_HEAD, sourceFile: 'assets/packs/generic-web/pack.json', why: 'R-5 快捷提问模板头；改措辞会让「模板进用户轮、不进 system」的判据静默恒 MISS' },
   { literal: SYS_GENERAL_ASSISTANT, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-01 基座通用助手定位；缺失即通用问答被误拒答' },
   { literal: SYS_GOVERNANCE_STRICT, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-02 治理边界不随对话放宽；被改写成可放宽表述即失守' },
   { literal: SYS_PERSONAL_PRECEDENCE, sourceFile: 'assets/system-prompt.md', why: 'ZA-SYS-08 偏好类以个人规则为准（优先级口径的前一半）' },
@@ -648,6 +652,15 @@ function driveDrill(u, body) {
  * 无法把"打印发票"这类无登记锚点的定位问句判为降级——它是失配/降级路径唯一可判据。
  */
 function decide(sys, u, body) {
+  // 快捷提问剧本（R-5）：只看模板文本落在哪一侧，据此产出两种互斥文本，
+  // 使「展开进用户轮」与「漏进 system 注入」在评测里可被分开断言。
+  if (u.includes(QUICK_ACTION_SUMMARIZE_HEAD)) {
+    return {
+      text: sys.includes(QUICK_ACTION_SUMMARIZE_HEAD)
+        ? 'MOCK-QUICKACTION-IN-SYSTEM 快捷提问模板同时出现在系统注入里。'
+        : 'MOCK-QUICKACTION-USER-TURN 快捷提问模板只出现在本轮用户消息里。',
+    };
+  }
   // M5 跨站任务组剧本（加法式）：命中即接管，不影响既有场景。
   const drill = driveDrill(u, body);
   if (drill !== null) return drill;

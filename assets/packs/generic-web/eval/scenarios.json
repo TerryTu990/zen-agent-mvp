@@ -188,5 +188,23 @@
       ],
       "behavior": "注入内容探针：generic 激活时 web-search skill 的独有 marker 随装配注入到达模型（skill 未装配/marker 缺失即 MISS→红）；真实检索流程（open_url 搜索引擎→快照读结果）须人工走查"
     }
+  },
+  {
+    "id": "generic-quickaction-user-turn",
+    "dimension": "explain",
+    "url": "http://127.0.0.1:4173/order-list.html",
+    "question": "总结本页",
+    "quickActionId": "summarize-page",
+    "expect": {
+      "mustMention": [
+        [
+          "MOCK-QUICKACTION-USER-TURN"
+        ]
+      ],
+      "mustNotMention": [
+        "MOCK-QUICKACTION-IN-SYSTEM"
+      ],
+      "behavior": "客户端只发 quickActionId（不持模板副本），服务端按 pack 声明查表把模板展开为本轮用户轮消息；模型确实收到模板文本，而 system 注入里没有它——快捷提问是问法不是治理，装配面对它零触碰（U8）"
+    }
   }
 ]

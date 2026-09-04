@@ -123,6 +123,13 @@
           "uniqueItems": true,
           "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.md$" }
         },
+        "quickActions": {
+          "$comment": "快捷提问库（R-5，纯数据 R2）：pack 作者预置的站点专属问法清单，面板 chips 与右键菜单同源消费。只承载「用户轮消息模板」——MUST NOT 进 system 注入、MUST NOT 改工具面与 riskTier，装配引擎不把它读进任何注入产物（U8 装配治理对对话免疫）。展开在服务端网关：C3 user-message 带 quickActionId，网关按 id 查表取 template 作本轮用户轮消息（客户端不持第二份模板副本）。占位符闭集 {{selection}}/{{url}}/{{title}}，闭集外的 {{…}} 一律拒——刻意不设整页正文占位，那会绕过 page-text 上限与证据规整。maxItems 20 = 一排 chips 的可读上界。",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/quickAction" }
+        },
         "builtinTools": {
           "$comment": "pack 声明其使用的平台内建工具族 ⊆ 平台已实现闭集（contracts 导出 packBuiltinTools），载入期交叉校验（fail-closed，越界拒载并报出越界值与 packId）；未声明 = 网关不注入任何平台内建工具面（缺省即不注入）。pattern 只做语法面守卫，值域权威在平台实现闭集。",
           "type": "array",
@@ -231,6 +238,36 @@
           "maximum": 60
         }
       }
+    },
+    "quickAction": {
+      "$comment": "快捷提问条目（L1/L2 同形）：id 为查表键、label 为 chip 与右键菜单文案、template 为展开后的用户轮消息、context 声明它需要什么页面材料（selection=选区正文 / page=当前页地址与标题 / none=纯问法）。featureIds 缺省 = 整 pack 可见；声明时客户端只在命中的 featureId 上呈现。context=selection 的模板 MUST 含 {{selection}}——否则右键取到的选区正文无处落，菜单项点了等于没带材料。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "template", "context"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "template": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "not": { "pattern": "\\{\\{(?!(?:selection|url|title)\\}\\})" }
+        },
+        "context": { "type": "string", "enum": ["selection", "page", "none"] },
+        "featureIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/featureId" }
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "子模式内重复声明 template 仅为满足 Ajv strict；约束本体在上方 properties。",
+          "if": { "properties": { "context": { "const": "selection" } }, "required": ["context"] },
+          "then": { "properties": { "template": { "type": "string", "pattern": "\\{\\{selection\\}\\}" } } }
+        }
+      ]
     },
     "featureId": {
       "$comment": "功能标识文法，与 config-snapshot / tool-definition 及 features/<id>/ 目录名一致（跨契约对齐）。",

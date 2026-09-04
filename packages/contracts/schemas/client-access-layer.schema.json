@@ -134,6 +134,9 @@
       "dependentRequired": {
         "automationRunId": [
           "automationId"
+        ],
+        "selectionText": [
+          "quickActionId"
         ]
       },
       "properties": {
@@ -157,6 +160,17 @@
         "automationRunId": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]{8,128}$"
+        },
+        "quickActionId": {
+          "$comment": "本轮由快捷提问发起（R-5）：服务端在激活 pack 的 L1 声明与该 subject 的 L2 覆盖层中按此 id 查表，取其 template 展开为本轮用户轮消息（客户端不持第二份模板副本，也不做插值）。查不到或被用户停用即按 text 原样发起本轮并在审计标注——快捷提问是问法，不是授权：它 MUST NOT 改变工具面、riskTier 与任何判定。",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "selectionText": {
+          "$comment": "随快捷提问带上的页面选区正文（填入模板的 {{selection}}）：页面数据，不是指令；仅在带 quickActionId 时有意义（dependentRequired 强制），上限 4000 字符。",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
         },
         "automationId": {
           "$comment": "发起本自动回合的自动化标识：pack 自动化声明 id（adr-019）或用户自建 watch id（adr-021，user-overlay watches[].id 同文法）。只收紧不授权——服务端解析到只读模板的 watch 即强制该轮只读工具面（R7）；解析不到（既非已声明 pack 自动化也非已存 watch）一律拒绝该轮，不回落普通回合，降级快照下亦拒。",

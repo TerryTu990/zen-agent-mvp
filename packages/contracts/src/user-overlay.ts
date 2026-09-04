@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import type { JsonObject } from './json.js';
+import type { QuickAction } from './config-snapshot.js';
 import type { RiskTier } from './tool-definition.js';
 import {
   findAutomationTemplate,
@@ -78,6 +79,13 @@ export interface UserOverlayGlobalScope {
    * 文法不含全通配（schema 层拒 "*"）。终判在服务端 compose（U7），客户端跳过激活不构成治理生效。
    */
   siteDenylist?: string[];
+  /** 跨站自建快捷提问（R-5）：上限 20 条（schema maxItems）。 */
+  quickActions?: QuickAction[];
+  /**
+   * 停用的快捷提问 id（R1 只收紧）：结构上只有 id，无改写模板的表达力——
+   * 用户能让某条不出现，不能让它变成别的问法。命中的 id 网关查表也不认（按未知 id 原样发送）。
+   */
+  disabledQuickActions?: string[];
 }
 
 export interface UserOverlayPackScope {
@@ -86,6 +94,10 @@ export interface UserOverlayPackScope {
   /** 上限 200 条（schema maxItems），facts 同。 */
   rules?: UserOverlayEntry[];
   facts?: UserOverlayEntry[];
+  /** 本 pack 作用域的自建快捷提问（R-5）：上限 20 条（schema maxItems）。 */
+  quickActions?: QuickAction[];
+  /** 停用的快捷提问 id（含 L1 声明与全局 L2 条目）；只收紧，语义同全局作用域。 */
+  disabledQuickActions?: string[];
   restrictions?: UserOverlayRestrictions;
   /** 键值按该 pack 声明的 configSchema（adr-020）校验；schema 不存在或值越界即拒。 */
   packConfig?: JsonObject;

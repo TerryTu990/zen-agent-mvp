@@ -17,7 +17,7 @@ import type {
   SnapshotEvidence,
 } from './client-access-layer.js';
 import type { AuditEvent, GateVerdict } from './audit-event.js';
-import type { PackAutomation, PackBuiltinTool, PackSource } from './config-snapshot.js';
+import type { PackAutomation, PackBuiltinTool, PackSource, QuickAction } from './config-snapshot.js';
 
 // ---- AssemblyPort（②会话网关 ← ⑤配置中心：featureId 定位 + 注入组合）----
 
@@ -302,6 +302,11 @@ export interface PackDescriptor {
   automations: PackAutomationDescriptor[];
   /** pack 声明的用户可配置点（adr-020）；未声明时省略。 */
   configSchema?: JsonObject;
+  /**
+   * pack 预置的快捷提问（R-5）：纯展示/查表投影，不参与 compose 的任何注入产物——
+   * 装配引擎只在本投影里透出它，网关据此展开用户轮消息，配置中心据此列出可停用条目。未声明时省略。
+   */
+  quickActions?: QuickAction[];
 }
 
 export interface AssemblyPort {

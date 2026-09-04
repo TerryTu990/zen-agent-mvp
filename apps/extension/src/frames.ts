@@ -43,6 +43,10 @@ export interface UserMessageFrame {
   automationRunId?: string;
   /** 发起本自动回合的自动化 id；服务端据此定位只读模板并强制该轮工具面（缺失则整条只读强制不可达）。 */
   automationId?: string;
+  /** 本轮由快捷提问发起：模板在服务端查表展开，客户端只发 id（不持模板副本、不做插值）。 */
+  quickActionId?: string;
+  /** 随快捷提问带上的页面选区正文（填模板的 {{selection}}）；仅在带 quickActionId 时有意义。 */
+  selectionText?: string;
 }
 
 export interface HitlDecisionFrame {
