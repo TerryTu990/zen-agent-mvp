@@ -132,12 +132,17 @@ function normalizeToolName(name) {
 }
 
 /**
- * 观测体剥壳：服务端把页面/工具带回来的内容包在会话定界串里（⟪untrusted:kind:nonce⟫…⟪/untrusted:nonce⟫）。
- * 真实模型读定界内的内容不必解析结构，本 mock 要按结构取 ref/证据，故解析前先按同形剥离并去掉包裹留下的空行。
+ * 观测体剥壳：服务端把页面/工具带回来的内容包在会话定界串里（⟪untrusted:kind:nonce⟫…⟪/untrusted:nonce⟫），
+ * 平台散文（截断附注、正文标注、指令句式注记）落在合标记之后。
+ * 真实模型读定界内的内容不必解析结构，本 mock 要按结构取 ref/证据，故解析前按开合标记切出区内正文——
+ * 按「删掉定界串」还原会把区外散文留在正文尾部，JSON.parse 随之失败。
  * 判据要看定界本身时用未剥壳的原文（lastToolObs 返回原样内容）。
  */
+const UNTRUSTED_REGION_RE = /⟪untrusted:[0-9a-z:-]{0,64}⟫\n?([\s\S]*?)\n?⟪\/untrusted:[0-9a-z:-]{0,64}⟫/;
 function unwrapObs(text) {
-  return String(text ?? '').replace(/⟪\/?untrusted:[^⟫\n]*⟫/g, '').trim();
+  const raw = String(text ?? '');
+  const matched = UNTRUSTED_REGION_RE.exec(raw);
+  return (matched === null ? raw : matched[1] ?? '').trim();
 }
 
 /** 请求 tools 是否携带指定 name 的工具（OpenAI function 形态或裸 name；wire 名归一后比对）。 */

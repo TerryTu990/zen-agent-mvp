@@ -165,6 +165,8 @@ card-inventory 10 / fulfillment 8 / audit 5。
 | 停止拒绝提示的过期竞态（N2 最终轮，minor） | `stopTurn` 网络往返期间用户发了新消息，`beginTurn` 已复位状态，迟到的拒绝提示里「本机页面操作已停止」过期；旧文案有同类问题 | 同上 |
 | 停止不变量 ST 的固有窗口一：已开始执行的那一步不可中止（N2 最终轮，minor） | `landOnPage` 的状态查询在 `execute()` 之前，但 `execute()` 内部仍有 `tabs.get/query/create` 的 await；停止落在这些 await 之间时 `chrome.tabs.update` 仍会发生。前置查询式设计的本质窗口 | 把状态查询下沉到每个 await 之后（或改为可取消的执行原语）时 |
 | 停止不变量 ST 的固有窗口二：http 代执行帧一旦落页再无中止面（N2 最终轮，minor） | `createDelegatedExecutor` 的 http 分支落页后由页面环境发请求，content 侧闩只挡 dom 解释器 | 同上 |
+| 内建导航（`site_navigate` / `open_url`）成功 observation 未进定界区（N1 评审，minor·N1-04） | 其 `url` 是 302 落点、由页面控制，回喂时没有定界串可依；现有 kind 闭集（page-text / page-elements / tool-result / pack-doc / group-pages）里没有「服务端自建结果」这一类 | 定界 kind 闭集扩到「服务端自建」类时 |
+| 滚动摘要正文（`summaryText`）自身不被定界包裹（N1 评审，minor·N1-05 余项） | 摘要由模型对较早回合重写，可能复述页面数据；较早回合的定界区随观测一并退场，复述部分无标记可依。本轮只补了摘要块的「可能复述页面数据」告诫，未包裹——包裹须先扩 kind 闭集 | 引入 LLM judge / 摘要器治理时 |
 
 ## 6. 待 Terry 裁决清单（8 项）——**已于 2026-09-03 全部裁决**
 

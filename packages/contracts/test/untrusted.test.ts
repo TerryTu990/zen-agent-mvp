@@ -88,6 +88,22 @@ describe('输入侧同形串剥离（防伪造闭合）', () => {
     const plain = '⟪注意⟫ untrusted 只是一个词';
     expect(stripUntrustedDelimiters(plain)).toBe(plain);
   });
+
+  it('未闭合开标记与远处的 ⟫ 不配对：跨字段删除不成立（形状限定 nonce/kind 字符集）', () => {
+    const body = JSON.stringify({
+      title: '标题⟪untrusted:',
+      elements: [{ ref: 'za-1', label: '导出' }],
+      text: '正文⟫尾',
+    });
+    expect(stripUntrustedDelimiters(body)).toBe(body);
+  });
+
+  it('形状只认小写十六进制 nonce 与连字符 kind，含引号/逗号的跨度不被当作定界串', () => {
+    expect(stripUntrustedDelimiters('⟪untrusted:page-text:"a","b"⟫')).toBe(
+      '⟪untrusted:page-text:"a","b"⟫',
+    );
+    expect(stripUntrustedDelimiters(`⟪untrusted:page-text:${NONCE}⟫`)).toBe('');
+  });
 });
 
 describe('按结构剥壳（消费方还原区内正文）', () => {

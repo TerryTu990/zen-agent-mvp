@@ -22,8 +22,13 @@ export function isUntrustedKind(value: string): value is UntrustedKind {
   return (UNTRUSTED_KINDS as readonly string[]).includes(value);
 }
 
-/** 定界串同形匹配：开标记带 kind、合标记只带 nonce；剥离按形状而非按本会话 nonce，猜测的 nonce 同样被剥。 */
-const DELIMITER_PATTERN = /⟪\/?untrusted:[^⟫\n]*⟫/g;
+/**
+ * 定界串同形匹配：开标记带 kind、合标记只带 nonce；剥离按形状而非按本会话 nonce，猜测的 nonce 同样被剥。
+ * 中段字符集收窄到 kind/nonce 实际可能出现的形状（小写字母数字 + `:` + `-`）：宽松通配会让一个
+ * 未闭合的开标记与远处任意位置的 `⟫` 配成一对，把两者之间的一切（含平台字段）当定界串删掉。
+ */
+const DELIMITER_BODY = '[0-9a-z:-]{0,64}';
+const DELIMITER_PATTERN = new RegExp(`⟪/?untrusted:${DELIMITER_BODY}⟫`, 'g');
 
 /** 会话级定界 nonce：16 位十六进制，由服务端生成后在本会话内复用。 */
 export function untrustedNonce(): string {
@@ -44,7 +49,9 @@ export function wrapUntrusted(kind: UntrustedKind, nonce: string, body: string):
 }
 
 /** 定界区匹配：开标记后与合标记前各让出一个换行——包裹时补的那两个换行不属于正文。 */
-const UNTRUSTED_REGION_PATTERN = /⟪untrusted:[^⟫\n]*⟫\n?([\s\S]*?)\n?⟪\/untrusted:[^⟫\n]*⟫/;
+const UNTRUSTED_REGION_PATTERN = new RegExp(
+  `⟪untrusted:${DELIMITER_BODY}⟫\\n?([\\s\\S]*?)\\n?⟪/untrusted:${DELIMITER_BODY}⟫`,
+);
 
 /**
  * 剥壳：只取开合标记之间的正文，标记之外的平台文本（治理注记、页标注）一律不进。

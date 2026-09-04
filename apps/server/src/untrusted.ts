@@ -13,19 +13,21 @@ import { wrapUntrusted, type UntrustedKind } from '@zen-agent/contracts';
  * 可疑指令句式类别：中英各覆盖同一意图，标签是审计与注记共用的稳定键。
  * 闭集有意保持小而粗——它只驱动「提醒一句 + 记一条」，不驱动任何拦截判定，
  * 漏判的代价是少一句提醒（定界仍在），误判的代价是多一句提醒。
+ * 每条都要求「动词 + 宾语」两端都落地：只有动词的裸词形态（「扮演」「直接执行」）在寻常页面文案里
+ * 密集出现，无锚点即每页恒命中——注记退化成噪音、审计流被无关事件淹没。
  */
 const SUSPICIOUS_INSTRUCTION_PATTERNS: ReadonlyArray<{ label: string; pattern: RegExp }> = [
   {
     label: 'ignore-previous',
-    pattern: /(忽略|无视|忘掉|忘记)[^。\n]{0,8}(以上|上面|前面|之前|所有)?[^。\n]{0,8}(规则|指令|提示|要求)|ignore\s+(all\s+)?(previous|prior|above)\s+instructions?/i,
+    pattern: /(忽略|无视|忘掉|忘记(?!密码))[^。\n]{0,8}(以上|上面|前面|之前|所有)[^。\n]{0,8}(规则|指令|提示|要求)|ignore\s+(all\s+)?(previous|prior|above)\s+instructions?/i,
   },
   {
     label: 'role-override',
-    pattern: /(你现在是|从现在起你是|你的新身份是|扮演)[^。\n]{0,12}|you\s+are\s+now\s+(a|an|the)\b/i,
+    pattern: /你现在是|从现在起你是|你的新身份是|扮演[^。\n]{0,8}(助手|AI|系统|角色)|you\s+are\s+now\s+(a|an|the)\b/i,
   },
   {
     label: 'tool-command',
-    pattern: /(请)?(立即|立刻|马上|直接)[^。\n]{0,6}(调用|执行|运行)[^。\n]{0,12}(工具|接口|命令)?|call\s+the\s+[\w.-]+\s+tool/i,
+    pattern: /(请)?(立即|立刻|马上|直接)[^。\n]{0,6}(调用|执行|运行)[^。\n]{0,12}(工具|接口|命令)|call\s+the\s+[\w.-]+\s+tool/i,
   },
   {
     label: 'exfiltration',

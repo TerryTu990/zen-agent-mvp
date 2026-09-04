@@ -4,6 +4,7 @@ import {
   BOUNDARY_MARKER,
   PAGE_OBS_MARKER,
   SUMMARY_MARKER,
+  SUMMARY_PAGE_DATA_NOTICE,
   SUMMARY_UNVERIFIED_NOTICE,
   TRUNCATION_NOTICE_PREFIX,
   TRUNCATION_UNVERIFIED_NOTICE,
@@ -24,6 +25,17 @@ function fakeLlm(reply: string, opts: { error?: boolean; seen?: string[] } = {})
         return;
       }
       yield { kind: 'text-delta', delta: reply };
+      yield { kind: 'done', stopReason: 'end' };
+    },
+  };
+}
+
+/** 复述型摘要器替身：把收到的待压缩头部原样当摘要输出（模拟摘要器把页面正文复述进摘要）。 */
+function echoingLlm(): LlmPort {
+  return {
+    cancel() {},
+    async *chat(request): AsyncGenerator<LlmStreamEvent> {
+      yield { kind: 'text-delta', delta: request.messages.map((m) => m.content).join('\n') };
       yield { kind: 'done', stopReason: 'end' };
     },
   };
@@ -378,15 +390,18 @@ describe('不可信定界与历史压缩的关系（定界不得被压缩摘掉�
     ];
   }
 
-  it('摘要路径：头部观测整体退场，正文不以裸文形式留在摘要块里', async () => {
+  it('摘要路径：摘要器复述页面正文时，摘要块自带「可能复述页面数据」告诫', async () => {
     const result = await compressHistory(historyWithWrappedObs(), {
-      llm: fakeLlm('较早回合已读过一页正文。'),
+      llm: echoingLlm(),
       keepRounds: 2,
     });
-    const joined = result.map((message) => message.content).join('\n');
-    expect(joined).not.toContain(PAGE_BODY);
-    // 保真项只留「调用与成败」，不留结果正文（定界与其内容一并退场，不产生半截裸正文）。
-    expect(result[0]!.content).toContain('page_snapshot → 成功');
+    const summary = result[0]!.content;
+    // 判据非恒真：替身把待压缩头部原样当摘要输出，正文确实被复述进摘要块。
+    expect(summary).toContain(PAGE_BODY);
+    expect(summary.indexOf(SUMMARY_PAGE_DATA_NOTICE)).toBeGreaterThanOrEqual(0);
+    expect(summary.indexOf(SUMMARY_PAGE_DATA_NOTICE)).toBeLessThan(summary.indexOf(PAGE_BODY));
+    // 保真项只留「调用与成败」，不留结果正文。
+    expect(summary).toContain('page_snapshot → 成功');
   });
 
   it('确定性截断路径：同样不留裸正文，且无落单的开/合标记', async () => {
