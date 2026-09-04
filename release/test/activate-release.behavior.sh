@@ -65,16 +65,8 @@ case "${op}" in
         exit 1
       fi
       printf 'lark:%s:ok\n' "${tag}" >>"${state}/operations"
-    elif [[ "${joined}" == *ZA_FEISHU_CARD_BASE_TOKEN* ]]; then
-      if [[ "${MOCK_CARD_ENABLED:-0}" == 1 ]]; then
-        if [[ "${MOCK_FAIL_KIND:-}" == whoami && "${tag}" == new ]]; then
-          printf 'whoami:new:fail\n' >>"${state}/operations"
-          exit 1
-        fi
-        printf 'whoami:%s:ok\n' "${tag}" >>"${state}/operations"
-      else
-        printf 'whoami:%s:skipped\n' "${tag}" >>"${state}/operations"
-      fi
+    elif [[ "${joined}" == *whoami* || "${joined}" == *ZA_FEISHU_CARD_BASE_TOKEN* ]]; then
+      printf 'whoami:%s:invoked\n' "${tag}" >>"${state}/operations"
     else
       printf 'exec:%s:ok\n' "${tag}" >>"${state}/operations"
     fi
@@ -147,9 +139,7 @@ run_case() {
   ln -s "${root}/releases/old" "${root}/current-release"
   printf 'zen-agent-server:old\n' >"${state}/image"
   printf '%s\n' "${root}/snapshots/old" >"${state}/snapshot"
-  card_enabled=0
-  [[ "${kind}" == whoami ]] && card_enabled=1
-  if PATH="${MOCK_BIN}:${PATH}" MOCK_STATE="${state}" MOCK_FAIL_KIND="${kind}" MOCK_CARD_ENABLED="${card_enabled}" \
+  if PATH="${MOCK_BIN}:${PATH}" MOCK_STATE="${state}" MOCK_FAIL_KIND="${kind}" \
     ZA_DEPLOY_HEALTH_ATTEMPTS=1 ZA_DEPLOY_HEALTH_DELAY=0 \
     bash "${SUBJECT}" "${root}" "${root}/releases/new" new "${root}/snapshots/new" "${root}/lark-cli"; then
     echo "${kind} 场景应失败却成功" >&2
@@ -168,22 +158,24 @@ run_case() {
     health) grep -qx 'health:new:fail' "${state}/operations" ;;
     replica) grep -qx 'ps:new:2' "${state}/operations" ;;
     lark) grep -qx 'lark:new:fail' "${state}/operations" ;;
-    whoami) grep -qx 'whoami:new:fail' "${state}/operations" ;;
   esac
 }
 
-for kind in health replica lark whoami link-create link-move; do run_case "${kind}"; done
+for kind in health replica lark link-create link-move; do run_case "${kind}"; done
 
-# 卡密未配置时 whoami 必须明确跳过，不能把未授权 profile 误判为发布失败。
-success_root="${TEST_ROOT}/success-unconfigured"
+# 履约退役（adr-026）后激活链路 MUST NOT 再做飞书 profile 探测：删除面反向守卫。
+success_root="${TEST_ROOT}/success"
 success_state="${success_root}/state"
 mkdir -p "${success_state}"
 make_release "${success_root}" new new
-PATH="${MOCK_BIN}:${PATH}" MOCK_STATE="${success_state}" MOCK_CARD_ENABLED=0 \
+PATH="${MOCK_BIN}:${PATH}" MOCK_STATE="${success_state}" \
   ZA_DEPLOY_HEALTH_ATTEMPTS=1 ZA_DEPLOY_HEALTH_DELAY=0 \
   bash "${SUBJECT}" "${success_root}" "${success_root}/releases/new" new \
     "${success_root}/snapshots/new" "${success_root}/lark-cli"
-grep -qx 'whoami:new:skipped' "${success_state}/operations"
+if grep -q '^whoami:' "${success_state}/operations"; then
+  echo '激活不应再执行飞书 profile 探测' >&2
+  exit 1
+fi
 [[ "$(readlink -f "${success_root}/current-release")" == "${success_root}/releases/new" ]]
 
 # 显式 legacy descriptor 可作为人工回滚目标：允许旧快照无外置 prompt，且不要求后来才加入的 lark-cli。

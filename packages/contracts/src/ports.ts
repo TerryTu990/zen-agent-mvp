@@ -342,12 +342,6 @@ export interface DomGateContext {
   path: string;
   /** 快照页 origin（ADR-013）：site pack 的非 navigate dom 步须 === 工具所属 pack origin，越界即 deny。 */
   origin?: string;
-  /** 当前快照完整 URL。 */
-  url?: string;
-  /** 快照所属 content script 页面生命周期，防快照后切页/刷新再执行。 */
-  pageInstanceId?: string;
-  /** 产出本 ref 闭集的客户端快照世代（C3 snapshotEpoch 原样落位）：同页多次观察的先后由它标定。 */
-  snapshotEpoch?: number;
   /** 最近快照元素的最小语义：按 ref 反查 role，判定敏感控件与确认卡「将发生什么」。 */
   elements?: SnapshotElement[];
   /** 最近快照按 pack 配方生成的结构化证据：只含闭集状态统计，不含消息正文。 */

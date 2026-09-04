@@ -69,11 +69,22 @@ adr-019 曾以「pack 声明式 preparation」把站点硬编码从核心挪进 
 该脚本顺带覆盖的两点——任务标签组命名为 Zen、知识附件正文进入真实 gateway→LLM 请求——**在本仓失去 E2E 覆盖**；
 `pnpm test:e2e:xianyu` 与 `verify:phase3` 对它的引用一并移除。补覆盖锚点 = 下一次 E2E 门梳理。
 
-**发布链路残余**：`release/remote/env.example`、`release/remote/activate-release.sh`、
-`release/test/verify-release-contract.mjs` 仍带 `ZA_FEISHU_CARD_*` / `ZA_FULFILLMENT_GUIDE_URL` 条目与
-`lark-cli` 冒烟分支；镜像内 `lark-cli` 与 `LARKSUITE_CLI_CONFIG_DIR` 卷同样保留。
-它们已不被服务端读取。清理锚点 = 下一次可在 Linux 发布镜像内跑 `release/test/activate-release.behavior.sh`
-（该脚本依赖 `flock`，开发机不可跑）时一并处理。
+**发布链路残余**：`release/remote/env.example` 的 `ZA_FEISHU_PROFILE` / `ZA_LARK_CLI_PATH` /
+`ZA_FEISHU_CARD_*` / `ZA_FULFILLMENT_*` 条目与 `activate-release.sh` 的飞书 profile 冒烟已删除；
+`verify-release-contract.mjs` 与 `activate-release.behavior.sh` 各留一条删除面反向守卫
+（两个 guide-url 键名不得回流、激活不得再探测 profile）。
+镜像内 `lark-cli` 与 `LARKSUITE_CLI_CONFIG_DIR` 卷仍在（`Dockerfile`、`release/remote/docker-compose.yml`、
+`activate-release.sh` 的 `lark-cli --version` 冒烟、`release/verify-phase1.sh`），已无服务端消费者；
+拆除须在 Linux 发布镜像内实跑 `release/test/activate-release.behavior.sh`（依赖 `flock`，开发机不可跑）
+并重建镜像才敢判定。清理锚点 = 下一次可在 Linux 发布镜像内跑该脚本时。
+
+**C6 `DomGateContext` 死面已删**：`url` / `pageInstanceId` / `snapshotEpoch` 三字段的唯一消费者是本次退役的
+有界意图绑定，删字段与 `apps/server/src/gateway.ts` 的填充（端口内部，不涉跨形态兼容）；
+`apps/server/test/server.test.ts` 中唯一断言 `snapshotEpoch` 透传的用例随之删除（在上表之外再 −1）。
+
+**C3 `expectedPageInstanceId` 残余**：该帧字段的唯一生产者随本次退役消失，字段与
+`apps/extension/src/delegated-execution.ts` 的等值守卫按 U3 加法纪律保留为预留。
+锚点：下一次 C3 帧族梳理时决定删或复用。
 
 ## 迁移路径：垂直能力今后怎么表达
 

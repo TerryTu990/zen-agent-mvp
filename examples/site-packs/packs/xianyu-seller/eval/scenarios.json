@@ -29,7 +29,7 @@
       "featureId": "xianyu-fulfillment",
       "toolIncludes": ["xianyu-fulfillment.compose-test-message", "xianyu-fulfillment.send-test-message"],
       "toolExcludesPrefixes": ["xianyu-orders."],
-      "behavior": "消息页装配非秘密人工测试工具与只接受服务端一次性意图的受限执行工具，不泄漏订单页工具"
+      "behavior": "消息页装配非秘密人工测试工具（拟稿 + 受控发送），不泄漏订单页工具"
     }
   },
   {

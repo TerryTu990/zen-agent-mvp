@@ -314,7 +314,7 @@ export interface DomExecRequest {
   kind: 'dom';
   steps: DomStep[];
   /**
-   * 副作用指令的机械执行围栏：服务端只钉可核对的维度（有界履约钉 URL+页面实例，定向批次钉状态表目标页 URL），
+   * 副作用指令的机械执行围栏：服务端只钉可核对的维度（当前只有定向批次钉状态表目标页 URL），
    * 客户端逐字段等值比较、未钉维度不参与判定，不承担治理判定。
    */
   expectedPageUrl?: string;

@@ -61,7 +61,6 @@ const LONG_NAV_URL = `${SITE_ORIGIN}/box?q=${RLO}${'a'.repeat(300)}`;
 /** 另一已安装 pack（zhipin）围栏内 URL：定向跨站导航不得把活跃站点上下文切过去。 */
 const CROSS_SITE_URL = 'https://www.zhipin.com/web/geek/job';
 
-
 interface DirectedMockHandle {
   port: number;
   close(): Promise<void>;

@@ -34,7 +34,7 @@ export function createDelegatedExecutor(
           return { type: 'exec-result', sessionId, nonce, ok: false, error: 'dom-runner-unavailable' };
         }
         const page = currentPage();
-        // 逐字段独立比对：服务端按可核对的维度下钉（有界履约钉 URL+实例，定向批次只钉状态表 URL），
+        // 逐字段独立比对：服务端按可核对的维度下钉（当前只有定向批次钉状态表目标页 URL），
         // 未下钉的维度不参与判定；任一已钉维度不符即在副作用前拒绝。
         if (
           (request.expectedPageUrl !== undefined && request.expectedPageUrl !== page.url) ||

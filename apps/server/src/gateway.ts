@@ -2334,9 +2334,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
               refs: trustedElements.map((element) => element.ref),
               path: pathOf(report.url),
               origin: originOf(report.url),
-              url: report.url,
-              ...(report.pageInstanceId !== undefined ? { pageInstanceId: report.pageInstanceId } : {}),
-              ...(report.snapshotEpoch !== undefined ? { snapshotEpoch: report.snapshotEpoch } : {}),
               elements: trustedElements,
               ...(report.evidence !== undefined ? { evidence: report.evidence } : {}),
             };
@@ -2347,9 +2344,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
               refs: trustedElements.map((element) => element.ref),
               path: pathOf(report.url),
               origin: originOf(report.url),
-              url: report.url,
-              ...(report.pageInstanceId !== undefined ? { pageInstanceId: report.pageInstanceId } : {}),
-              ...(report.snapshotEpoch !== undefined ? { snapshotEpoch: report.snapshotEpoch } : {}),
               elements: trustedElements,
             });
           }

@@ -47,6 +47,8 @@
 | [adr-021](adr/adr-021-user-defined-automation-triggers.md) | D21 用户自建自动化触发器：平台模板闭集 + 参数层 watches + 自动回合只读强制 |
 | [adr-022](adr/adr-022-anonymous-auto-login.md) | D22 匿名自动登录：安装 id → 短期 JWT，Google 账号登录为正式投产前置条件 |
 | [adr-023](adr/adr-023-task-group-multi-tab-workspace.md) | D23 任务组多 tab 工作区：组级视野与定向操作（不透明页面句柄、按目标页校验围栏） |
+| [adr-024](adr/adr-024-unattended-closure-and-approval-revalidation.md) | D24 无人值守回合的服务端收口、批准的恢复期复核与授权作用域指纹 |
+| [adr-025](adr/adr-025-general-purpose-base-prompt.md) | D25 基座通用化——从「配置未覆盖即拒答」到「事实边界 + 通用助手」 |
 | [adr-026](adr/adr-026-retire-vertical-fulfillment-from-core.md) | D26 垂直履约退出核心契约：C6 回五端口、C1 删 authorization/preparation、两包退役，垂直能力只在 pack tools.json adapter 声明 |
 
 新增非显然决策（架构/接口/依赖层）时按同格式续编号；已接受的 ADR 不改写，推翻用新 ADR 标注取代关系。

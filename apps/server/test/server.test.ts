@@ -1763,48 +1763,6 @@ describe('adr-024 治理决策链完整性（无人值守收口 / 停止吊销 /
     }
   });
 
-  it('快照世代进 dom 判定上下文：toolgate 收到的 domContext.snapshotEpoch 与本次上报同代', async () => {
-    const epochServer = await startServer(
-      serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 3 }),
-    );
-    const previousBaseUrl = baseUrl;
-    baseUrl = `http://127.0.0.1:${epochServer.port}`;
-    // 端口边界取证：domContext 只在裁决入参里外显，故在端口对象上挂透传观察者而非改被测实现。
-    const gate = epochServer.ports.toolgate;
-    const realDecide = gate.decide.bind(gate);
-    const decideInputs: Array<Parameters<typeof realDecide>[0]> = [];
-    gate.decide = async (input) => {
-      decideInputs.push(input);
-      return realDecide(input);
-    };
-    const token = await signToken();
-    const sessionId = await createSession(token);
-    const sse = await openSse(token, sessionId);
-    try {
-      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_MANAGE_URL });
-      await postFrame(token, sessionId, { type: 'user-message', sessionId, text: ORDERS_PROMPT });
-      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
-      await postFrame(token, sessionId, {
-        type: 'snapshot-report',
-        sessionId,
-        requestId: String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
-        url: ORDER_MANAGE_URL,
-        pageInstanceId: 'page-epoch',
-        snapshotEpoch: 7,
-        elements: ORDER_ELEMENTS,
-      });
-      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length === 1);
-      const withDom = decideInputs.filter((input) => input.domContext !== undefined);
-      expect(withDom.length).toBeGreaterThan(0);
-      for (const input of withDom) expect(input.domContext?.snapshotEpoch).toBe(7);
-    } finally {
-      sse.close();
-      gate.decide = realDecide;
-      baseUrl = previousBaseUrl;
-      await epochServer.close();
-    }
-  });
-
   it('批准恢复期复核：挂起期间该工具被 L2 收紧到 forbidden → approval-stale 拒绝且不签发指令', async () => {
     const userConfigDir = mkdtempSync(join(tmpdir(), 'za-adr024-l2-'));
     const staleServer = await startServer(

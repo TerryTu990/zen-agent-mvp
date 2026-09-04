@@ -19,7 +19,7 @@
 
 - **builder**：`node:22-slim` + corepack 固定 `pnpm@10.32.1` → `pnpm install --frozen-lockfile --filter @zen-agent/server...`（含 workspace 依赖拓扑）→ 递归 build → **`pnpm deploy` 收敛生产依赖**。
   - 为什么必须 `pnpm deploy`：workspace `workspace:*` 是软链，直接拷 `node_modules` 不可移植；且 `packages/contracts/schemas/*.json` 是**运行时** `require.resolve` 读取的非 dist 资产，deploy 会把它们随包实体带入——只拷 `dist/` 的天真多阶段构建会在启动期崩。
-- **runtime**：`node:22-slim`，仅含 deploy 产物与固定版本 `lark-cli`；站点包及 `system-prompt.md` 均来自同一个只读快照卷，以 `node` 非 root 用户运行。
+- **runtime**：`node:22-slim`，仅含 deploy 产物；站点包及 `system-prompt.md` 均来自同一个只读快照卷，以 `node` 非 root 用户运行。
 - 镜像内默认 env：`ZA_HOST=0.0.0.0`（容器内必须对外，否则端口发布后外部不可达）、数据路径固定绝对路径 `/data/za/*`（规避"相对 cwd"陷阱——本机 `pnpm start` 的 cwd 是 `apps/server`，`.za/` 会落在意外位置）。
 - `HEALTHCHECK`：内置 `GET /healthz`（无鉴权存活探针，仅证明进程在监听）。免鉴权路径只此一条与 `POST /v1/activation`（匿名激活端点本身就是发令牌的），其余路径一律先过验签——`GET /` 返回 401 是预期而非故障。
 
@@ -69,7 +69,7 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 - **发布新站点/改配置**：升 `manifest.json` version，上传到不可变 `snapshots/<version>`，以目标镜像强制调用 `listSites()`/`allTools()` 完整加载，再激活版本化 release。
 - **回滚**：服务器侧 `flock` 内恢复上一 release 的 compose、镜像和快照，复验 health、单副本、镜像及挂载后才算成功；首次失败则停止新服务。`current-release` 软链只在冒烟全绿后原子切换。
 - **勿做**：exec 进容器改快照文件（违反 U4，且下次重建即丢）。
-- **远端发布**：`release/deploy-server.sh --snapshot assets` 创建 `releases/<deploy-id>`；healthz、单副本、镜像/挂载、`/data/za` 非 root 写读删或飞书 smoke 失败时恢复完整旧 release。服务端必须保持单实例：当前文件会话存储的消息幂等占位只保证进程内原子，扩展为多副本前必须迁移到支持唯一约束/CAS 的共享存储。首次从单体 compose 升级时保存实际旧 compose 并验证其可重放后才登记回滚基线。未显式传快照会 fail-closed。公网域名 health 与匿名激活（`POST /v1/activation`，唯一登录路径）属激活后的反代报告检查，失败不回滚已在服务器本机全绿的 release。
+- **远端发布**：`release/deploy-server.sh --snapshot assets` 创建 `releases/<deploy-id>`；healthz、单副本、镜像/挂载、`/data/za` 非 root 写读删失败时恢复完整旧 release。服务端必须保持单实例：当前文件会话存储的消息幂等占位只保证进程内原子，扩展为多副本前必须迁移到支持唯一约束/CAS 的共享存储。首次从单体 compose 升级时保存实际旧 compose 并验证其可重放后才登记回滚基线。未显式传快照会 fail-closed。公网域名 health 与匿名激活（`POST /v1/activation`，唯一登录路径）属激活后的反代报告检查，失败不回滚已在服务器本机全绿的 release。
 
 ## 6. 运维检查单
 

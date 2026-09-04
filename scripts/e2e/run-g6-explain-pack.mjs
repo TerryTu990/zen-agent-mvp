@@ -1,7 +1,7 @@
 /**
  * G6 浏览器 E2E：E2E-A（讲解与拒答）+ E2E-D（pack v2 载入三态）。
- * 范式沿用 run-m5.mjs / run-xianyu.mjs：真实 Chromium + MV3 extension + 真实 gateway 子进程 +
- * 静态站点夹具 + 可编程 mock LLM（不接触真实密钥）。证据 = 面板截图 + 脱敏审计片段 + 原始 SSE 帧 + 注入透明视图。
+ * 真实 Chromium + MV3 extension + 真实 gateway 子进程 + 静态站点夹具 + 可编程 mock LLM（不接触真实密钥）。
+ * 证据 = 面板截图 + 脱敏审计片段 + 原始 SSE 帧 + 注入透明视图。
  *
  * 夹具快照（scripts/e2e/fixtures/g6/，不改 assets/）：
  *   config-ok           registry v1.0.0

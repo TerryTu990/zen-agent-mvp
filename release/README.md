@@ -41,7 +41,7 @@ release/
 │       ├── system-prompt.md
 │       ├── manifest.json
 │       └── packs/…
-├── lark-cli/           # 0700；飞书 general profile 与 token 刷新状态
+├── lark-cli/           # 0700；镜像内 lark-cli 的配置卷（履约退役后无服务端消费者，见 adr-026「发布链路残余」）
 └── data/za/             # 审计 events.jsonl + 会话 sessions/（可写挂载，容器重建不丢）
 ```
 
@@ -93,8 +93,6 @@ release/build-extension.sh             # 3. （插件有变更时）打 zip
 ```
 
 首次部署前提（人工，一次性）：服务器 `/root/zen-agent/.env` 按 `remote/env.example` 填好真值；
-飞书启用时在受控 `lark-cli/` 卷完成 `general` profile 授权；发布冒烟会在三项卡密配置启用时执行
-`whoami`（不回显身份正文）；1panel 反代已指向
-`127.0.0.1:9010`（SSE 需关闭响应缓冲，见 04-deployment §6）。
+1panel 反代已指向 `127.0.0.1:9010`（SSE 需关闭响应缓冲，见 04-deployment §6）。
 
-原子激活的远端 health/单副本/镜像/快照/数据卷/飞书检查负责自动回滚；随后公网域名 health 是报告型反代检查，失败会终止发布报告但不会回滚已经验证健康的服务端 release。
+原子激活的远端 health/单副本/镜像/快照/数据卷检查负责自动回滚；随后公网域名 health 是报告型反代检查，失败会终止发布报告但不会回滚已经验证健康的服务端 release。

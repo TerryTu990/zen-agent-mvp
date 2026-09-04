@@ -1138,7 +1138,6 @@ function makeSitePort(overrides?: PortOverrides) {
   });
 }
 
-
 describe('toolgate ADR-013 — per-origin 身份口径（http/server 按目标 pack origin fail-closed）', () => {
   const httpBase = { sessionId: 's', toolCallId: 'c', toolId: siteHttpTool.id, params: { name: 'k' } };
 

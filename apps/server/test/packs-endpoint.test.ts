@@ -139,12 +139,12 @@ describe('GET /v1/packs（配置中心站点包页 L1 数据源）', () => {
       const body = (await response.json()) as { packs: PackView[] };
       const pack = body.packs.find((entry) => entry.packId === 'xianyu-seller');
       expect(pack).toBeDefined();
-      expect(pack!.version).toBe('0.9.0');
+      expect(pack!.version).toBe('0.10.0');
       // site-packs/manifest.json 未声明 source → 归一为 official（registry 缺省语义，adr-020 §3）。
       expect(pack!.source).toBe('official');
       // site-packs/packs/xianyu-seller/pack.json 未声明 name → 省略（UI 回退 packId）。
       expect(pack!.name).toBeUndefined();
-      expect(pack!.summary).toBe('闲鱼卖家 PC 端：数据导航、订单识别与受控履约');
+      expect(pack!.summary).toBe('闲鱼卖家 PC 端：数据导航、订单识别与消息页受控发送');
       expect(pack!.origin).toBe('https://seller.goofish.com');
       expect(pack!.features.map((feature) => feature.featureId)).toEqual([
         'xianyu-seller-data',

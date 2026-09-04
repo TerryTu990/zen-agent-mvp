@@ -242,7 +242,6 @@
 | `ZA_SESSION_TTL_MS` | `3600000` | 会话闲置 TTL（1h） |
 | `ZA_USER_CONFIG_DIR` | `.za/user-config` | L2 用户覆盖层存储目录（C7；按 subject 二级分段落一个 JSON 文件，临时文件 + 同目录 rename 原子写）。**容器部署必须外置到持久卷并给运行用户写权限**——落在镜像层时写入抛 `write-failed`，且 overlay 随容器重建丢失 |
 | `ZA_APPLICATIONS_DIR` | `.za/applications` | 投递记录业务日志目录（`record_application`/`list_applications` 内建工具落点，按天 `<YYYY-MM-DD>.jsonl`）；record-only 旁路 fail-open，与审计事件流分立。同样须随容器持久化 |
-| `LARKSUITE_CLI_CONFIG_DIR` | CLI 默认目录；生产为 `/data/lark-cli` | 飞书 profile 与 token 刷新状态目录；生产必须挂服务器受控持久卷，不进镜像或仓库 |
 
 ### 凭证
 
