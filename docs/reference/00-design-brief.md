@@ -16,7 +16,7 @@
 在任意站点上叠加 agent，按用户所在站点/功能（`packId`/`featureId`）动态装配规则、知识、工具面与
 自动化，提供四档能力（信任阶梯）：
 
-1. **功能讲解**（看）——基于 pack 事实的有据回答，配置未覆盖明确拒答
+1. **功能讲解**（看）——基于 pack 事实的有据回答，配置未覆盖如实说明未能确认
 2. **UI 引导**（指）——高亮/滚动定位目标元素，锚点失配如实降级
 3. **受控代执行**（做）——分级判定 + HITL + 一次性签名指令 + 审计
 4. **自动化**（托管）——pack/用户声明的周期与事件触发任务，需确认项收口到人
@@ -87,7 +87,7 @@ S3 多形态客户端 → S4 七系统拆分+状态外置）。关键维度的�
 - **C2 身份契约**（`identity-claims`）：claims 闭集 `{sub, tenant, roles[], hostUserId, iss, exp}`；`iss` 区分签发形态（adr-022 后为匿名 / P4 平台账号两种）；平台零特权。
 - **C3 客户端接入层**（`client-access-layer`）：五能力 + 消息帧闭集（上行 context-report / user-message / hitl-decision / exec-result；下行 text-delta / tool-card / hitl-request / exec-instruction / guide-action / dom 步进帧族）；P2.5-c 增 `config-draft`/`config-decision`（加法）；adr-023 增上行 `group-pages`（任务组页面清单上报）与下行定向落点 `page`（会话作用域不透明句柄，加法）。
 - **C4 配置快照**（`config-snapshot`）：registry（`manifest.json{version, packs[]}`，演进含 source/hash/租户清单）+ `packs/<packId>/{pack.json, features/<id>/{feature.md, facts.md, tools.json}, skills/, docs/, eval/}`；纯数据（ZA-C-AGENT-03）。
-- **C5 审计事件**（`audit-event`）：全链路事件结构，落盘前脱敏；P2.5-a 增 `user-config-write` 类型与 `userConfigRevision` 字段；adr-023 增 `page{handle, origin?}` 落点页字段（additive）。
+- **C5 审计事件**（`audit-event`）：全链路事件结构，落盘前脱敏；P2.5-a 增 `user-config-write` 类型与 `userConfigRevision` 字段；adr-023 增 `page{handle, origin?}` 落点页字段（additive）；不可信内容定界增 `untrusted-content` 类型（只记定界 kind 与命中的指令句式类别标签，不记原文，additive）。
 - **C6 模块端口**（TS 类型，以 `packages/contracts/src/ports.ts` 导出为准）：`AssemblyPort / ToolGatePort / LlmPort / AuditPort / UserConfigStore`，全部满足 U1。垂直履约端口经 adr-026 退役，核心契约不含站点业务语义。
 - **C7 用户覆盖层**（`user-overlay`，adr-014，P2.5-a 落地）：subject 键控、`"*"` 全局作用域、rules/facts/restrictions/packConfig/preferences；只收紧表达力（ZA-C-AGENT-04）。
 
@@ -147,9 +147,9 @@ P2 品牌回归只完成产品面（插件 manifest 与 release 产物命名已�
 下一阶段 = **P3 商店合规**（权限最小化 + CWS 上架）与 **P4 托管服务**（Google 账号登录为正式投产前置
 条件），均未启动。
 
-**待裁决登记**：2026-09-03 基座改为通用助手（`assets/system-prompt.md`），「拒答边界」评测维度随之退出
-闭集；§1 第 1 档与产品规则 R8 的「配置未覆盖明确拒答」是否同步改写，待 Terry 裁决（锚点：该裁决作出时
-以 ADR 记录并回写本节与 §1）。
+**已裁决（2026-09-03，adr-025 accepted）并于本批落地**：基座改为通用助手（`assets/system-prompt.md`），
+「拒答边界」评测维度退出闭集；§1 第 1 档与产品规则 R8 改写为事实边界口径——站点功能的陈述以 pack 事实与
+页面证据为准，未覆盖时如实说明未能确认、不臆造站点行为，与站点无关的通用请求不受此限。
 
 本文件修订纪律：定位/铁律/不变量级变更 MUST 经 Terry 裁决并同步 `.claude/rules/` 与 CLAUDE.md，
 一般演进以 ADR 增补、按需回写本文件。

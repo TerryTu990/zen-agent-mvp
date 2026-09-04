@@ -222,9 +222,19 @@ function collectDocText(doc: Document, pieces: string[]): void {
   }
 }
 
+/**
+ * 不可见格式字符消毒（无损）：剔除双向控制符与零宽/不可见格式字符——它们不产生可见文本，
+ * 却能让下游看到的正文与页面上呈现的不一致（视觉反转、藏字）。可读字符（含全角标点）一律不动。
+ * 口径与服务端共享工具（contracts 的 stripInvisibleFormatChars）一致，两处 MUST 同步；
+ * 插件按 U2 不得依赖 contracts，故此处独立实现，不复用。
+ */
+function stripInvisibleFormatChars(raw: string): string {
+  return raw.replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g, '');
+}
+
 /** 只折叠行内空白与多余空行；块级换行是结构信息，保留。 */
 function normalize(raw: string): string {
-  return raw
+  return stripInvisibleFormatChars(raw)
     .replace(/[^\S\n]+/g, ' ')
     .replace(/ *\n */g, '\n')
     .replace(/^\| ?/gm, '')

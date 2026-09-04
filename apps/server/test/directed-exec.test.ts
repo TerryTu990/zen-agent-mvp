@@ -73,15 +73,21 @@ function domCall(id: string, params: Record<string, unknown>): MockDecision {
   return { toolCall: { id, name: DOM_TOOL, arguments: JSON.stringify(params) } };
 }
 
+/** 观测体剥壳：不可信内容被定界串包裹，按结构判形态前先剥离（回显仍用原文，供判据看定界本身）。 */
+function unwrapObs(text: string): string {
+  return text.replace(/⟪\/?untrusted:[^⟫\n]*⟫/g, '').trim();
+}
+
 /**
  * 首轮按用户哨兵语产出 tool_call；回喂轮按 observation 形态推进：
- * 定向快照观测（首行 `[来自 `）→ 发定向 dom 批次；缺省快照观测（`{"url"` 开头）→ 发后续 dom 批次；
- * 其余观测原样回显，供对回喂内容做机械断言。
+ * 定向快照观测（首行 `[来自 `）→ 发定向 dom 批次；缺省快照观测（剥壳后 `{"url"` 开头）→ 发后续 dom 批次；
+ * 其余观测原样回显（含定界串），供对回喂内容做机械断言。
  */
 function decide(u: string, messages: Array<Record<string, unknown>>): MockDecision {
   const last = messages[messages.length - 1] as { role?: string; content?: unknown } | undefined;
   const obs = last?.role === 'tool' ? String(last.content ?? '') : null;
   if (obs !== null) {
+    const body = unwrapObs(obs);
     const directedOp = u.match(/定向操作\s+(\S+)/);
     if (obs.startsWith('[来自 ') && directedOp !== null) {
       return domCall('call_dom_directed', {
@@ -92,14 +98,14 @@ function decide(u: string, messages: Array<Record<string, unknown>>): MockDecisi
         targetPage: directedOp[1],
       });
     }
-    if (obs.startsWith('{"url"') && u.includes('缺省快照后操作')) {
+    if (body.startsWith('{"url"') && u.includes('缺省快照后操作')) {
       return domCall('call_dom_default', {
         task: '活跃页操作任务',
         steps: [{ action: 'click', ref: 'za-9' }],
         summary: '点击活跃页按钮',
       });
     }
-    if (obs.startsWith('{"url"') && u.includes('缺省快照后隔离定向')) {
+    if (body.startsWith('{"url"') && u.includes('缺省快照后隔离定向')) {
       return domCall('call_dom_isolated', {
         task: '隔离定向任务',
         steps: [{ action: 'click', ref: 'za-9' }],

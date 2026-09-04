@@ -22,8 +22,8 @@ const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
 // 装配快照根（server 载入）+ pack 级评测发现根（ADR-013 §4：扫 packs 各 eval/scenarios.json 逐 pack 跑）。
 // 四根分阶段各起一台 server（同端口先后独占）——各根的 pack origin 互不相同，须独立载入。当前分布：
 //   host-demo   evals/scenarios.json 的 17 条主场景（该根下无 pack 级 eval 集）
-//   acceptance  5 个验收 pack 共 39 条：codeflow-console 2 / generic-web 10 / mail-126 3 / xianyu-seller 19 / zhipin 5
-//   assets      生产 pack generic-web 10 条
+//   acceptance  5 个验收 pack 共 42 条：codeflow-console 2 / generic-web 13 / mail-126 3 / xianyu-seller 19 / zhipin 5
+//   assets      生产 pack generic-web 13 条
 //   site-packs  已下线站点包 25 条：xianyu-seller 18 / yinxiang 7
 const SNAPSHOT_ROOT = join(REPO_ROOT, 'examples', 'host-demo', 'config');
 const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
@@ -308,7 +308,11 @@ async function executeInstruction(sessionId, token, frame, scenario) {
       body:
         navigateStep !== null
           ? { url: navigateStep.url }
-          : { reads: {}, completedSteps: steps.length === 0 ? 1 : steps.length },
+          : {
+              // 场景可声明 read 采集值，使工具返回体承载页面来源的不可信内容（定界维度需要）。
+              reads: scenario.execResultReads ?? {},
+              completedSteps: steps.length === 0 ? 1 : steps.length,
+            },
     });
     return;
   }

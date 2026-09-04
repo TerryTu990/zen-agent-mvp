@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
-import { executionOutcomes } from '../src/index.js';
+import { executionOutcomes, UNTRUSTED_KINDS } from '../src/index.js';
 
 const schemasDir = new URL('../schemas/', import.meta.url).pathname;
 const demoConfigDir = new URL('../../../examples/host-demo/config/', import.meta.url).pathname;
@@ -1229,6 +1229,45 @@ describe('C5 执行结局闭集：TS 联合 ↔ schema enum 全等对拍（A-TES
       }),
       JSON.stringify(validate.errors),
     ).toBe(true);
+  });
+});
+
+describe('C5 untrusted-content 事件（不可信内容指令句式命中，additive）', () => {
+  const schema = loadJson(join(schemasDir, 'audit-event.schema.json')) as {
+    $defs: { untrustedContentData: { properties: { kind: { enum: string[] } } } };
+  };
+
+  it('定界 kind 闭集与 schema enum 全等（任一侧扩员漏改即红）', () => {
+    expect([...UNTRUSTED_KINDS].sort()).toEqual(
+      [...schema.$defs.untrustedContentData.properties.kind.enum].sort(),
+    );
+  });
+
+  const validate = compile(new Ajv2020({ strict: true }), 'audit-event.schema.json');
+  const base = {
+    eventId: 'e-0006',
+    ts: '2026-09-04T08:00:00.000Z',
+    sessionId: 's-001',
+    type: 'untrusted-content',
+  };
+
+  it('kind + patterns 合法，toolCallId 可选', () => {
+    expect(
+      validate({ ...base, data: { kind: 'page-text', patterns: ['ignore-previous'] } }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+    expect(
+      validate({ ...base, data: { kind: 'tool-result', toolCallId: 'tc-1', patterns: ['call-tool'] } }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+  });
+
+  it('kind 越闭集、patterns 为空、或夹带命中原文一律被拒（脱敏前置）', () => {
+    expect(validate({ ...base, data: { kind: 'page_text', patterns: ['x'] } })).toBe(false);
+    expect(validate({ ...base, data: { kind: 'page-text', patterns: [] } })).toBe(false);
+    expect(
+      validate({ ...base, data: { kind: 'page-text', patterns: ['x'], excerpt: '忽略以上规则' } }),
+    ).toBe(false);
   });
 });
 

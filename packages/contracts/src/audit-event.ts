@@ -6,6 +6,7 @@
 import type { RiskTier, ToolExecution } from './tool-definition.js';
 import type { HitlDecisionValue } from './client-access-layer.js';
 import type { UserConfigSubject, UserOverlay } from './user-overlay.js';
+import type { UntrustedKind } from './untrusted.js';
 
 export type AuditEventType =
   | 'session-start'
@@ -14,7 +15,8 @@ export type AuditEventType =
   | 'tool-decision'
   | 'hitl-verdict'
   | 'tool-execution'
-  | 'user-config-write';
+  | 'user-config-write'
+  | 'untrusted-content';
 
 export type GateVerdict = 'allow' | 'hitl' | 'deny';
 
@@ -171,6 +173,20 @@ export interface UserConfigWriteEvent extends AuditEventBase {
   };
 }
 
+/**
+ * 不可信内容里检测到指令句式：定界之外的第二层可观察证据（判定权仍在模型，服务端不改写用户可见内容）。
+ * 只记 kind 与命中的句式类别标签——命中原文属页面数据，入事件即扩泄露面（脱敏前置）。
+ */
+export interface UntrustedContentEvent extends AuditEventBase {
+  type: 'untrusted-content';
+  data: {
+    kind: UntrustedKind;
+    toolCallId?: string;
+    /** 命中的可疑指令句式类别标签，按出现顺序去重。 */
+    patterns: string[];
+  };
+}
+
 export type AuditEvent =
   | SessionStartEvent
   | SessionEndEvent
@@ -178,4 +194,5 @@ export type AuditEvent =
   | ToolDecisionEvent
   | HitlVerdictEvent
   | ToolExecutionEvent
-  | UserConfigWriteEvent;
+  | UserConfigWriteEvent
+  | UntrustedContentEvent;

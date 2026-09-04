@@ -2717,7 +2717,10 @@ describe('编排韧性：并行调用 / 未知工具 / 失败预算 / 终止原�
         (m) => m.role === 'tool' && (m.content ?? '').includes('截断快照 第3次'),
       );
       expect(obs, JSON.stringify(messages.map((m) => m.role))).toBeDefined();
-      const body = JSON.parse(obs!.content ?? '{}') as {
+      // 观测体被不可信内容定界串包裹（治理注入在区外），按结构断言前先剥壳。
+      const body = JSON.parse(
+        (obs!.content ?? '{}').replace(/⟪\/?untrusted:[^⟫\n]*⟫/g, '').trim(),
+      ) as {
         elementsTruncated?: boolean;
         elementsOmitted?: number;
         elementsNote?: string;
@@ -2751,6 +2754,7 @@ describe('编排韧性：并行调用 / 未知工具 / 失败预算 / 终止原�
           url: ORDER_LIST_URL,
           title: `订单列表 第${round}次`,
           elements: [{ ref: `za-${round}`, role: 'button', label: `按钮${round}` }],
+          evidence: { 'message-receipts': { count: round, latest: '已读' } },
         });
       }
       await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
@@ -2762,6 +2766,49 @@ describe('编排韧性：并行调用 / 未知工具 / 失败预算 / 终止原�
       expect(snapshotObs[0]!.content).toContain('第3次');
       const stubs = messages.filter((m) => m.role === 'tool' && (m.content ?? '').includes('快照已过期'));
       expect(stubs).toHaveLength(2);
+      // 存根仍带回各自的 evidence 基线：抹掉基线，模型就无从判断回执是否新增（R6）。
+      // 观测体被定界串包裹，解析 evidence 前须剥壳——漏剥即基线静默丢失。
+      expect(stubs[0]!.content).toContain('"message-receipts":{"count":1,"latest":"已读"}');
+      expect(stubs[1]!.content).toContain('"message-receipts":{"count":2,"latest":"已读"}');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('页面文案命中指令句式：区外注记不破坏结构解析，evidence 基线与元素计数照常', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '模拟连续快照 观察这一页',
+      });
+      for (let round = 1; round <= 3; round += 1) {
+        await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === round);
+        const request = framesByType(sse.frames, 'snapshot-request')[round - 1]!;
+        await postFrame(token, sessionId, {
+          type: 'snapshot-report',
+          sessionId,
+          requestId: String(request['requestId']),
+          url: ORDER_LIST_URL,
+          // 命中 role-override 句式的寻常页面文案：治理注记随之落到定界区外。
+          title: `本片由张三扮演主角 第${round}次`,
+          elements: [{ ref: `za-p${round}`, role: 'button', label: `按钮${round}` }],
+          evidence: { 'message-receipts': { count: round, latest: '已读' } },
+        });
+      }
+      await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
+      const messages = requestMessagesAt(mock.requests.length - 1);
+      const stubs = messages.filter(
+        (m) => m.role === 'tool' && (m.content ?? '').includes('快照已过期'),
+      );
+      expect(stubs).toHaveLength(2);
+      expect(stubs[0]!.content).toContain('[快照已过期：1 元素，refs 失效]');
+      expect(stubs[0]!.content).toContain('"message-receipts":{"count":1,"latest":"已读"}');
+      expect(stubs[1]!.content).toContain('"message-receipts":{"count":2,"latest":"已读"}');
     } finally {
       sse.close();
     }
