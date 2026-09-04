@@ -111,6 +111,7 @@ export {
   isUntrustedKind,
   untrustedNonce,
   wrapUntrusted,
+  unwrapUntrusted,
   stripUntrustedDelimiters,
   stripInvisibleFormatChars,
   stripDisplayUnsafeChars,

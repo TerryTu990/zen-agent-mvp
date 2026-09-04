@@ -20,8 +20,8 @@ import {
   SITE_NAVIGATE_RESULT_SCHEMA,
   SITE_NAVIGATE_TOOL_ID,
   stripDisplayUnsafeChars,
-  stripUntrustedDelimiters,
   untrustedNonce,
+  unwrapUntrusted,
   validateOverlayAgainstL1,
   validateUserOverlay,
 } from '@zen-agent/contracts';
@@ -1011,14 +1011,14 @@ interface TurnOutcome {
 
 /**
  * 快照观测正文里的 evidence 块（紧凑复述）；无 evidence 或正文非 JSON（含已是存根）→ null。
- * 观测体被不可信内容定界串包裹，解析前先剥壳——否则 evidence 基线会在瘦身时静默丢失，
- * 履约回执的「操作前/操作后」比对将无从做起（R6）。
+ * 观测体被不可信内容定界串包裹，解析前按开合标记剥壳——区外的治理注记若留在正文里解析必失败，
+ * evidence 基线随之在瘦身时静默丢失，履约回执的「操作前/操作后」比对将无从做起（R6）。
  */
 function snapshotEvidenceOf(content: string): string | null {
   const newlineIdx = content.indexOf('\n');
   const tagged =
     content.startsWith(PAGE_OBS_MARKER) && newlineIdx >= 0 ? content.slice(newlineIdx + 1) : content;
-  const body = stripUntrustedDelimiters(tagged).trim();
+  const body = unwrapUntrusted(tagged).trim();
   try {
     const parsed = JSON.parse(body) as { evidence?: unknown };
     return parsed.evidence === undefined ? null : JSON.stringify({ evidence: parsed.evidence });

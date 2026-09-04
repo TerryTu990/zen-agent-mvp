@@ -30,7 +30,7 @@ export function untrustedNonce(): string {
   return randomBytes(8).toString('hex');
 }
 
-/** 剥除任何定界形状的串——用于包裹前的输入侧净化，也用于消费方按结构解析前的剥壳。 */
+/** 剥除任何定界形状的串——只用于包裹前的输入侧净化；消费方还原区内正文走 unwrapUntrusted。 */
 export function stripUntrustedDelimiters(text: string): string {
   return text.replace(DELIMITER_PATTERN, '');
 }
@@ -41,6 +41,19 @@ export function stripUntrustedDelimiters(text: string): string {
  */
 export function wrapUntrusted(kind: UntrustedKind, nonce: string, body: string): string {
   return `⟪untrusted:${kind}:${nonce}⟫\n${stripUntrustedDelimiters(body)}\n⟪/untrusted:${nonce}⟫`;
+}
+
+/** 定界区匹配：开标记后与合标记前各让出一个换行——包裹时补的那两个换行不属于正文。 */
+const UNTRUSTED_REGION_PATTERN = /⟪untrusted:[^⟫\n]*⟫\n?([\s\S]*?)\n?⟪\/untrusted:[^⟫\n]*⟫/;
+
+/**
+ * 剥壳：只取开合标记之间的正文，标记之外的平台文本（治理注记、页标注）一律不进。
+ * 消费方按结构解析前必须走本函数——按「删掉定界串」还原会把区外的平台文本留在正文里，
+ * 解析随之失败。未包裹的内容原样返回。
+ */
+export function unwrapUntrusted(content: string): string {
+  const matched = UNTRUSTED_REGION_PATTERN.exec(content);
+  return matched === null ? content : (matched[1] ?? '');
 }
 
 /**

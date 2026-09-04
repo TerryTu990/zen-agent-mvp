@@ -6,7 +6,7 @@
  * 保留集的粒度由 keyOf 决定：缺省全历史一份（落盘边界口径，跨回合按页并存无意义且无界增长），
  * 传入 snapshotPageKey 则每个观察目标各留最近一份（回合内请求视图口径，adr-023 同回合读多页后比对）。
  */
-import { stripUntrustedDelimiters, type LlmMessage } from '@zen-agent/contracts';
+import { unwrapUntrusted, type LlmMessage } from '@zen-agent/contracts';
 import { PAGE_OBS_MARKER } from './compress.js';
 
 export const SNAPSHOT_TOOL_NAME = 'page_snapshot';
@@ -16,7 +16,8 @@ const STALE_STUB_PREFIX = '[快照已过期：';
 /**
  * 存根内容：N=该快照元素数（解析本模块自建的观测 JSON 得出，非启发式猜测）。
  * 定向快照观测首行是页标注（`[来自 …]`），存根保留该行——过期存根仍知来源页。
- * 观测体被不可信内容定界串包裹，解析前先剥壳，否则元素计数恒为 0（存根会误报"0 元素"）。
+ * 观测体被不可信内容定界串包裹，解析前按开合标记剥壳——区外的治理注记若留在正文里，
+ * 解析必失败、元素计数会误报 0。
  * 已是存根的观测原样返回（幂等）：存根体非 JSON，重走解析会把元素计数冲成 0。
  */
 function snapshotStub(content: string): string {
@@ -30,7 +31,7 @@ function snapshotStub(content: string): string {
   if (body.startsWith(STALE_STUB_PREFIX)) return content;
   let count = 0;
   try {
-    const parsed = JSON.parse(stripUntrustedDelimiters(body).trim()) as { elements?: unknown };
+    const parsed = JSON.parse(unwrapUntrusted(body).trim()) as { elements?: unknown };
     if (Array.isArray(parsed.elements)) count = parsed.elements.length;
   } catch {
     count = 0;

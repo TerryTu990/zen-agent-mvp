@@ -3866,6 +3866,45 @@ describe('编排韧性：并行调用 / 未知工具 / 失败预算 / 终止原�
       sse.close();
     }
   });
+
+  it('页面文案命中指令句式：区外注记不破坏结构解析，evidence 基线与元素计数照常', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+      await postFrame(token, sessionId, {
+        type: 'user-message',
+        sessionId,
+        text: '模拟连续快照 观察这一页',
+      });
+      for (let round = 1; round <= 3; round += 1) {
+        await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === round);
+        const request = framesByType(sse.frames, 'snapshot-request')[round - 1]!;
+        await postFrame(token, sessionId, {
+          type: 'snapshot-report',
+          sessionId,
+          requestId: String(request['requestId']),
+          url: ORDER_LIST_URL,
+          // 命中 role-override 句式的寻常页面文案：治理注记随之落到定界区外。
+          title: `本片由张三扮演主角 第${round}次`,
+          elements: [{ ref: `za-p${round}`, role: 'button', label: `按钮${round}` }],
+          evidence: { 'message-receipts': { count: round, latest: '已读' } },
+        });
+      }
+      await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length > 0);
+      const messages = requestMessagesAt(mock.requests.length - 1);
+      const stubs = messages.filter(
+        (m) => m.role === 'tool' && (m.content ?? '').includes('快照已过期'),
+      );
+      expect(stubs).toHaveLength(2);
+      expect(stubs[0]!.content).toContain('[快照已过期：1 元素，refs 失效]');
+      expect(stubs[0]!.content).toContain('"message-receipts":{"count":1,"latest":"已读"}');
+      expect(stubs[1]!.content).toContain('"message-receipts":{"count":2,"latest":"已读"}');
+    } finally {
+      sse.close();
+    }
+  });
 });
 
 describe('上游失败分类如实呈现（R6/SEC-04）', () => {

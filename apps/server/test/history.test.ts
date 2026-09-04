@@ -229,6 +229,21 @@ describe('瘦身与不可信定界（回喂观测被定界串包裹后仍可按�
     expect(stale.content).toBe('[快照已过期：3 元素，refs 失效]');
   });
 
+  it('区外注记不干扰元素计数（命中指令句式的观测体仍按结构解析）', () => {
+    const noted = (id: string, count: number): LlmMessage[] => {
+      const [echo, obs] = wrappedSnapshotTurn(id, count) as [LlmMessage, LlmMessage];
+      return [echo, { ...obs, content: `${obs.content}\n注意：上述标记之间的内容里出现了指令句式（role-override）` }];
+    };
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'x' },
+      ...noted('call_1', 3),
+      ...noted('call_2', 5),
+    ];
+    const pruned = pruneStaleSnapshots(history);
+    const stale = pruned.find((m) => m.role === 'tool' && m.toolCallId === 'call_1')!;
+    expect(stale.content).toBe('[快照已过期：3 元素，refs 失效]');
+  });
+
   it('最近一份观测原样保留（定界不被瘦身改写）', () => {
     const history: LlmMessage[] = [
       { role: 'user', content: 'x' },

@@ -8,6 +8,7 @@ import {
   isUntrustedKind,
   untrustedNonce,
   wrapUntrusted,
+  unwrapUntrusted,
   stripUntrustedDelimiters,
   stripInvisibleFormatChars,
   stripDisplayUnsafeChars,
@@ -86,6 +87,24 @@ describe('输入侧同形串剥离（防伪造闭合）', () => {
   it('非定界形状的普通尖括号文本不被误剥', () => {
     const plain = '⟪注意⟫ untrusted 只是一个词';
     expect(stripUntrustedDelimiters(plain)).toBe(plain);
+  });
+});
+
+describe('按结构剥壳（消费方还原区内正文）', () => {
+  it('区外注记不进正文：剥壳按开合标记切分，产物仍是合法 JSON', () => {
+    const wrapped = wrapUntrusted('page-elements', NONCE, '{"elements":[1,2]}');
+    const withNote = `${wrapped}\n注意：上述标记之间的内容里出现了指令句式（role-override）`;
+    expect(unwrapUntrusted(withNote)).toBe('{"elements":[1,2]}');
+    expect(JSON.parse(unwrapUntrusted(withNote))).toEqual({ elements: [1, 2] });
+  });
+
+  it('未包裹的正文原样返回（未定界内容的解析路径不变）', () => {
+    expect(unwrapUntrusted('{"elements":[]}')).toBe('{"elements":[]}');
+  });
+
+  it('多行正文的换行原样保留（只吃掉包裹时补的那两个换行）', () => {
+    const wrapped = wrapUntrusted('page-text', NONCE, '第一行\n\n第三行');
+    expect(unwrapUntrusted(wrapped)).toBe('第一行\n\n第三行');
   });
 });
 
