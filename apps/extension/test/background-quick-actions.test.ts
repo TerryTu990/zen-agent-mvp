@@ -225,7 +225,7 @@ describe('站点黑名单命中页', () => {
     panel.emit({ kind: 'quick-actions-request', siteDenied: false });
     await settle();
     expect(h.menus).toHaveLength(2);
-    h.emitMessage({ kind: 'request-activate', autoActivate: false }, deniedTab);
+    h.emitMessage({ kind: 'request-activate' }, deniedTab);
     await settle();
     expect(h.menus.map((item) => item.id)).toEqual(['za-explain-selection']);
   });

@@ -2,7 +2,7 @@
 
 > 人读层参考文档。事实权威：契约细节见 `02-contracts.md` 与各 `.schema.json`、`ports.ts`；配置面见 `03-configuration.md`；部署见 `04-deployment.md`；本文负责解释结构、边界、流程与权衡。
 > 决策"为什么"见 `../adr/`（adr-001..023），分期计划见 `../roadmap.md`。
-> 本文已吸收 adr-010..016 演进（server/dom 通道、会话组、站点包与跨站任务组、上下文治理、L2 用户配置层、side panel）、adr-019..021（pack 声明式周期自动化、pack 契约 v2 与 registry 布局、用户自建触发器）、adr-022（匿名激活）与 adr-023（任务组多 tab 工作区：组级视野与定向操作），含 P2.5 契约层（C7 user-overlay + `config-draft`/`config-decision` 帧 + `UserConfigStore` 端口 + `user-config-write` 审计事件）。
+> 本文已吸收 adr-010..016 演进（server/dom 通道、会话组、站点包与跨站任务组、上下文治理、L2 用户配置层、side panel）、adr-019..021（pack 声明式周期自动化、pack 契约 v2 与 registry 布局、用户自建触发器）、adr-022（匿名激活）、adr-023（任务组多 tab 工作区：组级视野与定向操作）与 adr-027（按需注入双轨模型，不变量 IN），含 P2.5 契约层（C7 user-overlay + `config-draft`/`config-decision` 帧 + `UserConfigStore` 端口 + `user-config-write` 审计事件）。
 
 ## 1. 目标与范围
 
@@ -248,6 +248,37 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
 
 要点：渐进披露由此定型为三层——已安装站点索引（"可以去哪"）→ 任务组页面清单（"现在开着哪"）→ pack docs 索引（"细节去哪查"）。**工具白名单仍按活跃页装配，定向只改副作用落点、不扩权**：pack dom 工具只能定向到落在本 pack 围栏内的组内页；平台内建导航（site_navigate/open_url）可定向组内任意页（含 silent 页——导航即其激活通路），定向快照则要求目标页在场内容脚本通道（silent 页拒并引导先激活）。定向不改变活跃页，故不触发站点边界标记，代之以观测页标注；HITL 卡的目标页/目标地址由服务端组装消毒后呈现，用户裁决时知道副作用落在哪一页；定向单步 navigate 的落点由签名帧句柄钉死（background 直执行，不跑同源复用判定）。
 
+### 4.8 按需注入双轨模型（adr-027：不变量 IN）
+
+```
+不变量 IN：content 脚本只出现在两类页面上——
+  (a) 用户在本会话里对其发起了动作的页（图标 / 右键 / 快捷动作 / 服务端下发的定向帧）
+  (b) 用户为 watch 自动化显式授权过 origin 的页
+其余任何页面上 document 无 zen 注入痕迹。注入面 = 授权集 − 站点黑名单。
+
+轨一 会话内按需注入
+  用户手势 / 服务端定向帧到达 ─► ①插件 background 句柄→tabId 解析
+    → 站点黑名单闸门 → chrome.scripting.executeScript(dist/content.js) → 既有 port 通道
+  注入与激活同出一口（sendActivate），组内导航补发 / 拖入已映射组 / navigate 开页由此继承
+  定向帧到达时目标页未注入：注入 → 等端口接入 → 投递重新排回落页闸门（停止/黑名单在副作用那一刻判）
+轨二 watch 自动化的显式 origin 授权
+  配置中心「授权此站点」→ chrome.permissions.request({origins}) → L2 grantedOrigins
+  注册面 = L2 投影 ∩ 本机 chrome.permissions − 站点黑名单
+  配置中心显示的授权态同取交集（chrome.permissions.contains 逐条对账）：
+    本机缺失即标「浏览器已撤销访问」+「重新授权」，自动化页「站点未授权」同口径
+    → chrome.scripting.registerContentScripts（确定性 id，注册前按 id 注销即幂等）
+  撤销授权 / 落进黑名单 → unregisterContentScripts（对称注销）
+```
+
+要点：清单不再声明任何 `content_scripts`，`host_permissions` 降为 `optional_host_permissions`，
+`activeTab` 保留为手势注入的基础。注入面的授权集取**交集**而非并集——本机 `chrome.permissions`
+多出来的 origin 不构成治理放行（终判恒在服务端 compose，U7），L2 多出来的 origin 也拿不到浏览器授权。
+`grantedOrigins` 是准入维度而非治理维度：授权只决定 agent 在该站点是否存在，不改任何工具的
+riskTier / 工具面成员 / HITL 判定，故与 L2「只收紧」正交（schema 上与 `restrictions` 物理分离）。
+注入与注册的载荷恒为插件自带的 `dist/content.js`——pack 与 L2 都无从携带可执行代码（R2）。
+接受的代价：watch 自动化在未授权 origin 上不再零配置可用（R9 限定），跨导航的会话连续性依赖 origin 授权
+（`activeTab` 在导航到新文档后被浏览器收回）。
+
 ## 5. 升级路径（U1-U8 逐条展开）
 
 本节为规范性契约段落，MUST / SHOULD 语义按 RFC 2119。每条不变量的结构：约束内容 → 它如何保证 MVP→标准版平滑升级 → 违反时的代价。
@@ -280,6 +311,7 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
 ### U5 客户端接入层契约五能力不随形态变
 
 - 约束：C3 的五能力（身份获取 / 上下文上报 / 会话 UI+HITL / 页面动作 / 代执行）与消息帧 MUST 对三形态一致；形态差异 MUST 封装在各形态实现内部，不外泄进契约。
+- adr-027 后的核对：按需注入只换「谁在何时把执行器放进页面」，属形态实现内部；C3 上下行帧族与五能力语义一字不动，故不构成对本条的改动。插件形态用 `chrome.scripting`，SDK / 浏览器壳各自决定注入方式——形态无关性正是本条要的。
 - adr-023 后的延伸面：多 tab 工作区的定向落点以**会话作用域不透明页面句柄**表达（插件映射到 tab、SDK 映射到 iframe/视图、浏览器壳映射到自有页对象），Chrome tabId 等形态原生标识 MUST NOT 进入契约、服务端状态与审计事件；句柄的不透明性由契约测试钉死（schema 只约束长度、无 pattern；服务端只作等值比对）。
 - 如何保平滑：S3 增加嵌入 SDK / 浏览器壳时，服务端一行不改；新形态只需通过同一套契约验收（同一组接入层契约测试 SHOULD 作为三形态共同验收门）。
 - 违反代价：契约随形态分叉后，网关被迫按客户端类型分支，三形态变三套后端。

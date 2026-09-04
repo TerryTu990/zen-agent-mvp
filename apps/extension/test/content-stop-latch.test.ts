@@ -40,6 +40,8 @@ function domBatch(nonce: string): ExecInstructionFrame {
 
 /** 装载真实 content 脚本并完成激活握手；返回其会话端口的驱动面。 */
 async function loadContent(): Promise<ContentHarness> {
+  // 每个用例＝一张新文档：重复注入守卫的标记随文档存活，同一 jsdom window 上须先清掉。
+  delete (globalThis as { window?: { __zaInjected?: true } }).window?.__zaInjected;
   const runtimeListeners: Array<(raw: unknown) => void> = [];
   const portListeners: Array<(raw: unknown) => void> = [];
   const sent: ContentToBackgroundMessage[] = [];

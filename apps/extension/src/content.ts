@@ -149,27 +149,30 @@ function activate(): void {
   window.addEventListener('popstate', announceIfVisible);
 }
 
-async function matchesAutoActivate(): Promise<boolean> {
-  try {
-    const items = await chrome.storage.local.get('za.autoActivate');
-    const list = items['za.autoActivate'];
-    return Array.isArray(list) && list.includes(location.origin);
-  } catch {
-    return false;
+/**
+ * 重复注入守卫（adr-027 轨一）：本脚本按需逐次注入，同一文档可能被注入多次
+ * （手势重复、导航补发与定向帧到达撞在一起）。标记落在隔离世界的 window 上、随文档存活，
+ * 第二次注入整体空转——两套 runtime 监听与两条会话端口会让同一条指令执行两次。
+ */
+declare global {
+  interface Window {
+    __zaInjected?: true;
   }
 }
 
 function boot(): void {
   if (window.top !== window) return;
+  if (window.__zaInjected === true) return;
+  window.__zaInjected = true;
   chrome.runtime.onMessage.addListener((raw) => {
     const message = raw as BackgroundRuntimeMessage | null;
     if (message?.kind === 'activate') activate();
     else if (message?.kind === 'refresh-context' && document.visibilityState === 'visible') liveAnnounce?.();
   });
-  void matchesAutoActivate().then((autoActivate) => {
-    const request: ContentRuntimeMessage = { kind: 'request-activate', autoActivate };
-    void chrome.runtime.sendMessage(request).catch(() => {});
-  });
+  // 握手只报「content 已就位」：脚本出现在本页这件事本身就是 background 注入的结果，
+  // 是否接入会话由 background 按标签组状态判定，页面侧不持任何 origin 名单。
+  const request: ContentRuntimeMessage = { kind: 'request-activate' };
+  void chrome.runtime.sendMessage(request).catch(() => {});
 }
 
 boot();

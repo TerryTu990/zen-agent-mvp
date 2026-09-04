@@ -40,8 +40,22 @@ export function targetPageMembers<T>(
 }
 
 /**
- * target-page 帧的投递解析粘合（纯函数）：帧上目标句柄 → 句柄表反查 tabId → 成员端口
- * 等值匹配，至多命中一个成员。不载句柄的帧或任一级未命中一律空投递（fail-safe 同上，禁回退活跃页）。
+ * target-page 帧的落点解析（纯函数）：帧上目标句柄 → 句柄表反查 tabId。
+ * null = 帧不载句柄，或句柄已退役——后者即目标页面实体已不在组内，禁改投。
+ */
+export function targetPageTabId(frame: DownstreamFrame, table: PageHandleTable): number | null {
+  const handle =
+    frame.type === 'snapshot-request' ||
+    frame.type === 'exec-instruction' ||
+    frame.type === 'guide-action'
+      ? frame.page
+      : undefined;
+  return handle === undefined ? null : tabIdForHandle(table, handle);
+}
+
+/**
+ * target-page 帧的投递解析粘合（纯函数）：落点 tabId → 成员端口等值匹配，至多命中一个成员。
+ * 不载句柄的帧或任一级未命中一律空投递（fail-safe 同上，禁回退活跃页）。
  */
 export function resolveTargetPageMembers<T>(
   frame: DownstreamFrame,
@@ -49,14 +63,7 @@ export function resolveTargetPageMembers<T>(
   members: readonly T[],
   tabIdOf: (member: T) => number | undefined,
 ): T[] {
-  const handle =
-    frame.type === 'snapshot-request' ||
-    frame.type === 'exec-instruction' ||
-    frame.type === 'guide-action'
-      ? frame.page
-      : undefined;
-  const tabId = handle === undefined ? null : tabIdForHandle(table, handle);
-  return targetPageMembers(members, tabIdOf, tabId);
+  return targetPageMembers(members, tabIdOf, targetPageTabId(frame, table));
 }
 
 export interface GroupMembers<T> {

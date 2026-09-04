@@ -5,6 +5,7 @@ import {
   createGroupMembers,
   resolveTargetPageMembers,
   routeForFrame,
+  targetPageTabId,
   type FrameRoute,
 } from './group-routing.js';
 import { decideBackgroundNavigate, decideTargetedNavigate } from './navigate-target.js';
@@ -13,7 +14,6 @@ import {
   decideActivation,
   decidePanelVisibility,
   sessionKeyForGroup,
-  autoGroupKey,
   panelGroupKey,
   zenGroupKey,
   panelHistoryKeyForGroup,
@@ -89,6 +89,14 @@ import {
   SITE_DENYLIST_KEY,
   tabUrlOf,
 } from './site-denylist.js';
+import {
+  CONTENT_SCRIPT_FILE,
+  decideRegisteredOrigins,
+  GRANTED_ORIGINS_KEY,
+  grantedOriginsFromUserConfig,
+  parseGrantedOrigins,
+  planRegistrations,
+} from './injection.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
 // 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
@@ -100,6 +108,13 @@ const DEFAULT_SERVER_BASE_URL =
 
 // 全局唯一身份提供者：单飞与退避跨会话组共享，避免多组同时激活。
 const identity = createIdentityProvider();
+
+/**
+ * 定向帧注入后等待目标页会话端口接入的上限。
+ * 取值须容得下「注入 → 脚本求值 → 握手 → 端口接入」这一跳；超时按目标不可达丢帧，
+ * 不无限等——带副作用的帧压在没有落点的链上会把后续帧一并卡住。
+ */
+const CONTENT_ATTACH_TIMEOUT_MS = 3000;
 
 interface Session {
   baseUrl: string;
@@ -192,15 +207,6 @@ async function isGroupMapped(groupId: number): Promise<boolean> {
   const key = sessionKeyForGroup(groupId);
   const stored = (await chrome.storage.session.get(key))[key];
   return typeof stored === 'string' && stored !== '';
-}
-
-function originOf(url: string | undefined): string | null {
-  if (url === undefined) return null;
-  try {
-    return new URL(url).origin;
-  } catch {
-    return null;
-  }
 }
 
 type UpstreamContentMessage = Exclude<
@@ -394,6 +400,19 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   };
 
   /**
+   * 定向帧落到未注入目标页的通路：先注入，端口接入后再投递。
+   * 注入失败或端口始终不来即丢帧——与「目标成员不可达」同一处置，禁改投他页。
+   * 注入与端口接入之间最长隔着 CONTENT_ATTACH_TIMEOUT_MS，这段窗口里停止手势与站点拉黑都可能发生：
+   * 真正的投递因此重新排回 landOnPage，闸门恒在副作用发生的那一刻判，而非取址那一刻判过就一路放行。
+   */
+  async function injectAndPostToTab(frame: DownstreamFrame, tabId: number): Promise<void> {
+    if (!(await injectContentScript(tabId))) return;
+    const member = await awaitContentMember(tabId);
+    if (member === undefined) return;
+    landOnPage(frame, tabId, () => postContent(member, { kind: 'frame', frame }));
+  }
+
+  /**
    * 活跃执行页登记的统一出口，不变量 SD 第三句的唯一闸门：命中页不得成为活跃页——
    * 否则下行帧全部路由到一个只会被下行闸门丢掉的页，同组未命中页反而失联。
    * 有页面自报地址时一并判（上行闸门同口径）：tab 记录的地址在导航途中可能还是旧值。
@@ -485,7 +504,15 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         contentMembers.members(),
         (candidate) => candidate.sender?.tab?.id,
       );
-      // 目标成员不可达或形状不获准（silent 页非 navigate 批次、guide-action 无端口）：丢帧，禁改投。
+      if (members.length === 0) {
+        // 目标页尚未注入（按需注入模型下这是组内成员的常态）：定向帧到达即注入该页，再投递。
+        // 句柄已退役即 null——那才是真正的目标不可达，丢帧、禁改投。
+        const targetTabId = targetPageTabId(frame, pageHandles);
+        if (targetTabId !== null) {
+          landOnPage(frame, targetTabId, () => void injectAndPostToTab(frame, targetTabId));
+        }
+        return;
+      }
       for (const member of members) {
         landOnPage(frame, member.sender?.tab?.id, () => postContent(member, { kind: 'frame', frame }));
       }
@@ -1100,8 +1127,52 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     onEmpty();
   }
 
+  /**
+   * 定向帧目标页尚未接入时的等待面：轨一注入后其端口接入即兑现。
+   * 键为 tabId——同一页可能有多帧同时在等，故值为回调数组。
+   */
+  const contentWaiters = new Map<number, Array<() => void>>();
+
+  function memberForTab(tabId: number): chrome.runtime.Port | undefined {
+    return contentMembers.members().find((member) => member.sender?.tab?.id === tabId);
+  }
+
+  /**
+   * 等目标页的会话端口接入，上限 CONTENT_ATTACH_TIMEOUT_MS。
+   * 超时按「目标不可达」返回 undefined：等下去只会把带副作用的帧压在一条已经没有落点的链上。
+   */
+  async function awaitContentMember(tabId: number): Promise<chrome.runtime.Port | undefined> {
+    const existing = memberForTab(tabId);
+    if (existing !== undefined) return existing;
+    await new Promise<void>((resolve) => {
+      const waiters = contentWaiters.get(tabId) ?? [];
+      const done = (): void => {
+        clearTimeout(timer);
+        const list = contentWaiters.get(tabId);
+        if (list !== undefined) {
+          const index = list.indexOf(done);
+          if (index !== -1) list.splice(index, 1);
+          if (list.length === 0) contentWaiters.delete(tabId);
+        }
+        resolve();
+      };
+      const timer = setTimeout(done, CONTENT_ATTACH_TIMEOUT_MS);
+      waiters.push(done);
+      contentWaiters.set(tabId, waiters);
+    });
+    return memberForTab(tabId);
+  }
+
   function attachContent(port: chrome.runtime.Port): void {
     contentMembers.add(port);
+    const attachedTabId = port.sender?.tab?.id;
+    if (attachedTabId !== undefined) {
+      const waiters = contentWaiters.get(attachedTabId);
+      if (waiters !== undefined) {
+        contentWaiters.delete(attachedTabId);
+        for (const waiter of [...waiters]) waiter();
+      }
+    }
     // 接入即取当前停止态，而不是指望曾经广播过什么：停止后才接入的页拿不到那次广播，
     // 重连窗口里错过复位广播的页则会永久停摆——两者都是「曾经广播过」这个前提本身不成立。
     postContent(port, { kind: operationStopped ? 'stop-operation' : 'resume-operation' });
@@ -1533,6 +1604,55 @@ async function readSiteDenylist(): Promise<string[]> {
 }
 
 /**
+ * 轨一的一次性注入（不变量 IN 的 (a) 半）：把插件自带的 content 产物打进目标页。
+ * 载荷恒为 CONTENT_SCRIPT_FILE——pack 与 L2 都无从改写它（R2）。
+ * 失败即返回 false（该 origin 未授权且无 activeTab / 页面不可注入），调用方按「本页无 content」处置：
+ * 不降级、不改投、不伪装成功。content 侧的重复注入守卫使本调用幂等。
+ */
+async function injectContentScript(tabId: number): Promise<boolean> {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: [CONTENT_SCRIPT_FILE] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 已授权 origin 的本机缓存读回（来自 refreshAutomationDescriptors 的那次 /v1/user-config）。 */
+async function readGrantedOrigins(): Promise<string[]> {
+  const items: Record<string, unknown> = await chrome.storage.local
+    .get(GRANTED_ORIGINS_KEY)
+    .catch(() => ({}) as Record<string, unknown>);
+  return parseGrantedOrigins(items[GRANTED_ORIGINS_KEY]);
+}
+
+/**
+ * 轨二的常驻注册面对齐（不变量 IN 的 (b) 半）：注册集 = L2 投影 ∩ 本机 chrome.permissions − 站点黑名单。
+ * 每次全量对齐而非增量补丁：授权、L2、黑名单三方任一变动都只在这一处收敛，
+ * 「注册了什么」因此恒可由三方当刻状态推出，不依赖历史事件是否都被收到。
+ * 注册与注销严格对称，且只碰本族 id（其余注入面不属本机制）。
+ */
+async function syncContentScriptRegistrations(): Promise<void> {
+  try {
+    const denylist = await readSiteDenylist();
+    const granted = await chrome.permissions.getAll().catch(() => ({}) as { origins?: string[] });
+    const desired = decideRegisteredOrigins({
+      l2Origins: await readGrantedOrigins(),
+      grantedPatterns: granted.origins ?? [],
+      deniedBy: (origin) => siteDeniesUrl(denylist, origin),
+    });
+    const existing = await chrome.scripting.getRegisteredContentScripts().catch(() => []);
+    const plan = planRegistrations(desired, existing.map((item) => item.id));
+    if (plan.unregister.length > 0) {
+      await chrome.scripting.unregisterContentScripts({ ids: plan.unregister }).catch(() => {});
+    }
+    if (plan.register.length > 0) await chrome.scripting.registerContentScripts(plan.register).catch(() => {});
+  } catch {
+    // 注册面对齐失败不影响会话主链路；下一次配置变更或冷启动再对齐。
+  }
+}
+
+/**
  * 不变量 SD 的唯一判定：该页是否落在用户站点黑名单内。三处闸门（上行出口 / 下行落页 /
  * 活跃页登记）与激活闸门共用它，判定逻辑因此只有一份。
  * tabId 与 url 同时给出时任一命中即拦：tab 记录与页面自述各有滞后窗口，取并集只会更严。
@@ -1588,7 +1708,12 @@ async function revokeStaleActivationSkips(): Promise<void> {
 }
 
 /**
- * 通知该页挂面板连接（content 侧 activate 幂等）。
+ * 把执行器放进该页并通知它挂面板连接（不变量 IN 轨一的唯一出口）。
+ * 注入与激活恒同出一口：任何激活入口都必须先保证 content 在场，否则「已激活」只是一句空话。
+ * executeScript 失败（该 origin 未授权且无 activeTab / 页面本身不可注入）即就此收手，连激活也不发——
+ * 本页保持无 content，不降级、不改投，页面能力随之缺席，服务端按目标不可达处置。
+ * 客户端不为此单独提示：失败对用户不可观察，能力缺席由服务端的 silent 页叙述兜住。
+ * content 侧的重复注入守卫使本调用幂等。
  * 本函数内的黑名单判定是**兜底**：它在全部激活入口（握手 / 工具栏图标 / 组内导航补发 /
  * 拖入已映射组 / navigate 代执行开页）的最后一步，保证任何入口都发不出激活。
  * 用户可见副作用（建组、登记 zen 组、绑面板）发生在各入口更早处，故握手与图标两个入口
@@ -1602,6 +1727,7 @@ async function sendActivate(tabId: number): Promise<void> {
     return;
   }
   await noteActivationSkipped(tabId, false);
+  if (!(await injectContentScript(tabId))) return;
   const message: BackgroundRuntimeMessage = { kind: 'activate' };
   await chrome.tabs.sendMessage(tabId, message).catch(() => {});
 }
@@ -1627,69 +1753,28 @@ async function migrateLegacyGroupTitle(groupId: number): Promise<void> {
   }
 }
 
-/** 同窗同源 autoActivate 既有组（须仍映射会话）：供 autoJoin，避免既有多页场景重复建组。 */
-async function findAutoJoinGroup(windowId: number, origin: string): Promise<number | null> {
-  const key = autoGroupKey(windowId, origin);
-  const stored = (await chrome.storage.session.get(key))[key];
-  if (typeof stored !== 'number') return null;
-  return (await isGroupMapped(stored)) ? stored : null;
-}
-
 /**
- * content 加载后的激活握手：按 decideActivation 决定组内换页恢复 / autoActivate 加入既有组 / 新建组 / 不激活。
- * 决策后统一以 chrome.tabs.sendMessage 通知该页挂面板连接（content 侧 activate 幂等）。
+ * content 就位后的激活握手：按 decideActivation 决定组内换页恢复或不激活。
+ * 脚本在页内不构成「该页要开会话」的理由——轨二已授权 origin 上的常驻注册同样会送来这条握手，
+ * 建组只发生在手势入口。决策后以 chrome.tabs.sendMessage 通知该页挂面板连接（content 侧幂等）。
  */
-async function handleRequestActivate(
-  request: ContentRuntimeMessage,
-  sender: chrome.runtime.MessageSender,
-): Promise<void> {
+async function handleRequestActivate(sender: chrome.runtime.MessageSender): Promise<void> {
   const tab = sender.tab;
   if (tab?.id === undefined) return;
   const tabId = tab.id;
-  // 早退管副作用：下面的建组 / 登记 zen 组 / 绑面板都会被用户看见，判定必须先于它们发生
-  // （dev/demo 的 autoActivate 场景即经此路把命中站点的页拉进新建的 Zen 组）。
+  // 早退管副作用：下面的登记 zen 组 / 绑面板会被用户看见，判定必须先于它们发生。
   if (await isSiteDeniedPage({ tabId })) {
     await noteActivationSkipped(tabId, true);
     return;
   }
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
-  const origin = originOf(tab.url);
   // zen 组登记先于会话建立：会话尚未映射时组内导航的新页也须重连，否则该页 content 永久沉默。
   const groupIsMapped =
     tabGroupId !== TAB_GROUP_ID_NONE &&
     ((await isGroupMapped(tabGroupId)) || (await isZenGroup(tabGroupId)));
-  let autoJoinGroupId: number | null = null;
-  if (request.autoActivate && origin !== null && tab.windowId !== undefined) {
-    autoJoinGroupId = await findAutoJoinGroup(tab.windowId, origin);
-  }
-  const decision = decideActivation({
-    tabGroupId,
-    groupIsMapped,
-    autoActivate: request.autoActivate,
-    autoJoinGroupId,
-  });
-  let activeGroupId: number;
-  switch (decision.kind) {
-    case 'none':
-      return;
-    case 'reconnect':
-      activeGroupId = decision.groupId;
-      break;
-    case 'join':
-      await chrome.tabs.group({ tabIds: tabId, groupId: decision.groupId }).catch(() => {});
-      activeGroupId = decision.groupId;
-      break;
-    case 'create': {
-      // tab 已属某标签组（用户既有分组，或宿主自动化的受控组）则采用该组当会话组——
-      // 会话键即 tabGroup id（groupIdOf），无需夺 tab 新建；仅未分组 tab 才建 zen 组。
-      const groupId = tabGroupId !== TAB_GROUP_ID_NONE ? tabGroupId : await createZenGroup(tabId);
-      activeGroupId = groupId;
-      if (origin !== null && tab.windowId !== undefined) {
-        await chrome.storage.session.set({ [autoGroupKey(tab.windowId, origin)]: groupId });
-      }
-      break;
-    }
-  }
+  const decision = decideActivation({ tabGroupId, groupIsMapped });
+  if (decision.kind === 'none') return;
+  const activeGroupId = decision.groupId;
   await migrateLegacyGroupTitle(activeGroupId);
   await markZenGroup(activeGroupId);
   if (tab.windowId !== undefined) {
@@ -1735,7 +1820,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
 chrome.runtime.onMessage.addListener((raw, sender) => {
   const message = raw as ContentRuntimeMessage | null;
-  if (message?.kind === 'request-activate') void handleRequestActivate(message, sender);
+  if (message?.kind === 'request-activate') void handleRequestActivate(sender);
 });
 
 chrome.action.onClicked.addListener((tab) => {
@@ -1859,8 +1944,13 @@ async function refreshAutomationDescriptors(): Promise<void> {
     // 站点黑名单缓存只在本轮确实拿到 L2 配置时覆写；拉取失败保留上次名单——
     // 名单是隐私开关，网络抖动不该把它静默清空（宁可多挡一站）。应答成功但无该键即用户已清空，照实写空。
     if (userConfig !== null) {
-      await chrome.storage.local.set({ [SITE_DENYLIST_KEY]: siteDenylistFromUserConfig(userConfig) });
+      await chrome.storage.local.set({
+        [SITE_DENYLIST_KEY]: siteDenylistFromUserConfig(userConfig),
+        // 已授权 origin 与黑名单同源于这一次响应：注册面的三方之一在此落盘，随后统一对齐。
+        [GRANTED_ORIGINS_KEY]: grantedOriginsFromUserConfig(userConfig),
+      });
     }
+    await syncContentScriptRegistrations();
     const watches = watchesFromUserConfig(userConfig);
     if (!response.ok) return;
     const body = await response.json() as { descriptors?: unknown };
@@ -1975,11 +2065,18 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     void syncAutoScanAlarms();
     return;
   }
-  if (changes[SITE_DENYLIST_KEY] !== undefined) {
-    // 名单变更即重报组页面清单：服务端持有的旧清单里，命中页的 url/title 仍在按 active 优先
-    // 进模型注入面——不重报则用户拉黑之后那条记录仍旧一直被读到。
-    for (const bridge of groups.values()) bridge.notifyGroupTabsChanged();
-    void revokeStaleActivationSkips();
+  // 配置中心保存一次即以一次 storage.local.set 同时写这两个镜像键，故它们恒可能同批到达：
+  // 两者各自的处置必须都执行，任一分支不得吞掉另一分支（注册面只由两者的当刻交集推出，对齐一次即可）。
+  const grantedChanged = changes[GRANTED_ORIGINS_KEY] !== undefined;
+  const denylistChanged = changes[SITE_DENYLIST_KEY] !== undefined;
+  if (grantedChanged || denylistChanged) {
+    void syncContentScriptRegistrations();
+    if (denylistChanged) {
+      // 名单变更即重报组页面清单：服务端持有的旧清单里，命中页的 url/title 仍在按 active 优先
+      // 进模型注入面——不重报则用户拉黑之后那条记录仍旧一直被读到。
+      for (const bridge of groups.values()) bridge.notifyGroupTabsChanged();
+      void revokeStaleActivationSkips();
+    }
     return;
   }
   if (Object.keys(changes).some((key) => key.startsWith('za.autoScan.'))) {

@@ -33,13 +33,9 @@ function main() {
     process.exit(1);
   }
 
-  const config = {
-    [BASEURL_KEY]: `http://127.0.0.1:${PORT}`,
-    // ZA_AUTO_ACTIVATE=1 时才下发验收自动化开关（codeflow 页打开即视同点图标；126 由 navigate 入组）；
-    // 缺省不下发，保持产品默认「点图标才激活」。曾吃过 autoActivate 的浏览器需清残留键：
-    // chrome.storage.local.remove('za.autoActivate')
-    ...(process.env.ZA_AUTO_ACTIVATE === '1' ? { 'za.autoActivate': ['https://codeflow.asia'] } : {}),
-  };
+  // 只下发服务端地址：激活恒经工具栏图标（按需注入模型下没有「打开即注入」这条路，adr-027）。
+  // 曾吃过旧版本 autoActivate 的浏览器可清残留键：chrome.storage.local.remove('za.autoActivate')
+  const config = { [BASEURL_KEY]: `http://127.0.0.1:${PORT}` };
 
   // 配置边车：扩展 service worker 控制台 fetch 本端点即可写入 chrome.storage（免去手敲本机端口）。
   const CONFIG_PORT = PORT + 1;

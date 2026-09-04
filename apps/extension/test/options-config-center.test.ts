@@ -16,6 +16,7 @@ import {
   type PackView,
   type UserOverlayView,
 } from '../src/config-center.js';
+import { MAX_GRANTED_ORIGINS } from '../src/injection.js';
 
 const SUBJECT = { tenant: 'anon', hostUserId: 'anon-u1-abcdefghijklmnop' };
 const AUTH_TOKEN = 'eyJ-fake-token-for-dom-leak-assertion';
@@ -172,6 +173,16 @@ function panel(root: HTMLElement, tab: string): HTMLElement {
   const el = root.querySelector<HTMLElement>(`.za-cc-panel[data-za-panel="${tab}"]`);
   expect(el, `缺少 ${tab} 面板`).not.toBeNull();
   return el!;
+}
+
+/**
+ * 指定自建触发器行内的授权入口。自动化页同时渲染站点包自动化行，两种行的授权入口同类同名，
+ * 面板级选择器会把另一种行的入口算进来。
+ */
+function watchGrant(root: HTMLElement, watchId: string): HTMLButtonElement | null {
+  return panel(root, 'automation').querySelector<HTMLButtonElement>(
+    `.za-cc-watch[data-za-watch-id="${watchId}"] .za-cc-row-grant`,
+  );
 }
 
 function putCalls(harness: Harness): FetchCall[] {
@@ -1136,5 +1147,274 @@ describe('保存链路（乐观并发 + 服务端校验反馈）', () => {
         ? 'forbidden'
         : undefined);
     expect(tier).toBe('forbidden');
+  });
+});
+
+/**
+ * 站点授权编辑面（adr-027 轨二）：写 "*" 全局作用域的 grantedOrigins，并同步申请/撤销浏览器权限。
+ * 判据在两处对称——浏览器拒绝就不写 L2（写了也只是永远不生效的声明），撤销则两侧一并撤。
+ */
+describe('全局设置页 · 已授权常驻的站点（L2 grantedOrigins）', () => {
+  function grantEntries(root: HTMLElement): string[] {
+    return [...root.querySelectorAll<HTMLElement>('.za-cc-site-grant-entry')].map(
+      (row) => row.dataset['zaSiteGrant'] ?? '',
+    );
+  }
+
+  function addGrant(root: HTMLElement, value: string): void {
+    const input = root.querySelector<HTMLInputElement>('.za-cc-site-grant-input')!;
+    input.value = value;
+    root.querySelector<HTMLButtonElement>('.za-cc-site-grant-add')!.click();
+  }
+
+  function status(root: HTMLElement): string {
+    return root.querySelector('.za-cc-status')?.textContent ?? '';
+  }
+
+  it('文案说明默认不进入任何页面，且授权不改变风险档位', async () => {
+    const harness = createHarness();
+    await mounted(harness);
+    const text = panel(harness.root, 'global').textContent ?? '';
+    expect(text).toContain('默认不进入任何页面');
+    expect(text).toContain('风险档位');
+  });
+
+  it('浏览器授予后才写 L2；条目落 "*" 作用域 grantedOrigins（正常）', async () => {
+    const requested: string[] = [];
+    const harness = createHarness({
+      requestOriginAccess: async (origin) => {
+        requested.push(origin);
+        return true;
+      },
+    });
+    const handle = await mounted(harness);
+    addGrant(harness.root, 'https://shop.example');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(requested).toEqual(['https://shop.example']);
+    expect(grantEntries(harness.root)).toEqual(['https://shop.example']);
+    await handle.save();
+    expect(lastPutOverlay(harness).packs['*']?.grantedOrigins).toEqual(['https://shop.example']);
+  });
+
+  it('浏览器拒绝：不进待保存态、如实提示（不写一条永远不生效的声明）', async () => {
+    const harness = createHarness({ requestOriginAccess: async () => false });
+    const handle = await mounted(harness);
+    addGrant(harness.root, 'https://shop.example');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(grantEntries(harness.root)).toEqual([]);
+    expect(status(harness.root)).toContain('浏览器未授予');
+    await handle.save();
+    expect(lastPutOverlay(harness).packs['*']?.grantedOrigins).toBeUndefined();
+  });
+
+  it('撤销：浏览器权限与 L2 声明一并撤', async () => {
+    const removed: string[] = [];
+    const harness = createHarness({
+      revokeOriginAccess: async (origin) => {
+        removed.push(origin);
+        return true;
+      },
+    });
+    harness.stored.overlay = {
+      schemaVersion: 1,
+      subject: harness.stored.subject,
+      packs: { '*': { grantedOrigins: ['https://shop.example'] } },
+    };
+    const handle = await mounted(harness);
+    harness.root.querySelector<HTMLButtonElement>('.za-cc-site-grant-remove')!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(removed).toEqual(['https://shop.example']);
+    await handle.save();
+    expect(lastPutOverlay(harness).packs['*']?.grantedOrigins).toBeUndefined();
+  });
+
+  it('文法自检拒通配（授权是正向集合，通配等于把注入面放回全站）', async () => {
+    const harness = createHarness({ requestOriginAccess: async () => true });
+    await mounted(harness);
+    addGrant(harness.root, 'https://*.shop.example');
+    await Promise.resolve();
+    expect(grantEntries(harness.root)).toEqual([]);
+    expect(status(harness.root)).toContain('不支持通配');
+  });
+
+  it('保存成功后本机镜像同步落盘（background 注册面据此对齐）', async () => {
+    const mirrored: string[][] = [];
+    const harness = createHarness({
+      requestOriginAccess: async () => true,
+      saveGrantedOrigins: async (entries) => void mirrored.push(entries),
+    });
+    const handle = await mounted(harness);
+    addGrant(harness.root, 'https://shop.example');
+    await Promise.resolve();
+    await Promise.resolve();
+    await handle.save();
+    expect(mirrored).toEqual([['https://shop.example']]);
+  });
+
+  it('已达上限再添：不向浏览器要权限、如实提示、待保存态不变', async () => {
+    const requested: string[] = [];
+    const full = Array.from({ length: MAX_GRANTED_ORIGINS }, (_, index) => `https://shop${index}.example`);
+    const harness = createHarness({
+      requestOriginAccess: async (origin) => {
+        requested.push(origin);
+        return true;
+      },
+    });
+    harness.stored.overlay = {
+      schemaVersion: 1,
+      subject: harness.stored.subject,
+      packs: { '*': { grantedOrigins: full } },
+    };
+    const handle = await mounted(harness);
+    addGrant(harness.root, 'https://one-too-many.example');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(requested, '上限判定先于气泡：加不进去就不该先要一次权限').toEqual([]);
+    expect(status(harness.root)).toContain(`站点授权最多 ${MAX_GRANTED_ORIGINS} 个`);
+    expect(grantEntries(harness.root)).toEqual(full);
+    await handle.save();
+    expect(lastPutOverlay(harness).packs['*']?.grantedOrigins).toEqual(full);
+  });
+});
+
+/**
+ * 授权态的判据是「L2 声明 ∩ 本机浏览器权限」：浏览器侧的撤销（chrome://extensions 把站点访问
+ * 改回「点击时」）不通知本页，只认 L2 会把一个自动化其实跑不起来的站点显示成「已授权」。
+ * 两处判据必须同口径——自动化行的未授权标注与授权列表的就地标注。
+ */
+describe('全局设置页 · 授权态以本机浏览器权限对账', () => {
+  /** 授权按钮回调是 void 起的异步链（申请权限 → 重渲）：跨一次宏任务边界即全部落定。 */
+  const settled = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  function grantedOverlay(): UserOverlayView {
+    return {
+      schemaVersion: 1,
+      subject: SUBJECT,
+      packs: { '*': { grantedOrigins: ['https://shop.example'] } },
+      watches: [
+        { id: 'watch-1', templateId: 'page-watch', url: 'https://shop.example/orders', minutes: 30, enabled: true },
+      ],
+    };
+  }
+
+  it('L2 已授权但浏览器侧已撤销：自动化行仍标「站点未授权」并给出授权入口', async () => {
+    const harness = createHarness({ hasOriginAccess: async () => false });
+    harness.stored.overlay = grantedOverlay();
+    await mounted(harness);
+    expect(panel(harness.root, 'automation').textContent).toContain('自动化需先授权站点');
+    expect(watchGrant(harness.root, 'watch-1'), '本机权限缺失时该行必须给出可点的授权入口').not.toBeNull();
+  });
+
+  it('L2 与本机都在：不误报未授权（对照，判据不是恒为真）', async () => {
+    const harness = createHarness({ hasOriginAccess: async () => true });
+    harness.stored.overlay = grantedOverlay();
+    await mounted(harness);
+    expect(watchGrant(harness.root, 'watch-1')).toBeNull();
+    expect(panel(harness.root, 'global').querySelector('.za-cc-site-grant-regrant')).toBeNull();
+  });
+
+  it('授权列表就地标注本机缺失，且可直接补回授权（不必先撤销）', async () => {
+    const local = new Set<string>();
+    const requested: string[] = [];
+    const harness = createHarness({
+      hasOriginAccess: async (origin) => local.has(origin),
+      requestOriginAccess: async (origin) => {
+        requested.push(origin);
+        local.add(origin);
+        return true;
+      },
+    });
+    harness.stored.overlay = grantedOverlay();
+    await mounted(harness);
+    const entry = harness.root.querySelector<HTMLElement>('.za-cc-site-grant-entry')!;
+    expect(entry.textContent).toContain('浏览器已撤销访问');
+    const regrant = entry.querySelector<HTMLButtonElement>('.za-cc-site-grant-regrant');
+    expect(regrant, '本机缺失的条目必须能就地补回授权').not.toBeNull();
+    regrant!.click();
+    await settled();
+    expect(requested).toEqual(['https://shop.example']);
+    expect(harness.root.querySelector('.za-cc-site-grant-regrant')).toBeNull();
+    expect(watchGrant(harness.root, 'watch-1')).toBeNull();
+  });
+
+  it('本机缺失时重复输入该 origin 走重新申请，而不是回「已在授权列表里」', async () => {
+    const requested: string[] = [];
+    const harness = createHarness({
+      hasOriginAccess: async () => false,
+      requestOriginAccess: async (origin) => {
+        requested.push(origin);
+        return true;
+      },
+    });
+    harness.stored.overlay = grantedOverlay();
+    await mounted(harness);
+    const input = harness.root.querySelector<HTMLInputElement>('.za-cc-site-grant-input')!;
+    input.value = 'https://shop.example';
+    harness.root.querySelector<HTMLButtonElement>('.za-cc-site-grant-add')!.click();
+    await settled();
+    expect(requested).toEqual(['https://shop.example']);
+  });
+
+  it('宿主未提供本机权限探测（无浏览器的测试/降级环境）：一律视同已授予', async () => {
+    const harness = createHarness();
+    harness.stored.overlay = grantedOverlay();
+    await mounted(harness);
+    expect(watchGrant(harness.root, 'watch-1')).toBeNull();
+    expect(harness.root.querySelector('.za-cc-site-grant-regrant')).toBeNull();
+  });
+});
+
+/**
+ * 自动化页的授权入口：无手势唤醒的触发器必须就地说明「需先授权站点」并给出入口。
+ * 两种行同一判据——站点包自动化在未授权 origin 上同样静默不跑，页头「每行给出授权入口」
+ * 这句承诺必须对站点包自动化行与自建触发器行都成立。
+ */
+describe('自动化页 · 站点授权入口', () => {
+  it('站点包自动化行同样标注未授权并给出授权入口（按 pack 的 origin 围栏）', async () => {
+    const requested: string[] = [];
+    const harness = createHarness({
+      requestOriginAccess: async (origin) => {
+        requested.push(origin);
+        return true;
+      },
+    });
+    await mounted(harness);
+    const row = panel(harness.root, 'automation').querySelector<HTMLElement>('[data-za-automation-id="demo-scan"]');
+    expect(row, '缺少站点包自动化行').not.toBeNull();
+    expect(row!.textContent).toContain('站点未授权');
+    const grant = row!.querySelector<HTMLButtonElement>('.za-cc-row-grant');
+    expect(grant, '站点包自动化行须给出授权入口').not.toBeNull();
+    grant!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(requested).toEqual(['http://127.0.0.1:4173']);
+    const regranted = panel(harness.root, 'automation').querySelector<HTMLElement>(
+      '[data-za-automation-id="demo-scan"]',
+    );
+    expect(regranted!.querySelector('.za-cc-row-grant'), '授权后该行不再提示未授权').toBeNull();
+  });
+
+  it('未授权的触发器行标注「站点未授权」并给出授权按钮；授权后标注消失', async () => {
+    const harness = createHarness({ requestOriginAccess: async () => true });
+    harness.stored.overlay = {
+      schemaVersion: 1,
+      subject: harness.stored.subject,
+      packs: {},
+      watches: [
+        { id: 'watch-1', templateId: 'page-watch', url: 'https://shop.example/orders', minutes: 30, enabled: true },
+      ],
+    };
+    await mounted(harness);
+    expect(panel(harness.root, 'automation').textContent).toContain('自动化需先授权站点');
+    const grant = watchGrant(harness.root, 'watch-1');
+    expect(grant, '未授权行须给出授权入口').not.toBeNull();
+    grant!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(watchGrant(harness.root, 'watch-1'), '授权后该行不再提示未授权').toBeNull();
   });
 });

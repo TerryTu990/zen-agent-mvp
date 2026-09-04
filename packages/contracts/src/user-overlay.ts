@@ -79,6 +79,13 @@ export interface UserOverlayGlobalScope {
    * 文法不含全通配（schema 层拒 "*"）。终判在服务端 compose（U7），客户端跳过激活不构成治理生效。
    */
   siteDenylist?: string[];
+  /**
+   * 站点注入授权集（adr-027 轨二）：用户显式授权 Zen 在这些 origin 上常驻内容脚本。
+   * 条目为精确 origin "scheme://host[:port]"，协议闭集 http/https，无通配形态。
+   * 准入维度而非治理维度——授权只决定 agent 在该站点是否存在，不改任何 riskTier / 工具面 / HITL 判定，
+   * 与 restrictions 的只收紧正交。客户端注入面取本集合与浏览器授权的交集，黑名单命中时优先不注入。
+   */
+  grantedOrigins?: string[];
   /** 跨站自建快捷提问（R-5）：上限 20 条（schema maxItems）。 */
   quickActions?: QuickAction[];
   /**

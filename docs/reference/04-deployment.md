@@ -1,7 +1,8 @@
 # 部署参考（Docker）
 
 > 参考型文档：服务端容器化部署的权威导览。产物权威：根 `Dockerfile` / `docker-compose.yml` / `.dockerignore`；env 语义见 `03-configuration.md` §4。
-> 客户端（Chrome 扩展）不在本文范围——它经企业策略/商店分发，只需把 `za.serverBaseUrl` 指向部署地址。
+> 客户端（Chrome 扩展）的服务端接入不在本文范围——它经企业策略/商店分发，只需把 `za.serverBaseUrl` 指向部署地址；
+> 与分发直接相关的**权限声明**见 §7。
 
 ## 1. 设计原则
 
@@ -76,6 +77,28 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 - [ ] `/healthz` 探活接入编排（compose 已带 HEALTHCHECK；K8s 用 liveness/readiness 指向它）
 - [ ] `za-data` 卷有备份策略（审计是治理证据；会话含对话内容，按敏感数据对待）
 - [ ] 反向代理透传 SSE（`GET /v1/sessions/:id/events`）：禁用响应缓冲、read timeout 放宽（心跳默认 15s）
-- [ ] `ZA_CORS_ORIGIN` 按扩展来源收敛（默认 `*` 仅适合内网）
+- [ ] `ZA_CORS_ORIGIN` 按扩展来源收敛（默认 `*` 仅适合内网）：收敛值必须精确等于 `chrome-extension://<商店扩展 id>`，写错即插件全部请求被浏览器拦下
 - [ ] secret 轮换流程覆盖 `ZA_JWT_SECRET`（轮换即全部在途 token 失效，需与签发方协同）
 - [ ] 容器日志采集与审计卷采集分开配置（§1 原则 3）
+
+## 7. 扩展的商店权限声明（adr-027）
+
+装包由 `release/build-extension.sh` 产出，权限面即 `apps/extension/manifest.json` 的声明，与审核直接相关：
+
+| 声明 | 值 | 用途与审核口径 |
+|---|---|---|
+| `permissions` | `storage` / `activeTab` / `scripting` / `sidePanel` / `tabGroups` / `tabs` / `alarms` / `contextMenus` | `activeTab` + `scripting` 是按需注入的基础：用户点图标或用右键唤起时才把执行器放进当前页 |
+| `optional_host_permissions` | `<all_urls>` | **安装时不索取**任何站点访问权；用户在配置中心「全局设置 → 已授权常驻的站点」逐站授权，撤销即对称注销动态注册 |
+| `content_scripts` | 不声明 | 没有任何静态注入面——插件默认不进入任何页面 |
+
+**对服务端部署的连带要求**：删掉 `host_permissions` 后，插件发往服务端的请求不再享有扩展的跨域豁免，
+一律受 CORS 约束。`ZA_CORS_ORIGIN` 若从默认 `*` 收敛，其值必须**精确等于** `chrome-extension://<商店扩展 id>`；
+`access-control-expose-headers` 里的代执行公钥头（`x-zen-agent-exec-algorithm` / `x-zen-agent-exec-public-key`）
+同受此约束——收敛值不对时事件流握手取不到公钥，代执行整条链路即失效。
+
+审核问答要点：
+- **为什么要 `<all_urls>` 而不是固定站点清单**：产品是「任意站点上的 agent harness」，可授权的站点由用户决定；
+  故只能以可选权限逐站请求，无法在清单期穷举。
+- **什么时候真的注入**：不变量 IN——用户在本会话里对该页发起了动作，或该页 origin 已被用户显式授权；
+  两者都过用户级站点黑名单（黑名单优先）。其余页面上 `document` 无任何注入痕迹。
+- **注入的是什么**：恒为插件自带的 `dist/content.js`；站点包与用户配置都是纯数据，无从携带可执行代码。

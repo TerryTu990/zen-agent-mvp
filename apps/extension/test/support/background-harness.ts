@@ -64,6 +64,10 @@ export interface Harness {
   tabs: Map<number, FakeTab>;
   /** 收到 {kind:'activate'} 的 tabId，按发生序。 */
   activated: number[];
+  /** 被 chrome.scripting.executeScript 注入 content 脚本的 tabId，按发生序（重复注入重复记）。 */
+  injected: number[];
+  /** 当前动态注册着的 content script 项（轨二）。 */
+  registrations: Array<{ id: string; matches?: string[]; js?: string[] }>;
   requests: ServedRequest[];
   emitMessage(message: unknown, tab: FakeTab): void;
   emitIconClick(tab: FakeTab): void;
@@ -137,6 +141,10 @@ export interface LoadOptions {
   serve?: (request: ServedRequest) => Served | Promise<Served> | null | undefined;
   /** 新开页停在「导航未提交」形态（url 空、目标在 pendingUrl），复现真实 Chrome 的 navigate 瞬间。 */
   createLeavesUrlPending?: boolean;
+  /** 本机已授权的 origin 匹配模式（chrome.permissions 初值）。 */
+  grantedOrigins?: string[];
+  /** 这些 tabId 上的 executeScript 一律 reject，复现「未授权且无 activeTab」的注入失败。 */
+  injectionDeniedTabs?: number[];
   /**
    * 被测模块每次读 storage.local 时同步回调（读值之前）。
    * 用于在「异步链已启动、尚未产生副作用」的窗口里插入动作——该窗口在真实 Chrome 上同样存在。
@@ -183,6 +191,10 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
   const tabs = new Map<number, FakeTab>();
   for (const tab of options.tabs ?? []) tabs.set(tab.id, { ...tab });
   const activated: number[] = [];
+  const injected: number[] = [];
+  const registrations: Array<{ id: string; matches?: string[]; js?: string[] }> = [];
+  const grantedOrigins: string[] = [...(options.grantedOrigins ?? [])];
+  const injectionDenied = new Set(options.injectionDeniedTabs ?? []);
   const requests: ServedRequest[] = [];
   const sseControllers = new Set<ReadableStreamDefaultController<Uint8Array>>();
   let nextTabId = 900;
@@ -250,6 +262,41 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
         addListener: (fn: (info: unknown, tab: FakeTab) => void): void => {
           listeners.contextMenuClick.push(fn);
         },
+      },
+    },
+    scripting: {
+      executeScript: async (injection: { target: { tabId: number } }): Promise<unknown[]> => {
+        if (injectionDenied.has(injection.target.tabId)) throw new Error('Cannot access contents of the page');
+        injected.push(injection.target.tabId);
+        return [];
+      },
+      registerContentScripts: async (scripts: Array<{ id: string }>): Promise<void> => {
+        registrations.push(...scripts);
+      },
+      unregisterContentScripts: async (filter: { ids: string[] }): Promise<void> => {
+        for (const id of filter.ids) {
+          const index = registrations.findIndex((item) => item.id === id);
+          if (index !== -1) registrations.splice(index, 1);
+        }
+      },
+      getRegisteredContentScripts: async (): Promise<unknown[]> => [...registrations],
+    },
+    permissions: {
+      getAll: async (): Promise<{ origins: string[] }> => ({ origins: [...grantedOrigins] }),
+      contains: async (descriptor: { origins?: string[] }): Promise<boolean> =>
+        (descriptor.origins ?? []).every((origin) => grantedOrigins.includes(origin)),
+      request: async (descriptor: { origins?: string[] }): Promise<boolean> => {
+        for (const origin of descriptor.origins ?? []) {
+          if (!grantedOrigins.includes(origin)) grantedOrigins.push(origin);
+        }
+        return true;
+      },
+      remove: async (descriptor: { origins?: string[] }): Promise<boolean> => {
+        for (const origin of descriptor.origins ?? []) {
+          const index = grantedOrigins.indexOf(origin);
+          if (index !== -1) grantedOrigins.splice(index, 1);
+        }
+        return true;
       },
     },
     alarms: {
@@ -384,6 +431,8 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     session,
     tabs,
     activated,
+    injected,
+    registrations,
     requests,
     emitMessage(message, tab) {
       const sender = { tab: { id: tab.id, url: tab.url, windowId: tab.windowId, groupId: tab.groupId } };

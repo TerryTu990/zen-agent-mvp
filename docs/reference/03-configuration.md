@@ -28,9 +28,11 @@
 `site-denied` 抬头——那是更权威的事实，不得被客户端的猜测顶掉。
 拉黑前已上报的地址仍留在服务端会话上下文里，故下一轮 compose 仍按该 origin 判 `site-denied`。
 **尚未收进不变量的边界**：`site_navigate` 与站点索引仍不认名单（模型仍可能提到该站点、仍可导航过去，
-只是到了那里发不出帧也执行不了指令）；扩展在该页仍注入 content script、仍监听，UI 层面并未彻底消失。
+只是到了那里发不出帧也执行不了指令）。命中页的 content script 注入自 adr-027 起归入不变量 IN：
+黑名单优先于授权，两轨都不注入——但拉黑只挡此后的注入，**拉黑前已注入的页里 content 不随名单变更消失，
+需重载该页才彻底退出**；其间上行闸门照挡（不激活、不上报上下文、不进任务组页面清单）。
 **降级语义（fail-open）**：L2 读失败（用户配置存储不可用）的那一轮读不到名单，黑名单整体不生效、该站点照常装配——
-黑名单是隐私偏好而非安全边界（内容脚本本就 `<all_urls>` 全站注入），存储抖动期让整个产品停摆代价更大；
+黑名单是隐私偏好而非安全边界，存储抖动期让整个产品停摆代价更大；
 该轮在审计 assembly 事件里带 `userConfigDegraded` 可判读。同轮的工具面另按 fail-closed 一律 `forbidden`——那是执行授权，与此不同类。
 
 **快照根当前事实（2026-09-03）**：生产快照根 = `assets/`（`manifest.json` registry 2.0.0），**只登记通用兜底包 `generic-web`**；
@@ -75,7 +77,8 @@
 3. 新建 `packs/wiki-example/features/wiki-page/{feature.md, facts.md, tools.json}`（§3.2）
 4. （可选）`docs/`、`skills/`、`eval/`
 5. 重启服务端（快照惰性载入一次并缓存；坏配置启动期 fail-fast 报 `快照拒载：…`）
-6. 扩展 manifest.json 的 `host_permissions`/`content_scripts.matches` 加该 origin（客户端能注入的前提）
+6. 若该站点要用周期自动化，在配置中心「全局设置 → 已授权常驻的站点」授权该 origin
+   （adr-027 轨二：无手势唤醒要求该 origin 已授权；会话内点图标即用，不需预先声明）
 
 ### 3.1 pack.json
 
@@ -253,7 +256,15 @@
 
 ### 客户端（扩展）配置
 
-扩展经 `chrome.storage.local` 配置：`za.serverBaseUrl`（默认 `http://127.0.0.1:8787`）、`za.autoActivate`（origin 数组，命中即自动挂面板——**仅验收自动化用**，产品默认点图标激活）。身份键 `za.installId`（安装 id）与 `za.anonToken`（激活所得令牌缓存）由扩展自行维护，非用户配置项。
+扩展经 `chrome.storage.local` 配置：`za.serverBaseUrl`（默认 `http://127.0.0.1:8787`）。
+身份键 `za.installId`（安装 id）与 `za.anonToken`（激活所得令牌缓存）、
+注入面缓存键 `za.siteDenylist` / `za.grantedOrigins`（均为 L2 的本机镜像，配置中心保存后同步）
+由扩展自行维护，非用户直接配置项。
+
+**注入模型（adr-027）**：产品清单不声明任何 `content_scripts`，插件默认不进入任何页面。
+会话内能力由 background 在用户手势或服务端定向帧到达时逐次注入（轨一）；
+周期自动化要求该 origin 已在配置中心授权，授权后按 origin 动态注册常驻脚本（轨二）。
+旧的 `za.autoActivate` 已删除——它是纯客户端 origin 名单，与「准入判定不下放客户端」（U7）有张力。
 
 ## 5. 运行数据落点（`.za/`，已 gitignore）
 
