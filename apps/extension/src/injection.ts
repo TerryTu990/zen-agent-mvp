@@ -57,11 +57,32 @@ export function originMatchPattern(origin: string): string {
   return `${origin}/*`;
 }
 
-/** 匹配模式 → origin；非本形态（含 `<all_urls>` 这类通配）返回 null。 */
-export function originOfMatchPattern(pattern: string): string | null {
-  if (!pattern.endsWith('/*')) return null;
-  const origin = pattern.slice(0, -2);
-  return isGrantedOriginEntry(origin) ? origin : null;
+/**
+ * 浏览器已授予的某条匹配模式是否覆盖该 origin。
+ * 逐 origin 授权得到的是精确模式，但用户在 chrome://extensions 把站点访问改成「在所有网站上」时，
+ * 浏览器给回的是 `<all_urls>` 或裸通配主机这类模式，逐条授权会被它吸收——
+ * 只按精确模式比对会在「用户明明全授权了」时把注册面判成空，自动化随之静默停摆。
+ */
+export function grantedPatternCoversOrigin(pattern: string, origin: string): boolean {
+  if (pattern === '<all_urls>') return true;
+  const match = /^(\*|https?):\/\/(\*|\*\.[^/]+|[^/*]+)\/\*$/.exec(pattern);
+  if (match === null) return false;
+  const [, scheme = '', host = ''] = match;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (scheme !== '*' && parsed.protocol !== `${scheme}:`) return false;
+  if (host === '*') return true;
+  const hostname = parsed.hostname.toLowerCase();
+  if (host.startsWith('*.')) {
+    const domain = host.slice(2).toLowerCase();
+    return hostname === domain || hostname.endsWith(`.${domain}`);
+  }
+  // 精确形态须连端口一并相同：`https://a.example/*` 不覆盖 `https://a.example:8443`。
+  return `${parsed.protocol}//${parsed.host}` === `${scheme}://${host}`;
 }
 
 /** FNV-1a：只为把 origin 压成 id 里可读的定长尾缀，消歧不同 origin 归一化后的同名冲突。 */
@@ -97,15 +118,10 @@ export interface RegisteredOriginsInput {
  * 交集口径见文件头；黑名单优先于授权（两轨都不注入）。结果按输入序去重，供确定性 diff。
  */
 export function decideRegisteredOrigins(input: RegisteredOriginsInput): string[] {
-  const granted = new Set<string>();
-  for (const pattern of input.grantedPatterns) {
-    const origin = originOfMatchPattern(pattern);
-    if (origin !== null) granted.add(origin);
-  }
   const result: string[] = [];
   for (const origin of input.l2Origins) {
     if (!isGrantedOriginEntry(origin)) continue;
-    if (!granted.has(origin)) continue;
+    if (!input.grantedPatterns.some((pattern) => grantedPatternCoversOrigin(pattern, origin))) continue;
     if (input.deniedBy(origin)) continue;
     if (!result.includes(origin)) result.push(origin);
   }

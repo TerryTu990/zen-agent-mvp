@@ -9,7 +9,7 @@ import {
   grantedOriginsFromUserConfig,
   isGrantedOriginEntry,
   originMatchPattern,
-  originOfMatchPattern,
+  grantedPatternCoversOrigin,
   parseGrantedOrigins,
   planRegistrations,
   REGISTRATION_ID_PREFIX,
@@ -35,11 +35,8 @@ describe('授权条目文法', () => {
     expect(parseGrantedOrigins(null)).toEqual([]);
   });
 
-  it('匹配模式与 origin 互转；通配模式不还原为 origin', () => {
+  it('origin → 匹配模式（chrome.permissions 与 registerContentScripts 同一形态）', () => {
     expect(originMatchPattern('https://shop.example')).toBe('https://shop.example/*');
-    expect(originOfMatchPattern('https://shop.example/*')).toBe('https://shop.example');
-    expect(originOfMatchPattern('<all_urls>')).toBeNull();
-    expect(originOfMatchPattern('https://*/*')).toBeNull();
   });
 });
 
@@ -57,6 +54,28 @@ describe('L2 投影读取', () => {
   });
 });
 
+describe('浏览器已授予的模式覆盖判定', () => {
+  it('全站通配覆盖任意 origin（用户在 chrome://extensions 改成「在所有网站上」的形态）', () => {
+    for (const pattern of ['<all_urls>', 'https://*/*', '*://*/*']) {
+      expect(grantedPatternCoversOrigin(pattern, 'https://a.example')).toBe(true);
+    }
+    expect(grantedPatternCoversOrigin('http://*/*', 'https://a.example')).toBe(false);
+  });
+
+  it('子域通配覆盖该域及子域；精确模式连端口一并比对', () => {
+    expect(grantedPatternCoversOrigin('https://*.example.com/*', 'https://a.example.com')).toBe(true);
+    expect(grantedPatternCoversOrigin('https://*.example.com/*', 'https://example.com')).toBe(true);
+    expect(grantedPatternCoversOrigin('https://*.example.com/*', 'https://notexample.com')).toBe(false);
+    expect(grantedPatternCoversOrigin('https://a.example/*', 'https://a.example')).toBe(true);
+    expect(grantedPatternCoversOrigin('https://a.example/*', 'https://a.example:8443')).toBe(false);
+  });
+
+  it('非匹配模式形态一律不覆盖', () => {
+    expect(grantedPatternCoversOrigin('https://a.example', 'https://a.example')).toBe(false);
+    expect(grantedPatternCoversOrigin('file:///*', 'https://a.example')).toBe(false);
+  });
+});
+
 describe('注册面 = L2 ∩ 本机授权 − 黑名单', () => {
   it('两侧都有才注册', () => {
     expect(
@@ -66,6 +85,16 @@ describe('注册面 = L2 ∩ 本机授权 − 黑名单', () => {
         deniedBy: never,
       }),
     ).toEqual(['https://b.example']);
+  });
+
+  it('本机全站通配授权时逐条 L2 声明照常注册（授权被吸收不等于没授权）', () => {
+    expect(
+      decideRegisteredOrigins({
+        l2Origins: ['https://a.example'],
+        grantedPatterns: ['<all_urls>'],
+        deniedBy: never,
+      }),
+    ).toEqual(['https://a.example']);
   });
 
   it('黑名单优先于授权', () => {
