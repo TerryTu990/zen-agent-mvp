@@ -71,6 +71,15 @@ import {
   WATCH_DESCRIPTOR_PACK_ID,
 } from './auto-scan.js';
 import {
+  mergeQuickActions,
+  panelQuickActions,
+  parseQuickActions,
+  quickActionsFromPacks,
+  quickActionsFromUserConfig,
+  selectionQuickActions,
+  type QuickActionView,
+} from './quick-actions.js';
+import {
   parseSiteDenylist,
   siteDeniesUrl,
   siteDenylistFromUserConfig,
@@ -829,6 +838,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           text: message.text,
           ...('messageId' in message ? { messageId: message.messageId } : {}),
           executionPreference: message.executionPreference,
+          ...(message.quickActionId !== undefined ? { quickActionId: message.quickActionId } : {}),
+          ...(message.selectionText !== undefined ? { selectionText: message.selectionText } : {}),
         };
       case 'auto-scan':
         return autoScanUpstreamFrame(message, sessionId);
@@ -1168,6 +1179,49 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
+  /**
+   * 本页可呈现的快捷提问（R-5）：packId/featureId 取自与「本页生效」块同一个注入自省端点
+   * （故与面板上写着的装配面必然一致，不另立一套激活判定）；L1 声明与 L2 覆盖层各拉一次，
+   * 合并口径与服务端展开同源。任一环节读不出即回空清单——宁可少给入口，也不给一条点下去
+   * 会被服务端按未知 id 回退的 chip。取数会按需建会话，与该块的行为一致。
+   * 返回的同一份清单同时派生右键菜单：一份数据两入口。
+   */
+  async function resolveQuickActions(siteDenied: boolean): Promise<QuickActionView[]> {
+    // 命中站点黑名单的页连一次建会话都不该在服务端留下痕迹：判定先于 ensureSession，
+    // 并把右键入口一并撤掉（快捷动作属激活后的能力，黑名单是「本页不激活」）。
+    if (siteDenied) {
+      await syncContextMenus([]);
+      return [];
+    }
+    const session = await ensureSession();
+    if (session === null) return [];
+    const auth = { authorization: `Bearer ${session.token}` };
+    try {
+      const injection = await fetch(
+        `${session.baseUrl}/v1/sessions/${session.sessionId}/injection`,
+        { headers: auth, signal: abort.signal },
+      );
+      if (!injection.ok) return [];
+      const description = await injection.json() as { packId?: unknown; featureId?: unknown };
+      const packId = typeof description.packId === 'string' ? description.packId : null;
+      const featureId = typeof description.featureId === 'string' ? description.featureId : null;
+      const [packsRes, userConfig] = await Promise.all([
+        fetch(`${session.baseUrl}/v1/packs`, { headers: auth, signal: abort.signal }),
+        fetchUserConfig(session.baseUrl, session.token),
+      ]);
+      if (!packsRes.ok) return [];
+      const merged = mergeQuickActions(
+        quickActionsFromPacks(await packsRes.json(), packId),
+        quickActionsFromUserConfig(userConfig, packId),
+        featureId,
+      );
+      await syncContextMenus(merged);
+      return merged;
+    } catch {
+      return [];
+    }
+  }
+
   /** 右键选区：面板可能尚未挂上（本次点击才打开），故先缓存一条、待面板 ready 再投。 */
   let pendingComposerQuote: string | null = null;
   function queueComposerQuote(text: string): void {
@@ -1176,6 +1230,18 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       return;
     }
     pendingComposerQuote = text;
+  }
+
+  /** 右键快捷提问：与选区引用同一条「面板可能还没挂上」的时序，故同样先缓存一条。 */
+  let pendingQuickAction: Extract<BackgroundToSidePanelMessage, { kind: 'compose-quick-action' }> | null = null;
+  function queueQuickAction(
+    message: Extract<BackgroundToSidePanelMessage, { kind: 'compose-quick-action' }>,
+  ): void {
+    if (panels.size > 0) {
+      postToPanels(message);
+      return;
+    }
+    pendingQuickAction = message;
   }
 
   function attachPanel(port: chrome.runtime.Port): void {
@@ -1196,6 +1262,10 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           postPanel(port, { kind: 'compose-quote', text: pendingComposerQuote });
           pendingComposerQuote = null;
         }
+        if (pendingQuickAction !== null) {
+          postPanel(port, pendingQuickAction);
+          pendingQuickAction = null;
+        }
       });
     };
     finishAttach();
@@ -1215,6 +1285,12 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       if (message.kind === 'injection-request') {
         // 只读取数，不入投递管线：透明信息不排在会话消息之后，也不阻塞会话消息。
         void describeInjection().then((result) => postPanel(port, result));
+        return;
+      }
+      if (message.kind === 'quick-actions-request') {
+        void resolveQuickActions(message.siteDenied).then((actions) =>
+          postPanel(port, { kind: 'quick-actions', actions }),
+        );
         return;
       }
       if (message.kind === 'stop-operation') {
@@ -1401,7 +1477,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   /** 本组 tab 集/URL 可能变化（tabs.onUpdated/onRemoved）→ 防抖后重报全量清单。 */
   const notifyGroupTabsChanged = (): void => scheduleGroupPagesReport();
 
-  return { attachContent, attachPanel, queueComposerQuote, triggerAutoScan, configurationChanged, notifyGroupTabsChanged, close };
+  return { attachContent, attachPanel, queueComposerQuote, queueQuickAction, triggerAutoScan, configurationChanged, notifyGroupTabsChanged, close };
 }
 
 type GroupBridge = ReturnType<typeof createGroupBridge>;
@@ -1467,6 +1543,9 @@ async function noteActivationSkipped(tabId: number, skipped: boolean): Promise<v
     ? chrome.storage.session.set({ [key]: true })
     : chrome.storage.session.remove(key)
   ).catch(() => {});
+  // 快捷提问属激活后的能力：本机跳过了这一页的激活，右键项就一条都不该留着。
+  // 面板那一侧自然不会有（命中页面板根本不建组、不连端口），右键菜单是全局的，须显式撤。
+  if (skipped) await syncContextMenus([]);
 }
 
 /**
@@ -1656,20 +1735,43 @@ chrome.action.onClicked.addListener((tab) => {
 
 const SELECTION_MENU_ID = 'za-explain-selection';
 
-/** 右键菜单在 SW 每次冷启时重建：create 对已存在 id 会抛重复，故先 removeAll。 */
-async function installContextMenus(): Promise<void> {
+/** 派生自快捷提问清单的菜单项 id 前缀；其后缀即 quickActionId。 */
+const QUICK_ACTION_MENU_PREFIX = 'za-qa:';
+
+/** 已注册的派生菜单项 id → label：点击回执要带 label 作本地回声，chrome 的 info 不回传标题。 */
+const quickActionMenuLabels = new Map<string, string>();
+
+/**
+ * 右键菜单 = 快捷提问清单的第二个入口（一份数据两入口）。三种入参各有确定语义：
+ * null = 尚不知道本页有哪些条目（SW 冷启、面板未开），装回不带 quickActionId 的兜底入口——
+ * 它走既有引用块路径，由用户补充意图后自行发送；[] = 已知本页没有可呈现条目（命中站点黑名单
+ * 或全被停用），一个都不注册；非空 = 逐条按 label 注册。
+ * create 对已存在 id 会抛重复，故每次先 removeAll。
+ */
+async function syncContextMenus(actions: QuickActionView[] | null): Promise<void> {
   await chrome.contextMenus.removeAll().catch(() => {});
-  chrome.contextMenus.create({
-    id: SELECTION_MENU_ID,
-    title: '用 Zen 讲解选中内容',
-    contexts: ['selection'],
-  });
+  quickActionMenuLabels.clear();
+  if (actions === null) {
+    chrome.contextMenus.create({
+      id: SELECTION_MENU_ID,
+      title: '用 Zen 讲解选中内容',
+      contexts: ['selection'],
+    });
+    return;
+  }
+  for (const action of selectionQuickActions(actions)) {
+    const menuId = `${QUICK_ACTION_MENU_PREFIX}${action.id}`;
+    quickActionMenuLabels.set(menuId, action.label);
+    chrome.contextMenus.create({ id: menuId, title: action.label, contexts: ['selection'] });
+  }
 }
 
-void installContextMenus();
+void syncContextMenus(null);
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== SELECTION_MENU_ID) return;
+  const menuId = String(info.menuItemId);
+  const label = quickActionMenuLabels.get(menuId);
+  if (menuId !== SELECTION_MENU_ID && label === undefined) return;
   const text = (info.selectionText ?? '').trim();
   if (text === '' || tab?.id === undefined) return;
   const tabId = tab.id;
@@ -1683,7 +1785,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     .then(async () => {
       const groupId = (await chrome.tabs.get(tabId)).groupId ?? TAB_GROUP_ID_NONE;
       if (groupId === TAB_GROUP_ID_NONE) return;
-      bridgeFor(groupId).queueComposerQuote(text);
+      const bridge = bridgeFor(groupId);
+      if (label === undefined) {
+        bridge.queueComposerQuote(text);
+        return;
+      }
+      bridge.queueQuickAction({
+        kind: 'compose-quick-action',
+        actionId: menuId.slice(QUICK_ACTION_MENU_PREFIX.length),
+        label,
+        selectionText: text,
+      });
     })
     .catch(() => {
       console.error('Zen Agent 选区讲解入口失败');

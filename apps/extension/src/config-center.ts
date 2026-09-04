@@ -16,6 +16,13 @@ import {
   type WatchTemplateId,
 } from './auto-scan.js';
 import { EXECUTION_PREFERENCE_OPTIONS } from './execution-preference.js';
+import {
+  MAX_QUICK_ACTIONS_PER_SCOPE,
+  QUICK_ACTION_LABEL_MAX,
+  QUICK_ACTION_PLACEHOLDERS,
+  QUICK_ACTION_TEMPLATE_MAX,
+  type QuickActionContext,
+} from './quick-actions.js';
 import type { ExecutionPreference } from './frames.js';
 import { isSiteDenyEntry, MAX_SITE_DENYLIST_ENTRIES, siteDeniesUrl } from './site-denylist.js';
 
@@ -42,6 +49,22 @@ export interface PackAutomationView {
   defaultPeriodMinutes?: number;
 }
 
+/** L1 声明的快捷提问在配置中心的投影：只用于「显示/停用」开关，故不取模板（不持第二份副本）。 */
+export interface PackQuickActionView {
+  id: string;
+  label: string;
+  context: QuickActionContext;
+}
+
+/** 用户自建的快捷提问：模板是用户自己的内容，面板持其草稿并整条回写。 */
+export interface OverlayQuickActionView {
+  id: string;
+  label: string;
+  template: string;
+  context: QuickActionContext;
+  featureIds?: string[];
+}
+
 export interface PackView {
   packId: string;
   name?: string;
@@ -55,6 +78,8 @@ export interface PackView {
   tools: PackToolView[];
   automations: PackAutomationView[];
   configSchema?: Record<string, unknown>;
+  /** pack 预置的快捷提问；未声明时省略。 */
+  quickActions?: PackQuickActionView[];
 }
 
 export interface UserConfigSubjectView {
@@ -83,6 +108,10 @@ export interface OverlayAutomationPreferenceView {
 export interface OverlayScopeView {
   enabled?: false;
   siteDenylist?: string[];
+  /** 本作用域自建的快捷提问（R-5）。 */
+  quickActions?: OverlayQuickActionView[];
+  /** 本作用域停用的快捷提问 id（只收紧：只能让某条不出现，不能改写它）。 */
+  disabledQuickActions?: string[];
   rules?: OverlayEntryView[];
   facts?: OverlayEntryView[];
   restrictions?: {
@@ -146,6 +175,13 @@ export interface ConfigCenterHandle {
   /** 提交待保存态：本地设置 + PUT overlay；失败如实反映在状态行，不冒充成功。 */
   save(): Promise<void>;
 }
+
+const QUICK_ACTION_CONTEXT_LABEL: Record<QuickActionContext, string> = {
+  selection: '用在选中内容上（右键菜单）',
+  page: '针对当前页面（面板按钮）',
+  none: '与页面无关（面板按钮）',
+};
+const QUICK_ACTION_CONTEXTS: QuickActionContext[] = ['page', 'none', 'selection'];
 
 const TIER_ORDER: Record<RiskTier, number> = { auto: 0, hitl: 1, forbidden: 2 };
 const TIER_LABEL: Record<RiskTier, string> = { auto: '自动执行', hitl: '需确认', forbidden: '已禁用' };
@@ -644,8 +680,159 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
 
     node.append(renderEntries(scopeKey, pack, scope, 'rules', '我的规则'));
     node.append(renderEntries(scopeKey, pack, scope, 'facts', '我的事实'));
+    node.append(renderQuickActions(scopeKey, pack));
     if (pack !== undefined && pack.tools.length > 0) node.append(renderMatrix(pack));
     return node;
+  }
+
+  /** 某条快捷提问当前是否被停用：两个作用域的停用清单任一命中即算（并集，与服务端同口径）。 */
+  function isQuickActionDisabled(scopeKey: string, id: string): boolean {
+    const global = state.basePacks[GLOBAL_SCOPE]?.disabledQuickActions ?? [];
+    const scoped = state.basePacks[scopeKey]?.disabledQuickActions ?? [];
+    return global.includes(id) || scoped.includes(id);
+  }
+
+  /**
+   * 停用写本作用域；重新启用则两个作用域都摘（用户可能在任一处停过，只摘一处会让开关点了没反应）。
+   * 清空即删键：契约的停用清单 minItems=1，空数组会被写入期拒收。
+   */
+  function setQuickActionDisabled(scopeKey: string, id: string, disabled: boolean): void {
+    if (disabled) {
+      const scope = ensureScope(state.basePacks, scopeKey);
+      const list = scope.disabledQuickActions ?? [];
+      if (!list.includes(id)) scope.disabledQuickActions = [...list, id];
+      return;
+    }
+    for (const key of new Set([GLOBAL_SCOPE, scopeKey])) {
+      const scope = state.basePacks[key];
+      if (scope?.disabledQuickActions === undefined) continue;
+      const kept = scope.disabledQuickActions.filter((entry) => entry !== id);
+      if (kept.length === 0) delete scope.disabledQuickActions;
+      else scope.disabledQuickActions = kept;
+    }
+  }
+
+  /** 就地校验：与契约同口径（长度、占位符闭集、selection 必含 {{selection}}），过不了不入草稿。 */
+  function quickActionIssue(
+    scopeKey: string,
+    label: string,
+    template: string,
+    context: QuickActionContext,
+  ): string | null {
+    if (label === '') return '请填写按钮上显示的文字';
+    if (label.length > QUICK_ACTION_LABEL_MAX) return `按钮文字最多 ${QUICK_ACTION_LABEL_MAX} 字`;
+    if (template === '') return '请填写点击后发给助手的话';
+    if (template.length > QUICK_ACTION_TEMPLATE_MAX) return `内容最多 ${QUICK_ACTION_TEMPLATE_MAX} 字`;
+    const allowed: readonly string[] = QUICK_ACTION_PLACEHOLDERS;
+    const used = [...template.matchAll(/\{\{[^}]*\}\}/g)].map((match) => match[0]);
+    const unknown = used.find((placeholder) => !allowed.includes(placeholder));
+    if (unknown !== undefined) return `占位符 ${unknown} 不可用；可用的是 ${allowed.join(' / ')}`;
+    if (context === 'selection' && !template.includes('{{selection}}')) {
+      return '「用在选中内容上」的内容必须包含 {{selection}}，否则选中的文字无处可放';
+    }
+    const existing = state.basePacks[scopeKey]?.quickActions ?? [];
+    if (existing.length >= MAX_QUICK_ACTIONS_PER_SCOPE) {
+      return `本组最多 ${MAX_QUICK_ACTIONS_PER_SCOPE} 条快捷提问`;
+    }
+    return null;
+  }
+
+  /**
+   * 快捷提问节：站点包预置的只给「显示/停用」开关（只收紧——改不了别人的模板），
+   * 自建条目可删；下方是添加表单。id 由本页生成，用户不需要知道它的存在。
+   */
+  function renderQuickActions(scopeKey: string, pack: PackView | undefined): HTMLElement {
+    const wrap = section('快捷提问');
+    wrap.append(
+      el('p', 'za-cc-hint', '面板输入框上方与右键菜单里的一排按钮：点一下就把下面这段话发给助手。它只是问法，不改变助手的权限。'),
+    );
+    for (const declared of pack?.quickActions ?? []) {
+      const row = el('div', 'za-cc-quick-action');
+      row.dataset['zaQuickActionId'] = declared.id;
+      const toggle = el('input') as HTMLInputElement;
+      toggle.type = 'checkbox';
+      toggle.checked = !isQuickActionDisabled(scopeKey, declared.id);
+      toggle.setAttribute('aria-label', `显示「${declared.label}」`);
+      toggle.addEventListener('change', () => {
+        setQuickActionDisabled(scopeKey, declared.id, !toggle.checked);
+        renderOverlayPanel();
+      });
+      row.append(
+        toggle,
+        el('span', 'za-cc-quick-action-label', declared.label),
+        badge('za-cc-badge-origin', '站点包预置', '来源：站点包预置（可停用，不可改写）'),
+        el('span', 'za-cc-quick-action-context', QUICK_ACTION_CONTEXT_LABEL[declared.context]),
+      );
+      wrap.append(row);
+    }
+    for (const own of state.basePacks[scopeKey]?.quickActions ?? []) {
+      const row = el('div', 'za-cc-quick-action');
+      row.dataset['zaQuickActionId'] = own.id;
+      row.append(
+        el('span', 'za-cc-quick-action-label', own.label),
+        badge('za-cc-badge-origin', '我添加的', '来源：我添加的'),
+        el('span', 'za-cc-quick-action-context', QUICK_ACTION_CONTEXT_LABEL[own.context]),
+        el('span', 'za-cc-quick-action-template', own.template),
+      );
+      const remove = el('button', 'za-cc-quick-action-delete za-cc-btn za-cc-btn-danger', '删除');
+      remove.type = 'button';
+      remove.addEventListener('click', () => {
+        const scope = state.basePacks[scopeKey];
+        const kept = (scope?.quickActions ?? []).filter((candidate) => candidate.id !== own.id);
+        if (scope !== undefined) {
+          if (kept.length === 0) delete scope.quickActions;
+          else scope.quickActions = kept;
+        }
+        renderOverlayPanel();
+      });
+      row.append(remove);
+      wrap.append(row);
+    }
+    wrap.append(renderQuickActionForm(scopeKey));
+    return wrap;
+  }
+
+  function renderQuickActionForm(scopeKey: string): HTMLElement {
+    const form = el('div', 'za-cc-quick-action-form');
+    form.dataset['zaQuickActionForm'] = scopeKey;
+    const label = el('input', 'za-cc-input') as HTMLInputElement;
+    label.type = 'text';
+    label.placeholder = '按钮文字，如「挑重点讲」';
+    label.setAttribute('aria-label', '快捷提问的按钮文字');
+    const template = el('textarea', 'za-cc-textarea') as HTMLTextAreaElement;
+    template.rows = 2;
+    template.placeholder = `点击后发给助手的话，可用 ${QUICK_ACTION_PLACEHOLDERS.join(' / ')}`;
+    template.setAttribute('aria-label', '快捷提问的内容');
+    const context = el('select', 'za-cc-select') as HTMLSelectElement;
+    context.setAttribute('aria-label', '快捷提问的使用场景');
+    for (const value of QUICK_ACTION_CONTEXTS) {
+      const option = el('option', undefined, QUICK_ACTION_CONTEXT_LABEL[value]);
+      option.value = value;
+      context.append(option);
+    }
+    const issue = el('span', 'za-cc-quick-action-issue');
+    const add = el('button', 'za-cc-btn', '添加快捷提问');
+    add.type = 'button';
+    add.dataset['zaQuickActionAdd'] = scopeKey;
+    add.addEventListener('click', () => {
+      const chosen = context.value as QuickActionContext;
+      const problem = quickActionIssue(scopeKey, label.value.trim(), template.value.trim(), chosen);
+      issue.textContent = problem ?? '';
+      if (problem !== null) return;
+      const scope = ensureScope(state.basePacks, scopeKey);
+      scope.quickActions = [
+        ...(scope.quickActions ?? []),
+        {
+          id: `qa-${crypto.randomUUID().slice(0, 8)}`,
+          label: label.value.trim(),
+          template: template.value.trim(),
+          context: chosen,
+        },
+      ];
+      renderOverlayPanel();
+    });
+    form.append(label, template, context, add, issue);
+    return form;
   }
 
   function renderEntries(

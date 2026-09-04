@@ -2,6 +2,7 @@
  * content ↔ background 的 Port 内部消息（插件私有，不属 C3 契约）。
  * sessionId 由 background 唯一持有：content 只交原料，background 组 C3 上行帧。
  */
+import type { QuickActionView } from './quick-actions.js';
 import type {
   DownstreamFrame,
   ExecResultFrame,
@@ -113,12 +114,25 @@ export type BackgroundToContentMessage =
 export type SidePanelToBackgroundMessage =
   | { kind: 'panel-bind'; groupId: number }
   | { kind: 'browsing-context'; groupId: number; url?: string; title?: string }
-  | { kind: 'user-message'; messageId: string; text: string; displayText?: string; executionPreference: ExecutionPreference }
+  | {
+      kind: 'user-message';
+      messageId: string;
+      text: string;
+      displayText?: string;
+      executionPreference: ExecutionPreference;
+      /** 本轮由快捷提问发起：模板由服务端查表展开，面板只发 id（不持模板副本）。 */
+      quickActionId?: string;
+      /** 随快捷提问带上的页面选区正文；仅右键入口会带。 */
+      selectionText?: string;
+    }
   | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
   // L2 草稿裁决（U8）：面板只回传 draftId+decision，change 不经客户端往返。
   | { kind: 'config-decision'; draftId: string; decision: 'accept' | 'reject' }
   // 「本页生效」块取数：面板不持有会话与令牌，由 background 转发 GET /v1/sessions/:id/injection。
   | { kind: 'injection-request' }
+  // 快捷提问 chips 取数：面板不持有会话与令牌，由 background 合并 /v1/packs 与 /v1/user-config 后回投影。
+  // siteDenied = 本机确实跳过了这一页的激活（面板持有该事实）：background 据此连会话都不建。
+  | { kind: 'quick-actions-request'; siteDenied: boolean }
   | { kind: 'stop-operation'; messageId?: string }
   | { kind: 'ping' };
 
@@ -140,6 +154,10 @@ export type BackgroundToSidePanelMessage =
   | { kind: 'injection-result'; ok: false; error: string }
   // 右键「用 Zen 讲解选中内容」：选区原文送面板输入框，由用户补充意图后自行发送。
   | { kind: 'compose-quote'; text: string }
+  // 本页可呈现的快捷提问清单（合并 L1/L2 后的投影，不含模板）；空数组 = 本页没有可呈现的条目。
+  | { kind: 'quick-actions'; actions: QuickActionView[] }
+  // 右键选中某条快捷提问：面板按普通用户消息路径发出（本地回声/停止/幂等全部复用）。
+  | { kind: 'compose-quick-action'; actionId: string; label: string; selectionText: string }
   | { kind: 'stop-result'; messageId?: string; accepted: boolean }
   | { kind: 'operation-state'; running: boolean }
   | {

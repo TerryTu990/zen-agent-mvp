@@ -163,3 +163,9 @@ button { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
+
+/* 快捷提问 chips（R-5）：composer 上方一排；清单为空时容器 hidden 不占位。 */
+.za-quick-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 8px; }
+.za-quick-action { max-width: 100%; overflow: hidden; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255, 255, 255, .78); color: var(--ink-soft); font-size: 11px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; transition: border-color .16s ease, color .16s ease, background .16s ease; }
+.za-quick-action:hover:not(:disabled) { border-color: var(--agent); background: var(--agent-soft); color: var(--agent-deep); }
+.za-quick-action:disabled { opacity: .45; cursor: default; }

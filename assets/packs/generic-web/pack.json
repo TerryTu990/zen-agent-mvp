@@ -17,7 +17,7 @@
       {
         "id": "summarize-page",
         "label": "总结本页",
-        "template": "请总结当前页面《{{title}}》（{{url}}）的要点：它是做什么的、我在这页上能做哪些事。",
+        "template": "请总结当前页面（{{url}}）的要点：它是做什么的、我在这页上能做哪些事。",
         "context": "page"
       }
     ]

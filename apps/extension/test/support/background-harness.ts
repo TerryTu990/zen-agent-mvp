@@ -47,8 +47,19 @@ export interface ServedRequest {
 
 export type Served = { status: number; headers?: Record<string, string>; body?: unknown; stream?: boolean };
 
+/** chrome.contextMenus.create 的入参投影：右键入口的注册结果按此断言。 */
+export interface ContextMenuItem {
+  id: string;
+  title: string;
+  contexts: string[];
+}
+
 export interface Harness {
   local: Record<string, unknown>;
+  /** 当前注册着的右键菜单项（removeAll 会清空）。 */
+  menus: ContextMenuItem[];
+  /** 探针专用：模拟用户点了某个右键菜单项。 */
+  emitContextMenuClick(info: { menuItemId: string; selectionText?: string }, tab: FakeTab): void;
   session: Record<string, unknown>;
   tabs: Map<number, FakeTab>;
   /** 收到 {kind:'activate'} 的 tabId，按发生序。 */
@@ -185,7 +196,12 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     alarm: Array<(alarm: { name: string }) => void>;
     storageChanged: Array<(changes: unknown, areaName: string) => void>;
     tabRemoved: Array<(tabId: number, info: unknown) => void>;
-  } = { message: [], iconClick: [], tabUpdated: [], connect: [], alarm: [], storageChanged: [], tabRemoved: [] };
+    contextMenuClick: Array<(info: unknown, tab: FakeTab) => void>;
+  } = {
+    message: [], iconClick: [], tabUpdated: [], connect: [], alarm: [],
+    storageChanged: [], tabRemoved: [], contextMenuClick: [],
+  };
+  const menus: ContextMenuItem[] = [];
 
   const areaOf = (store: Record<string, unknown>, onRead?: (keys: string | string[] | null) => void) => ({
     async get(keys: string | string[] | null): Promise<Record<string, unknown>> {
@@ -224,9 +240,17 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
       onClicked: { addListener: (cb: (tab: FakeTab) => void): void => void listeners.iconClick.push(cb) },
     },
     contextMenus: {
-      removeAll: async (): Promise<void> => {},
-      create: (): void => {},
-      onClicked: { addListener: (): void => {} },
+      removeAll: async (): Promise<void> => {
+        menus.length = 0;
+      },
+      create: (item: ContextMenuItem): void => {
+        menus.push(item);
+      },
+      onClicked: {
+        addListener: (fn: (info: unknown, tab: FakeTab) => void): void => {
+          listeners.contextMenuClick.push(fn);
+        },
+      },
     },
     alarms: {
       getAll: async (): Promise<unknown[]> => [],
@@ -380,6 +404,10 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     emitTabRemoved(tabId) {
       tabs.delete(tabId);
       for (const cb of listeners.tabRemoved) cb(tabId, { isWindowClosing: false, windowId: 1 });
+    },
+    menus,
+    emitContextMenuClick(info, tab) {
+      for (const cb of listeners.contextMenuClick) cb(info, tab);
     },
     connectContent(tab) {
       return attach(SESSION_PORT_NAME, tab);
