@@ -1450,12 +1450,12 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
    * 授予后才进待保存的 L2 授权集。浏览器拒绝时不写 L2——本机拿不到权限，写进去也只是一条永远不生效的声明。
    */
   async function grantOrigin(origin: string): Promise<boolean> {
-    const request = deps.requestOriginAccess?.(origin) ?? Promise.resolve(true);
+    // 上限先判：判定是同步的，仍落在手势内；先弹气泡再说「其实加不进去」等于白要一次权限。
     if (state.grantedOrigins.length >= MAX_GRANTED_ORIGINS && !state.grantedOrigins.includes(origin)) {
       setStatus(`站点授权最多 ${MAX_GRANTED_ORIGINS} 个`, true);
       return false;
     }
-    if (!(await request)) {
+    if (!(await (deps.requestOriginAccess?.(origin) ?? Promise.resolve(true)))) {
       setStatus(`浏览器未授予 ${origin} 的访问权限：Zen 不会在该站点常驻，自动化到点也跑不起来`, true);
       return false;
     }

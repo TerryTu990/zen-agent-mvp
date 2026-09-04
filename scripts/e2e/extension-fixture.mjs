@@ -70,15 +70,6 @@ export async function activateTab(sw, tabId, groupId) {
   );
 }
 
-/** 取某个 Playwright page 对应的 tabId（按 URL 精确匹配；同 URL 多标签页时取第一个）。 */
-export async function tabIdForUrl(sw, url) {
-  return sw.evaluate(async (wanted) => {
-    const tabs = await chrome.tabs.query({});
-    const hit = tabs.find((tab) => (tab.url ?? tab.pendingUrl ?? '') === wanted);
-    return hit?.id ?? null;
-  }, url);
-}
-
 /**
  * 不变量 IN 的 E2E 判据：该页上没有 zen 的注入痕迹。
  * 两条独立证据——扩展侧向该 tab 发消息无接收方（content 的 runtime 监听不存在），
