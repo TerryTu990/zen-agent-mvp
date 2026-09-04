@@ -13,9 +13,9 @@
       "minLength": 1
     },
     "type": {
-      "$comment": "事件类型闭集：session-start/session-end（会话）、assembly（装配）、tool-decision（门禁判定）、hitl-verdict（人审裁决）、tool-execution（执行结局）、user-config-write（L2 用户配置写入，adr-014）。",
+      "$comment": "事件类型闭集：session-start/session-end（会话）、assembly（装配）、tool-decision（门禁判定）、hitl-verdict（人审裁决）、tool-execution（执行结局）、user-config-write（L2 用户配置写入，adr-014）、untrusted-content（不可信内容中检测到指令句式，旁路记录）。",
       "type": "string",
-      "enum": ["session-start", "session-end", "assembly", "tool-decision", "hitl-verdict", "tool-execution", "user-config-write"]
+      "enum": ["session-start", "session-end", "assembly", "tool-decision", "hitl-verdict", "tool-execution", "user-config-write", "untrusted-content"]
     },
     "ts": {
       "$comment": "事件时刻，ISO 8601 date-time。",
@@ -101,6 +101,10 @@
     {
       "if": { "properties": { "type": { "const": "user-config-write" } }, "required": ["type"] },
       "then": { "properties": { "data": { "$ref": "#/$defs/userConfigWriteData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "untrusted-content" } }, "required": ["type"] },
+      "then": { "properties": { "data": { "$ref": "#/$defs/untrustedContentData" } } }
     }
   ],
   "$defs": {
@@ -280,6 +284,24 @@
           "maximum": 599
         },
         "durationMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "untrustedContentData": {
+      "$comment": "不可信内容定界事件载荷：kind = 定界闭集成员（内容出自哪个采集面）；patterns = 命中的可疑指令句式类别标签（去重、按出现序）。【脱敏前置】命中原文与其上下文 MUST NOT 入事件——那是页面数据，入审计即扩泄露面；本事件只作可观察证据，是否照做的判定权仍在模型。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "patterns"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["page-text", "page-elements", "tool-result", "pack-doc", "group-pages"]
+        },
+        "toolCallId": { "type": "string" },
+        "patterns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
       }
     }
   }

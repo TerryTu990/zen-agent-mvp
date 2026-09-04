@@ -413,3 +413,17 @@ describe('extractPageText：按行边界截断', () => {
     expect(text.split('\n').at(-1)).toMatch(/^甲+\d+$/);
   });
 });
+
+describe('extractPageText：不可见格式字符消毒（无损）', () => {
+  it('零宽与双向控制符被剔除：下游看到的正文与页面呈现一致', () => {
+    document.body.innerHTML =
+      '<article><p>转账​给‮收款方‬确认﻿</p></article>';
+    expect(extractPageText(document).text).toBe('转账给收款方确认');
+  });
+
+  it('可读字符一字不改：全角标点与块级换行保持原样（无损口径）', () => {
+    document.body.innerHTML =
+      '<article><p>作者\uff1a张三\uff08编辑\uff09</p><p>第二段 正文</p></article>';
+    expect(extractPageText(document).text).toBe('作者\uff1a张三\uff08编辑\uff09\n\n第二段 正文');
+  });
+});

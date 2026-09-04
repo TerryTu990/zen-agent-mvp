@@ -12,7 +12,7 @@
   确定性快照。LLM 为确定性 mock（`scripts/mock-llm/server.mjs`），非真实模型。
 - **四个快照根依次独占同端口起 server**：`examples/host-demo/config`（跑本目录 `scenarios.json` 17 场景）、
   `examples/acceptance`、`assets`（生产快照）、`examples/site-packs`（已下线站点包）；每根再按
-  `packs/*/eval/scenarios.json` 自动发现逐 pack 跑。当前合计 93 组场景。
+  `packs/*/eval/scenarios.json` 自动发现逐 pack 跑。当前合计 97 组场景。
 - **维度覆盖**：`explain` / `assembly-swap` 与 `assembly` / `guide` / `tool` / `hitl` / `automation` 均有场景。
 - **宿主 API mock 有状态**：`orders` 状态表 + `calls` 调用流水，**每跑重置**；场景可用 `hostState` /
   `hostCalls` / `hostCallsAbsent` 断言代执行的真实副作用（批准后状态已变、拒绝后状态未变且接口未被调用）。
@@ -56,7 +56,7 @@ featureId（服务端应判定值，null=无命中仅基座）, question, expect
 
 pack 级 `packs/<packId>/eval/scenarios.json`：`{id, dimension, url（含 pack origin 的完整 URL）, question,
 snapshotElements / snapshotNotices / snapshotText / snapshotTextTruncated / snapshotSequence（回给
-`snapshot-request` 的确定性夹具）, execResultError（令代执行回错误结果）, expect}`。
+`snapshot-request` 的确定性夹具）, execResultError（令代执行回错误结果）, execResultReads（dom 批次回传的 read 采集值，令工具返回体承载页面来源内容）, expect}`。
 
 ### `expect` 字段
 

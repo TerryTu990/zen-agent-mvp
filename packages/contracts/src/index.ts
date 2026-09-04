@@ -101,9 +101,20 @@ export type {
   HitlVerdictEvent,
   ToolExecutionEvent,
   UserConfigWriteEvent,
+  UntrustedContentEvent,
   AuditEvent,
 } from './audit-event.js';
 export { executionOutcomes } from './audit-event.js';
+export type { UntrustedKind } from './untrusted.js';
+export {
+  UNTRUSTED_KINDS,
+  isUntrustedKind,
+  untrustedNonce,
+  wrapUntrusted,
+  stripUntrustedDelimiters,
+  stripInvisibleFormatChars,
+  stripDisplayUnsafeChars,
+} from './untrusted.js';
 export type { AutomationTemplateId, PlatformAutomationTemplate } from './automation-template.js';
 export {
   PLATFORM_AUTOMATION_TEMPLATES,

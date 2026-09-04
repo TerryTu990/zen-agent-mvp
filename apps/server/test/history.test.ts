@@ -206,3 +206,38 @@ describe('pruneStaleSnapshots（P0 旧观测瘦身）', () => {
     expect(pruneStaleSnapshots(history)).toBe(history);
   });
 });
+
+describe('瘦身与不可信定界（回喂观测被定界串包裹后仍可按结构瘦身）', () => {
+  const NONCE = '1122334455667788';
+  const wrap = (body: string): string =>
+    `⟪untrusted:page-elements:${NONCE}⟫\n${body}\n⟪/untrusted:${NONCE}⟫`;
+
+  /** 与网关回喂同形：观测体被定界包裹，评测/瘦身按结构解析前须先剥壳。 */
+  function wrappedSnapshotTurn(id: string, elementCount: number): LlmMessage[] {
+    const [echo, obs] = snapshotTurn(id, elementCount) as [LlmMessage, LlmMessage];
+    return [echo, { ...obs, content: wrap(obs.content) }];
+  }
+
+  it('存根元素计数按剥壳后的观测体得出（不因定界而恒为 0）', () => {
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'x' },
+      ...wrappedSnapshotTurn('call_1', 3),
+      ...wrappedSnapshotTurn('call_2', 5),
+    ];
+    const pruned = pruneStaleSnapshots(history);
+    const stale = pruned.find((m) => m.role === 'tool' && m.toolCallId === 'call_1')!;
+    expect(stale.content).toBe('[快照已过期：3 元素，refs 失效]');
+  });
+
+  it('最近一份观测原样保留（定界不被瘦身改写）', () => {
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'x' },
+      ...wrappedSnapshotTurn('call_1', 3),
+      ...wrappedSnapshotTurn('call_2', 5),
+    ];
+    const pruned = pruneStaleSnapshots(history);
+    const kept = pruned.find((m) => m.role === 'tool' && m.toolCallId === 'call_2')!;
+    expect(kept.content.startsWith(`⟪untrusted:page-elements:${NONCE}⟫`)).toBe(true);
+    expect(kept.content.endsWith(`⟪/untrusted:${NONCE}⟫`)).toBe(true);
+  });
+});

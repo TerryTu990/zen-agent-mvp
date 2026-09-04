@@ -35,6 +35,8 @@ const GENERIC_URL = `${GENERIC_ORIGIN}/article.html`;
 const SNAPSHOT_TOOL = 'page_snapshot';
 const BROWSE_TOOL = 'browse.page-operate';
 const OBS_ECHO_PREFIX = 'MOCK-DIRECTED-OBS';
+/** 观测体首行：不可信内容定界开标记；页标注（若有）仍须独占其前一行。 */
+const OBS_BODY_HEAD = '⟪untrusted:page-';
 
 /** 异形句柄（非 p<N> 形状）：服务端只作等值比对，无按句柄结构分支（U5 续锚）。 */
 const ODD_HANDLE = 'workspace-view-00c3';
@@ -431,7 +433,7 @@ describe('定向快照全链路（成功路径）', () => {
     }
     const text = joinedText(sse);
     // 前缀独占首行：`[来自 句柄 · origin]` + 换行 + 快照 JSON。
-    expect(text).toContain(`${OBS_ECHO_PREFIX} [来自 ${ODD_HANDLE} · ${TARGET_ORIGIN}]\n{"url"`);
+    expect(text).toContain(`${OBS_ECHO_PREFIX} [来自 ${ODD_HANDLE} · ${TARGET_ORIGIN}]\n${OBS_BODY_HEAD}`);
 
     const events = snapshotExecEvents(sessionId);
     expect(events).toHaveLength(1);
@@ -507,7 +509,7 @@ describe('定向快照全链路（成功路径）', () => {
     } finally {
       sse.close();
     }
-    expect(joinedText(sse)).toContain(`${OBS_ECHO_PREFIX} [来自 ${NO_ORIGIN_HANDLE}]\n{"url"`);
+    expect(joinedText(sse)).toContain(`${OBS_ECHO_PREFIX} [来自 ${NO_ORIGIN_HANDLE}]\n${OBS_BODY_HEAD}`);
     const events = snapshotExecEvents(sessionId);
     expect(events).toHaveLength(1);
     expect(events[0]!['page']).toEqual({ handle: NO_ORIGIN_HANDLE });
@@ -534,7 +536,7 @@ describe('定向快照全链路（成功路径）', () => {
     } finally {
       sse.close();
     }
-    expect(joinedText(sse)).toContain(`${OBS_ECHO_PREFIX} [来自 act-1 · ${GENERIC_ORIGIN}]\n{"url"`);
+    expect(joinedText(sse)).toContain(`${OBS_ECHO_PREFIX} [来自 act-1 · ${GENERIC_ORIGIN}]\n${OBS_BODY_HEAD}`);
   });
 
   it('includeText 随定向透传：下行帧同时带 page 与 includeText', async () => {
@@ -598,7 +600,7 @@ describe('定向快照全链路（成功路径）', () => {
       sse.close();
     }
     const text = joinedText(sse);
-    expect(text).toContain(`${OBS_ECHO_PREFIX} [来自 p2fake · ${TARGET_ORIGIN}]\n{"url"`);
+    expect(text).toContain(`${OBS_ECHO_PREFIX} [来自 p2fake · ${TARGET_ORIGIN}]\n${OBS_BODY_HEAD}`);
     expect(text).not.toContain(`[来自 ${NEWLINE_HANDLE}`);
     const events = snapshotExecEvents(sessionId);
     expect(events).toHaveLength(1);
@@ -750,8 +752,8 @@ describe('缺省调用零变化回归', () => {
     } finally {
       sse.close();
     }
-    // 缺省观测原样回喂（无前缀）：回显紧跟快照 JSON 本体。
-    expect(joinedText(sse)).toContain(`${OBS_ECHO_PREFIX} {"url"`);
+    // 缺省观测原样回喂（无页标注前缀）：回显紧跟观测体（定界开标记即体首行）。
+    expect(joinedText(sse)).toContain(`${OBS_ECHO_PREFIX} ${OBS_BODY_HEAD}`);
     expect(joinedText(sse)).not.toContain('[来自 ');
     expect(snapshotExecEvents(sessionId)).toHaveLength(0);
   });
