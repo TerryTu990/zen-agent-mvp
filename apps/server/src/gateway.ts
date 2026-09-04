@@ -989,6 +989,13 @@ interface SessionRuntime {
   pendingHitl: Map<string, (decision: PendingHitlOutcome) => void>;
   /** 代执行挂起等待器：nonce → resolver；exec-result 到达时解析，回合恢复。 */
   pendingExec: Map<string, (result: ExecResultFrame) => void>;
+  /**
+   * 用户停止时被合成解析的代执行 nonce：客户端步间检查点仍会如实回一条同 nonce 的真实 exec-result，
+   * 该回执必然迟于合成回执到达。命中即幂等受理（不回喂、不改状态），一次性消费后仍回 409——
+   * 一次性签名语义（U7）不放宽：集合外的未知 nonce 与同 nonce 二次到达一律按重放/伪造拒绝。
+   * 有界 64 条 FIFO，随会话 runtime 释放。
+   */
+  stoppedExecNonces: Set<string>;
   /** 快照挂起等待器：requestId → resolver；snapshot-report 到达时解析。 */
   pendingSnapshot: Map<string, (report: SnapshotReportFrame | null) => void>;
   /** 最近一次快照的判定上下文（ref 闭集 + 页路径）；dom 签发校验依据，无快照即 deny。 */
@@ -1003,6 +1010,18 @@ interface SessionRuntime {
   untrustedNonce: string;
   /** 本会话已落过审计事件的可疑句式类别：快照与清单每轮全量重建，不去重则同一类别每轮刷屏。 */
   untrustedPatternsSeen: Set<string>;
+}
+
+/** 停止后可幂等受理的迟到回执上限：超出即按 FIFO 淘汰最早一条，淘汰后的 nonce 回到 409。 */
+const STOPPED_EXEC_NONCE_LIMIT = 64;
+
+function rememberStoppedExecNonce(runtime: SessionRuntime, nonce: string): void {
+  runtime.stoppedExecNonces.add(nonce);
+  while (runtime.stoppedExecNonces.size > STOPPED_EXEC_NONCE_LIMIT) {
+    const oldest = runtime.stoppedExecNonces.values().next().value as string | undefined;
+    if (oldest === undefined) break;
+    runtime.stoppedExecNonces.delete(oldest);
+  }
 }
 
 /**
@@ -1297,6 +1316,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         runningMessageId: null,
         pendingHitl: new Map(),
         pendingExec: new Map(),
+        stoppedExecNonces: new Set(),
         pendingSnapshot: new Map(),
         domContext: null,
         domContextByPage: new Map(),
@@ -3368,12 +3388,18 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
       case 'exec-result': {
         // nonce 等待器在网关层即为一次性：命中即摘除，二次到达（重放）无等待器→409、不再入 toolgate。
-        const resolve = runtimeOf(session.sessionId).pendingExec.get(upstream.nonce);
+        const execRuntime = runtimeOf(session.sessionId);
+        const resolve = execRuntime.pendingExec.get(upstream.nonce);
         if (resolve === undefined) {
+          // 停止时已合成收尾的同批回执：幂等受理，不回喂模型、不改回合状态；消费后同 nonce 再来即重放。
+          if (execRuntime.stoppedExecNonces.delete(upstream.nonce)) {
+            sendJson(res, 202, { accepted: true });
+            return;
+          }
           sendJson(res, 409, { error: '代执行结果无对应挂起回合（已处理、重放或伪造 nonce）' });
           return;
         }
-        runtimeOf(session.sessionId).pendingExec.delete(upstream.nonce);
+        execRuntime.pendingExec.delete(upstream.nonce);
         resolve(upstream);
         sendJson(res, 202, { accepted: true });
         return;
@@ -3492,6 +3518,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
       for (const [nonce, resolve] of [...runtime.pendingExec]) {
         runtime.pendingExec.delete(nonce);
+        rememberStoppedExecNonce(runtime, nonce);
         resolve({
           type: 'exec-result',
           sessionId: session.sessionId,

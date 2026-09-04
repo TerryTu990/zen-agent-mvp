@@ -298,6 +298,14 @@ async function runScenarios(context, packAPage, panelPage, sw) {
   await waitFor(async () => (await panelText(panelPage)).includes(STOP_CLOSURE_NOTICE), {
     label: '停止演练：等待停止收尾', timeoutMs: 20000,
   });
+  // 步间检查点回的真实 exec-result 迟于合成回执到达；留出送达窗口再判面板，避免抢在上行之前误绿。
+  await new Promise((r) => setTimeout(r, 2000));
+  const stopPanelText = await panelText(panelPage);
+  assert(
+    !stopPanelText.includes('409') && !stopPanelText.includes('状态冲突'),
+    `停止演练：停止后面板不应出现上行冲突提示，实际 ${stopPanelText.slice(-200)}`,
+  );
+  console.log('  [pass] 停止后同批迟到回执幂等受理：面板无 409/状态冲突提示');
   await sendMessage(panelPage, '停止演练：停止后重试');
   await waitFor(async () => (await hitlCardCount(panelPage)) > 0, {
     label: '停止演练：等待重新授权', timeoutMs: 20000,

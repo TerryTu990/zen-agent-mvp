@@ -379,6 +379,81 @@ describe('讲解闭环全链路（真 assembly + mock LLM）', () => {
     }
   });
 
+  /** 驱动到「执行中点停止」：返回被合成收尾的 nonce 与停止后的 SSE/模型请求基线。 */
+  async function stopMidExec(token: string, sessionId: string, sse: SseHandle, messageId: string) {
+    await postFrame(token, sessionId, { type: 'context-report', sessionId, url: ORDER_LIST_URL });
+    const started = await postFrame(token, sessionId, {
+      type: 'user-message', sessionId, messageId, text: '在页面上刷新订单',
+    });
+    expect(started.status).toBe(202);
+    await sse.waitFor(() => sse.frames.some((frame) => frame['type'] === 'exec-instruction'));
+    const instruction = sse.frames.find((frame) => frame['type'] === 'exec-instruction');
+    const nonce = String(instruction?.['nonce']);
+    expect(nonce).toBeTruthy();
+    const stopped = await api(`/v1/sessions/${sessionId}/stop`, {
+      method: 'POST',
+      headers: authHeaders(token, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ messageId }),
+    });
+    expect(stopped.status).toBe(202);
+    await sse.waitFor(() => sse.frames.some(
+      (frame) => frame['type'] === 'turn-complete' && frame['messageId'] === messageId,
+    ));
+    return { nonce, frameCount: sse.frames.length, llmRequestCount: mock.requests.length };
+  }
+
+  it('停止后同批 exec-result 迟到：幂等受理不报错、不回喂模型、不改回合状态', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      const { nonce, frameCount, llmRequestCount } = await stopMidExec(
+        token, sessionId, sse, 'message-stop-late-exec-result',
+      );
+      const late = await postFrame(token, sessionId, {
+        type: 'exec-result', sessionId, nonce, ok: true, status: 200,
+      });
+      expect(late.status).toBe(202);
+      expect(await late.json()).toEqual({ accepted: true });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(sse.frames.length).toBe(frameCount);
+      expect(mock.requests.length).toBe(llmRequestCount);
+      expect(await getTurnState(token, sessionId)).toEqual({ running: false });
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('停止后未知 nonce 的 exec-result 仍 409（伪造判定不因停止放宽）', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      const { nonce } = await stopMidExec(token, sessionId, sse, 'message-stop-forged-nonce');
+      const forged = await postFrame(token, sessionId, {
+        type: 'exec-result', sessionId, nonce: `${nonce}-forged`, ok: true,
+      });
+      expect(forged.status).toBe(409);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('停止后同 nonce 第二次迟到 → 409（幂等受理只一次，重放判定不放宽）', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      const { nonce } = await stopMidExec(token, sessionId, sse, 'message-stop-replayed-nonce');
+      const first = await postFrame(token, sessionId, { type: 'exec-result', sessionId, nonce, ok: true });
+      expect(first.status).toBe(202);
+      const second = await postFrame(token, sessionId, { type: 'exec-result', sessionId, nonce, ok: true });
+      expect(second.status).toBe(409);
+    } finally {
+      sse.close();
+    }
+  });
+
   it('幂等占位无法耐久写入时返回 503，且不启动回合', async () => {
     const base = mkdtempSync(join(tmpdir(), 'za-idempotency-failure-'));
     const blockedSessionDir = join(base, 'not-a-directory');
