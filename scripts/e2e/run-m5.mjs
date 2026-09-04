@@ -53,6 +53,10 @@ const HOST_A_ORIGIN = `http://127.0.0.1:${HOST_A_PORT}`;
 const HOST_B_ORIGIN = `http://127.0.0.1:${HOST_B_PORT}`;
 const ORDER_LIST_URL = `${HOST_A_ORIGIN}/order-list.html`;
 const BOUNDARY_MARKER = '【站点边界】';
+// 停止后的收尾文案由服务端产出（apps/server/src/gateway.ts 回合收口），不经模型。
+const STOP_CLOSURE_NOTICE = '已停止当前任务。';
+// 停止演练批次的 toolCallId 由 mock 剧本 driveStop 固定下发。
+const STOP_DRILL_CALL_ID = 'call_stop_operate';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css' };
 
@@ -203,6 +207,21 @@ function readSessionHistory() {
     .join('\n');
 }
 
+/** 最近一次落盘的会话历史消息序列（停止语义按消息结构判，不靠文本子串）。 */
+function readSessionMessages() {
+  for (const line of readSessionHistory().split('\n').reverse()) {
+    if (line === '') continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record?.t === 'history' && Array.isArray(record.history)) return record.history;
+  }
+  return [];
+}
+
 async function runScenarios(context, packAPage, panelPage, sw) {
   const pageCountBeforeFence = context.pages().length;
 
@@ -275,15 +294,33 @@ async function runScenarios(context, packAPage, panelPage, sw) {
   await approveOneCard(panelPage, '停止演练：等待任务授权');
   await panelPage.locator('[data-za-action][data-mode="stop"]:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
   await panelPage.locator('[data-za-action][data-mode="stop"]').click();
-  await waitFor(async () => (await panelText(panelPage)).includes('已按用户要求停止'), {
-    label: '停止演练：等待停止总结', timeoutMs: 20000,
+  // 停止＝立刻收手（adr-024 D2）：本回合不再请求模型，收尾文案由服务端就地产出。
+  await waitFor(async () => (await panelText(panelPage)).includes(STOP_CLOSURE_NOTICE), {
+    label: '停止演练：等待停止收尾', timeoutMs: 20000,
   });
   await sendMessage(panelPage, '停止演练：停止后重试');
   await waitFor(async () => (await hitlCardCount(panelPage)) > 0, {
     label: '停止演练：等待重新授权', timeoutMs: 20000,
   });
   await panelPage.locator('[data-za-hitl-reject]').click();
-  console.log('  [pass] 停止语义：中止余下 DOM 步骤、回传 user-stopped、吊销任务授权，重试重新询问');
+  // 重试轮的 HITL 卡已出现＝停止轮已落盘，此时读历史无竞态（回合在服务端串行）。
+  const stopMessages = readSessionMessages();
+  const stopObsIndex = stopMessages.findIndex(
+    (message) => message.role === 'tool' && message.toolCallId === STOP_DRILL_CALL_ID,
+  );
+  assert(stopObsIndex >= 0, '停止演练：会话历史缺停止批次的观测');
+  assert(
+    stopMessages[stopObsIndex].content === '{"error":"user-stopped"}',
+    `停止演练：停止批次观测应只有 user-stopped（余下步骤零执行、无 reads），实际 ${stopMessages[stopObsIndex].content}`,
+  );
+  const stopClosure = stopMessages[stopObsIndex + 1];
+  assert(
+    stopClosure?.role === 'assistant' &&
+      stopClosure.toolCalls === undefined &&
+      stopClosure.content === STOP_CLOSURE_NOTICE,
+    `停止演练：user-stopped 之后应直接是服务端收尾、停止后零模型轮，实际 ${JSON.stringify(stopClosure)}`,
+  );
+  console.log('  [pass] 停止语义：余下 DOM 步骤零执行、user-stopped 回喂后零模型轮、服务端就地收尾，吊销任务授权后重试重新询问');
 
   // 审计断言：assembly/tool-decision/tool-execution 均带 packId，且出现两个不同 packId。
   const events = readAuditEvents();
