@@ -14,7 +14,7 @@ paths:
 ---
 
 ## ZA-C-WHERE-01*（U1）端口跨模块只传 JSON 可序列化值
-**C6 全部模块端口（AssemblyPort / ToolGatePort / LlmPort / AuditPort / UserConfigStore / CardInventoryPort / FulfillmentCoordinatorPort，以 `packages/contracts/src/ports.ts` 导出为准）的入参与返回值 MUST 全部 JSON 可序列化；MUST NOT 跨端口传函数、类实例、流句柄等进程内对象。**
+**C6 全部模块端口（以 `packages/contracts/src/ports.ts` 导出为准：AssemblyPort / ToolGatePort / LlmPort / AuditPort / UserConfigStore）的入参与返回值 MUST 全部 JSON 可序列化；MUST NOT 跨端口传函数、类实例、流句柄等进程内对象。**
 - 拆服务时端口调用 1:1 替换为 RPC，签名与语义不变——升级改传输层，不改契约。
 - 流式 carve-out：端口方法返回 `AsyncIterable` 且逐个产出的事件本体全部 JSON 可序列化时，视为流式 RPC（SSE）的合法进程内投影，不触发本条（LlmPort.chat 即此形态）。
 - 判定：端口签名/实现出现函数、类实例、Stream、AbortSignal 等不可序列化值跨端口传递（上述流式 carve-out 除外）→ 触发，改为纯数据。

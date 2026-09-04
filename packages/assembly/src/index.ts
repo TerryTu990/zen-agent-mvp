@@ -39,9 +39,7 @@ import {
   checkContractCompatibility,
   compileConfigSchema,
   contractVersion,
-  isDomTool,
   packBuiltinTools,
-  preparationWorkflows,
 } from '@zen-agent/contracts';
 import type { PackSource } from '@zen-agent/contracts';
 
@@ -184,42 +182,9 @@ function loadFeature(
         `快照拒载：功能 ${featureId} 的 tools.json[${index}] 不过 tool-definition 契约：${errorsText(validateTool)}`,
       );
     }
-    const tool = element as ToolDefinition;
-    assertPreparationIntegrity(featureId, index, tool);
-    return tool;
+    return element as ToolDefinition;
   });
   return { featureRules, facts, tools, title };
-}
-
-/** preparation 跨字段完整性（schema 表达不了的引用一致性）：不满足即拒载（fail-closed）。 */
-function assertPreparationIntegrity(featureId: string, index: number, tool: ToolDefinition): void {
-  const preparation = tool.authorization?.preparation;
-  if (preparation === undefined) return;
-  const reject = (reason: string): never => {
-    throw new Error(`快照拒载：功能 ${featureId} 的 tools.json[${index}] preparation ${reason}`);
-  };
-  if (!(preparation.productParam in preparation.params)) {
-    reject(`productParam "${preparation.productParam}" 不是 params 的键`);
-  }
-  if (!('orderId' in preparation.params)) {
-    reject('params 缺 orderId（两类履约工作流的端口输入均要求订单号派生源）');
-  }
-  if (preparation.paramEvidence !== undefined && !(preparation.paramEvidence.param in preparation.params)) {
-    reject(`paramEvidence.param "${preparation.paramEvidence.param}" 不是 params 的键`);
-  }
-  if (!isDomTool(tool)) reject('仅支持 dom 工具（证据配方在 adapter.snapshotEvidence）');
-  else {
-    const rule = (tool.adapter.snapshotEvidence ?? []).find((r) => r.id === preparation.evidence.rule);
-    if (rule === undefined) {
-      reject(`evidence.rule "${preparation.evidence.rule}" 不在 adapter.snapshotEvidence 中`);
-    } else {
-      for (const status of [preparation.evidence.before, preparation.evidence.after]) {
-        if (status !== undefined && !rule.statuses.includes(status)) {
-          reject(`evidence 状态 "${status}" 不在规则 "${rule.id}" 的 statuses 闭集中`);
-        }
-      }
-    }
-  }
 }
 
 function loadSkills(packRoot: string): SkillAsset[] {
@@ -389,13 +354,6 @@ function assertPackV2Semantics(pack: PackManifest, skills: SkillAsset[], docFile
     if (!(packBuiltinTools as readonly string[]).includes(builtin)) {
       throw new Error(
         `快照拒载：pack ${pack.packId} capabilities.builtinTools 声明 ${builtin} 不在平台内建工具闭集 [${packBuiltinTools.join(', ')}] 内`,
-      );
-    }
-  }
-  for (const workflow of pack.capabilities?.preparation?.workflows ?? []) {
-    if (!(preparationWorkflows as readonly string[]).includes(workflow)) {
-      throw new Error(
-        `快照拒载：pack ${pack.packId} capabilities.preparation.workflows 声明 ${workflow} 不在服务端已实现闭集 [${preparationWorkflows.join(', ')}] 内`,
       );
     }
   }

@@ -111,7 +111,7 @@
 | `features` | ⬜ | 功能闭单；声明则启动校验目录齐备（缺失拒载），省略则按目录扫描 |
 | `automations` | ⬜ | 周期自动化声明（adr-019，≤5 条，纯调度/提示词数据不承载治理）：每条 `{id, prompt, workRoutes, executionPreference, defaultPeriodMinutes?}`——`workRoutes` 是工作页判定前缀（激活页 URL 去 origin 后的 path+hash 须以任一前缀开头，origin 恒取 `site.origin`），`executionPreference` 闭集 `auto` / `dom-only` / `prefer-client-api` / `prefer-server-api`，`defaultPeriodMinutes` 省略时按 5 分钟。`id` 跨 pack 唯一（载入期查重拒载）；generic pack 禁声明 |
 | `engines.contract` | ⬜ | 平台兼容声明（VS Code engines 范式，adr-020）：对 contracts 导出 `contractVersion` 的 semver range；载入期比对，range 非法或不满足即拒载（不降级猜测） |
-| `capabilities` | ⬜ | 结构化能力声明（MCP capabilities 范式），全部可选，知识型 pack（仅 feature.md+facts.md）合法缺省：`skills`（`skills/` 目录闭单，与目录**双向对账**——声明多一项或目录多一项均拒载）、`docs`（`docs/` 内相对路径闭单，同样双向对账）、`preparation.workflows`（须 ⊆ 服务端已实现准备工作流闭集，载入期交叉校验）、`anchors`（featureId → 引导锚点数组 `{id, role, label, selectorHint?}`，契约定义的结构化锚点登记位，失配降级、不作准入门槛；装配端尚未接线消费，现行实践仍把定位锚点写在 `facts.md`，见 §3.3） |
+| `capabilities` | ⬜ | 结构化能力声明（MCP capabilities 范式），全部可选，知识型 pack（仅 feature.md+facts.md）合法缺省：`skills`（`skills/` 目录闭单，与目录**双向对账**——声明多一项或目录多一项均拒载）、`docs`（`docs/` 内相对路径闭单，同样双向对账）、`anchors`（featureId → 引导锚点数组 `{id, role, label, selectorHint?}`，契约定义的结构化锚点登记位，失配降级、不作准入门槛；装配端尚未接线消费，现行实践仍把定位锚点写在 `facts.md`，见 §3.3） |
 | `configSchema` | ⬜ | pack 声明的用户可配置点（adr-020）：一份**扁平顶层** JSON Schema 对象——必带 `type: "object"` + `properties`（键闭集即可配置点）+ `additionalProperties: false`，顶层不得出现 `$ref`/`allOf`/`patternProperties` 等组合关键字（键的值 schema 可任意复杂，复用走 `$defs` + 值内 `$ref`）。载入期校验形态与可编译性，两者任一不过即拒载；L2 `packConfig` 写入期按它校验（未声明或值越界即拒），注入期按同一份顶层 `properties` 取键，故写入端与注入端同源。取值以结构化数据注入，不改变工具 riskTier 与治理面 |
 | `integrity` | ⬜ | canonical 文件清单 sha256（U4 不可变的机械化验证）：键=pack 内相对路径、值=sha256 hex。装配端校验启用锚点=打包分发落地时，当前只做契约校验、不比对内容 |
 
@@ -194,7 +194,7 @@
 ### 3.3 feature.md / facts.md 要点
 
 - `feature.md`（规则·守）：编号 `ZA-FEAT-NN`；讲清"该功能内 agent 怎么讲、什么必经工具、什么不做"。操作类功能记得写"先 `page_snapshot` 后动作、以页面证据复核成败"与 task 标题保持纪律。
-- `facts.md`（事实）：页面构成、元素定位锚点（aria-label/文本/角色，勿依赖动态 id）、操作 API、站点组件库交互注意（如自绘下拉须点选项）。事实不足会直接导致讲解臆造与操作失误——参照 `examples/acceptance/packs/mail-126` 的写法；`examples/site-packs/packs/xianyu-seller` 是含 `automations` 与受控履约工具的完整站点包样例。
+- `facts.md`（事实）：页面构成、元素定位锚点（aria-label/文本/角色，勿依赖动态 id）、操作 API、站点组件库交互注意（如自绘下拉须点选项）。事实不足会直接导致讲解臆造与操作失误——参照 `examples/acceptance/packs/mail-126` 的写法；`examples/site-packs/packs/xianyu-seller` 是含 `automations` 的完整站点包样例。
 
 ## 4. 服务端环境变量全表
 
@@ -242,13 +242,6 @@
 | `ZA_SESSION_TTL_MS` | `3600000` | 会话闲置 TTL（1h） |
 | `ZA_USER_CONFIG_DIR` | `.za/user-config` | L2 用户覆盖层存储目录（C7；按 subject 二级分段落一个 JSON 文件，临时文件 + 同目录 rename 原子写）。**容器部署必须外置到持久卷并给运行用户写权限**——落在镜像层时写入抛 `write-failed`，且 overlay 随容器重建丢失 |
 | `ZA_APPLICATIONS_DIR` | `.za/applications` | 投递记录业务日志目录（`record_application`/`list_applications` 内建工具落点，按天 `<YYYY-MM-DD>.jsonl`）；record-only 旁路 fail-open，与审计事件流分立。同样须随容器持久化 |
-| `ZA_FULFILLMENT_POLICIES_JSON` | `[]` | ADR-016 有界履约策略 JSON 数组；首期每个商品分别为 `xianyu-shipping.execute-intent` 与 `xianyu-fulfillment.execute-intent` 配置独立策略，绑定账号、站点 origin、商品、有效期、单笔数量、每日限额与 `dayBoundaryOffsetMinutes`；缺少任一工具策略时对应阶段 fail-closed，与工具声明联合校验非法则拒绝启动 |
-| `ZA_FEISHU_CARD_BASE_TOKEN` | 无 | 飞书卡密库存 Base token；与表 ID、使用说明 URL 三项同时配置才启用，不是应用凭证 |
-| `ZA_FEISHU_CARD_TABLE_ID` | 无 | 飞书卡密库存表 ID |
-| `ZA_FULFILLMENT_GUIDE_URL` | 无 | 固定写入履约通知的 HTTPS 使用说明链接，不接受模型或客户端覆盖 |
-| `ZA_FULFILLMENT_PRODUCT_KEYS_JSON` | `{}` | 闲鱼 `itemId` 到飞书 `product_key` 的服务端 JSON 对象；为空时不向模型注入零参数真实履约准备工具 |
-| `ZA_FEISHU_PROFILE` | `general` | `lark-cli` profile；运行时 token 获取/刷新复用飞书项目现有边界 |
-| `ZA_LARK_CLI_PATH` | `lark-cli` | 可选 CLI 可执行文件路径（容器/sidecar 部署时显式设置） |
 | `LARKSUITE_CLI_CONFIG_DIR` | CLI 默认目录；生产为 `/data/lark-cli` | 飞书 profile 与 token 刷新状态目录；生产必须挂服务器受控持久卷，不进镜像或仓库 |
 
 ### 凭证

@@ -6,18 +6,14 @@ import { createServer } from 'node:http';
 import type {
   AssemblyPort,
   AuditPort,
-  CardInventoryPort,
-  FulfillmentCoordinatorPort,
   LlmPort,
   ToolGatePort,
   UserConfigStore,
 } from '@zen-agent/contracts';
 import { createAssemblyPort } from '@zen-agent/assembly';
-import { createToolGatePort, type BoundedFulfillmentPolicy } from '@zen-agent/toolgate';
+import { createToolGatePort } from '@zen-agent/toolgate';
 import { createLlmPort } from '@zen-agent/llm-port';
 import { createAuditPort } from '@zen-agent/audit';
-import { createLarkBaseCardInventoryPort } from '@zen-agent/card-inventory';
-import { createFulfillmentCoordinator } from '@zen-agent/fulfillment';
 import { createTokenVerifier } from './auth.js';
 import {
   createMemorySessionStore,
@@ -84,40 +80,6 @@ export interface ServerOptions {
   userConfigDir?: string;
   /** 配置草稿（teach 流）有效期毫秒；缺省 10 分钟。 */
   configDraftTtlMs?: number;
-  /** ADR-016：运营者预批准的服务端有界履约策略；不从客户端或模型上下文接受。 */
-  fulfillmentPolicies?: BoundedFulfillmentPolicy[];
-  /** Phase 3：可选飞书轻量卡密库存；未配置时不组装连接器，既有人工 intent 测试路径不变。 */
-  cardInventory?: {
-    baseToken: string;
-    tableId: string;
-    guideUrl: string;
-    profile?: string;
-    cliPath?: string;
-  };
-  /** 可信宿主可直接注入库存端口（测试/sidecar）；与 cardInventory CLI 配置互斥。 */
-  cardInventoryPort?: CardInventoryPort;
-  /** cardInventoryPort 模式下的固定使用说明 URL。 */
-  cardInventoryGuideUrl?: string;
-  /** 站点商品 id → 库存 productKey 闭集映射；仅服务端配置，供声明式零参数 prepare 工具引擎使用。 */
-  fulfillmentProductKeys?: Record<string, string>;
-}
-
-export function parseFulfillmentProductKeys(raw: string | undefined): Record<string, string> {
-  if (raw === undefined || raw.trim() === '') return {};
-  const parsed: unknown = JSON.parse(raw);
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('ZA_FULFILLMENT_PRODUCT_KEYS_JSON 必须是 JSON 对象');
-  }
-  const result: Record<string, string> = {};
-  for (const [productId, productKey] of Object.entries(parsed)) {
-    const normalizedId = productId.trim();
-    const normalizedKey = typeof productKey === 'string' ? productKey.trim() : '';
-    if (normalizedId === '' || normalizedKey === '' || normalizedId !== productId) {
-      throw new Error('ZA_FULFILLMENT_PRODUCT_KEYS_JSON 的键和值必须是非空规范字符串');
-    }
-    result[normalizedId] = normalizedKey;
-  }
-  return result;
 }
 
 export interface ServerPorts {
@@ -125,7 +87,6 @@ export interface ServerPorts {
   toolgate: ToolGatePort;
   llm: LlmPort;
   audit: AuditPort;
-  fulfillment?: FulfillmentCoordinatorPort;
   /** L2 用户覆盖层存储（adr-014）：assembly 与网关写入通道共用同一实例；缺省 = 未启用 L2。 */
   userConfigStore?: UserConfigStore;
 }
@@ -153,44 +114,13 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
     toolOwnership,
     signingSecret: options.signingSecret,
     ...(options.execInstructionTtlMs !== undefined ? { ttlMs: options.execInstructionTtlMs } : {}),
-    fulfillmentPolicies: options.fulfillmentPolicies ?? [],
     ...(options.resolveCredential ? { resolveCredential: options.resolveCredential } : {}),
   });
-  if (options.cardInventory !== undefined && options.cardInventoryPort !== undefined) {
-    throw new Error('飞书 CLI 配置与注入库存端口不可同时设置');
-  }
-  const inventory =
-    options.cardInventoryPort ??
-    (options.cardInventory
-      ? createLarkBaseCardInventoryPort({
-          baseToken: options.cardInventory.baseToken,
-          tableId: options.cardInventory.tableId,
-          ...(options.cardInventory.profile !== undefined
-            ? { profile: options.cardInventory.profile }
-            : {}),
-          ...(options.cardInventory.cliPath !== undefined
-            ? { cliPath: options.cardInventory.cliPath }
-            : {}),
-        })
-      : undefined);
-  const guideUrl = options.cardInventory?.guideUrl ?? options.cardInventoryGuideUrl;
-  if ((inventory === undefined) !== (guideUrl === undefined)) {
-    throw new Error('卡密库存端口与使用说明 URL 必须同时配置');
-  }
-  const fulfillment =
-    inventory !== undefined && guideUrl !== undefined
-      ? createFulfillmentCoordinator({
-          inventory,
-          toolgate,
-          guideUrl,
-        })
-      : undefined;
   return {
     assembly,
     toolgate,
     llm: createLlmPort({ allowedProviders: options.allowedProviders }),
     audit: createAuditPort({ sinkPath: options.auditSinkPath }),
-    ...(fulfillment !== undefined ? { fulfillment } : {}),
     ...(userConfigStore !== undefined ? { userConfigStore } : {}),
   };
 }
@@ -245,8 +175,6 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     assembly: ports.assembly,
     llm: ports.llm,
     toolgate: ports.toolgate,
-    ...(ports.fulfillment !== undefined ? { fulfillment: ports.fulfillment } : {}),
-    fulfillmentProductKeys: options.fulfillmentProductKeys ?? {},
     audit: ports.audit,
     verifier: createTokenVerifier({
       jwtSecret: options.jwtSecret,

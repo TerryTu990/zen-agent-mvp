@@ -138,22 +138,6 @@ describe('pack v2 载入：capabilities 闭单对账（skills/docs）', () => {
   });
 });
 
-describe('pack v2 载入：preparation.workflows 服务端闭集交叉校验', () => {
-  it('声明服务端未实现的 workflow → 拒载', async () => {
-    const tmp = v2Snapshot({ capabilities: { preparation: { workflows: ['card-magic'] } } });
-    await expect(portOf(tmp).resolveFeature({ url: 'http://p.example/x' })).rejects.toThrow(
-      /card-magic/,
-    );
-  });
-
-  it('声明服务端闭集内 workflow → 载入成功（边界）', async () => {
-    const tmp = v2Snapshot({ capabilities: { preparation: { workflows: ['delivery', 'shipment'] } } });
-    await expect(portOf(tmp).resolveFeature({ url: 'http://p.example/x' })).resolves.toMatchObject({
-      packId: 'p',
-    });
-  });
-});
-
 describe('pack v2 载入：configSchema 合法性校验', () => {
   it('configSchema 不是合法 JSON Schema → 拒载', async () => {
     const tmp = v2Snapshot({
