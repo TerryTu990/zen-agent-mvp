@@ -104,6 +104,7 @@ D18（adr-018）周期履约触发 · D19（adr-019）pack 声明式 preparation
 D21（adr-021）用户自建自动化触发器 ·
 **D22（adr-022）匿名自动登录**：安装 id → 短期 JWT、hostUserId 哈希派生、删手填令牌与 demo-token、Google 登录为投产前置条件 ·
 **D23（adr-023）任务组多 tab 工作区**：组级视野（页面清单作为渐进披露第二层注入）与定向操作（不透明页面句柄、围栏按目标页校验、silent 页通道分级、签名覆盖落点）·
+**D27（adr-027）按需注入双轨模型**：不变量 IN（content 脚本只出现在「本会话里被发起过动作的页」与「用户显式授权过 origin 的页」，注入面 = 授权集 − 站点黑名单）；清单删 `content_scripts`、host 权限降为可选；轨一手势/定向帧一次性注入、轨二已授权 origin 动态注册；`grantedOrigins` 是准入维度、与 L2 只收紧正交（U5 五能力语义不变，R9 加「需先授权站点」限定）·
 **D26（adr-026）垂直履约退出核心契约**：C6 回到五端口、C1 删 authorization/preparation、履约与库存两包退役；垂直能力今后只在各站点 pack 的 `tools.json` adapter 中声明。
 
 ## 7. 治理体系（两层，速查入口 `CLAUDE.md`）
