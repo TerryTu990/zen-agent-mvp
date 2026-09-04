@@ -21,6 +21,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { ANON_TENANT, activate } from './anon-identity.mjs';
+import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 import { startMockLlm } from '../mock-llm/server.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -217,11 +218,13 @@ async function main() {
     console.log('[3/7] 真实 Chromium 加载 MV3 extension 并激活被监测页…');
     let context;
     let sw;
+    const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+    cleanups.push(() => removeExtensionDir(loadedExtensionDir));
     for (const headless of [true, false]) {
       const profile = join(tempRoot, `profile-${headless}`);
       const candidate = await chromium.launchPersistentContext(profile, {
         headless,
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+        args: [`--disable-extensions-except=${loadedExtensionDir}`, `--load-extension=${loadedExtensionDir}`],
       });
       let selected = false;
       try {
@@ -254,7 +257,8 @@ async function main() {
     const overlay = {
       schemaVersion: 1,
       subject: { tenant: ANON_TENANT, hostUserId },
-      packs: {},
+      // 轨二：自动化是无手势唤醒，被监测站点必须先经用户显式授权进 L2 授权集（adr-027）。
+      packs: { '*': { grantedOrigins: [site.origin] } },
       watches: [
         {
           id: STATUS_WATCH_ID, templateId: 'page-watch', url: statusUrl,
@@ -274,11 +278,28 @@ async function main() {
     });
     assert(written.status === 200, `触发器写入失败：${written.status} ${await written.text()}`);
 
-    await sw.evaluate(async ([base, origin]) => {
-      await chrome.storage.local.set({ 'za.serverBaseUrl': base, 'za.autoActivate': [origin] });
-    }, [serverBase, site.origin]);
+    await sw.evaluate(async (base) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base });
+    }, serverBase);
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
+    // 轨二证据：授权集拉回后该 origin 出现在动态注册面上（注册载荷恒为插件自带 dist/content.js）。
+    await waitFor(async () => {
+      const registered = await sw.evaluate(async () => {
+        const scripts = await chrome.scripting.getRegisteredContentScripts();
+        return scripts.map((item) => ({ id: item.id, matches: item.matches, js: item.js }));
+      });
+      const hit = registered.find((item) => (item.matches ?? []).includes(`${site.origin}/*`));
+      if (hit === undefined) return '授权 origin 尚未进入动态注册面';
+      assert(
+        Array.isArray(hit.js) && hit.js.includes('dist/content.js'),
+        `动态注册载荷必须是插件自带产物，实际 ${JSON.stringify(hit.js)}`,
+      );
+      return true;
+    }, '已授权 origin 进入动态注册面', 30_000);
+    // 工作页仍须在会话组内才被自动化唤醒：图标手势的自动化等价建组并注入。
+    const workTabId = await sw.evaluate(async () => (await chrome.tabs.query({ active: true }))[0]?.id ?? null);
+    await activateTab(sw, workTabId);
     const extensionId = new URL(sw.url()).host;
     panel = await context.newPage();
     await panel.setViewportSize({ width: 420, height: 780 });

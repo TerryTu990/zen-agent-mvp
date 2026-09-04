@@ -25,6 +25,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { startMockLlm } from '../mock-llm/server.mjs';
+import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -264,9 +265,11 @@ async function main() {
 
     console.log('[5/5] 启动 chromium 加载扩展…');
     const userDataDir = join(REPO_ROOT, '.za', 'e2e-profile-m3');
+    const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+    cleanups.push(() => removeExtensionDir(loadedExtensionDir));
     const launchArgs = [
-      `--disable-extensions-except=${EXTENSION_DIR}`,
-      `--load-extension=${EXTENSION_DIR}`,
+      `--disable-extensions-except=${loadedExtensionDir}`,
+      `--load-extension=${loadedExtensionDir}`,
     ];
     let context = null;
     let sw = null;
@@ -287,19 +290,14 @@ async function main() {
     if (!context || !sw) throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
     cleanups.push(() => context.close());
 
-    // 身份零预置：插件自己匿名激活。za.autoActivate 命中 host origin 使 reload 后自动激活
-    //（显式发起模型下 content 不自动连会话）。
-    await sw.evaluate(
-      async ([base, origin]) => {
-        await chrome.storage.local.set({
-          'za.serverBaseUrl': base,
-          'za.autoActivate': [origin],
-        });
-      },
-      [SERVER_BASE, HOST_BASE],
-    );
+    // 身份零预置：插件自己匿名激活；按需注入模型下由图标手势的自动化等价把 content 放进这一页。
+    await sw.evaluate(async (base) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base });
+    }, SERVER_BASE);
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
+    const orderTabId = await sw.evaluate(async () => (await chrome.tabs.query({ active: true }))[0]?.id ?? null);
+    await activateTab(sw, orderTabId);
     await new Promise((r) => setTimeout(r, 400));
     const extensionId = new URL(sw.url()).host;
     const panel = await context.newPage();

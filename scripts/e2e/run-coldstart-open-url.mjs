@@ -30,6 +30,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { activate } from './anon-identity.mjs';
+import { prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = process.env.ZA_E2E_EXTENSION_DIR
@@ -286,11 +287,13 @@ async function main() {
     console.log('[3/6] 真实 Chromium 加载 MV3 extension…');
     let context;
     let sw;
+    const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+    cleanups.push(() => removeExtensionDir(loadedExtensionDir));
     for (const headless of [true, false]) {
       const profile = join(tempRoot, `profile-${headless}`);
       const candidate = await chromium.launchPersistentContext(profile, {
         headless,
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+        args: [`--disable-extensions-except=${loadedExtensionDir}`, `--load-extension=${loadedExtensionDir}`],
       });
       sw =
         candidate.serviceWorkers()[0] ??

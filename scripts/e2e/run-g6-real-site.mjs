@@ -48,9 +48,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
+import { activateTab, prepareExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
+/**
+ * 装载目录：产品清单里 host 权限是 optional，其授权气泡不可被自动化点击，故本脚本
+ * 以「用户已授权站点访问」为前置装载（见 extension-fixture）；持久化 profile 跨次复用同一份。
+ */
+const LOADED_EXTENSION_DIR = prepareExtensionDir(EXTENSION_DIR);
 // 证据默认落仓内（.za 已在 gitignore）；机器专属位置由运行者以 ZA_E2E_TEST_ROOT 传入，
 // 不写进源码——发布门脚本须能被他人在别的机器上复跑取证。
 const TEST_ROOT = resolve(process.env.ZA_E2E_TEST_ROOT ?? join(REPO_ROOT, '.za', 'e2e'));
@@ -132,7 +138,7 @@ async function bootstrapLogin() {
   mkdirSync(PROFILE_DIR, { recursive: true });
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless: false,
-    args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+    args: [`--disable-extensions-except=${LOADED_EXTENSION_DIR}`, `--load-extension=${LOADED_EXTENSION_DIR}`],
   });
   const goofish = context.pages()[0] ?? (await context.newPage());
   await goofish.goto(GOOFISH_ORIGIN).catch(() => {});
@@ -249,6 +255,14 @@ async function driveOnce(runIndex, context, sw, extensionId, auditPath) {
   await searchPage.goto(`${GOOFISH_ORIGIN}/search?q=${encodeURIComponent(SEARCH_KEYWORD)}`, {
     waitUntil: 'domcontentloaded',
   });
+  // 图标手势的自动化等价：建 Zen 组并把 content 放进搜索页（adr-027 轨一，按需注入）。
+  const searchTabId = await sw.evaluate(async (origin) => {
+    const [tab] = await chrome.tabs.query({ url: `${origin}/*` });
+    return tab?.id ?? null;
+  }, GOOFISH_ORIGIN);
+  assert(typeof searchTabId === 'number', '未找到 goofish 搜索页标签');
+  await activateTab(sw, searchTabId);
+
   const panel = await context.newPage();
   await panel.setViewportSize({ width: 420, height: 900 });
   await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
@@ -382,14 +396,14 @@ async function main() {
     console.log('[3/4] 打开持久化 profile 的真实 Chromium（须已登录 goofish 与飞书）…');
     const context = await chromium.launchPersistentContext(PROFILE_DIR, {
       headless: false,
-      args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+      args: [`--disable-extensions-except=${LOADED_EXTENSION_DIR}`, `--load-extension=${LOADED_EXTENSION_DIR}`],
     });
     cleanups.push(() => context.close());
     const sw = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker', { timeout: 20_000 });
     // 身份零预置：插件自己匿名激活（持久化 profile 上安装 id 跨次复用）；脚本只读回它用于脱敏与泄漏断言。
-    await sw.evaluate(async ([base, origins]) => {
-      await chrome.storage.local.set({ 'za.serverBaseUrl': base, 'za.autoActivate': origins });
-    }, [serverBase, [GOOFISH_ORIGIN, new URL(FEISHU_DOC_URL).origin]]);
+    await sw.evaluate(async (base) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base });
+    }, serverBase);
     for (let attempt = 0; attempt < 60 && installId === ''; attempt += 1) {
       installId = await sw.evaluate(async () => (await chrome.storage.local.get('za.installId'))['za.installId'] ?? '');
       if (installId === '') await new Promise((r) => setTimeout(r, 500));

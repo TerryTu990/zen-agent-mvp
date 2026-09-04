@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const EXTENSION_DIR = process.env.ZA_EXTENSION_E2E_DIR
@@ -33,6 +34,7 @@ async function waitServiceWorker(context) {
 async function main() {
   let context;
   let authServer;
+  let loadedExtensionDir;
   let nextFrameStatus = 401;
   let holdNextTurn = false;
   let delayNextFrameResponse = false;
@@ -177,6 +179,8 @@ async function main() {
 
     console.log('[2/3] 真实 Chromium 加载 MV3 extension…');
     let sw;
+    // 见 extension-fixture：产品清单里 host 权限是 optional，其授权气泡不可被自动化点击。
+    loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
     for (const headless of [true, false]) {
       await run('rm', ['-rf', PROFILE_DIR]);
       // headless 下 MV3 扩展常起不来（本机即如此），且失败形态既有「启动返回但无 SW」也有「启动挂起」；
@@ -186,7 +190,7 @@ async function main() {
         candidate = await chromium.launchPersistentContext(PROFILE_DIR, {
           headless,
           ...(headless ? { timeout: 45_000 } : {}),
-          args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+          args: [`--disable-extensions-except=${loadedExtensionDir}`, `--load-extension=${loadedExtensionDir}`],
         });
       } catch (cause) {
         console.log(`  启动失败（headless=${headless}）：${cause instanceof Error ? cause.message.split('\n')[0] : cause}`);
@@ -422,6 +426,7 @@ async function main() {
     process.exitCode = 1;
   } finally {
     await context?.close().catch(() => {});
+    if (loadedExtensionDir !== undefined) removeExtensionDir(loadedExtensionDir);
     if (authServer !== undefined) {
       for (const stream of eventStreams.values()) stream.end();
       await new Promise((resolveClose) => authServer.close(() => resolveClose())).catch(() => {});

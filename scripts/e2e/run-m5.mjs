@@ -14,7 +14,7 @@
  *            （every-call：即便已有任务级授权仍单独弹卡，批准）→ 提交生效（#sb-result 可见变化）→ 收尾。
  *
  * 断言另含：审计 jsonl 的 assembly/tool-decision/tool-execution 事件带 packId 且出现两个不同 packId（host-a / site-b）；
- * 持久化会话历史含站点边界标记（切到站点乙 origin）。za.autoActivate 只配站点甲，站点乙靠 navigate 入组。
+ * 持久化会话历史含站点边界标记（切到站点乙 origin）。只对站点甲做图标手势等价，站点乙靠 navigate 入组。
  */
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -23,6 +23,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { startMockLlm } from '../mock-llm/server.mjs';
+import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -345,9 +346,11 @@ async function main() {
 
     console.log('[5/5] 启动 chromium 加载扩展…');
     const userDataDir = join(REPO_ROOT, '.za', 'e2e-profile-m5');
+    const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+    cleanups.push(() => removeExtensionDir(loadedExtensionDir));
     const launchArgs = [
-      `--disable-extensions-except=${EXTENSION_DIR}`,
-      `--load-extension=${EXTENSION_DIR}`,
+      `--disable-extensions-except=${loadedExtensionDir}`,
+      `--load-extension=${loadedExtensionDir}`,
     ];
     let context = null;
     let sw = null;
@@ -368,19 +371,15 @@ async function main() {
     if (!context || !sw) throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
     cleanups.push(() => context.close());
 
-    // 身份零预置：插件自己匿名激活。za.autoActivate 只配站点甲：站点甲页 reload 后自动激活建组；
-    // 站点乙由 navigate 入组（不靠 autoActivate）。
-    await sw.evaluate(
-      async ([base, origin]) => {
-        await chrome.storage.local.set({
-          'za.serverBaseUrl': base,
-          'za.autoActivate': [origin],
-        });
-      },
-      [SERVER_BASE, HOST_A_ORIGIN],
-    );
+    // 身份零预置：插件自己匿名激活。只对站点甲页做图标手势的自动化等价（建组 + 注入）；
+    // 站点乙由 navigate 代执行开页入组，其注入走 background 的组内补发路径。
+    await sw.evaluate(async (base) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base });
+    }, SERVER_BASE);
     const packAPage = context.pages()[0];
     await packAPage.reload({ waitUntil: 'load' });
+    const packATabId = await sw.evaluate(async () => (await chrome.tabs.query({ active: true }))[0]?.id ?? null);
+    await activateTab(sw, packATabId);
     await new Promise((r) => setTimeout(r, 400));
     const extensionId = new URL(sw.url()).host;
     const panel = await context.newPage();

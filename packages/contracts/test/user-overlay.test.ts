@@ -87,6 +87,18 @@ describe('C7 user-overlay schema（adr-014 §2）', () => {
         },
       },
     },
+    '"*" 作用域含 grantedOrigins（站点注入授权集，精确 origin + 带端口）': {
+      schemaVersion: 1,
+      subject,
+      packs: { '*': { grantedOrigins: ['https://shop.example', 'http://127.0.0.1:8787'] } },
+    },
+    'grantedOrigins 与 siteDenylist 可并存（准入与拉黑是两个维度，交叠由运行期按黑名单优先处置）': {
+      schemaVersion: 1,
+      subject,
+      packs: {
+        '*': { grantedOrigins: ['https://shop.example'], siteDenylist: ['https://bank.example.com'] },
+      },
+    },
   };
 
   it.each(Object.keys(validOverlays))('合法 overlay 通过校验：%s', (label) => {
@@ -123,6 +135,26 @@ describe('C7 user-overlay schema（adr-014 §2）', () => {
       schemaVersion: 1,
       subject,
       packs: { '*': { siteDenylist: ['https://bank.example.com/login'] } },
+    },
+    'grantedOrigins 含子域通配（授权是正向集合，通配等于把注入面放回 <all_urls>）': {
+      schemaVersion: 1,
+      subject,
+      packs: { '*': { grantedOrigins: ['https://*.shop.example'] } },
+    },
+    'grantedOrigins 含非 http(s) 协议（协议闭集之外）': {
+      schemaVersion: 1,
+      subject,
+      packs: { '*': { grantedOrigins: ['file:///Users'] } },
+    },
+    'grantedOrigins 条目带路径（origin 之外的成分不参与判定，拒收）': {
+      schemaVersion: 1,
+      subject,
+      packs: { '*': { grantedOrigins: ['https://shop.example/orders'] } },
+    },
+    'grantedOrigins 居 pack 级作用域（准入是跨站点声明，不锚定任何 pack）': {
+      schemaVersion: 1,
+      subject,
+      packs: { 'xianyu-seller': { grantedOrigins: ['https://shop.example'] } },
     },
     'siteDenylist 条目重复（uniqueItems）': {
       schemaVersion: 1,

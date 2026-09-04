@@ -15,6 +15,7 @@ import { EXECUTION_PREFERENCE_KEY, parseExecutionPreference } from './execution-
 import { createIdentityProvider } from './identity.js';
 import { normalizeTrustedServerBaseUrl } from './server-url.js';
 import { SITE_DENYLIST_KEY } from './site-denylist.js';
+import { GRANTED_ORIGINS_KEY, originMatchPattern } from './injection.js';
 
 const BASEURL_KEY = 'za.serverBaseUrl';
 
@@ -85,5 +86,11 @@ void chrome.storage.local.get(null).then(async (items) => {
     async saveSiteDenylist(entries) {
       await chrome.storage.local.set({ [SITE_DENYLIST_KEY]: entries });
     },
+    async saveGrantedOrigins(entries) {
+      await chrome.storage.local.set({ [GRANTED_ORIGINS_KEY]: entries });
+    },
+    // 授权气泡只在用户手势内弹得出来：配置中心的按钮回调里同步发起，中间不得插入 await。
+    requestOriginAccess: (origin) => chrome.permissions.request({ origins: [originMatchPattern(origin)] }),
+    revokeOriginAccess: (origin) => chrome.permissions.remove({ origins: [originMatchPattern(origin)] }),
   });
 });

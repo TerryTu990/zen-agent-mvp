@@ -3,7 +3,7 @@
  * 本地测试站同源三页组成任务组：/board.html（活跃页）、/ticket.html（背景页）、/silent.html
  * （建组前已完成"不激活"裁决、建组后不重载——入组但无 content 端口，即通道分级拒签的那类 silent 页）。
  *
- * 组的建立走 za.autoActivate 真实激活路径（content 首载自动建组/入组），不复刻图标点击。
+ * 组的建立复刻图标手势的可观察产物；组内页面的注入走 background 的组内补发路径（adr-027）。
  * mock LLM 内置专用脚本（与 run-coldstart-open-url.mjs 同口径）：按 user 指令 + observation
  * 内容驱动状态机，句柄一律从系统注入的「# 任务组页面清单」机械解析（不硬编码）。
  *
@@ -38,6 +38,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { unwrapObs } from '../mock-llm/server.mjs';
+import { prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = process.env.ZA_E2E_EXTENSION_DIR
@@ -456,11 +457,13 @@ async function main() {
     console.log('[3/9] 真实 Chromium 加载 MV3 extension…');
     let context;
     let sw;
+    const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+    cleanups.push(() => removeExtensionDir(loadedExtensionDir));
     for (const headless of [true, false]) {
       const profile = join(tempRoot, `profile-${headless}`);
       const candidate = await chromium.launchPersistentContext(profile, {
         headless,
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+        args: [`--disable-extensions-except=${loadedExtensionDir}`, `--load-extension=${loadedExtensionDir}`],
       });
       sw =
         candidate.serviceWorkers()[0] ??
@@ -482,8 +485,8 @@ async function main() {
     const extensionId = new URL(sw.url()).host;
 
     // 图标点击建组无法在 Playwright 内自动化：与 run-coldstart-open-url.mjs 同口径，在 SW 里
-    // 复刻 handleIconClick 的可观察产物（建组 + zenGroup/panelGroup 登记）。三页先于建组载入，
-    // content 首载激活请求得 'none' 而保持沉默；建组后重载 board/ticket 令其经 reconnect 激活接入，
+    // 复刻 handleIconClick 的可观察产物（建组 + zenGroup/panelGroup 登记）。按需注入模型下三页
+    // 先于建组载入时本就没有 content；建组后重载 board/ticket，其加载完成触发组内补发注入并接入端口，
     // silent 页刻意不重载——入组但无 content 端口，即通道分级拒签的那类 silent 页。
     console.log('[4/9] 同源三页建组：board（活跃）/ ticket（背景）/ silent（不激活，无端口）…');
     const tabByPath = async (path) =>
@@ -501,8 +504,7 @@ async function main() {
     await pageTicket.goto(`${site.origin}/ticket.html`);
     const pageSilent = await context.newPage();
     await pageSilent.goto(`${site.origin}/silent.html`);
-    // 三页 content 的首载激活请求（request-activate）必须先于建组得到 'none' 裁决，
-    // silent 页才不会在建组后经 reconnect 路径接入端口（转 background/active 的竞态源头）。
+    // 建组前三页都不该有 content：按需注入模型下没有任何触发源落到它们身上。
     await sleep(1_500);
 
     const group = await sw.evaluate(async () => {

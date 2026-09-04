@@ -24,6 +24,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { ANON_TENANT, activate } from './anon-identity.mjs';
+import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -454,11 +455,13 @@ async function main() {
     console.log('[4/6] 真实 Chromium 加载 MV3 extension…');
     let context;
     let sw;
+    const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+    cleanups.push(() => removeExtensionDir(loadedExtensionDir));
     for (const headless of [true, false]) {
       rmSync(PROFILE_DIR, { recursive: true, force: true });
       const candidate = await chromium.launchPersistentContext(PROFILE_DIR, {
         headless,
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+        args: [`--disable-extensions-except=${loadedExtensionDir}`, `--load-extension=${loadedExtensionDir}`],
       });
       const page = candidate.pages()[0] ?? (await candidate.newPage());
       await page.goto(ORDER_LIST_URL, { waitUntil: 'load' }).catch(() => {});
@@ -476,14 +479,13 @@ async function main() {
     cleanups.push(() => context.close());
 
     // 身份零预置：插件自己生成安装 id 并匿名激活；脚本读回它换算主身份的 subject（overlay 归属键）。
-    await sw.evaluate(async ([base, origin]) => {
-      await chrome.storage.local.set({
-        'za.serverBaseUrl': base,
-        'za.autoActivate': [origin],
-      });
-    }, [serverBase, HOST_BASE]);
+    await sw.evaluate(async (base) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base });
+    }, serverBase);
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
+    const orderTabId = await sw.evaluate(async () => (await chrome.tabs.query({ active: true }))[0]?.id ?? null);
+    await activateTab(sw, orderTabId);
     await new Promise((r) => setTimeout(r, 400));
     const extensionId = new URL(sw.url()).host;
     const panel = await context.newPage();
