@@ -94,7 +94,7 @@ pack 风险声明面（P3.5 pack 分发上线）、红队用例生成与动作�
 | 2 | N2 | **已交付**（2026-09-04）：删 `ZA_GENERIC_ALLOWLIST` 全链路 + L2 站点黑名单。主批 + 六轮修复，最终以两条不变量收敛：SD（命中页对服务端完全惰性：一份判定 + 三处出口）与 ST（停止为一处权威状态，所有页面副作用路径执行前必查）。9 条 minor 按收口规则登记为锚点（交付报告 §5） | — |
 | 3 | N3 | **已交付**（2026-09-04，`4728e69`）：card-inventory / fulfillment 整包退役，C1 删 authorization + preparation 原语，C6 回到五端口，toolgate 删履约方法与「发货」标签闭集，server 删 prepare 引擎与全部 ZA_FULFILLMENT_*/ZA_FEISHU_* env（U4 恢复干净），xianyu-seller 示例包降级为普通 adapter 声明，adr-026。补遗：release/ 履约 env 与飞书冒烟退场（契约测试改为反向守卫，其字面即为保留的唯一命中）、DomGateContext 三个只写字段删除（其透传用例随之删除，用例 −1 非回归）、示例包升版、ADR 索引回填 | — |
 | 4 | N4 | **已交付**（2026-09-04，`c96b548`）：R4 条文与北极星改写为「本页生效」块；快捷指令库——L1 `capabilities.quickActions` + L2 `quickActions`/`disabledQuickActions`，C3 user-message 加 `quickActionId`/`selectionText`，服务端展开只进用户轮，chips 与右键一份数据两入口，配置中心个人定制页。补遗（`b2b3622`）：chips 改经无会话投影端点取数（面板打开不建会话）、展开移入回合内绑本轮 compose 生效 pack、右键兜底项常驻 | — |
-| 5 | N5 | **R-8 权限最小化注入**：`<all_urls>` 改点击激活 | N2 之后（同一隐私面） |
+| 5 | N5 | **已交付**（2026-09-05，`b83d627`，adr-027）：manifest 删 `content_scripts`、host 权限降为可选；轨一手势/定向帧一次性注入（`sendActivate` 唯一出口，黑名单闸门在注入之前，content 幂等守卫）；轨二 L2 `grantedOrigins` ∩ 本机授权 − 黑名单 动态注册（确定性 id、对称注销、载荷恒为插件自带 `dist/content.js`）；`za.autoActivate` 删除，E2E 改用夹具；R9 加「需先授权站点」限定；不变量 IN 测试按触发源枚举，单测 1734 | — |
 | — | 随批 | r2 的 12 条 partial 必修项，优先 `record_application` 进 describeInjection 与 L2 收紧面、复核/watch 快照同步 `domContext` | 无 |
 
 P3.5 另计：会话历史列表（R-6）、pack 风险声明面与安装确认。

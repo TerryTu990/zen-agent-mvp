@@ -42,9 +42,7 @@
   ],
   "commands": {
     "_execute_action": {
-      "suggested_key": {
-        "default": "Alt+Shift+Z"
-      },
+      "suggested_key": { "default": "Alt+Shift+Z" },
       "description": "打开 Zen Agent 面板"
     }
   },

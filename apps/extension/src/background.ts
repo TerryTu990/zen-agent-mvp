@@ -2065,7 +2065,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     void syncAutoScanAlarms();
     return;
   }
-  // 配置中心保存一次即以一次 storage.local.set 同时写这两个镜像键，故它们恒可能同批到达：
+  // background 的 L2 刷新（refreshAutomationDescriptors）以一次 storage.local.set 同写这两个镜像键，故它们可能同批到达：
   // 两者各自的处置必须都执行，任一分支不得吞掉另一分支（注册面只由两者的当刻交集推出，对齐一次即可）。
   const grantedChanged = changes[GRANTED_ORIGINS_KEY] !== undefined;
   const denylistChanged = changes[SITE_DENYLIST_KEY] !== undefined;

@@ -25,7 +25,8 @@
 | 评测 | `pnpm eval` | 89 组场景 × 3 跑全过；审计完整性 PASS |
 | 评测判据自检 | `node scripts/evals/run.mjs --check` | 绿（探针在位 + 89 条判据均可被证伪） |
 | 浏览器 E2E（mock LLM） | `test:e2e` `:m2` `:m3` `:d3` `:coldstart` `:automation` `:explain-pack` `:user-config` | **八项全绿** |
-| 面板 E2E | `pnpm test:e2e:sidepanel` | **不稳定**：2026-09-03 连跑 14 次全绿；2026-09-04 同一 commit 独立 worktree 里 3/3 红（401 阶段）。已单独立项 |
+| 面板 E2E | `pnpm test:e2e:sidepanel` | **绿**（2026-09-05 溯源：夹具竞态，`f0ea8ba` 改为先等上行帧到达，10/10） |
+| M5 E2E | `pnpm test:e2e:m5` | **绿**（2026-09-05 溯源：自 `3117f29` 起判据过期两个多月，`b5304c9` 改为三条结构判据；此前不在任何门清单） |
 
 **已知未绿（如实记录）**：
 - `pnpm test:e2e:real`（真实 LLM）与 `test:e2e:real-site`（真实站点 + 飞书）**BLOCKED，未执行**。
@@ -85,7 +86,7 @@
 
 | 事项 | 锚点 |
 |---|---|
-| `test:e2e:sidepanel` **不稳定门**（14 次全绿与 3/3 红出现在同一 commit 上），根因未查明，疑为 401 令牌续期竞态 | 单独立项专项诊断；不计入批次成败 |
+| `test:e2e:sidepanel` 曾判为不稳定门 | 已闭合：根因是夹具 happens-before 假设被 `b691932` 提交即回显打破，非产品竞态；`f0ea8ba` 修 harness 后 10/10 绿 |
 | 真实 LLM / 真实站点 E2E 未执行（BLOCKED） | 提供凭证与已登录 profile 后按 §2 解除命令执行 |
 | `run-real-llm.mjs` 的新判据兼容未经实跑验证 | 同上 |
 | ~~8 项待 Terry 裁决~~ **已于 2026-09-03 全部裁决**；改写与实施尚未落地 | 裁决原文与下一轮工作序列见 `docs/plans/2026-09-03-terry-rulings-and-next-round.md` |
@@ -111,8 +112,7 @@
 
 ## 七、下一步建议
 
-1. **诊断 `test:e2e:sidepanel` 的不确定性**：它在同一 commit 上既出现过 14 次全绿、也出现过 3/3 红（失败点 401 阶段「重试未使用重新激活的令牌」）。先前判它为「误判、实为绿」的结论**已更正为「不稳定门」**——复跑全绿只能证明"此时此环境绿"，不足以证明门是稳定的。
-2. **N1 / N2 / N3 / N4 已交付**（2026-09-04，见裁决记录 §2）。剩余按 `docs/plans/2026-09-03-terry-rulings-and-next-round.md` §2 推进：
-   N5（权限最小化注入，双轨模型：会话内按需注入 + watch 自动化显式授权 origin；不变量 IN）。
+1. **`test:e2e:sidepanel` 与 `test:e2e:m5` 已于 2026-09-05 溯源闭合**（见交付报告 §5）：两者都是 harness 没跟上有意的产品语义变更。教训：改产品语义的 commit 必须实跑 E2E 全家族（含 m5），门清单以 `package.json` 的 `test:e2e*` 全集为准。
+2. **N1-N5 全部交付**（2026-09-04 至 09-05，见裁决记录 §2）。N5 之后的产品可见变化：插件不再常驻注入任何页面，图标/右键/快捷动作只在当前文档生效；跨 origin 继续使用与 watch 自动化都要先在配置中心「已授权常驻的站点」授权该 origin（adr-027，R9 相应加了限定）。侧边栏尚无就地授权入口（锚点见交付报告 §5）。
 3. r2 的 12 条 partial 里挑「进 describeInjection」与「domContext 同步」两条收口（都是本轮改动的残余面）。
 4. 若要发布：先补 `apps/extension/manifest.json` 版本递增，再走 release skill；本轮**未发布**，生产仍是上次发布的版本。

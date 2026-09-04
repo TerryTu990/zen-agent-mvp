@@ -50,6 +50,7 @@
 | [adr-024](adr/adr-024-unattended-closure-and-approval-revalidation.md) | D24 无人值守回合的服务端收口、批准的恢复期复核与授权作用域指纹 |
 | [adr-025](adr/adr-025-general-purpose-base-prompt.md) | D25 基座通用化——从「配置未覆盖即拒答」到「事实边界 + 通用助手」 |
 | [adr-026](adr/adr-026-retire-vertical-fulfillment-from-core.md) | D26 垂直履约退出核心契约：C6 回五端口、C1 删 authorization/preparation、两包退役，垂直能力只在 pack tools.json adapter 声明 |
+| [adr-027](adr/adr-027-on-demand-injection-dual-track.md) | D27 按需注入双轨模型：删 `<all_urls>` 常驻注入，轨一手势/定向帧一次性注入 + 轨二已授权 origin 动态注册（不变量 IN，注入面 = 授权集 − 站点黑名单） |
 
 新增非显然决策（架构/接口/依赖层）时按同格式续编号；已接受的 ADR 不改写，推翻用新 ADR 标注取代关系。
 
