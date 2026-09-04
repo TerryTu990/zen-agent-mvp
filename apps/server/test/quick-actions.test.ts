@@ -168,6 +168,8 @@ async function runTurn(token: string, sessionId: string, frame: Record<string, u
 interface AssemblyEventData {
   quickActionId?: string;
   quickActionUnresolved?: true;
+  packDisabled?: true;
+  siteDenied?: true;
 }
 
 function lastAssemblyEvent(sessionId: string): AssemblyEventData {
@@ -245,6 +247,58 @@ describe('快捷提问展开（L2 用户覆盖层）', () => {
       quickActionId: 'summarize-page',
       quickActionUnresolved: true,
     });
+  });
+});
+
+describe('展开尊重本轮 compose 的回落判定', () => {
+  it('用户关停该 pack：L1 预置问法不展开，原文原样 + 审计标注', async () => {
+    const hostUserId = 'qa-pack-disabled';
+    const token = await signToken(hostUserId);
+    await putOverlay(token, hostUserId, { 'generic-web': { enabled: false } });
+    const sessionId = await createSession(token);
+    await postFrame(token, sessionId, { type: 'context-report', sessionId, url: PAGE_URL });
+    const capture = await runTurn(token, sessionId, { text: '总结本页', quickActionId: 'summarize-page' });
+    expect(capture.lastUser).toBe('总结本页');
+    expect(capture.lastUser).not.toContain(L1_SUMMARIZE_HEAD);
+    expect(lastAssemblyEvent(sessionId)).toMatchObject({
+      quickActionId: 'summarize-page',
+      packDisabled: true,
+      quickActionUnresolved: true,
+    });
+  });
+
+  it('本页命中站点黑名单：L1 预置问法不展开，原文原样 + 审计标注', async () => {
+    const hostUserId = 'qa-site-denied';
+    const token = await signToken(hostUserId);
+    await putOverlay(token, hostUserId, { '*': { siteDenylist: ['http://127.0.0.1:4173'] } });
+    const sessionId = await createSession(token);
+    await postFrame(token, sessionId, { type: 'context-report', sessionId, url: PAGE_URL });
+    const capture = await runTurn(token, sessionId, { text: '总结本页', quickActionId: 'summarize-page' });
+    expect(capture.lastUser).toBe('总结本页');
+    expect(capture.lastUser).not.toContain(L1_SUMMARIZE_HEAD);
+    expect(lastAssemblyEvent(sessionId)).toMatchObject({
+      quickActionId: 'summarize-page',
+      siteDenied: true,
+      quickActionUnresolved: true,
+    });
+  });
+
+  it('回落仅基座仍展开 L2 全局作用域条目（全局条目不锚定任何 pack）', async () => {
+    const hostUserId = 'qa-denied-global';
+    const token = await signToken(hostUserId);
+    await putOverlay(token, hostUserId, {
+      '*': {
+        siteDenylist: ['http://127.0.0.1:4173'],
+        quickActions: [
+          { id: 'my-checklist', label: '按我的清单核对', template: '按我的核对清单逐条检查这一页。', context: 'none' },
+        ],
+      },
+    });
+    const sessionId = await createSession(token);
+    await postFrame(token, sessionId, { type: 'context-report', sessionId, url: PAGE_URL });
+    const capture = await runTurn(token, sessionId, { text: '按我的清单核对', quickActionId: 'my-checklist' });
+    expect(capture.lastUser).toBe('按我的核对清单逐条检查这一页。');
+    expect(lastAssemblyEvent(sessionId).quickActionUnresolved).toBeUndefined();
   });
 });
 

@@ -79,6 +79,19 @@ export function quickActionsFromPacks(body: unknown, packId: string | null): Qui
   return parseQuickActions(pack?.['quickActions']);
 }
 
+/**
+ * GET /v1/packs 响应 → generic 兜底包的 packId；未安装即 null。
+ * 首屏（尚无会话、拿不到本页装配面）按它取 L1 声明：兜底包是「任意 http/https 页都可能激活」的那一个，
+ * 站点包的问法则要等会话建立、注入自省说出本页 packId 之后才呈现。
+ */
+export function genericPackIdFromPacks(body: unknown): string | null {
+  const packs = asRecord(body)?.['packs'];
+  if (!Array.isArray(packs)) return null;
+  const generic = packs.map(asRecord).find((entry) => entry?.['generic'] === true);
+  const packId = generic?.['packId'];
+  return typeof packId === 'string' && packId !== '' ? packId : null;
+}
+
 export interface OverlayQuickActions {
   /** "*" 全局作用域条目（跨站）。 */
   global: QuickActionView[];

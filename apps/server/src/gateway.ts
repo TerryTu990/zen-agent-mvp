@@ -1902,10 +1902,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
      */
     run: AutomationRunRef | null,
     /**
-     * 本轮的快捷提问归因（R-5）：text 已在受理处按模板展开，此处只承载审计标注——
-     * resolved:false = 查表未命中（未声明/已停用/L2 读不出），本轮用的是客户端原文。
+     * 本轮的快捷提问（R-5）：text 是客户端原文（chip 上那句话），模板在本回合首次装配后按
+     * 本轮 compose 定下的生效 pack 查表展开——回落仅基座的轮次里该 pack 的问法本就不可见。
      */
-    quickAction: { id: string; resolved: boolean } | null,
+    quickActionRequest: { id: string; selectionText?: string } | null,
   ): Promise<TurnOutcome> {
     const { sessionId } = session;
     const unattended = run !== null;
@@ -1915,6 +1915,46 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const preferenceInstruction = executionPreferenceInstruction(executionPreference);
     const withPreference = (content: string): string =>
       preferenceInstruction === null ? content : `${content}\n\n${preferenceInstruction}`;
+    /**
+     * 快捷提问展开（R-5）：查表面绑本轮 compose 定下的生效 pack——pack 被关停或本页命中站点黑名单时
+     * compose 已回落仅基座，该 pack 的预置问法本轮不可见，一律按客户端原文原样发起并标 unresolved。
+     * 展开只在回合首次装配时发生：用户轮消息此后不再改，navigate 换装不得重写已发出的那句话。
+     * L2 读不出来同样按原文——无从知道用户是否已停用这一条，宁可发他在 chip 上看得见的原文。
+     */
+    let turnText = text;
+    let quickAction: { id: string; resolved: boolean } | null = null;
+    const expandQuickActionFor = async (composed: ComposeResult, url: string): Promise<void> => {
+      if (quickActionRequest === null || quickAction !== null) return;
+      const declared =
+        composed.packId === null
+          ? []
+          : ((await getPacks()).find((pack) => pack.packId === composed.packId)?.quickActions ?? []);
+      let overlay: UserOverlay | null = null;
+      let overlayReadable = true;
+      if (deps.userConfig !== undefined) {
+        try {
+          overlay = (await deps.userConfig.store.read(subjectOf(claims))).overlay;
+        } catch {
+          overlayReadable = false;
+        }
+      }
+      const expansion = overlayReadable
+        ? expandQuickAction(
+            visibleQuickActions(declared, overlay, composed.packId),
+            quickActionRequest.id,
+            text,
+            {
+              ...(quickActionRequest.selectionText !== undefined
+                ? { selectionText: quickActionRequest.selectionText }
+                : {}),
+              url,
+              title: session.groupPages.find((page) => page.status === 'active')?.title ?? '',
+            },
+          )
+        : { text, resolved: false };
+      turnText = expansion.text;
+      quickAction = { id: quickActionRequest.id, resolved: expansion.resolved };
+    };
     // 按 URL 装配一轮上下文（回合开始与 navigate 落点换装共用）：解析功能、组装注入、建工具面。
     const assembleFor = async (url: string, fenceEscaped = false) => {
       const resolved = await deps.assembly.resolveFeature({ url });
@@ -1934,6 +1974,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         subject,
         ...(pageOrigin !== '' ? { origin: pageOrigin } : {}),
       });
+      await expandQuickActionFor(composed, url);
       // enabled:false（用户关停 pack）与站点黑名单命中时 compose 已回落仅基座：回合归属/附注/审计
       // 一律按 composed.packId，不用 resolve 结果——审计以 packDisabled / siteDenied 区分回落归因。
       const pack: PackRef =
@@ -2064,11 +2105,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
       },
       ...session.history,
       ...boundaryMessages,
-      { role: 'user', content: text },
+      { role: 'user', content: turnText },
     ];
     // 本回合待落 history 的消息序列（含工具轮）：回合内只追加不回改，落盘边界统一瘦身。
     // 边界标记随本回合落 history（进入下回合上下文与 P1 摘要保留集）。
-    const turnMessages: LlmMessage[] = [...boundaryMessages, { role: 'user', content: text }];
+    const turnMessages: LlmMessage[] = [...boundaryMessages, { role: 'user', content: turnText }];
     // 终结轮（纯文本/引导/截断）的气泡文本；工具轮的 roundText 进各自 assistant 回声，不入此。
     let tailText = '';
     // 回合是否自然收尾（纯文本/引导终结）；false=轮数耗尽被截断，须显式告知用户而非静默停。
@@ -3163,46 +3204,18 @@ export function createGateway(deps: GatewayDeps): Gateway {
           }
         }
         /**
-         * 快捷提问展开（R-5）：模板只替换本轮用户轮消息的正文，system 注入、工具面与任何判定都不受
-         * 其影响（U8）。查表面 = 激活 pack 的 L1 声明 + 该 subject 的 L2 覆盖层；查不到、被停用或
-         * L2 读不出来一律按原文原样发起并标 unresolved——读不出覆盖层就无从知道用户是否已停用这一条，
-         * 宁可发用户在 chip 上看得见的原文，也不发一份他已经关掉的问法。
+         * 快捷提问（R-5）：受理处只把 id 与选区正文原样带下去，展开在回合内按本轮 compose 的
+         * 生效 pack 查表——模板只替换用户轮消息正文，system 注入、工具面与任何判定都不受其影响（U8）。
          */
-        let turnText = upstream.text;
-        let quickAction: { id: string; resolved: boolean } | null = null;
-        if (upstream.quickActionId !== undefined) {
-          const pageUrl = session.currentUrl ?? '';
-          const { packId } = gateGeneric(await deps.assembly.resolveFeature({ url: pageUrl }), pageUrl);
-          const declared =
-            packId === null
-              ? []
-              : ((await getPacks()).find((pack) => pack.packId === packId)?.quickActions ?? []);
-          let overlay: UserOverlay | null = null;
-          let overlayReadable = true;
-          if (deps.userConfig !== undefined) {
-            try {
-              overlay = (await deps.userConfig.store.read(subjectOf(claims))).overlay;
-            } catch {
-              overlayReadable = false;
-            }
-          }
-          const expansion = overlayReadable
-            ? expandQuickAction(
-                visibleQuickActions(declared, overlay, packId),
-                upstream.quickActionId,
-                upstream.text,
-                {
-                  ...(upstream.selectionText !== undefined
-                    ? { selectionText: upstream.selectionText }
-                    : {}),
-                  url: pageUrl,
-                  title: session.groupPages.find((page) => page.status === 'active')?.title ?? '',
-                },
-              )
-            : { text: upstream.text, resolved: false };
-          turnText = expansion.text;
-          quickAction = { id: upstream.quickActionId, resolved: expansion.resolved };
-        }
+        const quickActionRequest =
+          upstream.quickActionId === undefined
+            ? null
+            : {
+                id: upstream.quickActionId,
+                ...(upstream.selectionText !== undefined
+                  ? { selectionText: upstream.selectionText }
+                  : {}),
+              };
         if (upstream.messageId !== undefined) {
           const reservation = deps.store.reserveMessageTurn(session.sessionId, upstream.messageId);
           if (reservation === 'storage-failed') {
@@ -3269,12 +3282,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
               } else {
                 const result = await runTurn(
                   session,
-                  turnText,
+                  upstream.text,
                   claims,
                   upstream.executionPreference ?? 'auto',
                   upstream.messageId,
                   automationRun,
-                  quickAction,
+                  quickActionRequest,
                 );
                 succeeded = result.ok;
                 turnReason = result.reason;

@@ -188,7 +188,7 @@
           "pattern": "^[a-z][a-z0-9-]{0,63}$"
         },
         "quickActionUnresolved": {
-          "$comment": "true = 该 quickActionId 在本轮 L1 声明与 L2 覆盖层中查不到（或已被用户停用），本轮按客户端原文原样发起、未做任何展开。缺省 = 已展开或非快捷提问轮。",
+          "$comment": "true = 该 quickActionId 在本轮生效的 L1 声明与 L2 覆盖层中查不到（或已被用户停用），本轮按客户端原文原样发起、未做任何展开。回落仅基座的轮次（packDisabled / siteDenied）里该 pack 的预置问法不在本轮生效面内，故一并按此标注。缺省 = 已展开或非快捷提问轮。",
           "const": true
         }
       }

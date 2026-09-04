@@ -71,6 +71,7 @@ import {
   WATCH_DESCRIPTOR_PACK_ID,
 } from './auto-scan.js';
 import {
+  genericPackIdFromPacks,
   mergeQuickActions,
   panelQuickActions,
   parseQuickActions,
@@ -1180,40 +1181,56 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   }
 
   /**
-   * 本页可呈现的快捷提问（R-5）：packId/featureId 取自与「本页生效」块同一个注入自省端点
-   * （故与面板上写着的装配面必然一致，不另立一套激活判定）；L1 声明与 L2 覆盖层各拉一次，
-   * 合并口径与服务端展开同源。任一环节读不出即回空清单——宁可少给入口，也不给一条点下去
-   * 会被服务端按未知 id 回退的 chip。取数会按需建会话，与该块的行为一致。
+   * 本轮取数的作用域：会话已在的组按注入自省给出的 packId/featureId（与「本页生效」块同一口径，
+   * 不另立一套激活判定）；尚无会话时按 generic 兜底包呈现首屏——为一排 chips 建会话会在服务端
+   * 落一条 session-start，那是用户没做任何事就产生的可观察行为。自省读不出即回 null（弃本轮取数）。
+   */
+  async function quickActionScope(
+    packsBody: unknown,
+  ): Promise<{ packId: string | null; featureId: string | null } | null> {
+    const session = sessionPromise === null ? null : await sessionPromise;
+    if (session === null) return { packId: genericPackIdFromPacks(packsBody), featureId: null };
+    const injection = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/injection`, {
+      headers: { authorization: `Bearer ${session.token}` },
+      signal: abort.signal,
+    });
+    if (!injection.ok) return null;
+    const description = await injection.json() as { packId?: unknown; featureId?: unknown };
+    return {
+      packId: typeof description.packId === 'string' ? description.packId : null,
+      featureId: typeof description.featureId === 'string' ? description.featureId : null,
+    };
+  }
+
+  /**
+   * 本页可呈现的快捷提问（R-5）：只经两个无会话投影端点取数（/v1/packs 的 L1 声明 + /v1/user-config
+   * 的 L2 覆盖层，与配置中心同源），合并口径与服务端展开同源。任一环节读不出即回空清单——宁可少给
+   * 入口，也不给一条点下去会被服务端按未知 id 回退的 chip。
    * 返回的同一份清单同时派生右键菜单：一份数据两入口。
    */
   async function resolveQuickActions(siteDenied: boolean): Promise<QuickActionView[]> {
-    // 命中站点黑名单的页连一次建会话都不该在服务端留下痕迹：判定先于 ensureSession，
-    // 并把右键入口一并撤掉（快捷动作属激活后的能力，黑名单是「本页不激活」）。
+    // 命中站点黑名单的页连取数都不发：快捷动作属激活后的能力，黑名单是「本页不激活」。
+    // 派生的右键项一并撤掉（兜底入口不属快捷提问，仍留）。
     if (siteDenied) {
       await syncContextMenus([]);
       return [];
     }
-    const session = await ensureSession();
-    if (session === null) return [];
-    const auth = { authorization: `Bearer ${session.token}` };
     try {
-      const injection = await fetch(
-        `${session.baseUrl}/v1/sessions/${session.sessionId}/injection`,
-        { headers: auth, signal: abort.signal },
-      );
-      if (!injection.ok) return [];
-      const description = await injection.json() as { packId?: unknown; featureId?: unknown };
-      const packId = typeof description.packId === 'string' ? description.packId : null;
-      const featureId = typeof description.featureId === 'string' ? description.featureId : null;
+      const baseUrl = await readServerBaseUrl();
+      const token = await identity.getToken(baseUrl);
+      const auth = { authorization: `Bearer ${token}` };
       const [packsRes, userConfig] = await Promise.all([
-        fetch(`${session.baseUrl}/v1/packs`, { headers: auth, signal: abort.signal }),
-        fetchUserConfig(session.baseUrl, session.token),
+        fetch(`${baseUrl}/v1/packs`, { headers: auth, signal: abort.signal }),
+        fetchUserConfig(baseUrl, token),
       ]);
       if (!packsRes.ok) return [];
+      const packsBody: unknown = await packsRes.json();
+      const scope = await quickActionScope(packsBody);
+      if (scope === null) return [];
       const merged = mergeQuickActions(
-        quickActionsFromPacks(await packsRes.json(), packId),
-        quickActionsFromUserConfig(userConfig, packId),
-        featureId,
+        quickActionsFromPacks(packsBody, scope.packId),
+        quickActionsFromUserConfig(userConfig, scope.packId),
+        scope.featureId,
       );
       await syncContextMenus(merged);
       return merged;
@@ -1742,23 +1759,21 @@ const QUICK_ACTION_MENU_PREFIX = 'za-qa:';
 const quickActionMenuLabels = new Map<string, string>();
 
 /**
- * 右键菜单 = 快捷提问清单的第二个入口（一份数据两入口）。三种入参各有确定语义：
- * null = 尚不知道本页有哪些条目（SW 冷启、面板未开），装回不带 quickActionId 的兜底入口——
- * 它走既有引用块路径，由用户补充意图后自行发送；[] = 已知本页没有可呈现条目（命中站点黑名单
- * 或全被停用），一个都不注册；非空 = 逐条按 label 注册。
+ * 右键菜单 = 兜底入口 + 快捷提问清单派生项（一份数据两入口）。兜底项「用 Zen 讲解选中内容」常驻：
+ * 它不带 quickActionId、走既有引用块路径由用户补充意图，与本页有没有 selection 类问法无关。
+ * 入参只决定其后追加什么：null = 尚不知道本页有哪些条目（SW 冷启、面板未开），不追加；
+ * [] = 已知本页没有可呈现条目（命中站点黑名单或全被停用），不追加；非空 = 逐条按 label 追加。
  * create 对已存在 id 会抛重复，故每次先 removeAll。
  */
 async function syncContextMenus(actions: QuickActionView[] | null): Promise<void> {
   await chrome.contextMenus.removeAll().catch(() => {});
   quickActionMenuLabels.clear();
-  if (actions === null) {
-    chrome.contextMenus.create({
-      id: SELECTION_MENU_ID,
-      title: '用 Zen 讲解选中内容',
-      contexts: ['selection'],
-    });
-    return;
-  }
+  chrome.contextMenus.create({
+    id: SELECTION_MENU_ID,
+    title: '用 Zen 讲解选中内容',
+    contexts: ['selection'],
+  });
+  if (actions === null) return;
   for (const action of selectionQuickActions(actions)) {
     const menuId = `${QUICK_ACTION_MENU_PREFIX}${action.id}`;
     quickActionMenuLabels.set(menuId, action.label);

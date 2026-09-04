@@ -305,6 +305,8 @@ export function startSidePanel(elements: SidePanelElements): void {
   let pendingMessageId: string | null = null;
   let pendingMessage: PendingUserMessage | null = null;
   let quickActions: QuickActionView[] = [];
+  /** chips 是否已按本页装配面收窄过一次（会话建立前的首屏只有兜底面）。 */
+  let quickActionsScoped = false;
   let deliveryAwaiting = false;
   let localEcho: LocalEcho | null = null;
   let activeMessageId: string | null = null;
@@ -690,6 +692,12 @@ export function startSidePanel(elements: SidePanelElements): void {
         pendingMessageId = null;
         activeMessageId = message.messageId;
         turnInProgress = !completedMessageIds.has(message.messageId);
+        // 首条消息被受理即本组会话已建立：此刻起注入自省可得，chips 能从首屏的兜底面收窄到本页 packId。
+        // 只重取这一次——其后换页由上下文变更重取，同一页每轮都重取只是重复拉同一份投影。
+        if (!quickActionsScoped) {
+          quickActionsScoped = true;
+          requestQuickActions();
+        }
       } else {
         revertLocalEcho();
         ui.hideThinking();

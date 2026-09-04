@@ -110,7 +110,11 @@ export interface AssemblyEvent extends AuditEventBase {
     siteDenied?: true;
     /** 本轮由快捷提问发起时的动作 id（C3 user-message.quickActionId）：R4 可追溯本轮问法来源；缺省 = 普通输入回合。 */
     quickActionId?: string;
-    /** true = 该 quickActionId 在本轮 L1/L2 中查不到或已被停用，本轮按客户端原文原样发起；缺省 = 已展开或非快捷提问轮。 */
+    /**
+     * true = 该 quickActionId 在本轮生效的 L1/L2 中查不到或已被停用，本轮按客户端原文原样发起；
+     * 回落仅基座的轮次（packDisabled / siteDenied）里该 pack 的预置问法即不在本轮生效面内。
+     * 缺省 = 已展开或非快捷提问轮。
+     */
     quickActionUnresolved?: true;
   };
 }
