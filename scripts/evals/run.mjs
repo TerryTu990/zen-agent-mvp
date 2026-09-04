@@ -22,8 +22,8 @@ const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
 // 装配快照根（server 载入）+ pack 级评测发现根（ADR-013 §4：扫 packs 各 eval/scenarios.json 逐 pack 跑）。
 // 四根分阶段各起一台 server（同端口先后独占）——各根的 pack origin 互不相同，须独立载入。当前分布：
 //   host-demo   evals/scenarios.json 的 17 条主场景（该根下无 pack 级 eval 集）
-//   acceptance  5 个验收 pack 共 42 条：codeflow-console 2 / generic-web 13 / mail-126 3 / xianyu-seller 19 / zhipin 5
-//   assets      生产 pack generic-web 13 条
+//   acceptance  5 个验收 pack 共 43 条：codeflow-console 2 / generic-web 14 / mail-126 3 / xianyu-seller 19 / zhipin 5
+//   assets      生产 pack generic-web 14 条
 //   site-packs  已下线站点包 25 条：xianyu-seller 18 / yinxiang 7
 const SNAPSHOT_ROOT = join(REPO_ROOT, 'examples', 'host-demo', 'config');
 const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
@@ -918,7 +918,15 @@ async function runScenarioCore(scenario, token) {
     for (const pages of scenario.groupPagesReports ?? []) {
       await postFrame(sessionId, token, { type: 'group-pages', sessionId, pages });
     }
-    await postFrame(sessionId, token, { type: 'user-message', sessionId, text: scenario.question });
+    // scenario.quickActionId 声明本轮以快捷提问发起（R-5）：客户端只发 id 与选区正文，
+    // 模板由服务端查表展开——判据据此才能分辨「模板进了用户轮」与「模板漏进 system」。
+    await postFrame(sessionId, token, {
+      type: 'user-message',
+      sessionId,
+      text: scenario.question,
+      ...(scenario.quickActionId !== undefined ? { quickActionId: scenario.quickActionId } : {}),
+      ...(scenario.selectionText !== undefined ? { selectionText: scenario.selectionText } : {}),
+    });
     const outcome = await driveTurn(sessionId, token, scenario, bus);
     return evaluateOutcome(scenario, outcome);
   } finally {

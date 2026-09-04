@@ -154,6 +154,7 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
     keys: keysOf<UserMessageFrame>({
       type: true, sessionId: true, text: true, messageId: true,
       executionPreference: true, automationRunId: true, automationId: true,
+      quickActionId: true, selectionText: true,
     }),
   },
   {

@@ -181,6 +181,15 @@
         "siteDenied": {
           "$comment": "true = 当前页 origin 命中用户 L2 站点黑名单而回落仅基座；与 packDisabled 分列——「用户不让 Zen 出现在这个站点」与「用户关停了这个 pack」是两种归因，缺省=非黑名单回落。",
           "const": true
+        },
+        "quickActionId": {
+          "$comment": "本轮由快捷提问发起时的动作 id（C3 user-message.quickActionId，R-5）：R4 可追溯「这一轮的问法从哪来」；缺省 = 用户自行输入的普通回合。",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "quickActionUnresolved": {
+          "$comment": "true = 该 quickActionId 在本轮 L1 声明与 L2 覆盖层中查不到（或已被用户停用），本轮按客户端原文原样发起、未做任何展开。缺省 = 已展开或非快捷提问轮。",
+          "const": true
         }
       }
     },

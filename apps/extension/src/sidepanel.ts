@@ -16,6 +16,7 @@ import {
   type SidePanelUiEvent,
   type SidePanelToBackgroundMessage,
 } from './messaging.js';
+import { panelQuickActions, type QuickActionView } from './quick-actions.js';
 import { siteDeniedSkipKey } from './site-denylist.js';
 
 type PendingUserMessage = Extract<SidePanelToBackgroundMessage, { kind: 'user-message' }>;
@@ -180,6 +181,7 @@ export function pageEffectView(description: InjectionDescriptionView): PageEffec
 
 export interface SidePanelElements {
   messages: HTMLElement;
+  quickActions: HTMLElement;
   input: HTMLTextAreaElement;
   action: HTMLButtonElement;
   upload: HTMLButtonElement;
@@ -213,6 +215,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
         <div class="za-empty"><strong>把操作交给 Zen</strong><span>对话会留在这里；页面只负责观察与执行。</span></div>
       </section>
       <footer class="za-composer">
+        <div class="za-quick-actions" data-za-quick-actions role="group" aria-label="快捷提问" hidden></div>
         <div class="za-composer-surface" data-za-composer-state="idle">
           <div class="za-attachments" data-za-attachments hidden></div>
           <textarea id="za-input" rows="1" aria-label="给 Zen 发送消息" placeholder="向 Zen 交代任务…" disabled></textarea>
@@ -234,6 +237,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
       </footer>
     </section>`;
   const messages = root.querySelector<HTMLElement>('[data-za-messages]');
+  const quickActions = root.querySelector<HTMLElement>('[data-za-quick-actions]');
   const input = root.querySelector<HTMLTextAreaElement>('#za-input');
   const action = root.querySelector<HTMLButtonElement>('[data-za-action]');
   const upload = root.querySelector<HTMLButtonElement>('[data-za-upload]');
@@ -248,6 +252,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
   const configCenter = root.querySelector<HTMLButtonElement>('[data-za-config-center]');
   if (
     messages === null ||
+    quickActions === null ||
     input === null ||
     action === null ||
     upload === null ||
@@ -265,6 +270,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
   }
   return {
     messages,
+    quickActions,
     input,
     action,
     upload,
@@ -298,6 +304,7 @@ export function startSidePanel(elements: SidePanelElements): void {
   let preparingMessageId: string | null = null;
   let pendingMessageId: string | null = null;
   let pendingMessage: PendingUserMessage | null = null;
+  let quickActions: QuickActionView[] = [];
   let deliveryAwaiting = false;
   let localEcho: LocalEcho | null = null;
   let activeMessageId: string | null = null;
@@ -345,6 +352,10 @@ export function startSidePanel(elements: SidePanelElements): void {
     elements.action.dataset['mode'] = mode;
     elements.action.setAttribute('aria-label', mode === 'stop' ? '停止当前操作' : mode === 'waiting' ? '正在处理' : '发送消息');
     elements.action.closest<HTMLElement>('.za-composer-surface')?.setAttribute('data-za-composer-state', busy ? 'busy' : 'idle');
+    // chips 与发送按钮同门：忙碌时点它等于插队发第二轮，一律禁用而非静默丢弃点击。
+    for (const chip of elements.quickActions.querySelectorAll('button')) {
+      chip.disabled = !ready || busy;
+    }
   };
 
   const resetActivity = (): void => {
@@ -502,6 +513,42 @@ export function startSidePanel(elements: SidePanelElements): void {
     });
   };
 
+  /**
+   * 快捷提问 chips（R-5）：只呈现服务端合并后的清单，客户端不持模板——点击只发 quickActionId，
+   * 模板由网关按同一份 L1/L2 查表展开。清单空即整条不占位（不留一条空横条）。
+   */
+  const renderQuickActions = (): void => {
+    const visible = panelQuickActions(quickActions);
+    elements.quickActions.replaceChildren();
+    elements.quickActions.hidden = visible.length === 0;
+    for (const action of visible) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'za-quick-action';
+      chip.dataset['zaQuickAction'] = action.id;
+      chip.textContent = action.label;
+      chip.addEventListener('click', () => {
+        void sendQuickAction(action.id, action.label);
+      });
+      elements.quickActions.append(chip);
+    }
+    updateComposer();
+  };
+
+  /**
+   * 取数与「本页生效」块同源同判据：本机确实跳过了这一页的激活时连请求都不发——
+   * 命中站点黑名单的页不该因为一排 chips 就在服务端建出会话（右键项由 background 一并撤掉）。
+   */
+  const requestQuickActions = (): void => {
+    void activationSkippedHere().then((skipped) => {
+      if (skipped) {
+        quickActions = [];
+        renderQuickActions();
+      }
+      send({ kind: 'quick-actions-request', siteDenied: skipped });
+    });
+  };
+
   // 抬头判定要读一次「跳过激活」的登记，故是异步的；只有最后一条上下文的判定结果作数。
   let contextSeq = 0;
   const updateContext = (message: TaskContextMessage): void => {
@@ -511,6 +558,8 @@ export function startSidePanel(elements: SidePanelElements): void {
       applyContextHeader(skipped ? SITE_DENIED_HEADER_VIEW : contextHeaderView(message, message.groupId));
       // 换页即换装配面：仅在块展开时重取，收起状态不产生建会话副作用。
       if (elements.pageEffect.open) requestPageEffect();
+      // chips 换页必重取：换站即换 pack，上一页的问法留在这里点下去只会被服务端按未知 id 回退。
+      requestQuickActions();
     });
   };
 
@@ -616,6 +665,12 @@ export function startSidePanel(elements: SidePanelElements): void {
         }
       }
       updateComposer();
+      requestQuickActions();
+    } else if (message.kind === 'quick-actions') {
+      quickActions = message.actions;
+      renderQuickActions();
+    } else if (message.kind === 'compose-quick-action') {
+      void sendQuickAction(message.actionId, message.label, message.selectionText);
     } else if (message.kind === 'session-failed') {
       submitting = false;
       deliveryAwaiting = false;
@@ -758,6 +813,48 @@ export function startSidePanel(elements: SidePanelElements): void {
     ready = false;
     resetActivity();
     connect();
+  };
+
+  /**
+   * 快捷提问发送（chips 与右键入口共用）：正文由服务端按 quickActionId 展开，
+   * 面板只把 label 作本地回声与「服务端查不到时的原文」——查不到那一轮用户看到的就是他点的那句话。
+   * 其余状态机（幂等编号 / 本地回声 / 停止 / 投递失败回滚）与普通发送同一套，不另起一条路径。
+   */
+  const sendQuickAction = async (
+    actionId: string,
+    label: string,
+    selectionText?: string,
+  ): Promise<void> => {
+    if (isBusy()) return;
+    const messageId = crypto.randomUUID();
+    pendingMessageId = messageId;
+    submitting = true;
+    elements.composerNotice.textContent = '';
+    clearEmpty();
+    ui.showThinking();
+    scrollMessagesToLatest();
+    updateComposer();
+    const executionPreference = await readExecutionPreference();
+    deliveryAwaiting = true;
+    pendingMessage = {
+      kind: 'user-message',
+      messageId,
+      text: label,
+      executionPreference,
+      quickActionId: actionId,
+      ...(selectionText !== undefined && selectionText !== '' ? { selectionText } : {}),
+    };
+    showLocalEcho(messageId, label);
+    if (!send(pendingMessage)) {
+      submitting = false;
+      deliveryAwaiting = false;
+      pendingMessageId = null;
+      pendingMessage = null;
+      revertLocalEcho();
+      ui.hideThinking();
+      elements.composerNotice.textContent = '连接已中断，请稍后重试';
+    }
+    updateComposer();
   };
 
   const submit = async (): Promise<void> => {

@@ -28,8 +28,19 @@ const SECRET_PATTERNS = [
   { re: /ghp_[A-Za-z0-9]{36}/, name: 'GitHub PAT' },
   { re: /AKIA[A-Z0-9]{16}/, name: 'AWS Access Key' },
   { re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/, name: '私钥 PEM 块' },
-  { re: /(?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*["'][^"'\s]{8,}["']/i, name: '硬编码凭证赋值' },
+  { re: /(?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*["']([^"'\s]{8,})["']/i, name: '硬编码凭证赋值', fixtureExempt: true },
 ];
+
+/**
+ * 测试 fixture 占位例外：仅对「硬编码凭证赋值」一条、仅在 test/ 目录的 *.test.* 文件内、且值以显式占位前缀开头时放行
+ * （仓内测试用 'za-test-secret' / 'fake-token' 这类占位签 JWT 与伪造 bearer，本就不是凭证）。
+ * 其余五条模式（真实 key 形态、PEM 块）在测试文件里照拦——占位前缀之外的任何值仍视为凭证。
+ */
+const FIXTURE_FILE = /(^|\/)test\/[^/]+\.test\.(?:ts|mts|js|mjs)$/;
+const FIXTURE_VALUE = /^(?:fake|za-test|test|dummy)-/i;
+function isFixturePlaceholder(file, match) {
+  return FIXTURE_FILE.test(file) && typeof match?.[1] === 'string' && FIXTURE_VALUE.test(match[1]);
+}
 
 /**
  * 裸 TODO/FIXME 判定（违反 ZA-C-WHEN-01）：仅当 TODO/FIXME 以标记形态出现（行首或紧跟注释开启符）
@@ -99,11 +110,12 @@ function scanAddedLines(diff) {
     const at = lineNo;
     lineNo += 1;
 
-    for (const { re, name } of SECRET_PATTERNS) {
-      if (re.test(text)) {
-        hits.push(`  [secret/${name}] ${file}:${at}`);
-        break;
-      }
+    for (const { re, name, fixtureExempt } of SECRET_PATTERNS) {
+      const match = text.match(re);
+      if (!match) continue;
+      if (fixtureExempt && isFixturePlaceholder(file, match)) continue;
+      hits.push(`  [secret/${name}] ${file}:${at}`);
+      break;
     }
     const prose = text.replace(/`[^`]*`/g, '');
     if (TODO_MARKER.test(prose) && !TODO_ANCHOR.test(prose)) {

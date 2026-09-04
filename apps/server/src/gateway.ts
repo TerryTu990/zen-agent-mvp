@@ -94,6 +94,7 @@ import {
   executionPreferenceInstruction,
   selectToolsForPreference,
 } from './execution-preference.js';
+import { expandQuickAction, visibleQuickActions } from './quick-actions.js';
 import {
   changeSummary,
   diffWatchSnapshots,
@@ -1872,6 +1873,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
      * 既是判定/签发的 unattended 依据（adr-024 D1），也是本回合全部审计事件的归因键（C5）。
      */
     run: AutomationRunRef | null,
+    /**
+     * 本轮的快捷提问归因（R-5）：text 已在受理处按模板展开，此处只承载审计标注——
+     * resolved:false = 查表未命中（未声明/已停用/L2 读不出），本轮用的是客户端原文。
+     */
+    quickAction: { id: string; resolved: boolean } | null,
   ): Promise<TurnOutcome> {
     const { sessionId } = session;
     const unattended = run !== null;
@@ -1926,6 +1932,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ...(composed.packDisabled === true ? { packDisabled: true as const } : {}),
           ...(composed.disabledPackId !== undefined ? { disabledPackId: composed.disabledPackId } : {}),
           ...(composed.siteDenied === true ? { siteDenied: true as const } : {}),
+          ...(quickAction !== null ? { quickActionId: quickAction.id } : {}),
+          ...(quickAction !== null && !quickAction.resolved
+            ? { quickActionUnresolved: true as const }
+            : {}),
         },
       }, pack, run ?? undefined);
       // L2 定格面（封 TOCTOU）：本轮 compose 冻结的生效面贯穿全部判定与签发；
@@ -3060,6 +3070,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
           sendJson(res, 400, { error: '自动回合缺少 automationId，未启动回合' });
           return;
         }
+        // 快捷提问只服务用户轮：无人值守轮的问法由模板决定，两者同发即语义冲突。
+        // 拒绝而不是丢掉其中一个——静默丢弃会让客户端以为它发出去的那条生效了。
+        if (upstream.quickActionId !== undefined && upstream.automationId !== undefined) {
+          sendJson(res, 400, { error: '自动回合不接受快捷提问，未启动回合' });
+          return;
+        }
         // 上面的守卫使两者同在同缺，绑成一个值让后续无须各自兜底。
         const automationRun =
           upstream.automationRunId !== undefined && upstream.automationId !== undefined
@@ -3103,6 +3119,47 @@ export function createGateway(deps: GatewayDeps): Gateway {
             }
             if (resolution.kind === 'ready') watchRun = resolution.watch;
           }
+        }
+        /**
+         * 快捷提问展开（R-5）：模板只替换本轮用户轮消息的正文，system 注入、工具面与任何判定都不受
+         * 其影响（U8）。查表面 = 激活 pack 的 L1 声明 + 该 subject 的 L2 覆盖层；查不到、被停用或
+         * L2 读不出来一律按原文原样发起并标 unresolved——读不出覆盖层就无从知道用户是否已停用这一条，
+         * 宁可发用户在 chip 上看得见的原文，也不发一份他已经关掉的问法。
+         */
+        let turnText = upstream.text;
+        let quickAction: { id: string; resolved: boolean } | null = null;
+        if (upstream.quickActionId !== undefined) {
+          const pageUrl = session.currentUrl ?? '';
+          const { packId } = gateGeneric(await deps.assembly.resolveFeature({ url: pageUrl }), pageUrl);
+          const declared =
+            packId === null
+              ? []
+              : ((await getPacks()).find((pack) => pack.packId === packId)?.quickActions ?? []);
+          let overlay: UserOverlay | null = null;
+          let overlayReadable = true;
+          if (deps.userConfig !== undefined) {
+            try {
+              overlay = (await deps.userConfig.store.read(subjectOf(claims))).overlay;
+            } catch {
+              overlayReadable = false;
+            }
+          }
+          const expansion = overlayReadable
+            ? expandQuickAction(
+                visibleQuickActions(declared, overlay, packId),
+                upstream.quickActionId,
+                upstream.text,
+                {
+                  ...(upstream.selectionText !== undefined
+                    ? { selectionText: upstream.selectionText }
+                    : {}),
+                  url: pageUrl,
+                  title: session.groupPages.find((page) => page.status === 'active')?.title ?? '',
+                },
+              )
+            : { text: upstream.text, resolved: false };
+          turnText = expansion.text;
+          quickAction = { id: upstream.quickActionId, resolved: expansion.resolved };
         }
         if (upstream.messageId !== undefined) {
           const reservation = deps.store.reserveMessageTurn(session.sessionId, upstream.messageId);
@@ -3170,11 +3227,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
               } else {
                 const result = await runTurn(
                   session,
-                  upstream.text,
+                  turnText,
                   claims,
                   upstream.executionPreference ?? 'auto',
                   upstream.messageId,
                   automationRun,
+                  quickAction,
                 );
                 succeeded = result.ok;
                 turnReason = result.reason;

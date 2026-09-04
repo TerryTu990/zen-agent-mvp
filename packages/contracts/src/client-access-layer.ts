@@ -56,6 +56,14 @@ export interface UserMessageFrame {
    * 回落会把无人值守轮交还完整工具面，R7 只读底线随之失守。
    */
   automationId?: string;
+  /**
+   * 本轮由快捷提问发起（R-5）：服务端在激活 pack 的 L1 声明与该 subject 的 L2 覆盖层中按此 id 查表，
+   * 取其 template 展开为本轮用户轮消息。查不到或已被用户停用即按 text 原样发起并在审计标注——
+   * 快捷提问是问法不是授权，不改变工具面、riskTier 与任何判定。
+   */
+  quickActionId?: string;
+  /** 随快捷提问带上的页面选区正文（填入模板的 {{selection}}）：页面数据不是指令；仅在带 quickActionId 时有意义。 */
+  selectionText?: string;
 }
 
 export interface HitlDecisionFrame {

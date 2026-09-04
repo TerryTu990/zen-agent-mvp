@@ -18,6 +18,7 @@ import type {
   PackFeatureDescriptor,
   PackManifest,
   PackToolDescriptor,
+  QuickAction,
   ReadPackDocResult,
   RegistryManifest,
   RiskTier,
@@ -107,6 +108,11 @@ interface LoadedPack {
   automations: PackAutomation[];
   /** pack 声明的用户可配置点（adr-020）；null = 未声明（L2 packConfig 写入期无表项即拒）。 */
   configSchema: JsonObject | null;
+  /**
+   * pack 预置的快捷提问（R-5）：只经 listPacks 投影透出，compose 全程不读——
+   * 它是「用户轮的问法」，不是装配面的一部分（U8）。未声明为空数组。
+   */
+  quickActions: QuickAction[];
 }
 
 interface LoadedSnapshot {
@@ -424,6 +430,7 @@ function loadPack(
     automations: pack.automations ?? [],
     builtinTools: pack.capabilities?.builtinTools ?? [],
     configSchema: pack.configSchema ?? null,
+    quickActions: pack.capabilities?.quickActions ?? [],
   };
 }
 
@@ -537,6 +544,7 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
     docsDir: docs.docsDir,
     automations: [],
     configSchema: null,
+    quickActions: [],
   };
   return {
     version: manifest.version,
@@ -1143,6 +1151,7 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
               : {}),
           })),
           ...(pack.configSchema !== null ? { configSchema: pack.configSchema } : {}),
+          ...(pack.quickActions.length > 0 ? { quickActions: pack.quickActions } : {}),
         });
       }
       return structuredClone(descriptors);
