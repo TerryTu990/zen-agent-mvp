@@ -74,7 +74,8 @@
 - **改 `assets/` 必跑评测**（`pnpm eval` ≥3 跑，ZA-EVAL）。
   **改基座措辞前先 grep `scripts/mock-llm/server.mjs` 的 `PROBE_LITERALS`**（22 条，每条带 sourceFile）——
   mock 以基座字面为探针，改字面即评测假红；禁靠改探针把红评测改绿。
-- **hooks 已挂载**：za-secret-guard / za-bash-guard / za-verify-on-stop。
+- **hooks 已挂载**：za-secret-guard / za-bash-guard / za-verify-on-stop。za-bash-guard 的「硬编码凭证赋值」模式自 2026-09-04 起对 `test/` 目录 `*.test.*` 内以 `fake-|za-test-|test-|dummy-` 开头的占位放行（Terry 裁决；此前同型占位靠人工提交绕过），其余模式与非测试文件不变。
+- **E2E 脚本化 mock 读 observation 必须经 `scripts/mock-llm/server.mjs` 导出的 `unwrapObs` 切区**（定界区内是页面数据 JSON、平台散文在合标记之后）；D3 门曾因漏改这一处自 `1bbd6cf` 起静默失效，直至 2026-09-04 补遗后全门验证才发现。合并分支后必须实跑 E2E 全家族，不能只跑 build/单测。
 - **C3 帧有三处编码**（schema / `packages/contracts/src/client-access-layer.ts` / `apps/extension/src/frames.ts`），
   改一处必须三处同步，`apps/extension/test/frames-schema.test.ts` 会逐帧属性集对账。
 
@@ -111,8 +112,7 @@
 ## 七、下一步建议
 
 1. **诊断 `test:e2e:sidepanel` 的不确定性**：它在同一 commit 上既出现过 14 次全绿、也出现过 3/3 红（失败点 401 阶段「重试未使用重新激活的令牌」）。先前判它为「误判、实为绿」的结论**已更正为「不稳定门」**——复跑全绿只能证明"此时此环境绿"，不足以证明门是稳定的。
-2. **N2 已交付**（2026-09-04，见裁决记录 §2）。继续按 `docs/plans/2026-09-03-terry-rulings-and-next-round.md` §2 推进：N1（R8 事实边界 + 不可信内容定界，合并共用一次全量评测）、
-   N2（删 `ZA_GENERIC_ALLOWLIST` + 补 L2 站点黑名单）、N3（垂直履约语义移出 C6，先出 ADR）、
-   N4（R4 条文改写 + 快捷指令库）、N5（权限最小化注入）。
+2. **N1 / N2 / N3 / N4 已交付**（2026-09-04，见裁决记录 §2）。剩余按 `docs/plans/2026-09-03-terry-rulings-and-next-round.md` §2 推进：
+   N5（权限最小化注入，双轨模型：会话内按需注入 + watch 自动化显式授权 origin；不变量 IN）。
 3. r2 的 12 条 partial 里挑「进 describeInjection」与「domContext 同步」两条收口（都是本轮改动的残余面）。
 4. 若要发布：先补 `apps/extension/manifest.json` 版本递增，再走 release skill；本轮**未发布**，生产仍是上次发布的版本。

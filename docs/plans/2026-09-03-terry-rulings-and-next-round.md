@@ -90,10 +90,10 @@ pack 风险声明面（P3.5 pack 分发上线）、红队用例生成与动作�
 | 序 | 批次 | 内容 | 依赖 |
 |---|---|---|---|
 | 0 | N0 | `test:e2e:sidepanel` **重新开立为「不稳定门」专项**：同一 commit 上既有 14 次全绿、也有 3/3 红（401 阶段）；先前「误判、实为绿」的结论已更正。已顺带修好该脚本的启动回退缺陷 | 无 |
-| 1 | N1 | **R-1 + R-8 定界合并**：R8 改写 + SSOT §1 + UI 规范 + 基座措辞 + 不可信内容结构化定界；同步 mock-llm 探针字面；**独占一次全量评测预算** | 无 |
+| 1 | N1 | **已交付**（2026-09-04，`4b1dc55`）：R8 改事实边界（product-form / SSOT §1 / UI 规范 / adr-025 落地），基座 ZA-SYS-04 随之改写并补探针；不可信内容结构化定界（L0 kind 闭集 + 每会话随机定界串 + 输入侧剥同形串 + 采集侧无损消毒），评测 97 场景 ×3。补遗（`6005adb`）：区内只留页面数据 JSON、同形串剥离下沉到序列化前并收窄定界串形状、摘要块补告诫、可疑句式加锚点 + 审计按类别去重 | — |
 | 2 | N2 | **已交付**（2026-09-04）：删 `ZA_GENERIC_ALLOWLIST` 全链路 + L2 站点黑名单。主批 + 六轮修复，最终以两条不变量收敛：SD（命中页对服务端完全惰性：一份判定 + 三处出口）与 ST（停止为一处权威状态，所有页面副作用路径执行前必查）。9 条 minor 按收口规则登记为锚点（交付报告 §5） | — |
-| 3 | N3 | **R-4**：垂直履约语义移出 C6，先出 ADR 再动契约 | 建议在 N1/N2 之后，避免与基座改动同轮 |
-| 4 | N4 | **R-2 + R-5**：R4 条文与北极星验收改写 + 快捷指令库（L1 声明 + L2 自建 + 面板呈现） | R-2 是纯文档，可并入任一轮 |
+| 3 | N3 | **已交付**（2026-09-04，`4728e69`）：card-inventory / fulfillment 整包退役，C1 删 authorization + preparation 原语，C6 回到五端口，toolgate 删履约方法与「发货」标签闭集，server 删 prepare 引擎与全部 ZA_FULFILLMENT_*/ZA_FEISHU_* env（U4 恢复干净），xianyu-seller 示例包降级为普通 adapter 声明，adr-026。补遗：release/ 履约 env 与飞书冒烟退场（契约测试改为反向守卫，其字面即为保留的唯一命中）、DomGateContext 三个只写字段删除（其透传用例随之删除，用例 −1 非回归）、示例包升版、ADR 索引回填 | — |
+| 4 | N4 | **已交付**（2026-09-04，`c96b548`）：R4 条文与北极星改写为「本页生效」块；快捷指令库——L1 `capabilities.quickActions` + L2 `quickActions`/`disabledQuickActions`，C3 user-message 加 `quickActionId`/`selectionText`，服务端展开只进用户轮，chips 与右键一份数据两入口，配置中心个人定制页。补遗（`b2b3622`）：chips 改经无会话投影端点取数（面板打开不建会话）、展开移入回合内绑本轮 compose 生效 pack、右键兜底项常驻 | — |
 | 5 | N5 | **R-8 权限最小化注入**：`<all_urls>` 改点击激活 | N2 之后（同一隐私面） |
 | — | 随批 | r2 的 12 条 partial 必修项，优先 `record_application` 进 describeInjection 与 L2 收紧面、复核/watch 快照同步 `domContext` | 无 |
 

@@ -167,6 +167,14 @@ card-inventory 10 / fulfillment 8 / audit 5。
 | 停止不变量 ST 的固有窗口二：http 代执行帧一旦落页再无中止面（N2 最终轮，minor） | `createDelegatedExecutor` 的 http 分支落页后由页面环境发请求，content 侧闩只挡 dom 解释器 | 同上 |
 | 内建导航（`site_navigate` / `open_url`）成功 observation 未进定界区（N1 评审，minor·N1-04） | 其 `url` 是 302 落点、由页面控制，回喂时没有定界串可依；现有 kind 闭集（page-text / page-elements / tool-result / pack-doc / group-pages）里没有「服务端自建结果」这一类 | 定界 kind 闭集扩到「服务端自建」类时 |
 | 滚动摘要正文（`summaryText`）自身不被定界包裹（N1 评审，minor·N1-05 余项） | 摘要由模型对较早回合重写，可能复述页面数据；较早回合的定界区随观测一并退场，复述部分无标记可依。本轮只补了摘要块的「可能复述页面数据」告诫，未包裹——包裹须先扩 kind 闭集 | 引入 LLM judge / 摘要器治理时 |
+| 工具失败 observation（服务端自建 JSON）不进定界区（N1 评审，minor·N1-04 余项） | 失败回执由服务端自建，包裹会让 compress 的 `extractToolReceipts` 无法识别失败回执；其 message 若含页面文案仍是裸文 | 定界 kind 闭集扩到「服务端自建」类时（与上一行同锚点） |
+| NFKC 归一只作用于展示口径，不进采集口径（N1，主会话接受的取舍） | NFKC 会把中文全角标点改写成半角，违反「采集侧无损」；采集侧只做零宽/双向控制符剥除 | — |
+| `xianyu-seller` 两份镜像基线即不一致（N3，minor） | version / facts.md 一行 / scenarios 的 expectDecisions 与 acceptance 独有场景；N3 反而收敛了 features/xianyu-fulfillment 与 orders/tools.json | 为示例包补镜像对账测试（同 generic-pack-mirror.test）时 |
+| `run-xianyu.mjs` 退役带走两点 E2E 覆盖（N3，minor） | ① 任务标签分组名必须为 Zen（不得为 commerce）；② 知识附件正文确实进入真实 gateway → LLM 请求 | 下一次 E2E 门梳理时补进 run-m1 或 run-g6-user-config（adr-026 已记） |
+| 发布镜像内的 lark-cli 与 release/ 残余（N3，minor） | env/契约测试/激活脚本中的履约与飞书残余已在补遗清理；镜像内 lark-cli 二进制本身需 Linux 镜像内验证 | 下一次可在 Linux 发布镜像内跑 activate-release.behavior.sh 时 |
+| `/` 触发候选与自定义 `{param}` 弹窗（N4，裁定不做） | chips + 右键两入口已够 | 用户反馈需要时 |
+| D3 定向副作用 E2E 门自 `1bbd6cf` 起失效、至补遗后全门验证才发现（N1 → 验证，major·已修） | N1 首个 commit 给 observation 加定界并改了 mock-llm 的 `unwrapObs`，漏改 D3 E2E 自带的脚本化 mock（`run-d3-directed.mjs` 仍按「头行 + JSON」解析 → `MOCK-B-SNAPSHOT-UNPARSABLE`）；并行阶段 E2E 按端口串行到合并后才跑，合并 agent 只跑 build/单测/`--check`，故窗口内流程 B/C/D/E 无门。修法：harness 侧只留 mock-llm 导出的 `unwrapObs` 一处剥壳、E2E 引用；另 `run-g6-user-config.mjs` C2 间歇红的真根因是回合判据竞态（面板重载复原历史气泡，文本判据提前放行），改为「mock 请求已增长且回复已渲染」并把换身份后的 600ms 定时等待改为轮询注入自省 | 已修（`dabf5e1`）；再有新的按结构解析 observation 的脚本化 mock 时必须引 `unwrapObs` |
+| `run-g6-user-config.mjs` C 段轮询谓词内做网络调用与读审计文件、`waitFor` 不捕获谓词异常（harness 验证，minor） | 注入自省瞬时非 2xx 或审计尾行读到半行时谓词抛出即整跑失败，而非继续轮询；本轮 4/4 未复现 | 该门再次出现间歇红时，给 `waitFor` 谓词加异常吞并重试 |
 
 ## 6. 待 Terry 裁决清单（8 项）——**已于 2026-09-03 全部裁决**
 
