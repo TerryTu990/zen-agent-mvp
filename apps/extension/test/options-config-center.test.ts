@@ -16,6 +16,7 @@ import {
   type PackView,
   type UserOverlayView,
 } from '../src/config-center.js';
+import { MAX_GRANTED_ORIGINS } from '../src/injection.js';
 
 const SUBJECT = { tenant: 'anon', hostUserId: 'anon-u1-abcdefghijklmnop' };
 const AUTH_TOKEN = 'eyJ-fake-token-for-dom-leak-assertion';
@@ -172,6 +173,16 @@ function panel(root: HTMLElement, tab: string): HTMLElement {
   const el = root.querySelector<HTMLElement>(`.za-cc-panel[data-za-panel="${tab}"]`);
   expect(el, `缺少 ${tab} 面板`).not.toBeNull();
   return el!;
+}
+
+/**
+ * 指定自建触发器行内的授权入口。自动化页同时渲染站点包自动化行，两种行的授权入口同类同名，
+ * 面板级选择器会把另一种行的入口算进来。
+ */
+function watchGrant(root: HTMLElement, watchId: string): HTMLButtonElement | null {
+  return panel(root, 'automation').querySelector<HTMLButtonElement>(
+    `.za-cc-watch[data-za-watch-id="${watchId}"] .za-cc-row-grant`,
+  );
 }
 
 function putCalls(harness: Harness): FetchCall[] {
@@ -1242,6 +1253,32 @@ describe('全局设置页 · 已授权常驻的站点（L2 grantedOrigins）', (
     await handle.save();
     expect(mirrored).toEqual([['https://shop.example']]);
   });
+
+  it('已达上限再添：不向浏览器要权限、如实提示、待保存态不变', async () => {
+    const requested: string[] = [];
+    const full = Array.from({ length: MAX_GRANTED_ORIGINS }, (_, index) => `https://shop${index}.example`);
+    const harness = createHarness({
+      requestOriginAccess: async (origin) => {
+        requested.push(origin);
+        return true;
+      },
+    });
+    harness.stored.overlay = {
+      schemaVersion: 1,
+      subject: harness.stored.subject,
+      packs: { '*': { grantedOrigins: full } },
+    };
+    const handle = await mounted(harness);
+    addGrant(harness.root, 'https://one-too-many.example');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(requested, '上限判定先于气泡：加不进去就不该先要一次权限').toEqual([]);
+    expect(status(harness.root)).toContain(`站点授权最多 ${MAX_GRANTED_ORIGINS} 个`);
+    expect(grantEntries(harness.root)).toEqual(full);
+    await handle.save();
+    expect(lastPutOverlay(harness).packs['*']?.grantedOrigins).toEqual(full);
+  });
 });
 
 /**
@@ -1268,19 +1305,15 @@ describe('全局设置页 · 授权态以本机浏览器权限对账', () => {
     const harness = createHarness({ hasOriginAccess: async () => false });
     harness.stored.overlay = grantedOverlay();
     await mounted(harness);
-    const automation = panel(harness.root, 'automation');
-    expect(automation.textContent).toContain('自动化需先授权站点');
-    expect(
-      automation.querySelector('.za-cc-watch-grant'),
-      '本机权限缺失时该行必须给出可点的授权入口',
-    ).not.toBeNull();
+    expect(panel(harness.root, 'automation').textContent).toContain('自动化需先授权站点');
+    expect(watchGrant(harness.root, 'watch-1'), '本机权限缺失时该行必须给出可点的授权入口').not.toBeNull();
   });
 
   it('L2 与本机都在：不误报未授权（对照，判据不是恒为真）', async () => {
     const harness = createHarness({ hasOriginAccess: async () => true });
     harness.stored.overlay = grantedOverlay();
     await mounted(harness);
-    expect(panel(harness.root, 'automation').querySelector('.za-cc-watch-grant')).toBeNull();
+    expect(watchGrant(harness.root, 'watch-1')).toBeNull();
     expect(panel(harness.root, 'global').querySelector('.za-cc-site-grant-regrant')).toBeNull();
   });
 
@@ -1305,7 +1338,7 @@ describe('全局设置页 · 授权态以本机浏览器权限对账', () => {
     await settled();
     expect(requested).toEqual(['https://shop.example']);
     expect(harness.root.querySelector('.za-cc-site-grant-regrant')).toBeNull();
-    expect(panel(harness.root, 'automation').querySelector('.za-cc-watch-grant')).toBeNull();
+    expect(watchGrant(harness.root, 'watch-1')).toBeNull();
   });
 
   it('本机缺失时重复输入该 origin 走重新申请，而不是回「已在授权列表里」', async () => {
@@ -1330,13 +1363,41 @@ describe('全局设置页 · 授权态以本机浏览器权限对账', () => {
     const harness = createHarness();
     harness.stored.overlay = grantedOverlay();
     await mounted(harness);
-    expect(panel(harness.root, 'automation').querySelector('.za-cc-watch-grant')).toBeNull();
+    expect(watchGrant(harness.root, 'watch-1')).toBeNull();
     expect(harness.root.querySelector('.za-cc-site-grant-regrant')).toBeNull();
   });
 });
 
-/** 自动化页的授权入口：无手势唤醒的触发器必须就地说明「需先授权站点」并给出入口。 */
+/**
+ * 自动化页的授权入口：无手势唤醒的触发器必须就地说明「需先授权站点」并给出入口。
+ * 两种行同一判据——站点包自动化在未授权 origin 上同样静默不跑，页头「每行给出授权入口」
+ * 这句承诺必须对站点包自动化行与自建触发器行都成立。
+ */
 describe('自动化页 · 站点授权入口', () => {
+  it('站点包自动化行同样标注未授权并给出授权入口（按 pack 的 origin 围栏）', async () => {
+    const requested: string[] = [];
+    const harness = createHarness({
+      requestOriginAccess: async (origin) => {
+        requested.push(origin);
+        return true;
+      },
+    });
+    await mounted(harness);
+    const row = panel(harness.root, 'automation').querySelector<HTMLElement>('[data-za-automation-id="demo-scan"]');
+    expect(row, '缺少站点包自动化行').not.toBeNull();
+    expect(row!.textContent).toContain('站点未授权');
+    const grant = row!.querySelector<HTMLButtonElement>('.za-cc-row-grant');
+    expect(grant, '站点包自动化行须给出授权入口').not.toBeNull();
+    grant!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(requested).toEqual(['http://127.0.0.1:4173']);
+    const regranted = panel(harness.root, 'automation').querySelector<HTMLElement>(
+      '[data-za-automation-id="demo-scan"]',
+    );
+    expect(regranted!.querySelector('.za-cc-row-grant'), '授权后该行不再提示未授权').toBeNull();
+  });
+
   it('未授权的触发器行标注「站点未授权」并给出授权按钮；授权后标注消失', async () => {
     const harness = createHarness({ requestOriginAccess: async () => true });
     harness.stored.overlay = {
@@ -1348,16 +1409,12 @@ describe('自动化页 · 站点授权入口', () => {
       ],
     };
     await mounted(harness);
-    const automation = panel(harness.root, 'automation');
-    expect(automation.textContent).toContain('自动化需先授权站点');
-    const grant = automation.querySelector<HTMLButtonElement>('.za-cc-watch-grant');
+    expect(panel(harness.root, 'automation').textContent).toContain('自动化需先授权站点');
+    const grant = watchGrant(harness.root, 'watch-1');
     expect(grant, '未授权行须给出授权入口').not.toBeNull();
     grant!.click();
     await Promise.resolve();
     await Promise.resolve();
-    expect(
-      panel(harness.root, 'automation').querySelector('.za-cc-watch-grant'),
-      '授权后该行不再提示未授权',
-    ).toBeNull();
+    expect(watchGrant(harness.root, 'watch-1'), '授权后该行不再提示未授权').toBeNull();
   });
 });

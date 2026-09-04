@@ -209,15 +209,6 @@ async function isGroupMapped(groupId: number): Promise<boolean> {
   return typeof stored === 'string' && stored !== '';
 }
 
-function originOf(url: string | undefined): string | null {
-  if (url === undefined) return null;
-  try {
-    return new URL(url).origin;
-  } catch {
-    return null;
-  }
-}
-
 type UpstreamContentMessage = Exclude<
   ContentToBackgroundMessage,
   | { kind: 'ping' }
@@ -1719,8 +1710,10 @@ async function revokeStaleActivationSkips(): Promise<void> {
 /**
  * 把执行器放进该页并通知它挂面板连接（不变量 IN 轨一的唯一出口）。
  * 注入与激活恒同出一口：任何激活入口都必须先保证 content 在场，否则「已激活」只是一句空话。
- * executeScript 失败（该 origin 未授权且无 activeTab）只让本页保持无 content——不降级、不改投，
- * 页面能力随之缺席，服务端按目标不可达处置。content 侧的重复注入守卫使本调用幂等。
+ * executeScript 失败（该 origin 未授权且无 activeTab / 页面本身不可注入）即就此收手，连激活也不发——
+ * 本页保持无 content，不降级、不改投，页面能力随之缺席，服务端按目标不可达处置。
+ * 客户端不为此单独提示：失败对用户不可观察，能力缺席由服务端的 silent 页叙述兜住。
+ * content 侧的重复注入守卫使本调用幂等。
  * 本函数内的黑名单判定是**兜底**：它在全部激活入口（握手 / 工具栏图标 / 组内导航补发 /
  * 拖入已映射组 / navigate 代执行开页）的最后一步，保证任何入口都发不出激活。
  * 用户可见副作用（建组、登记 zen 组、绑面板）发生在各入口更早处，故握手与图标两个入口
@@ -1734,7 +1727,7 @@ async function sendActivate(tabId: number): Promise<void> {
     return;
   }
   await noteActivationSkipped(tabId, false);
-  await injectContentScript(tabId);
+  if (!(await injectContentScript(tabId))) return;
   const message: BackgroundRuntimeMessage = { kind: 'activate' };
   await chrome.tabs.sendMessage(tabId, message).catch(() => {});
 }
@@ -2072,16 +2065,18 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     void syncAutoScanAlarms();
     return;
   }
-  if (changes[GRANTED_ORIGINS_KEY] !== undefined) {
+  // 配置中心保存一次即以一次 storage.local.set 同时写这两个镜像键，故它们恒可能同批到达：
+  // 两者各自的处置必须都执行，任一分支不得吞掉另一分支（注册面只由两者的当刻交集推出，对齐一次即可）。
+  const grantedChanged = changes[GRANTED_ORIGINS_KEY] !== undefined;
+  const denylistChanged = changes[SITE_DENYLIST_KEY] !== undefined;
+  if (grantedChanged || denylistChanged) {
     void syncContentScriptRegistrations();
-    return;
-  }
-  if (changes[SITE_DENYLIST_KEY] !== undefined) {
-    void syncContentScriptRegistrations();
-    // 名单变更即重报组页面清单：服务端持有的旧清单里，命中页的 url/title 仍在按 active 优先
-    // 进模型注入面——不重报则用户拉黑之后那条记录仍旧一直被读到。
-    for (const bridge of groups.values()) bridge.notifyGroupTabsChanged();
-    void revokeStaleActivationSkips();
+    if (denylistChanged) {
+      // 名单变更即重报组页面清单：服务端持有的旧清单里，命中页的 url/title 仍在按 active 优先
+      // 进模型注入面——不重报则用户拉黑之后那条记录仍旧一直被读到。
+      for (const bridge of groups.values()) bridge.notifyGroupTabsChanged();
+      void revokeStaleActivationSkips();
+    }
     return;
   }
   if (Object.keys(changes).some((key) => key.startsWith('za.autoScan.'))) {

@@ -1054,6 +1054,28 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     return group;
   }
 
+  /**
+   * 自动化行的站点授权入口（两种行共用）：自动化是无手势唤醒，未授权该 origin 时到点根本注入不进去，
+   * 且不发任何提示——不就地给出授权入口，这一行等于承诺了一份永远不来的周期汇报。
+   * origin 为 null（地址尚未填好/不可解析/pack 未声明站点围栏）时不给入口：无从判定要授权哪个站点。
+   */
+  function appendGrantEntry(row: HTMLElement, origin: string | null): void {
+    if (origin === null || originAuthorized(origin)) return;
+    const grant = el('button', 'za-cc-btn za-cc-row-grant', '授权此站点');
+    grant.type = 'button';
+    grant.addEventListener('click', () => {
+      void grantOrigin(origin).then((granted) => {
+        if (!granted) return;
+        renderAutomationPanel();
+        refreshGrantSection();
+      });
+    });
+    row.append(
+      badge('za-cc-badge-warn', '站点未授权', '自动化需先授权站点：未授权时到点不跑，也不发提示'),
+      grant,
+    );
+  }
+
   function renderWatchRow(draft: WatchDraft): HTMLElement {
     const row = el('div', 'za-cc-watch');
     row.dataset['zaWatchId'] = draft.id;
@@ -1132,26 +1154,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'),
       );
     }
-    // 自动化是无手势唤醒：未授权该站点时到点根本注入不进去，这一行必须就地给出授权入口，
-    // 否则它等于承诺了一份永远不来的周期汇报。
-    const watchOrigin = originOfUrl(draft.url);
-    if (watchOrigin !== null && !originAuthorized(watchOrigin)) {
-      const grant = el('button', 'za-cc-btn za-cc-watch-grant', '授权此站点');
-      grant.type = 'button';
-      grant.dataset['zaWatchId'] = draft.id;
-      grant.addEventListener('click', () => {
-        void grantOrigin(watchOrigin).then((granted) => {
-          if (granted) {
-            renderAutomationPanel();
-            refreshGrantSection();
-          }
-        });
-      });
-      row.append(
-        badge('za-cc-badge-warn', '站点未授权', '自动化需先授权站点：未授权时到点不跑，也不发提示'),
-        grant,
-      );
-    }
+    appendGrantEntry(row, originOfUrl(draft.url));
     // 启用态 + 名单内地址 = 到点静默不跑：不标注则这一行等于承诺了一份永远不来的周期汇报。
     if (siteDeniesUrl(state.siteDenylist, draft.url)) {
       row.append(
@@ -1209,6 +1212,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'),
       );
     }
+    appendGrantEntry(row, pack.origin !== undefined && isGrantedOriginEntry(pack.origin) ? pack.origin : null);
     return row;
   }
 
@@ -1423,7 +1427,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         return;
       }
       state.siteDenylist = [...state.siteDenylist, value];
-      setStatus(`${value} 已加入待保存的名单，点「保存」后生效`);
+      setStatus(`${value} 已加入待保存的名单，点「保存」后不再进入该站点；已打开的页重载后生效`);
       refreshSiteDenySection();
     });
     const form = el('div', 'za-cc-field-inline');
@@ -1506,7 +1510,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     await deps.revokeOriginAccess?.(origin);
     localOriginAccess.delete(origin);
     state.grantedOrigins = state.grantedOrigins.filter((candidate) => candidate !== origin);
-    setStatus(`${origin} 的授权已撤销，点「保存」后 Zen 不再在该站点常驻`);
+    setStatus(`${origin} 的授权已撤销，点「保存」后不再进入该站点；已打开的页重载后生效`);
   }
 
   /**

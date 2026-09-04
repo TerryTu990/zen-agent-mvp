@@ -287,3 +287,41 @@ describe('黑名单优先于授权：两轨都不注入', () => {
     expect(h.registrations).toEqual([]);
   });
 });
+
+/**
+ * 注入失败（该 origin 未授权且无 activeTab / 页面本身不可注入）：本页保持无 content。
+ * 客户端不为此单独提示——失败对用户不可观察，能力缺席由服务端的 silent 页叙述兜住。
+ */
+describe('注入失败：本页保持无 content，不降级不改投', () => {
+  it('轨一注入失败即不发 activate（不伪装成功）', async () => {
+    const h = await loadBackground({
+      tabs: [workTab],
+      storageSession: {},
+      injectionDeniedTabs: [workTab.id],
+    });
+    h.emitIconClick(workTab);
+    await settle();
+    expect(h.injected).toEqual([]);
+    expect(h.activated).toEqual([]);
+  });
+
+  it('定向帧目标页注入失败：丢帧，不改投同组他页', async () => {
+    const h = await loadBackground({
+      tabs: [workTab, secondTab],
+      storageSession: mappedGroup,
+      injectionDeniedTabs: [secondTab.id],
+    });
+    const active = h.connectContent(workTab);
+    active.emit({ kind: 'context-report', url: WORK_URL, title: '订单' });
+    await settle();
+    const before = active.received.length;
+    h.pushDownstream({ type: 'snapshot-request', sessionId: SESSION_ID, requestId: 'req-1', page: 'p2' });
+    await settle();
+
+    expect(h.injected).not.toContain(secondTab.id);
+    expect(
+      active.received.slice(before).filter((message) => (message as { kind?: string }).kind === 'frame'),
+      '目标页注入不进去时，帧不得落到同组的活跃页上',
+    ).toEqual([]);
+  });
+});

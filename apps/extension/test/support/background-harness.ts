@@ -68,8 +68,6 @@ export interface Harness {
   injected: number[];
   /** 当前动态注册着的 content script 项（轨二）。 */
   registrations: Array<{ id: string; matches?: string[]; js?: string[] }>;
-  /** 本机 chrome.permissions 已授予的 origin 匹配模式。 */
-  grantedOrigins: string[];
   requests: ServedRequest[];
   emitMessage(message: unknown, tab: FakeTab): void;
   emitIconClick(tab: FakeTab): void;
@@ -435,7 +433,6 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     activated,
     injected,
     registrations,
-    grantedOrigins,
     requests,
     emitMessage(message, tab) {
       const sender = { tab: { id: tab.id, url: tab.url, windowId: tab.windowId, groupId: tab.groupId } };
