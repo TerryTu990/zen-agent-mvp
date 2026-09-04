@@ -134,12 +134,13 @@ function normalizeToolName(name) {
 /**
  * 观测体剥壳：服务端把页面/工具带回来的内容包在会话定界串里（⟪untrusted:kind:nonce⟫…⟪/untrusted:nonce⟫），
  * 平台散文（截断附注、正文标注、指令句式注记）落在合标记之后。
- * 真实模型读定界内的内容不必解析结构，本 mock 要按结构取 ref/证据，故解析前按开合标记切出区内正文——
+ * 真实模型读定界内的内容不必解析结构，脚本化 mock 要按结构取 ref/证据，故解析前按开合标记切出区内正文——
  * 按「删掉定界串」还原会把区外散文留在正文尾部，JSON.parse 随之失败。
  * 判据要看定界本身时用未剥壳的原文（lastToolObs 返回原样内容）。
+ * harness 侧唯一剥壳实现：各 E2E 的脚本化 mock 一律引本函数，不另写一份切区逻辑。
  */
 const UNTRUSTED_REGION_RE = /⟪untrusted:[0-9a-z:-]{0,64}⟫\n?([\s\S]*?)\n?⟪\/untrusted:[0-9a-z:-]{0,64}⟫/;
-function unwrapObs(text) {
+export function unwrapObs(text) {
   const raw = String(text ?? '');
   const matched = UNTRUSTED_REGION_RE.exec(raw);
   return (matched === null ? raw : matched[1] ?? '').trim();

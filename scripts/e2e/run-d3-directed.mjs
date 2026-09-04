@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { unwrapObs } from '../mock-llm/server.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = process.env.ZA_E2E_EXTENSION_DIR
@@ -255,10 +256,12 @@ function startScriptedLlm(siteOrigin) {
     }
 
     if (obs.startsWith('[来自 ')) {
+      // 定向快照观测的构成：首行页标注（区外）+ 定界区（页面数据）+ 区外平台散文。
+      // 按结构取 ref 必须先经 unwrapObs 切出区内正文，直接 JSON.parse 余下全文必失败。
       const newline = obs.indexOf('\n');
       let parsed;
       try {
-        parsed = JSON.parse(obs.slice(newline + 1));
+        parsed = JSON.parse(unwrapObs(obs.slice(newline + 1)));
       } catch {
         return { text: 'MOCK-B-SNAPSHOT-UNPARSABLE' };
       }
