@@ -337,89 +337,17 @@ export interface DomGateContext {
   path: string;
   /** 快照页 origin（ADR-013）：site pack 的非 navigate dom 步须 === 工具所属 pack origin，越界即 deny。 */
   origin?: string;
-  /** 当前快照完整 URL：有界履约意图必须与其精确绑定，防在另一订单聊天页复用。 */
+  /** 当前快照完整 URL。 */
   url?: string;
   /** 快照所属 content script 页面生命周期，防快照后切页/刷新再执行。 */
   pageInstanceId?: string;
   /** 产出本 ref 闭集的客户端快照世代（C3 snapshotEpoch 原样落位）：同页多次观察的先后由它标定。 */
   snapshotEpoch?: number;
-  /** 最近快照元素的最小语义，用于有界履约固定校验输入框与发送按钮。 */
+  /** 最近快照元素的最小语义：按 ref 反查 role，判定敏感控件与确认卡「将发生什么」。 */
   elements?: SnapshotElement[];
-  /** 最近快照按 pack 配方生成的结构化证据；服务端可信准备器只消费闭集统计，不读取消息正文。 */
+  /** 最近快照按 pack 配方生成的结构化证据：只含闭集状态统计，不含消息正文。 */
   evidence?: Record<string, SnapshotEvidence>;
 }
-
-export interface PrepareFulfillmentIntentInput {
-  /** 库存写入前由 toolgate 原子预留策略/订单/日额度所得的一次性票据；缺失不得登记 intent。 */
-  authorizationId: string;
-  accountId: string;
-  toolId: string;
-  productId: string;
-  orderId: string;
-  quantity: number;
-  pageUrl: string;
-  /** 可信连接器绑定的页面生命周期；必须与执行前最近快照一致。 */
-  pageInstanceId: string;
-  /** 可信连接器只提交语义字段；toolgate 固定构造恰好一组 fill→click。 */
-  messageRef: string;
-  sendRef: string;
-  message: string;
-  receiptEvidenceId: string;
-  receiptBaselineCount: number;
-  receiptSuccessStatuses: string[];
-  expiresAt: number;
-}
-
-export interface PrepareShipmentIntentInput {
-  authorizationId: string;
-  accountId: string;
-  toolId: string;
-  productId: string;
-  orderId: string;
-  quantity: number;
-  pageUrl: string;
-  pageInstanceId: string;
-  /** 当前详情页唯一、可用且标签为“发货”的按钮 ref。 */
-  actionRef: string;
-  statusEvidenceId: string;
-  statusBaseline: string;
-  statusSuccessStatuses: string[];
-  expiresAt: number;
-}
-
-export interface PreauthorizeFulfillmentInput {
-  accountId: string;
-  toolId: string;
-  productId: string;
-  orderId: string;
-  quantity: number;
-  pageUrl: string;
-  expiresAt: number;
-}
-
-export interface PreauthorizeFulfillmentResult {
-  authorizationId: string;
-}
-
-export interface PrepareFulfillmentIntentResult {
-  intentId: string;
-}
-
-export interface ConfirmFulfillmentReceiptInput {
-  sessionId: string;
-  toolCallId: string;
-  pageUrl: string;
-  pageInstanceId: string;
-  evidence: Record<string, SnapshotEvidence>;
-}
-
-export interface ConfirmFulfillmentReceiptResult {
-  confirmed: boolean;
-  state: 'completed' | 'uncertain';
-}
-
-export type ConfirmShipmentStatusInput = ConfirmFulfillmentReceiptInput;
-export type ConfirmShipmentStatusResult = ConfirmFulfillmentReceiptResult;
 
 /**
  * ADR-013 任务组：工具所属激活 pack 的 site 上下文（网关按激活 pack 计算传入）。
@@ -537,18 +465,6 @@ export interface HitlGrantInput {
 export interface ToolGatePort {
   /** 插件经已鉴权 SSE 响应取得的 Ed25519 SPKI 公钥；仅用于指令验签。 */
   getExecVerificationKey(): Promise<{ algorithm: 'Ed25519'; publicKey: string }>;
-  /** 库存写前原子校验并占住策略、订单和日额度；失败不得触达库存。 */
-  preauthorizeFulfillment(input: PreauthorizeFulfillmentInput): Promise<PreauthorizeFulfillmentResult>;
-  /** 库存/intent 准备失败时释放尚未转执行态的预授权。 */
-  releaseFulfillmentAuthorization(authorizationId: string): Promise<void>;
-  /** 仅供 apps/server 内可信连接器调用；不暴露为模型工具或客户端 API。 */
-  prepareFulfillmentIntent(input: PrepareFulfillmentIntentInput): Promise<PrepareFulfillmentIntentResult>;
-  /** 登记固定单击“发货”的一次性 intent；模型只取得 opaque id。 */
-  prepareShipmentIntent(input: PrepareShipmentIntentInput): Promise<PrepareFulfillmentIntentResult>;
-  /** DOM 执行成功后，以发送后新快照回执确认最终交付；未精确增加 1 一律 uncertain。 */
-  confirmFulfillmentReceipt(input: ConfirmFulfillmentReceiptInput): Promise<ConfirmFulfillmentReceiptResult>;
-  /** 订单动作后以新快照状态枚举确认“已发货”；不匹配即 uncertain。 */
-  confirmShipmentStatus(input: ConfirmShipmentStatusInput): Promise<ConfirmShipmentStatusResult>;
   decide(input: GateDecisionInput): Promise<GateDecision>;
   /**
    * 批准恢复期复核（adr-024 D3）：approve 之后、签发之前以当轮最新上下文重跑判定链
@@ -577,149 +493,6 @@ export interface ToolGatePort {
    * 不经 nonce/客户端回传（那是 client 通道）；凭证解析不到时按未配置处理返回 ok=false。
    */
   executeServer(input: IssueExecInstructionInput): Promise<Observation>;
-}
-
-// ---- CardInventoryPort（飞书只承担轻量库存账本；卡密不得进入模型/审计/日志）----
-
-export type CardInventoryStatus = 'available' | 'reserved' | 'sent' | 'manual';
-export type CardInventoryStage = 'reserved' | 'shipping-attempted' | 'shipped-confirmed' | 'delivery-attempted';
-
-export type CardInventoryError =
-  | 'inventory-unavailable'
-  | 'inventory-empty'
-  | 'inventory-ambiguous'
-  | 'inventory-paused'
-  | 'inventory-write-failed'
-  | 'inventory-invalid-record';
-
-export interface ReserveCardInput {
-  productKey: string;
-  orderId: string;
-}
-
-export type ReserveCardResult =
-  | {
-      ok: true;
-      cardId: string;
-      /** 仅在服务端履约编排内短暂流转；MUST NOT 进入模型、审计或日志。 */
-      cardSecret: string;
-      status: 'reserved';
-      stage: CardInventoryStage;
-      reused: boolean;
-    }
-  | {
-      ok: true;
-      cardId: string;
-      status: 'sent' | 'manual';
-      reused: true;
-    }
-  | { ok: false; error: CardInventoryError };
-
-export interface BeginCardDeliveryInput {
-  cardId: string;
-  orderId: string;
-}
-
-export interface ConfirmCardShipmentInput extends BeginCardDeliveryInput {
-  confirmed: boolean;
-  note?: string;
-}
-
-export interface SettleCardInput {
-  cardId: string;
-  orderId: string;
-  status: 'sent' | 'manual';
-  note?: string;
-}
-
-export type SettleCardResult =
-  | { ok: true }
-  | { ok: false; error: CardInventoryError };
-
-export interface CardInventoryPort {
-  /** 同订单优先复用；否则领取一条 available 并先写 reserved。单执行器串行前提见实施计划。 */
-  reserve(input: ReserveCardInput): Promise<ReserveCardResult>;
-  /** 点击发货前写 shipping-attempted；该状态重启后不得再次点击。 */
-  beginShipment(input: BeginCardDeliveryInput): Promise<SettleCardResult>;
-  /** 订单状态复核后写 shipped-confirmed；不明确则写 manual。 */
-  confirmShipment(input: ConfirmCardShipmentInput): Promise<SettleCardResult>;
-  /** 在浏览器副作用前持久化 attempt 闩锁；重启后看到该闩锁只能转人工，不得重发。 */
-  beginDelivery(input: BeginCardDeliveryInput): Promise<SettleCardResult>;
-  /** 页面回执明确后写 sent；任何不明确结果写 manual。 */
-  settle(input: SettleCardInput): Promise<SettleCardResult>;
-}
-
-export interface PrepareCardFulfillmentInput {
-  accountId: string;
-  toolId: string;
-  productId: string;
-  productKey: string;
-  orderId: string;
-  quantity: number;
-  pageUrl: string;
-  pageInstanceId: string;
-  messageRef: string;
-  sendRef: string;
-  receiptEvidenceId: string;
-  receiptBaselineCount: number;
-  receiptSuccessStatuses: string[];
-  expiresAt: number;
-}
-
-export interface PrepareCardShipmentInput {
-  accountId: string;
-  toolId: string;
-  productId: string;
-  productKey: string;
-  orderId: string;
-  quantity: number;
-  pageUrl: string;
-  pageInstanceId: string;
-  actionRef: string;
-  statusEvidenceId: string;
-  statusBaseline: string;
-  statusSuccessStatuses: string[];
-  expiresAt: number;
-}
-
-export type PrepareCardFulfillmentResult =
-  | { ok: true; intentId: string }
-  | {
-      ok: false;
-      error:
-        | CardInventoryError
-        | 'already-sent'
-        | 'manual-review'
-        | 'shipment-required'
-        | 'fulfillment-paused'
-        | 'unsupported-quantity'
-        | 'authorization-denied'
-        | 'intent-registration-failed';
-    };
-
-export interface SettleCardFulfillmentInput {
-  intentId: string;
-  outcome: 'sent' | 'manual';
-  note?: string;
-}
-
-export type SettleCardFulfillmentResult =
-  | { ok: true }
-  | { ok: false; error: CardInventoryError | 'unknown-intent' | 'outcome-conflict' };
-
-export interface FulfillmentCoordinatorPort {
-  /** 预授权后先预占卡密，再登记一次性订单发货 intent。 */
-  prepareShipment(input: PrepareCardShipmentInput): Promise<PrepareCardFulfillmentResult>;
-  /** 先由 toolgate 原子占住授权/额度，再领取卡密并登记不向模型暴露正文的一次性 intent。 */
-  prepare(input: PrepareCardFulfillmentInput): Promise<PrepareCardFulfillmentResult>;
-  /** 发货副作用前持久化 shipping-attempted。 */
-  beginShipment(intentId: string): Promise<SettleCardFulfillmentResult>;
-  /** 状态复核成功写 shipped-confirmed；不明确由 settle(manual) 终止。 */
-  confirmShipment(intentId: string): Promise<SettleCardFulfillmentResult>;
-  /** toolgate 放行后、浏览器指令签发前写入不可重放的发送尝试闩锁。 */
-  beginDelivery(intentId: string): Promise<SettleCardFulfillmentResult>;
-  /** 站点回执闭环后回填库存终态；失败必须阻断后续自动处理。 */
-  settle(input: SettleCardFulfillmentInput): Promise<SettleCardFulfillmentResult>;
 }
 
 // ---- UserConfigStore（L2 用户覆盖层存储端口，adr-014：事实源在服务端，换实现不换端口）----

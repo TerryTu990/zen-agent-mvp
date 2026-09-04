@@ -71,8 +71,6 @@ export interface PackCapabilities {
   docs?: string[];
   /** pack 声明使用的平台内建工具族 ⊆ 平台已实现闭集，载入期交叉校验；未声明 = 网关不注入任何内建工具面。 */
   builtinTools?: PackBuiltinTool[];
-  /** pack 使用的准备 workflows ⊆ 服务端已实现闭集，载入期交叉校验。 */
-  preparation?: { workflows: string[] };
 }
 
 /** canonical 文件清单 sha256（键 = pack 内相对路径，值 = sha256 hex）；装配端校验启用锚点 = P3.5。 */
