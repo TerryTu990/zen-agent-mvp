@@ -39,14 +39,15 @@
 | [adr-013](adr/adr-013-site-pack-and-cross-site-task-group.md) | D13 站点包与跨站任务组：registry/pack 两级、site 围栏、per-origin 身份、上下文治理 P0-P2 |
 | [adr-014](adr/adr-014-user-config-layer.md) | D14 用户级配置层：C7 user-overlay、UserConfigStore 端口、只收紧合并与确认写入通道（U4/U8 配套） |
 | [adr-015](adr/adr-015-chrome-side-panel.md) | D15 Chrome Side Panel 承载持久对话，页面只承担观察与执行 |
-| [adr-016](adr/adr-016-bounded-fulfillment-authorization.md) | D16 确定性履约采用服务端有界自动授权 |
-| [adr-017](adr/adr-017-feishu-card-inventory.md) | D17 飞书多维表作为轻量卡密库存账本 |
-| [adr-018](adr/adr-018-xianyu-periodic-fulfillment-trigger.md) | D18 周期履约触发与零参数可信准备 |
-| [adr-019](adr/adr-019-pack-declared-preparation-and-automation.md) | D19 pack 声明式 intent 准备与周期自动化（核心去站点硬编码） |
+| [adr-016](adr/adr-016-bounded-fulfillment-authorization.md) | D16 确定性履约采用服务端有界自动授权（经 adr-026 退役） |
+| [adr-017](adr/adr-017-feishu-card-inventory.md) | D17 飞书多维表作为轻量卡密库存账本（经 adr-026 退役） |
+| [adr-018](adr/adr-018-xianyu-periodic-fulfillment-trigger.md) | D18 周期履约触发与零参数可信准备（准备器经 adr-026 退役） |
+| [adr-019](adr/adr-019-pack-declared-preparation-and-automation.md) | D19 pack 声明式 intent 准备与周期自动化（核心去站点硬编码；preparation 面经 adr-026 退役） |
 | [adr-020](adr/adr-020-pack-contract-v2-registry-and-storage.md) | D20 pack 契约 v2、registry 与存储分发：三来源、capabilities/configSchema、多租户共享内容模型 |
 | [adr-021](adr/adr-021-user-defined-automation-triggers.md) | D21 用户自建自动化触发器：平台模板闭集 + 参数层 watches + 自动回合只读强制 |
 | [adr-022](adr/adr-022-anonymous-auto-login.md) | D22 匿名自动登录：安装 id → 短期 JWT，Google 账号登录为正式投产前置条件 |
 | [adr-023](adr/adr-023-task-group-multi-tab-workspace.md) | D23 任务组多 tab 工作区：组级视野与定向操作（不透明页面句柄、按目标页校验围栏） |
+| [adr-026](adr/adr-026-retire-vertical-fulfillment-from-core.md) | D26 垂直履约退出核心契约：C6 回五端口、C1 删 authorization/preparation、两包退役，垂直能力只在 pack tools.json adapter 声明 |
 
 新增非显然决策（架构/接口/依赖层）时按同格式续编号；已接受的 ADR 不改写，推翻用新 ADR 标注取代关系。
 

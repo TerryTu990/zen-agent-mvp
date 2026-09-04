@@ -26,10 +26,6 @@ const TOOL_SEND_EMAIL = 'mail-126.send-email';
 const TOOL_BROWSE = 'browse.page-operate';
 const TOOL_XIANYU_ORDERS = 'xianyu-orders.page-operate';
 const TOOL_XIANYU_SEND = 'xianyu-fulfillment.send-test-message';
-const TOOL_XIANYU_INTENT = 'xianyu-fulfillment.execute-intent';
-const TOOL_XIANYU_PREPARE = 'prepare.xianyu-fulfillment.execute-intent';
-const TOOL_XIANYU_SHIPPING = 'xianyu-shipping.execute-intent';
-const TOOL_XIANYU_SHIPPING_PREPARE = 'prepare.xianyu-shipping.execute-intent';
 const TOOL_YINXIANG_WRITE = 'yinxiang-note.write-note';
 const TOOL_OPEN_URL = 'open_url';
 
@@ -94,7 +90,7 @@ export const PROBE_LITERALS = [
   { literal: FACTS_NOT_CANCELLABLE, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-list/facts.md', why: 'R1 状态语义事实（不可取消）' },
   { literal: FEATURE_ORDER_ADMIN, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-list/feature.md', why: 'R4 不编造：业务原因引导联系订单管理员' },
   { literal: PACK_XIANYU_ORDERS, sourceFile: 'examples/site-packs/packs/xianyu-seller/pack.json', why: 'xianyu-orders 功能装配在场的判别（订单页剧本门控）' },
-  { literal: PACK_XIANYU_FULFILLMENT, sourceFile: 'examples/site-packs/packs/xianyu-seller/pack.json', why: 'xianyu-fulfillment 功能装配在场的判别（履约剧本门控）' },
+  { literal: PACK_XIANYU_FULFILLMENT, sourceFile: 'examples/site-packs/packs/xianyu-seller/pack.json', why: 'xianyu-fulfillment 功能装配在场的判别（消息页剧本门控）' },
   { literal: UNATTENDED_DENY_NOTICE, sourceFile: 'apps/server/src/gateway.ts', why: 'R7 只读强制拒绝后回喂给模型的系统提示；剧本据此产出"被拒后如实汇报"回合' },
   { literal: BOUNDARY_MARKER, sourceFile: 'apps/server/src/compress.ts', why: '回合内换站注入的边界标记（user 角色）；取用户发言时据此跳过，字面漂移会让剧本把它误当用户新指令' },
 ];
@@ -228,32 +224,6 @@ function sendXianyuTestCall(obs) {
       steps: [{ action: 'click', ref: button?.ref ?? 'za-send' }],
       summary: '对外发送已准备好的非秘密测试占位内容',
     }),
-  };
-}
-
-function executeXianyuIntentCall(userText) {
-  const match = userText.match(/履约意图\s+([0-9a-f-]{16,})/i);
-  return {
-    id: 'call_xianyu_intent',
-    name: TOOL_XIANYU_INTENT,
-    arguments: JSON.stringify({ intentId: match?.[1] ?? 'missing-intent' }),
-  };
-}
-
-function executePreparedXianyuIntentCall(obs, toolName = TOOL_XIANYU_INTENT) {
-  let intentId = 'missing-intent';
-  try {
-    const parsed = JSON.parse(obs);
-    if (typeof parsed.intentId === 'string') intentId = parsed.intentId;
-  } catch {
-    // 保持闭集占位，让服务端 fail-closed。
-  }
-  return {
-    // 同一会话可能顺序处理多个订单；调用 ID 绑定 opaque intent，避免测试 mock
-    // 把不同订单伪装成同一个 tool call 重放而被服务端正确拒绝。
-    id: `${toolName === TOOL_XIANYU_SHIPPING ? 'call_xianyu_shipping_intent' : 'call_xianyu_intent'}_${intentId}`,
-    name: toolName,
-    arguments: JSON.stringify({ intentId }),
   };
 }
 
@@ -713,58 +683,7 @@ function decide(sys, u, body) {
       },
     };
   }
-  if (obs === null && u.includes('自动履约扫描') && hasTool(body, TOOL_XIANYU_PREPARE)) {
-    return { toolCall: snapshotCall() };
-  }
-  if (obs === null && u.includes('自动发货') && hasTool(body, TOOL_XIANYU_SHIPPING_PREPARE)) {
-    return { toolCall: snapshotCall() };
-  }
-  if (obs === null && u.includes('履约意图') && hasTool(body, TOOL_XIANYU_INTENT)) {
-    return { toolCall: snapshotCall() };
-  }
   if (obs !== null) {
-    const shippingIntentCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_SHIPPING);
-    if (shippingIntentCount > 0) {
-      return obs.includes('"shipmentConfirmed":true')
-        ? { text: '订单平台状态已明确变为已发货。' }
-        : { text: '订单发货状态未能明确确认，已转人工且不会自动重试。' };
-    }
-    const shippingPrepareCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_SHIPPING_PREPARE);
-    if (shippingPrepareCount > 0 && obs.includes('"intentId"')) {
-      return { toolCall: executePreparedXianyuIntentCall(obs, TOOL_XIANYU_SHIPPING) };
-    }
-    const xianyuIntentCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_INTENT);
-    if (xianyuIntentCount > 0 && u.includes('旧意图再新单') && hasTool(body, TOOL_XIANYU_PREPARE)) {
-      if (obs.includes('"deliveryConfirmed":true')) return { toolCall: snapshotCall() };
-      if (obs.includes('"elements"')) {
-        return {
-          toolCall: {
-            id: 'call_xianyu_prepare_after_old_intent',
-            name: TOOL_XIANYU_PREPARE,
-            arguments: JSON.stringify({}),
-          },
-        };
-      }
-    }
-    if (xianyuIntentCount > 0) {
-      if (obs.includes('"deliveryConfirmed":true')) {
-        return { text: '页面新回执已确认履约消息送达。' };
-      }
-      return { text: '页面回执未明确增加或等待超时，履约状态已转人工且不会自动重发。' };
-    }
-    const xianyuPrepareCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_PREPARE);
-    if (xianyuPrepareCount === 1 && u.includes('双单预算')) {
-      return {
-        toolCall: {
-          id: 'call_xianyu_prepare_second_order',
-          name: TOOL_XIANYU_PREPARE,
-          arguments: JSON.stringify({}),
-        },
-      };
-    }
-    if (xianyuPrepareCount > 0 && obs.includes('"intentId"')) {
-      return { toolCall: executePreparedXianyuIntentCall(obs) };
-    }
     const xianyuSendCount = toolCallCountSinceLastUser(body, TOOL_XIANYU_SEND);
     if (xianyuSendCount > 0 && !obs.includes('"elements"')) {
       if (obs.includes('user-stopped')) return { text: '已按用户要求停止，后续没有重发消息。' };
@@ -793,15 +712,6 @@ function decide(sys, u, body) {
       if (notice !== null) return { text: `页面提示：${notice}，已停止操作，请先处理该提示。` };
       return { toolCall: pageOperateCall(obs) };
     }
-    if (obs.includes('"elements"') && u.includes('自动发货') && hasTool(body, TOOL_XIANYU_SHIPPING_PREPARE)) {
-      return {
-        toolCall: {
-          id: 'call_xianyu_shipping_prepare',
-          name: TOOL_XIANYU_SHIPPING_PREPARE,
-          arguments: JSON.stringify({}),
-        },
-      };
-    }
     if (obs.includes('"elements"') && hasTool(body, TOOL_XIANYU_ORDERS)) {
       const notice = firstNotice(obs);
       if (notice !== null) return { text: `页面提示：${notice}，已停止筛选。` };
@@ -811,25 +721,9 @@ function decide(sys, u, body) {
     if (obs.includes('"elements"') && hasTool(body, TOOL_SEND_EMAIL)) {
       return { toolCall: sendEmailCall(obs) };
     }
-    if (
-      obs.includes('"elements"') &&
-      u.includes('自动履约扫描') &&
-      hasTool(body, TOOL_XIANYU_PREPARE)
-    ) {
-      return {
-        toolCall: {
-          id: 'call_xianyu_prepare',
-          name: TOOL_XIANYU_PREPARE,
-          arguments: JSON.stringify({}),
-        },
-      };
-    }
     if (obs.includes('"elements"') && hasTool(body, TOOL_XIANYU_SEND)) {
       const notice = firstBlockingNotice(obs);
       if (notice !== null) return { text: `页面提示：${notice}，已停止发送。` };
-      if (hasTool(body, TOOL_XIANYU_INTENT) && u.includes('履约意图')) {
-        return { toolCall: executeXianyuIntentCall(u) };
-      }
       return { toolCall: sendXianyuTestCall(obs) };
     }
     // 印象笔记快照观察轮：有拦截提示即停（ZA-FEAT-05 失败即停、禁重复保存），否则产出写笔记批次。

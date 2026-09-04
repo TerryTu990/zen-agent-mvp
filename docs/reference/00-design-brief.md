@@ -83,12 +83,12 @@ S3 多形态客户端 → S4 七系统拆分+状态外置）。关键维度的�
 
 ## 5. 契约清单（各出 `.schema.json` + 契约文档，schema 为准）
 
-- **C1 工具定义**（`tool-definition`）：`{id, featureIds[], description, params, execution 闭集, riskTier('auto'|'hitl'|'forbidden'), adapter, resultSchema, authorization(含 preparation, adr-019)}`；pack v2 字段见 adr-020。
+- **C1 工具定义**（`tool-definition`）：`{id, featureIds[], description, params, execution 闭集, riskTier('auto'|'hitl'|'forbidden'), adapter, resultSchema}`；pack v2 字段见 adr-020。
 - **C2 身份契约**（`identity-claims`）：claims 闭集 `{sub, tenant, roles[], hostUserId, iss, exp}`；`iss` 区分签发形态（adr-022 后为匿名 / P4 平台账号两种）；平台零特权。
 - **C3 客户端接入层**（`client-access-layer`）：五能力 + 消息帧闭集（上行 context-report / user-message / hitl-decision / exec-result；下行 text-delta / tool-card / hitl-request / exec-instruction / guide-action / dom 步进帧族）；P2.5-c 增 `config-draft`/`config-decision`（加法）；adr-023 增上行 `group-pages`（任务组页面清单上报）与下行定向落点 `page`（会话作用域不透明句柄，加法）。
 - **C4 配置快照**（`config-snapshot`）：registry（`manifest.json{version, packs[]}`，演进含 source/hash/租户清单）+ `packs/<packId>/{pack.json, features/<id>/{feature.md, facts.md, tools.json}, skills/, docs/, eval/}`；纯数据（ZA-C-AGENT-03）。
 - **C5 审计事件**（`audit-event`）：全链路事件结构，落盘前脱敏；P2.5-a 增 `user-config-write` 类型与 `userConfigRevision` 字段；adr-023 增 `page{handle, origin?}` 落点页字段（additive）。
-- **C6 模块端口**（TS 类型，以 `packages/contracts/src/ports.ts` 导出为准）：`AssemblyPort / ToolGatePort / LlmPort / AuditPort / UserConfigStore / CardInventoryPort / FulfillmentCoordinatorPort`，全部满足 U1。后两者把履约（发货/送卡）语义带进核心契约，该取舍列入待裁决（§10）。
+- **C6 模块端口**（TS 类型，以 `packages/contracts/src/ports.ts` 导出为准）：`AssemblyPort / ToolGatePort / LlmPort / AuditPort / UserConfigStore`，全部满足 U1。垂直履约端口经 adr-026 退役，核心契约不含站点业务语义。
 - **C7 用户覆盖层**（`user-overlay`，adr-014，P2.5-a 落地）：subject 键控、`"*"` 全局作用域、rules/facts/restrictions/packConfig/preferences；只收紧表达力（ZA-C-AGENT-04）。
 
 ## 6. 关键决策索引（详见 `docs/adr/`）
@@ -99,11 +99,12 @@ D10（adr-010）server 通道与 credentialRef · D11（adr-011）可见页面�
 D12（adr-012）会话=标签组 · D13（adr-013）站点包与跨站任务组 ·
 **D14（adr-014）用户级配置层**：L2 契约、渐进绑定身份（§1 身份形态经 adr-022 修订）、故障语义拆分、U4/U8 配套 ·
 D15（adr-015）Chrome side panel · D16（adr-016）有界履约授权 · D17（adr-017）飞书卡片库存 ·
-D18（adr-018）周期履约触发 · D19（adr-019）pack 声明式 preparation 与自动化 ·
+D18（adr-018）周期履约触发 · D19（adr-019）pack 声明式 preparation 与自动化（preparation 面经 D26 退役，pack 声明式自动化保留）·
 **D20（adr-020）pack 契约 v2**：三来源、capabilities/configSchema、registry 指针、多租户共享内容模型、存储矩阵 ·
 D21（adr-021）用户自建自动化触发器 ·
 **D22（adr-022）匿名自动登录**：安装 id → 短期 JWT、hostUserId 哈希派生、删手填令牌与 demo-token、Google 登录为投产前置条件 ·
-**D23（adr-023）任务组多 tab 工作区**：组级视野（页面清单作为渐进披露第二层注入）与定向操作（不透明页面句柄、围栏按目标页校验、silent 页通道分级、签名覆盖落点）。
+**D23（adr-023）任务组多 tab 工作区**：组级视野（页面清单作为渐进披露第二层注入）与定向操作（不透明页面句柄、围栏按目标页校验、silent 页通道分级、签名覆盖落点）·
+**D26（adr-026）垂直履约退出核心契约**：C6 回到五端口、C1 删 authorization/preparation、履约与库存两包退役；垂直能力今后只在各站点 pack 的 `tools.json` adapter 中声明。
 
 ## 7. 治理体系（两层，速查入口 `CLAUDE.md`）
 
@@ -120,7 +121,7 @@ zen-agent-mvp/
 ├── CLAUDE.md / README.md
 ├── docs/{reference/, adr/（D1-D23）, plans/, design/（产品设计稿+UI 规范）, research/, roadmap.md}
 ├── .claude/{rules/, hooks/, skills/, settings.json}
-├── packages/{contracts, assembly, toolgate, llm-port, audit, fulfillment, card-inventory}
+├── packages/{contracts, assembly, toolgate, llm-port, audit}
 ├── apps/{server, extension}
 ├── assets/{system-prompt.md, manifest.json, packs/<packId>/…}
 ├── examples/{host-demo/, acceptance/, site-packs/（已下线站点包）}

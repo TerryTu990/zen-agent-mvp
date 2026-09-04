@@ -16,9 +16,9 @@
     "url": "https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage",
     "expect": {
       "featureId": "xianyu-orders",
-      "toolIncludes": ["xianyu-orders.page-operate", "xianyu-shipping.execute-intent"],
+      "toolIncludes": ["xianyu-orders.page-operate"],
       "toolExcludesPrefixes": ["xianyu-seller-data."],
-      "behavior": "订单管理装配订单读取工具和只接受服务端一次性意图的受控发货工具"
+      "behavior": "订单管理只装配订单读取工具"
     }
   },
   {
@@ -27,7 +27,7 @@
     "url": "https://seller.goofish.com/?site=COMMONPRO#/im?itemId=masked&orderId=masked&peerUserId=masked",
     "expect": {
       "featureId": "xianyu-fulfillment",
-      "toolIncludes": ["xianyu-fulfillment.compose-test-message", "xianyu-fulfillment.send-test-message", "xianyu-fulfillment.execute-intent"],
+      "toolIncludes": ["xianyu-fulfillment.compose-test-message", "xianyu-fulfillment.send-test-message"],
       "toolExcludesPrefixes": ["xianyu-orders."],
       "behavior": "消息页装配非秘密人工测试工具与只接受服务端一次性意图的受限执行工具，不泄漏订单页工具"
     }

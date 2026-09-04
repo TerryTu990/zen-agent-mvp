@@ -12,7 +12,7 @@
 | C3 客户端接入层 | `schemas/client-access-layer.schema.json` | 五能力 + 上行 7 帧 / 下行 8 帧闭集（含 dom 观察半程帧与 L2 配置写入帧） |
 | C4 配置快照 | `schemas/registry.schema.json` + `schemas/pack.schema.json`（legacy：`config-snapshot.schema.json`） | registry/pack 两级版本化不可变快照（L1） |
 | C5 审计事件 | `schemas/audit-event.schema.json` | 全链路审计事件类型闭集 |
-| C6 模块端口 | `src/ports.ts` | 七端口 TS 契约（Assembly/ToolGate/CardInventory/FulfillmentCoordinator/UserConfigStore/Llm/Audit） |
+| C6 模块端口 | `src/ports.ts` | 五端口 TS 契约（Assembly/ToolGate/UserConfigStore/Llm/Audit） |
 | C7 用户覆盖层 | `schemas/user-overlay.schema.json` | subject 维度的 L2 运行期覆盖（只收紧表达力） |
 
 ## C1 工具定义（tool-definition）
@@ -24,7 +24,7 @@
 - `description` / `params`：面向 LLM 的说明与入参 JSON Schema，装配期原样进 tool spec；执行前服务端按 `params` 校验实参。
 - `execution`：通道闭集 `client | server`；**adapter 三形**按通道分形（schema if/then）：
   - `ClientAdapter`（http 代执行）：宿主请求模板（`{{param}}` 占位、服务端代入实参后签名下发，插件以用户 cookie 发请求）；
-  - `DomAdapter`（`kind:'dom'` 可见页面代操作，adr-011）：`pathPrefixes` 页路径围栏；实参约定 `task`（任务级授权作用域标识，必填）+ `steps`（闭集动作批次，ref 须出自最近快照）+ `summary`/`plan`（授权卡呈现）；**`targetPage` 是平台保留入参**（adr-023 定向操作）——toolgate 载入期给 dom 工具 params 统一增广可选 `targetPage`（bounded-fulfillment 工具不增广），pack 制品不写它，任一 dom 工具自声明即载入期拒启（含不获增广的 bounded-fulfillment 工具）；保留面仅此一名，其余参数名（含 `page`）pack 自由使用；
+  - `DomAdapter`（`kind:'dom'` 可见页面代操作，adr-011）：`pathPrefixes` 页路径围栏；实参约定 `task`（任务级授权作用域标识，必填）+ `steps`（闭集动作批次，ref 须出自最近快照）+ `summary`/`plan`（授权卡呈现）；**`targetPage` 是平台保留入参**（adr-023 定向操作）——toolgate 载入期给 dom 工具 params 统一增广可选 `targetPage`，pack 制品不写它，任一 dom 工具自声明即载入期拒启；保留面仅此一名，其余参数名（含 `page`）pack 自由使用；
   - `ServerAdapter`（服务端直调，adr-010）：API 映射 + `credentialRef` 凭证引用名（真值运行时注入，禁入配置）。
 - `riskTier`：操作分级矩阵落点，闭集 `auto | hitl | forbidden`；判定永远在服务端工具执行层，未知/缺失一律 deny。
 - `hitlMode`（可选，仅 riskTier=hitl 有意义）：`per-task`（缺省）——同会话同任务首批确认后跨工具自动放行；`every-call`——对外不可撤回动作（发信/删除等）次次挂起单独确认、不复用授权。
@@ -111,9 +111,7 @@
 
 **端口语义**（方法闭集以 `ports.ts` 为准，此处为语义导览）：
 - `AssemblyPort`（②网关 ← ⑤配置中心）：`resolveFeature`（url → pack 激活 + featureId，返回含 packId/packVersion/snapshotVersion）、`compose`（每轮换出：基座 + 站点索引 + feature.md + facts.md + skills + 工具白名单 + docs 索引；可选入参 `origin` = 活跃页 origin，命中 L2 `siteDenylist` 即回落仅基座并标 `siteDenied`——不传即维持基线行为）、`describeInjection`（注入自省，与 compose 同源，喂审计 assembly 事件；`reason` 闭集 `pack`/`generic`/`base-only`/`pack-disabled`/`site-denied` 说清本轮装配面之所以如此，黑名单命中优先于 pack 关停）、`readPackDoc`（pack_doc 渐进披露正文，路径穿越 fail-closed）、`allTools`/`listSites`/`listToolOwnership`（启动期汇总：toolgate 判定闭集 / site 围栏 / 命名空间纪律）。
-- `ToolGatePort`（③工具执行层）：`decide`（唯一决策点：分级矩阵 + 身份/实参/dom 步骤/围栏校验 + 任务级授权复用，fail-closed；入参含 packOrigin/claimsForOrigin/domContext，及 `groupPages` 组页面状态表快照——定向调用的目标解析基准，入参带 `targetPage` 而表内未命中一律拒、禁回退活跃页）、`grantHitl`（HITL 批准后登记 `(sessionId,task)` 授权）、`getExecVerificationKey`（只读 Ed25519 公钥）、`issueExecInstruction`（签发带绝对时限的一次性指令，前提 = decide 放行；同收 `groupPages`，签名前独立重解析定向目标，不依赖 decide 已通过的假设）、`acceptExecResult`（核销 nonce + 验 ttl + resultSchema 校验 → 规整 observation）、`confirmFulfillmentReceipt`（发送后结构化回执确认 `completed/uncertain`）、`executeServer`（server 通道直调：渲染 + credentialRef 凭证注入 + 结果校验）。
-- `CardInventoryPort`（飞书库存边界）：`reserve` 先按订单复用，否则领取一条 available 并写 reserved；`settle` 只允许 reserved → sent/manual 或同终态幂等。卡密值虽为 JSON 字符串，但仅在服务端端口内流转，禁止进入模型/审计/日志。
-- `FulfillmentCoordinatorPort`（履约编排）：`prepare` 先预占库存，再把固定通知登记为 toolgate opaque intent；`settle` 按网关的最终页面回执回填库存，失败进入阻断状态。
+- `ToolGatePort`（③工具执行层）：`decide`（唯一决策点：分级矩阵 + 身份/实参/dom 步骤/围栏校验 + 任务级授权复用，fail-closed；入参含 packOrigin/claimsForOrigin/domContext，及 `groupPages` 组页面状态表快照——定向调用的目标解析基准，入参带 `targetPage` 而表内未命中一律拒、禁回退活跃页）、`grantHitl`（HITL 批准后登记 `(sessionId,task)` 授权）、`getExecVerificationKey`（只读 Ed25519 公钥）、`issueExecInstruction`（签发带绝对时限的一次性指令，前提 = decide 放行；同收 `groupPages`，签名前独立重解析定向目标，不依赖 decide 已通过的假设）、`acceptExecResult`（核销 nonce + 验 ttl + resultSchema 校验 → 规整 observation）、`executeServer`（server 通道直调：渲染 + credentialRef 凭证注入 + 结果校验）。
 - `UserConfigStore`（⑤配置中心 L2 存储边界，adr-014）：`read`（返回 `{overlay|null, revision, stale?}`——`revision` 为内容 hash，空 overlay 亦有稳定值；`stale:true` = 本次读失败、返回上次成功结果，消费方须落审计标注）、`write`（前提 = overlay 已过 `validateUserOverlay` 组合校验与只收紧校验）。toolgate 不直接依赖本端口——compose 定格的结果经端口入参传递以封 TOCTOU（U2）；`restrictions`/`enabled` 读失败语义 fail-closed 由消费方承担（U7）。
 - `LlmPort`（④LLM 接入层）：`chat` 返回 `AsyncIterable<LlmStreamEvent>`——流式 RPC 的进程内投影，逐事件 JSON 可序列化，仍满足 U1；done 事件携 `usage`（历史压缩触发依据）与 `errorKind`（invalid-tool-args 自愈信号）；provider 白名单与密钥托管在实现侧，不进契约。
 - `AuditPort`（⑦观测审计）：`record` 为 record-only 旁路，实现不抛异常、失败仅本地日志。

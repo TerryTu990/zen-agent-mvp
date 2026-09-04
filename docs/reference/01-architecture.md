@@ -2,7 +2,7 @@
 
 > 人读层参考文档。事实权威：契约细节见 `02-contracts.md` 与各 `.schema.json`、`ports.ts`；配置面见 `03-configuration.md`；部署见 `04-deployment.md`；本文负责解释结构、边界、流程与权衡。
 > 决策"为什么"见 `../adr/`（adr-001..023），分期计划见 `../roadmap.md`。
-> 本文已吸收 adr-010..016 演进（server/dom 通道、会话组、站点包与跨站任务组、上下文治理、L2 用户配置层、side panel、有界履约授权）、adr-019..021（pack 声明式准备与周期自动化、pack 契约 v2 与 registry 布局、用户自建触发器）、adr-022（匿名激活）与 adr-023（任务组多 tab 工作区：组级视野与定向操作），含 P2.5 契约层（C7 user-overlay + `config-draft`/`config-decision` 帧 + `UserConfigStore` 端口 + `user-config-write` 审计事件）。
+> 本文已吸收 adr-010..016 演进（server/dom 通道、会话组、站点包与跨站任务组、上下文治理、L2 用户配置层、side panel）、adr-019..021（pack 声明式周期自动化、pack 契约 v2 与 registry 布局、用户自建触发器）、adr-022（匿名激活）与 adr-023（任务组多 tab 工作区：组级视野与定向操作），含 P2.5 契约层（C7 user-overlay + `config-draft`/`config-decision` 帧 + `UserConfigStore` 端口 + `user-config-write` 审计事件）。
 
 ## 1. 目标与范围
 
@@ -70,8 +70,8 @@
 │     内建工具注入：guide_highlight / page_snapshot / pack_doc /        │
 │     site_navigate / open_url（渐进披露，随装配条件注入，不入 tools.json）│
 │      │              │               │              │               │
-│  ────┴── 端口注入（C6：Assembly/ToolGate/CardInventory/Fulfillment/ │
-│          Llm/Audit Port，                                           │
+│  ────┴── 端口注入（C6：Assembly/ToolGate/Llm/Audit/               │
+│          UserConfigStore Port，                                     │
 │          U1 只传 JSON 可序列化值；U2 模块间禁直接 import）──────        │
 │      │              │               │              │               │
 │  ┌───▼────────┐ ┌───▼─────────┐ ┌───▼──────────┐ ┌─▼────────────┐  │
@@ -197,8 +197,6 @@ agent(LLM) ─tool_call(工具 id + params)─► ②网关 ─► ③toolgate�
 要点（U7 的运行时形态）：判定与挂起全部在服务端；客户端拿到的只是"一次性、短时效、签名过"的指令，执行结果必须过服务端 schema 校验才进 agent 上下文。
 
 **任务级 HITL 授权（adr-013，对 4.3 的演进）**：hitl 工具批准后，toolgate 以 `(sessionId, packId, packOrigin, task)` 四元组登记授权（滑动闲置 TTL，默认 15min；后三项取自服务端自持事实而非模型自述，防跨 pack 同名 task 蹭授权）——同会话同作用域同任务标题的后续调用**跨工具共享**放行（含带 task 的 `site_navigate`），不再逐次弹卡。两个例外不并入复用：`hitlMode: 'every-call'` 工具（发信等对外不可撤回动作，次次单独确认，批准也不登记）与授权卡未呈现任务计划的 navigate 批准。用户点「停止」中止在途批次、拒绝待确认卡片，并吊销本会话全部任务级授权（adr-024 D2，`ToolGatePort.revokeHitlGrants`；吊销失败只记本地错误、不阻断停止）；会话逐出回收同样先吊销再回收，吊销失败即原样保留治理态——回收异常不得演变成治理放宽。授权卡展示 agent 声明的 `plan`（任务级大步骤），用户批准的即这份计划。dom 步骤校验永远先于授权复用——已授权任务的非法批次照样 deny（fail-closed 不被 grant 绕过）。
-
-**有界自动履约（adr-016）**：可信连接器先通过进程内端口登记一次性履约意图，绑定账号、精确页面 URL/页面生命周期、商品、规范化订单、数量、消息/发送 ref、回执基线与固定正文；模型工具只传 opaque `intentId`。toolgate 匹配服务端策略并原子预占全局订单键，只构造 `fill → click`。服务端 Ed25519 私钥签名会话、绝对时限与最终请求，插件仅信任生产 HTTPS（本机开发例外）SSE 公钥，并在副作用前验签、验过期、持久化 nonce 去重。DOM 两步成功不等于送达：网关在原指令时限内强制请求发送后快照，回执仍绑定同一 URL/页面实例且数量恰增 1 才记 `completed`；其余均 `uncertain` 且不自动重试。输入值由插件不采集、网关再剥离，策略/正文不进模型或审计。
 
 ### 4.4 dom 可见页面代操作（adr-011：观察 → 操作 → 复核）
 
@@ -328,8 +326,6 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
 | `packages/contracts` | C1-C6 全部 schema + TS 类型 | 零依赖底座：schema、端口类型、内建工具结构契约 | 任何实现逻辑 |
 | `packages/assembly` | C4 消费端（AssemblyPort） | 快照载入（registry/legacy 二形态）、pack 激活解析、注入组合、docs 渐进披露、site/工具归属枚举 | 运行时改写快照（U4）；治理判定 |
 | `packages/toolgate` | C1/C2 消费端（ToolGatePort） | 唯一决策点（分级/身份/围栏/dom 校验/任务级授权/定向目标页解析与通道分级）、一次性签名签发/核销、server 直调执行器 | 产生对话内容；持 LLM 密钥 |
-| `packages/card-inventory` | C6 CardInventoryPort | 飞书 Base 同订单查重、单卡预占与 sent/manual 回填；CLI 错误脱敏 | 模型调用；页面操作；并发事务伪装 |
-| `packages/fulfillment` | C6 FulfillmentCoordinatorPort | 先预占库存、生成固定通知、登记 opaque intent、按回执回填 | DOM 执行；toolgate 决策；记录卡密 |
 | `packages/llm-port` | C6 LlmPort | openai 兼容流式对接、provider 白名单、密钥 env 托管、toolId 出网净化、实参非法诊断 | 感知业务语义与装配内容 |
 | `packages/audit` | C5 生产端（AuditPort） | record-only 旁路落盘、落盘前脱敏 | 进入控制流（故障吞掉） |
 | `apps/server` | 唯一组装点（U2） | 内部六模块：gateway（回合循环/内建工具/HITL 挂起恢复/自愈重试/任务组页面清单注入）、auth（验签）、sessions（持久化 + 组页面状态表）、compress（P1 压缩）、history（P0 瘦身）、activation（匿名身份签发，adr-022） | 第二组装点；横向 import |

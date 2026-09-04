@@ -20,7 +20,6 @@
     "test:e2e:explain-pack": "node scripts/e2e/run-g6-explain-pack.mjs",
     "test:e2e:user-config": "node scripts/e2e/run-g6-user-config.mjs",
     "test:e2e:automation": "node scripts/e2e/run-g6-automation.mjs",
-    "test:e2e:xianyu": "node scripts/e2e/run-xianyu.mjs",
     "test:e2e:real": "node --env-file=../tmp/zen-agent-demo/.env scripts/e2e/run-real-llm.mjs",
     "test:e2e:real-site": "node --env-file=../tmp/zen-agent-demo/.env scripts/e2e/run-g6-real-site.mjs",
     "lint:deps": "node scripts/lint-deps.mjs",
@@ -28,7 +27,7 @@
     "verify:phase1:core": "pnpm lint:deps && pnpm -r build && pnpm -r --workspace-concurrency=1 test && pnpm eval",
     "verify:phase1": "pnpm verify:phase1:core && bash release/verify-phase1.sh",
     "verify:phase2": "pnpm verify:paths && pnpm lint:deps && pnpm -r build && pnpm exec vitest run packages/contracts/test/schemas.test.ts packages/assembly/test/production-snapshot.test.ts packages/assembly/test/xianyu-pack.test.ts packages/toolgate/test/index.test.ts apps/server/test/server.test.ts apps/extension/test/frames-schema.test.ts apps/extension/test/page-snapshot.test.ts apps/extension/test/dom-steps.test.ts && pnpm -r --workspace-concurrency=1 test && pnpm eval && git diff --check",
-    "verify:phase3": "pnpm lint:deps && pnpm -r build && pnpm -r --workspace-concurrency=1 test && pnpm eval && pnpm test:e2e:xianyu && pnpm test:e2e:sidepanel && git diff --check",
+    "verify:phase3": "pnpm lint:deps && pnpm -r build && pnpm -r --workspace-concurrency=1 test && pnpm eval && pnpm test:e2e:sidepanel && git diff --check",
     "verify:paths": "node scripts/verify-paths.mjs"
   },
   "devDependencies": {

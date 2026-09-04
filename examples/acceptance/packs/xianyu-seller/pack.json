@@ -28,7 +28,7 @@
   "automations": [
     {
       "id": "xianyu-auto-scan",
-      "prompt": "执行闲鱼自动履约扫描。每轮最多处理一笔；任一页面、订单、库存或回执状态不确定时立即暂停，不得重试发送。",
+      "prompt": "执行闲鱼待发货订单扫描。每轮最多处理一笔；任一页面、订单或回执状态不确定时立即暂停，不得重试发送。",
       "workRoutes": ["#/seller-trade/order-manage", "#/im"],
       "executionPreference": "dom-only",
       "defaultPeriodMinutes": 5
