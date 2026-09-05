@@ -3,9 +3,12 @@
  * 但把 LLM 从确定性 mock 换成真实 provider——server 的 ZA_LLM_BASE_URL/API_KEY/MODEL 由
  * demo .env 的 ZF_LLM_* 经 --env-file 原生注入并在本进程映射，密钥值始终不落上下文/日志（SEC-02）。
  *
- * 真实 LLM 措辞非确定，故断言从"精确关键词"放宽为"结构 + 行为"：讲解非空且命中要点组、拒答不越界、
+ * 真实 LLM 措辞非确定，故断言从"精确关键词"放宽为"结构 + 行为"：讲解非空且命中要点组、
  * 装配换出确定性校验、引导命中/降级看帧、工具/HITL 看代执行是否发生 + 宿主 API 是否被调用。
- * 每场景跑一次、transcript（脱敏：不含签名/凭证）落盘 evals/runs/real-llm-transcripts.json，供 workflow 并行判定。
+ * scenarios.json 的 judges 与 mustNotMention 属结构性判据，两 harness 同一解释、逐场景照跑；
+ * 判据依赖 mock LLM 哨兵（MOCK-*）而真模型必然跑不过的场景在 scenarios.json 标 mockOnly，本 harness 跳过并如实列出。
+ * 每场景跑 RUNS 次、全过才算过（ZA-C-EVAL-02）；transcript（脱敏：不含签名/凭证）逐跑落盘
+ * evals/runs/real-llm-transcripts.json，供 workflow 并行判定。
  *
  * 启动：node --env-file=<demo>/.env scripts/e2e/run-real-llm.mjs
  */
@@ -31,6 +34,9 @@ const HOST_PORT = Number(process.env.ZA_RL_HOST_PORT ?? 4180);
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
 
+// 真模型回答非确定：单跑通过不足以判稳，按 ZA-C-EVAL-02 每场景跑 3 次全过才算过。
+// 允许 ZA_RL_RUNS 覆盖——调试单场景时压回 1 次，省真实调用配额。
+const RUNS = Number(process.env.ZA_RL_RUNS ?? 3);
 const TURN_TIMEOUT_MS = Number(process.env.ZA_RL_TURN_TIMEOUT_MS ?? 120000);
 const QUIET_MS = Number(process.env.ZA_RL_QUIET_MS ?? 2000);
 const POLL_MS = Number(process.env.ZA_RL_POLL_MS ?? 150);
@@ -304,33 +310,70 @@ async function driveTurn(sessionId, token, decision, bus) {
   }
 }
 
+/**
+ * 词界判定：命中处两侧须非「字母/数字/下划线」。语义与 scripts/evals/run.mjs 的 containsToken 逐字一致——
+ * 两 harness 读同一份 scenarios.json，judges 不得有两套解释，否则同一判据在 mock 与真模型下含义分叉。
+ */
+function isWordChar(ch) {
+  return ch !== undefined && /[\p{L}\p{N}_]/u.test(ch);
+}
+
+function containsToken(text, keyword) {
+  if (keyword === '') return false;
+  for (let from = 0; ; from += 1) {
+    const at = text.indexOf(keyword, from);
+    if (at < 0) return false;
+    if (!isWordChar(text[at - 1]) && !isWordChar(text[at + keyword.length])) return true;
+    from = at;
+  }
+}
+
+/** 判据类型闭集：闭集外的 kind 一律判失败（防拼错静默恒真）。 */
+const JUDGE_KINDS = {
+  substring: (text, judge) => (judge.anyOf ?? []).some((keyword) => text.includes(keyword)),
+  token: (text, judge) => (judge.anyOf ?? []).some((keyword) => containsToken(text, keyword)),
+  regex: (text, judge) => new RegExp(judge.pattern, judge.flags ?? '').test(text),
+};
+
+function describeJudge(judge) {
+  return judge.kind === 'regex' ? `/${judge.pattern}/` : `[${(judge.anyOf ?? []).join('|')}]`;
+}
+
+/** 逐条 judge 连乘：任一不成立即该跑失败（"不得出现"仍走 mustNotMention）。 */
+function evaluateJudges(judges, text) {
+  const reasons = [];
+  for (const judge of judges) {
+    const match = JUDGE_KINDS[judge.kind];
+    if (match === undefined) {
+      reasons.push(`判据 kind「${judge.kind}」不在闭集 [${Object.keys(JUDGE_KINDS).join('|')}] 内`);
+      continue;
+    }
+    if (!match(text, judge)) reasons.push(`${judge.kind} 判据未命中 ${describeJudge(judge)}`);
+  }
+  return reasons;
+}
+
 function evaluateOutcome(scenario, o, hostCallsDelta) {
   const reasons = [];
   const text = o.text ?? '';
   if (/服务暂时不可用|内部错误/.test(text)) reasons.push(`回合以错误收尾：「${text}」`);
+
+  // judges 与 mustNotMention 是结构性/负向判据（词界、正则、不得谎称成功），措辞非确定也应成立，
+  // 故不分维度一律照跑——遗漏它们等于把场景的核心断言在真模型路径上静默丢弃。
+  reasons.push(...evaluateJudges(scenario.expect.judges ?? [], text));
+  for (const k of scenario.expect.mustNotMention ?? []) {
+    if (text.includes(k)) reasons.push(`出现禁止内容「${k}」`);
+  }
 
   if (scenario.dimension === 'explain') {
     if (text.trim() === '') reasons.push('讲解文本为空');
     for (const group of scenario.expect.mustMention ?? []) {
       if (!group.some((k) => text.includes(k))) reasons.push(`讲解缺要点组 [${group.join('|')}]`);
     }
-    for (const k of scenario.expect.mustNotMention ?? []) {
-      if (text.includes(k)) reasons.push(`讲解出现禁止内容「${k}」`);
-    }
-  } else if (scenario.dimension === 'refusal') {
-    if (text.trim() === '') reasons.push('拒答文本为空');
-    for (const k of scenario.expect.mustNotMention ?? []) {
-      if (text.includes(k)) reasons.push(`拒答出现禁止内容「${k}」`);
-    }
-    if (hostCallsDelta.length > 0) reasons.push(`拒答场景不应调用宿主 API，实际：[${hostCallsDelta.join(', ')}]`);
-    if (o.guideFrame !== null) reasons.push('拒答场景不应产出引导帧');
   } else if (scenario.dimension === 'guide') {
     const degrade = Array.isArray(scenario.expect.mustNotMention) && scenario.expect.mustNotMention.length > 0;
     if (degrade) {
       if (o.guideFrame !== null) reasons.push('降级场景不应产出 guide-action 帧');
-      for (const k of scenario.expect.mustNotMention) {
-        if (text.includes(k)) reasons.push(`降级场景出现禁止内容「${k}」`);
-      }
     } else if (o.guideFrame === null || o.guideFrame.selector === '') {
       reasons.push('命中场景应产出 selector 非空的 guide-action 帧');
     }
@@ -349,20 +392,19 @@ function evaluateOutcome(scenario, o, hostCallsDelta) {
       } else if (hostCallsDelta.length > 0) {
         reasons.push(`不应调用宿主 API，实际：[${hostCallsDelta.join(', ')}]`);
       }
-      // 不谎称成功：tool/hitl 的负向断言（如 forbidden 不得"已为你"、reject 不得"已为你取消订单"）
-      // 用真实 LLM 也不该踩的 mustNotMention 校验；正向措辞非确定，不做精确关键词校验（交 workflow 质量判定）。
-      for (const k of scenario.expect.mustNotMention ?? []) {
-        if (text.includes(k)) reasons.push(`出现禁止内容「${k}」（疑谎称成功/越界）`);
-      }
+      // 正向措辞非确定，不做精确关键词校验（交 workflow 质量判定）；只要求回合确实有总结文本收尾。
       if (text.trim() === '') reasons.push('工具/HITL 回合应有总结文本，实际为空');
     }
+  } else {
+    // 未建真模型判据的维度不得静默放行：宁可红，也不让「跑了但什么都没断言」冒充通过。
+    reasons.push(`维度「${scenario.dimension}」在本 harness 无行为判据：请补判据或给该场景标 mockOnly`);
   }
 
   if (o.timedOut) reasons.push(`回合等待超时（${Math.round(TURN_TIMEOUT_MS / 1000)}s）`);
   return { pass: reasons.length === 0, reasons };
 }
 
-async function runAssemblySwap(scenario, token, transcripts) {
+async function runAssemblySwap(scenario, token, transcripts, run) {
   const auth = { authorization: `Bearer ${token}` };
   const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
   const sessionId = created.sessionId;
@@ -387,6 +429,7 @@ async function runAssemblySwap(scenario, token, transcripts) {
   const result = { pass: reasons.length === 0, reasons };
   transcripts.push({
     id: scenario.id,
+    run,
     dimension: scenario.dimension,
     behavior: scenario.expect.behavior,
     firstFeatureId: first.featureId,
@@ -396,9 +439,9 @@ async function runAssemblySwap(scenario, token, transcripts) {
   return result;
 }
 
-async function runScenario(scenario, token, hostCalls, transcripts) {
+async function runScenario(scenario, token, hostCalls, transcripts, run) {
   if (scenario.dimension === 'assembly-swap') {
-    return runAssemblySwap(scenario, token, transcripts);
+    return runAssemblySwap(scenario, token, transcripts, run);
   }
   const auth = { authorization: `Bearer ${token}` };
   const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
@@ -416,6 +459,7 @@ async function runScenario(scenario, token, hostCalls, transcripts) {
     const result = evaluateOutcome(scenario, outcome, hostCallsDelta);
     transcripts.push({
       id: scenario.id,
+      run,
       dimension: scenario.dimension,
       page: scenario.page,
       question: scenario.question,
@@ -469,27 +513,50 @@ async function main() {
       scenarios = scenarios.filter((s) => ids.has(s.id));
     }
 
-    console.log(`[3/3] 跑 ${scenarios.length} 个场景（真实 LLM，每场景 1 次）：\n`);
+    // mock 专用场景（判据依赖 mock LLM 哨兵）不跑：真模型必然红，跑了只会把结果变成噪声。
+    // 跳过必须显式列出——否则"少跑了几条"会伪装成"全过"。
+    const skipped = scenarios.filter((s) => s.mockOnly === true);
+    scenarios = scenarios.filter((s) => s.mockOnly !== true);
+    if (skipped.length > 0) {
+      console.log(
+        `已跳过 ${skipped.length} 条 mock 专用场景（mockOnly，判据依赖 MOCK-* 哨兵）：${skipped.map((s) => s.id).join(', ')}\n`,
+      );
+    }
+
+    console.log(`[3/3] 跑 ${scenarios.length} 个场景 × ${RUNS} 次（真实 LLM）：\n`);
     const results = [];
     for (const scenario of scenarios) {
-      let result;
-      try {
-        result = await runScenario(scenario, token, hostCalls, transcripts);
-      } catch (cause) {
-        result = { pass: false, reasons: [`运行异常：${cause instanceof Error ? cause.message : String(cause)}`] };
+      const runOutcomes = [];
+      for (let i = 0; i < RUNS; i += 1) {
+        try {
+          runOutcomes.push(await runScenario(scenario, token, hostCalls, transcripts, i + 1));
+        } catch (cause) {
+          runOutcomes.push({
+            pass: false,
+            reasons: [`运行异常：${cause instanceof Error ? cause.message : String(cause)}`],
+          });
+        }
       }
-      results.push({ id: scenario.id, dimension: scenario.dimension, ...result });
-      console.log(`  [${result.pass ? 'PASS' : 'FAIL'}] ${scenario.id} (${scenario.dimension})`);
-      if (!result.pass) result.reasons.forEach((rsn) => console.log(`      - ${rsn}`));
+      const passCount = runOutcomes.filter((r) => r.pass).length;
+      results.push({ id: scenario.id, dimension: scenario.dimension, passCount });
+      console.log(
+        `  [${passCount === RUNS ? 'PASS' : 'FAIL'}] ${scenario.id} (${scenario.dimension})：${passCount}/${RUNS}`,
+      );
+      runOutcomes.forEach((o, i) => {
+        if (!o.pass) o.reasons.forEach((rsn) => console.log(`      run${i + 1}: ${rsn}`));
+      });
     }
 
     mkdirSync(dirname(TRANSCRIPTS_PATH), { recursive: true });
     writeFileSync(TRANSCRIPTS_PATH, JSON.stringify(transcripts, null, 2), 'utf8');
     console.log(`\ntranscript 已写入 ${TRANSCRIPTS_PATH}`);
 
-    allPassed = results.every((r) => r.pass);
-    const passCount = results.filter((r) => r.pass).length;
-    console.log(`\n结构/行为断言：${passCount}/${results.length} 通过 ${allPassed ? '✅' : '❌'}`);
+    allPassed = results.every((r) => r.passCount === RUNS);
+    const passedScenarios = results.filter((r) => r.passCount === RUNS).length;
+    console.log(
+      `\n结构/行为断言：${passedScenarios}/${results.length} 场景 ${RUNS} 跑全过 ${allPassed ? '✅' : '❌'}` +
+        `${skipped.length > 0 ? `（另跳过 ${skipped.length} 条 mock 专用场景）` : ''}`,
+    );
   } catch (error) {
     failure = error;
     console.error(`\nharness 异常：${error instanceof Error ? error.message : String(error)}`);

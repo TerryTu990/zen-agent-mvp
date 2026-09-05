@@ -41,7 +41,6 @@ const packV2 = {
     },
     skills: ['greet'],
     docs: ['guide.md'],
-    preparation: { workflows: ['delivery'] },
   },
   configSchema: {
     type: 'object',
@@ -102,9 +101,9 @@ describe('C4 pack v2 字段（adr-020 §2）', () => {
     },
     'configSchema 非对象被拒': { ...sitePackV1, configSchema: 'x' },
     'name 空串被拒（minLength 1）': { ...sitePackV1, name: '' },
-    'capabilities.preparation.workflows 非字符串数组被拒': {
+    'capabilities.preparation 被拒（垂直履约语义已退出核心契约）': {
       ...sitePackV1,
-      capabilities: { preparation: { workflows: [42] } },
+      capabilities: { preparation: { workflows: ['delivery'] } },
     },
   };
 

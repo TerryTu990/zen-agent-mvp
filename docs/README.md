@@ -10,9 +10,9 @@
 
 | 文档 | 内容 | 何时读 |
 |---|---|---|
-| [00-design-brief.md](reference/00-design-brief.md) | 设计基准（奠基期 SSOT，头部附奠基后演进勘误）：定位、双版本定义、七系统速览、升级不变量 U1-U7、契约清单、决策清单 D1-D13 | 对齐项目定位与不变量时；历史原貌保留，现状以勘误与 01/02/03 为准 |
-| [01-architecture.md](reference/01-architecture.md) | 双版本架构、七系统职责边界、六条关键时序（含 dom 代操作/跨站任务组/上下文治理）、U1-U7 升级路径、**模块边界与扩展点清单**（§7） | 需要理解系统怎么组织、边界在哪、怎么扩展时 |
-| [02-contracts.md](reference/02-contracts.md) | C1-C6 契约总览（adapter 三形 × hitlMode、registry/pack 两级快照、六端口现签名、内建工具） | 实现或消费任一契约前 |
+| [00-design-brief.md](reference/00-design-brief.md) | 设计基准（SSOT v2，2026-08-04 重写）：定位与宗旨两问、P 线/S 线两条演进线、七系统速览、升级不变量 U1-U8、契约清单 C1-C7、决策索引 D1-D23、验收基准 | 对齐项目定位与不变量时；实现细节以代码与各 `.schema.json` 为准 |
+| [01-architecture.md](reference/01-architecture.md) | 双版本架构、七系统职责边界、六条关键时序（含 dom 代操作/跨站任务组/上下文治理）、U1-U8 升级路径、**模块边界与扩展点清单**（§7） | 需要理解系统怎么组织、边界在哪、怎么扩展时 |
+| [02-contracts.md](reference/02-contracts.md) | C1-C7 契约总览（adapter 三形 × hitlMode、registry/pack 两级快照、端口现签名以 `ports.ts` 为准、内建工具） | 实现或消费任一契约前 |
 | [03-configuration.md](reference/03-configuration.md) | 配置参考：站点包目录树与字段表、**新增站点完整示例**、环境变量全表、凭证注入、运行数据落点 | 新增/修改站点配置、部署配置排障时 |
 | [04-deployment.md](reference/04-deployment.md) | 部署参考：Docker 镜像构建、卷规划（站点包外挂不进镜像）、secret 注入、日志双通道、健康检查 | 发布服务端到容器环境时 |
 
@@ -20,7 +20,7 @@
 
 ### adr/ — 架构决策记录（为什么这么选）
 
-设计基准 §6 的 D1-D9 各一份，格式：状态 / 背景 / 决策 / 理由 / 被否方案 / 后果。
+设计基准 §6 的决策索引 D1-D23 各一份，格式：状态 / 背景 / 决策 / 理由 / 被否方案 / 后果。
 
 | ADR | 决策 |
 |---|---|
@@ -37,12 +37,36 @@
 | [adr-011](adr/adr-011-visible-dom-operation.md) | D11 可见页面代操作：dom 通道（每步高亮 + 闭集步骤 + 任务级授权），取代 D9 的"不做" |
 | [adr-012](adr/adr-012-session-tab-group.md) | D12 会话=标签组：显式点图标建组（会话组语义被 adr-013 吸收） |
 | [adr-013](adr/adr-013-site-pack-and-cross-site-task-group.md) | D13 站点包与跨站任务组：registry/pack 两级、site 围栏、per-origin 身份、上下文治理 P0-P2 |
+| [adr-014](adr/adr-014-user-config-layer.md) | D14 用户级配置层：C7 user-overlay、UserConfigStore 端口、只收紧合并与确认写入通道（U4/U8 配套） |
+| [adr-015](adr/adr-015-chrome-side-panel.md) | D15 Chrome Side Panel 承载持久对话，页面只承担观察与执行 |
+| [adr-016](adr/adr-016-bounded-fulfillment-authorization.md) | D16 确定性履约采用服务端有界自动授权（经 adr-026 退役） |
+| [adr-017](adr/adr-017-feishu-card-inventory.md) | D17 飞书多维表作为轻量卡密库存账本（经 adr-026 退役） |
+| [adr-018](adr/adr-018-xianyu-periodic-fulfillment-trigger.md) | D18 周期履约触发与零参数可信准备（准备器经 adr-026 退役） |
+| [adr-019](adr/adr-019-pack-declared-preparation-and-automation.md) | D19 pack 声明式 intent 准备与周期自动化（核心去站点硬编码；preparation 面经 adr-026 退役） |
+| [adr-020](adr/adr-020-pack-contract-v2-registry-and-storage.md) | D20 pack 契约 v2、registry 与存储分发：三来源、capabilities/configSchema、多租户共享内容模型 |
+| [adr-021](adr/adr-021-user-defined-automation-triggers.md) | D21 用户自建自动化触发器：平台模板闭集 + 参数层 watches + 自动回合只读强制 |
+| [adr-022](adr/adr-022-anonymous-auto-login.md) | D22 匿名自动登录：安装 id → 短期 JWT，Google 账号登录为正式投产前置条件 |
+| [adr-023](adr/adr-023-task-group-multi-tab-workspace.md) | D23 任务组多 tab 工作区：组级视野与定向操作（不透明页面句柄、按目标页校验围栏） |
+| [adr-024](adr/adr-024-unattended-closure-and-approval-revalidation.md) | D24 无人值守回合的服务端收口、批准的恢复期复核与授权作用域指纹 |
+| [adr-025](adr/adr-025-general-purpose-base-prompt.md) | D25 基座通用化——从「配置未覆盖即拒答」到「事实边界 + 通用助手」 |
+| [adr-026](adr/adr-026-retire-vertical-fulfillment-from-core.md) | D26 垂直履约退出核心契约：C6 回五端口、C1 删 authorization/preparation、两包退役，垂直能力只在 pack tools.json adapter 声明 |
+| [adr-027](adr/adr-027-on-demand-injection-dual-track.md) | D27 按需注入双轨模型：删 `<all_urls>` 常驻注入，轨一手势/定向帧一次性注入 + 轨二已授权 origin 动态注册（不变量 IN，注入面 = 授权集 − 站点黑名单） |
 
 新增非显然决策（架构/接口/依赖层）时按同格式续编号；已接受的 ADR 不改写，推翻用新 ADR 标注取代关系。
 
 ### roadmap.md — 分期计划
 
-[roadmap.md](roadmap.md)：MVP 内五期（M0 奠基 / M1 讲解闭环 / M2 引导 / M3 代执行+HITL / M4 审计+评测门）→ 标准版四期（S1 服务端直调 / S2 配置中心 / S3 多形态客户端 / S4 七系统拆分+状态外置），每期含验收基准与涉及模块。
+[roadmap.md](roadmap.md)：架构演进的 M 线（MVP 五期：M0 奠基 / M1 讲解闭环 / M2 引导 / M3 代执行+HITL / M4 审计+评测门，**已全部完成**）→ S 线（标准版四期：S1 服务端直调 / S2 配置中心 / S3 多形态客户端 / S4 七系统拆分+状态外置，S1 已随 adr-010 落地），每期含验收基准与涉及模块。
+产品形态的 P 线与之正交，口径以 SSOT §2 为准、展开见 [plans/2026-08-04-generic-extension-productization.md](plans/2026-08-04-generic-extension-productization.md)。
+
+### 其他分区（人读层，按需查）
+
+- **plans/** — 实施方案与产品形态定义（P 线、pack/L2 技术方案、产品形态规则 R1-R9）。
+- **design/** — 产品设计稿与 UI 规范。
+- **research/** — 竞品与机制调研。
+- **operations/** — 外部依赖的运维手册（如飞书账本）。
+- **reviews/** — 阶段交付报告与审核记录。
+- **prompts/** — 无人值守批次的提示词存档。
 
 ### 预留分区（有真实内容时再建目录）
 

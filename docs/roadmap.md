@@ -1,25 +1,28 @@
 # zen-agent-mvp Roadmap（MVP 分期 → 标准版分期）
 
-> 人读层计划文档。事实权威：`reference/00-design-brief.md`（SSOT）；架构与升级不变量见 `reference/01-architecture.md`；决策依据见 `adr/`。
-> 每期遵循 ZA 红线与 eval 纪律（adr-008）；分期边界可随真实进展调整，但升级不变量 U1-U7 不随分期妥协。
-> **产品形态分期（P 线：P1 内核归一 → P2 品牌发行 → P3 商店合规 → P4 服务端产品化 → P5 用户维度）**
-> 与本文 M/S 线正交，见 `plans/2026-08-04-generic-extension-productization.md`；定位泛化勘误见 SSOT 头部。
+> 人读层计划文档，管**架构演进的 M 线与 S 线**。事实权威：`reference/00-design-brief.md`（SSOT）；架构与升级不变量见 `reference/01-architecture.md`；决策依据见 `adr/`。
+> 每期遵循 ZA 红线与 eval 纪律（adr-008）；分期边界可随真实进展调整，但升级不变量 U1-U8 不随分期妥协。
+> **产品形态分期（P 线）与本文正交，口径以 SSOT §2 为准**：P1 内核归一 → P2 品牌回归 → P2.5 透明性+L2 →
+> P3 商店合规 → P3.5 teach+分享 → P4 托管服务；展开见 `plans/2026-08-04-generic-extension-productization.md`。
+>
+> **进度**：M 线五期与 MVP 验收已全部完成（生产在跑）；S1 已随 adr-010 落地，S2-S4 未启动。
+> 各期正文为立项时的范围与验收基准记录，不随后续演进回写——现状以 SSOT §2 的能力表与代码为准。
 
 ## 总览
 
 ```
-MVP（模块化单体 + Chrome 插件 + git 配置 + client 通道）
+MVP（模块化单体 + Chrome 插件 + git 配置 + client/server/dom 三通道）——已完成
   M0 奠基 ─► M1 讲解闭环 ─► M2 引导 ─► M3 代执行+HITL ─► M4 审计+评测门
                                                             │
-                                                     MVP 验收（SSOT §9）
+                                                     MVP 验收（SSOT §9，已达成）
                                                             ▼
-标准版（七系统 + 三形态 + 双通道 + 配置中心）
-  S1 服务端直调通道 ─► S2 配置中心 ─► S3 多形态客户端 ─► S4 七系统拆分+状态外置
+标准版（七系统 + 三形态 + 多通道 + 配置中心）
+  S1 服务端直调（已落地，adr-010）─► S2 配置中心 ─► S3 多形态客户端 ─► S4 七系统拆分+状态外置
 ```
 
 ## MVP 分期
 
-### M0 奠基（本期）
+### M0 奠基（已完成）
 
 范围（SSOT §10）：治理资产 + C1-C6 契约 + 架构文档/ADR/roadmap + 可编译骨架（各包 ports/类型/最小实现骨架 + 示例配置），不含功能实现。
 
@@ -30,7 +33,7 @@ MVP（模块化单体 + Chrome 插件 + git 配置 + client 通道）
   3. 治理资产就位：ZA 红线 + hooks 挂载生效；
   4. 本套文档（01-architecture / adr-001..009 / roadmap / docs README）与 SSOT 无冲突。
 
-### M1 讲解闭环
+### M1 讲解闭环（已完成）
 
 范围：第一条端到端能力——插件连上 server，对 `examples/host-demo` 完成 URL 推断 featureId → 装配 → 讲解问答（时序见 01-architecture §4.1/§4.2）。
 
@@ -40,7 +43,7 @@ MVP（模块化单体 + Chrome 插件 + git 配置 + client 通道）
   2. 页面跳转后 featureId 切换、装配换出（describeInjection 可见注入变化）；
   3. 配置未覆盖的问题得到明确拒答而非编造（拒答边界首次可观察）。
 
-### M2 引导
+### M2 引导（已完成）
 
 范围：UI 引导能力——agent 产出 guide-action，插件在宿主页面高亮/滚动到目标元素。
 
@@ -50,7 +53,7 @@ MVP（模块化单体 + Chrome 插件 + git 配置 + client 通道）
   2. 锚点失配（元素不存在）时插件如实回报、agent 如实告知用户，不假装成功；
   3. 引导不引入任何客户端治理判定（边界铁律复查）。
 
-### M3 代执行 + HITL
+### M3 代执行 + HITL（已完成）
 
 范围：API 调用协助全链路——tool_call → toolgate 分级判定 → HITL 卡片 → 一次性签名指令 → 页面代执行 → 结果校验回喂（时序见 01-architecture §4.3）。
 
@@ -61,7 +64,7 @@ MVP（模块化单体 + Chrome 插件 + git 配置 + client 通道）
   3. 指令重放（nonce 复用）与超时（过 ttl）被服务端拒绝；伪造/畸形 exec-result 不通过 resultSchema、不进 agent 上下文；
   4. 一次完整 HITL API 代执行在 host-demo 上闭环（对齐 SSOT §9-1 最后一环）。
 
-### M4 审计 + 评测门
+### M4 审计 + 评测门（已完成）
 
 范围：观测审计全链路 + eval 纪律就位（adr-008），补齐 MVP 验收的剩余两条。
 
@@ -70,8 +73,9 @@ MVP（模块化单体 + Chrome 插件 + git 配置 + client 通道）
   1. 跑完一次 M1-M3 全能力操作后，`.za/events.jsonl` 含全链路事件且已脱敏（抽查无 secret/凭证真值）；
   2. 审计旁路性验证：audit sink 故障时主链路行为不变；
   3. 评测脚本可对 host-demo 配置跑五维度评测并出报告；配置改动跑评测回归的纪律写入开发流程。
+- 后续演进：评测维度闭集自 2026-09-03 起改为讲解正确 / 装配换出 / 引导命中 / 工具触发 / HITL 触发 / 自动化触发（基座通用化后「拒答边界」退出），现行闭集以 `.claude/rules/ZA-EVAL.md` 为准。
 
-### MVP 验收（对齐 SSOT §9）
+### MVP 验收（对齐 SSOT §9，已达成）
 
 1. 插件连上 server，对 `examples/host-demo` 完成闭环：URL 推断 featureId → 装配 → 讲解问答 / 高亮引导 / 一次 HITL API 代执行。【M1+M2+M3】
 2. `.za/events.jsonl` 有全链路审计事件（脱敏）。【M4】
@@ -79,7 +83,7 @@ MVP（模块化单体 + Chrome 插件 + git 配置 + client 通道）
 
 ## 标准版分期
 
-### S1 服务端直调通道
+### S1 服务端直调通道（已落地于 MVP，adr-010）
 
 范围：③ 工具执行层补 `execution: 'server'` 执行器（token 化 API 直调），双通道齐备；server 成为首选主通道，client 降为 legacy 扩展项（adr-002 权衡的审计真实性在此补齐）。
 
@@ -109,6 +113,6 @@ MVP（模块化单体 + Chrome 插件 + git 配置 + client 通道）
 
 ## 分期依赖与原则
 
-- M 线严格串行（每期建立在上期闭环上）；S 线按客户需求可调序，但 S4 依赖 S1-S3 对 U1-U7 的持续验证。
+- M 线严格串行（每期建立在上期闭环上）；S 线按客户需求可调序，但 S4 依赖 S1-S3 对 U1-U8 的持续验证。
 - 每期完成判定以本文验收基准为准，未验证不称完成；带未了结 deferral 的期不迁完成态。
-- U1-U7 是贯穿全部分期的红线：任何一期为赶进度破坏不变量，等于把该期成本转嫁给 S4。
+- U1-U8 是贯穿全部分期的红线：任何一期为赶进度破坏不变量，等于把该期成本转嫁给 S4。

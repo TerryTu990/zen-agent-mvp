@@ -16,7 +16,16 @@ import {
   type WatchTemplateId,
 } from './auto-scan.js';
 import { EXECUTION_PREFERENCE_OPTIONS } from './execution-preference.js';
+import {
+  MAX_QUICK_ACTIONS_PER_SCOPE,
+  QUICK_ACTION_LABEL_MAX,
+  QUICK_ACTION_PLACEHOLDERS,
+  QUICK_ACTION_TEMPLATE_MAX,
+  type QuickActionContext,
+} from './quick-actions.js';
 import type { ExecutionPreference } from './frames.js';
+import { isSiteDenyEntry, MAX_SITE_DENYLIST_ENTRIES, siteDeniesUrl } from './site-denylist.js';
+import { isGrantedOriginEntry, MAX_GRANTED_ORIGINS } from './injection.js';
 
 export type RiskTier = 'auto' | 'hitl' | 'forbidden';
 export type PackSource = 'official' | 'community' | 'local';
@@ -41,6 +50,22 @@ export interface PackAutomationView {
   defaultPeriodMinutes?: number;
 }
 
+/** L1 声明的快捷提问在配置中心的投影：只用于「显示/停用」开关，故不取模板（不持第二份副本）。 */
+export interface PackQuickActionView {
+  id: string;
+  label: string;
+  context: QuickActionContext;
+}
+
+/** 用户自建的快捷提问：模板是用户自己的内容，面板持其草稿并整条回写。 */
+export interface OverlayQuickActionView {
+  id: string;
+  label: string;
+  template: string;
+  context: QuickActionContext;
+  featureIds?: string[];
+}
+
 export interface PackView {
   packId: string;
   name?: string;
@@ -54,6 +79,8 @@ export interface PackView {
   tools: PackToolView[];
   automations: PackAutomationView[];
   configSchema?: Record<string, unknown>;
+  /** pack 预置的快捷提问；未声明时省略。 */
+  quickActions?: PackQuickActionView[];
 }
 
 export interface UserConfigSubjectView {
@@ -75,9 +102,19 @@ export interface OverlayAutomationPreferenceView {
   minutes?: number;
 }
 
-/** 站点作用域与 "*" 全局作用域的合并投影：全局作用域结构上不出现 enabled/restrictions/packConfig。 */
+/**
+ * 站点作用域与 "*" 全局作用域的合并投影：全局作用域结构上不出现 enabled/restrictions/packConfig，
+ * siteDenylist 则只出现在全局作用域（黑名单跨站点，不锚定任何 pack）。
+ */
 export interface OverlayScopeView {
   enabled?: false;
+  siteDenylist?: string[];
+  /** 站点注入授权集（adr-027 轨二）：本机 chrome.permissions 与本集合的交集才常驻注入。 */
+  grantedOrigins?: string[];
+  /** 本作用域自建的快捷提问（R-5）。 */
+  quickActions?: OverlayQuickActionView[];
+  /** 本作用域停用的快捷提问 id（只收紧：只能让某条不出现，不能改写它）。 */
+  disabledQuickActions?: string[];
   rules?: OverlayEntryView[];
   facts?: OverlayEntryView[];
   restrictions?: {
@@ -128,6 +165,28 @@ export interface ConfigCenterDeps {
   localAutomations?: Record<string, { enabled?: boolean; minutes?: number }>;
   /** 把面板上的自动化偏好全量镜像回本地调度存储；缺省 = 只写 L2。 */
   saveAutomations?(prefs: Record<string, { enabled: boolean; minutes: number }>): Promise<void>;
+  /**
+   * 把保存后的站点黑名单全量镜像回本机存储（background 激活判定的数据源）；缺省 = 只写 L2，
+   * 本机侧要等下次冷启动重拉才收紧。
+   */
+  saveSiteDenylist?(entries: string[]): Promise<void>;
+  /**
+   * 把保存后的站点授权集全量镜像回本机存储（background 常驻注册面的数据源之一）。
+   * 缺省 = 只写 L2，本机注册面要等下次冷启动重拉才对齐。
+   */
+  saveGrantedOrigins?(entries: string[]): Promise<void>;
+  /**
+   * 向浏览器申请该 origin 的访问权限（chrome.permissions.request）；返回是否授予。
+   * MUST 在用户手势内同步调用——授权气泡只在手势里弹得出来。缺省 = 视同已授予（无浏览器宿主的测试环境）。
+   */
+  requestOriginAccess?(origin: string): Promise<boolean>;
+  /** 撤销该 origin 的浏览器访问权限（chrome.permissions.remove）。 */
+  revokeOriginAccess?(origin: string): Promise<boolean>;
+  /**
+   * 该 origin 当下是否真的持有浏览器访问权限（chrome.permissions.contains）。
+   * 缺省 = 视同已授予（无浏览器宿主的降级环境不凭空报未授权）。
+   */
+  hasOriginAccess?(origin: string): Promise<boolean>;
 }
 
 export interface ConfigCenterHandle {
@@ -136,6 +195,13 @@ export interface ConfigCenterHandle {
   /** 提交待保存态：本地设置 + PUT overlay；失败如实反映在状态行，不冒充成功。 */
   save(): Promise<void>;
 }
+
+const QUICK_ACTION_CONTEXT_LABEL: Record<QuickActionContext, string> = {
+  selection: '用在选中内容上（右键菜单）',
+  page: '针对当前页面（面板按钮）',
+  none: '与页面无关（面板按钮）',
+};
+const QUICK_ACTION_CONTEXTS: QuickActionContext[] = ['page', 'none', 'selection'];
 
 const TIER_ORDER: Record<RiskTier, number> = { auto: 0, hitl: 1, forbidden: 2 };
 const TIER_LABEL: Record<RiskTier, string> = { auto: '自动执行', hitl: '需确认', forbidden: '已禁用' };
@@ -308,6 +374,10 @@ interface CenterState {
   foreignWatches: UserOverlayWatchView[];
   /** 空串 = 未设置，跟随站点包默认。 */
   verbosity: Verbosity | '';
+  /** "*" 作用域的站点黑名单待保存态；空数组 = 无名单（写回时省略该键）。 */
+  siteDenylist: string[];
+  /** "*" 作用域的站点授权集待保存态；空数组 = 未授权任何站点（写回时省略该键）。 */
+  grantedOrigins: string[];
   loadError: string | null;
 }
 
@@ -413,6 +483,13 @@ function buildOverlay(state: CenterState, subject: UserConfigSubjectView): UserO
     globalScope.preferences = { ...globalScope.preferences, verbosity: state.verbosity };
   }
 
+  // 删空时省略该键：契约 minItems=1，空数组会被写入期拒收。
+  if (state.siteDenylist.length === 0) delete packs[GLOBAL_SCOPE]?.siteDenylist;
+  else ensureScope(packs, GLOBAL_SCOPE).siteDenylist = [...state.siteDenylist];
+
+  if (state.grantedOrigins.length === 0) delete packs[GLOBAL_SCOPE]?.grantedOrigins;
+  else ensureScope(packs, GLOBAL_SCOPE).grantedOrigins = [...state.grantedOrigins];
+
   for (const [key, scope] of Object.entries(packs)) {
     if (Object.keys(scope).length === 0) delete packs[key];
   }
@@ -446,6 +523,8 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     watches: [],
     foreignWatches: [],
     verbosity: '',
+    siteDenylist: [],
+    grantedOrigins: [],
     loadError: null,
   };
   const authToken = deps.authToken;
@@ -627,8 +706,159 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
 
     node.append(renderEntries(scopeKey, pack, scope, 'rules', '我的规则'));
     node.append(renderEntries(scopeKey, pack, scope, 'facts', '我的事实'));
+    node.append(renderQuickActions(scopeKey, pack));
     if (pack !== undefined && pack.tools.length > 0) node.append(renderMatrix(pack));
     return node;
+  }
+
+  /** 某条快捷提问当前是否被停用：两个作用域的停用清单任一命中即算（并集，与服务端同口径）。 */
+  function isQuickActionDisabled(scopeKey: string, id: string): boolean {
+    const global = state.basePacks[GLOBAL_SCOPE]?.disabledQuickActions ?? [];
+    const scoped = state.basePacks[scopeKey]?.disabledQuickActions ?? [];
+    return global.includes(id) || scoped.includes(id);
+  }
+
+  /**
+   * 停用写本作用域；重新启用则两个作用域都摘（用户可能在任一处停过，只摘一处会让开关点了没反应）。
+   * 清空即删键：契约的停用清单 minItems=1，空数组会被写入期拒收。
+   */
+  function setQuickActionDisabled(scopeKey: string, id: string, disabled: boolean): void {
+    if (disabled) {
+      const scope = ensureScope(state.basePacks, scopeKey);
+      const list = scope.disabledQuickActions ?? [];
+      if (!list.includes(id)) scope.disabledQuickActions = [...list, id];
+      return;
+    }
+    for (const key of new Set([GLOBAL_SCOPE, scopeKey])) {
+      const scope = state.basePacks[key];
+      if (scope?.disabledQuickActions === undefined) continue;
+      const kept = scope.disabledQuickActions.filter((entry) => entry !== id);
+      if (kept.length === 0) delete scope.disabledQuickActions;
+      else scope.disabledQuickActions = kept;
+    }
+  }
+
+  /** 就地校验：与契约同口径（长度、占位符闭集、selection 必含 {{selection}}），过不了不入草稿。 */
+  function quickActionIssue(
+    scopeKey: string,
+    label: string,
+    template: string,
+    context: QuickActionContext,
+  ): string | null {
+    if (label === '') return '请填写按钮上显示的文字';
+    if (label.length > QUICK_ACTION_LABEL_MAX) return `按钮文字最多 ${QUICK_ACTION_LABEL_MAX} 字`;
+    if (template === '') return '请填写点击后发给助手的话';
+    if (template.length > QUICK_ACTION_TEMPLATE_MAX) return `内容最多 ${QUICK_ACTION_TEMPLATE_MAX} 字`;
+    const allowed: readonly string[] = QUICK_ACTION_PLACEHOLDERS;
+    const used = [...template.matchAll(/\{\{[^}]*\}\}/g)].map((match) => match[0]);
+    const unknown = used.find((placeholder) => !allowed.includes(placeholder));
+    if (unknown !== undefined) return `占位符 ${unknown} 不可用；可用的是 ${allowed.join(' / ')}`;
+    if (context === 'selection' && !template.includes('{{selection}}')) {
+      return '「用在选中内容上」的内容必须包含 {{selection}}，否则选中的文字无处可放';
+    }
+    const existing = state.basePacks[scopeKey]?.quickActions ?? [];
+    if (existing.length >= MAX_QUICK_ACTIONS_PER_SCOPE) {
+      return `本组最多 ${MAX_QUICK_ACTIONS_PER_SCOPE} 条快捷提问`;
+    }
+    return null;
+  }
+
+  /**
+   * 快捷提问节：站点包预置的只给「显示/停用」开关（只收紧——改不了别人的模板），
+   * 自建条目可删；下方是添加表单。id 由本页生成，用户不需要知道它的存在。
+   */
+  function renderQuickActions(scopeKey: string, pack: PackView | undefined): HTMLElement {
+    const wrap = section('快捷提问');
+    wrap.append(
+      el('p', 'za-cc-hint', '面板输入框上方与右键菜单里的一排按钮：点一下就把下面这段话发给助手。它只是问法，不改变助手的权限。'),
+    );
+    for (const declared of pack?.quickActions ?? []) {
+      const row = el('div', 'za-cc-quick-action');
+      row.dataset['zaQuickActionId'] = declared.id;
+      const toggle = el('input') as HTMLInputElement;
+      toggle.type = 'checkbox';
+      toggle.checked = !isQuickActionDisabled(scopeKey, declared.id);
+      toggle.setAttribute('aria-label', `显示「${declared.label}」`);
+      toggle.addEventListener('change', () => {
+        setQuickActionDisabled(scopeKey, declared.id, !toggle.checked);
+        renderOverlayPanel();
+      });
+      row.append(
+        toggle,
+        el('span', 'za-cc-quick-action-label', declared.label),
+        badge('za-cc-badge-origin', '站点包预置', '来源：站点包预置（可停用，不可改写）'),
+        el('span', 'za-cc-quick-action-context', QUICK_ACTION_CONTEXT_LABEL[declared.context]),
+      );
+      wrap.append(row);
+    }
+    for (const own of state.basePacks[scopeKey]?.quickActions ?? []) {
+      const row = el('div', 'za-cc-quick-action');
+      row.dataset['zaQuickActionId'] = own.id;
+      row.append(
+        el('span', 'za-cc-quick-action-label', own.label),
+        badge('za-cc-badge-origin', '我添加的', '来源：我添加的'),
+        el('span', 'za-cc-quick-action-context', QUICK_ACTION_CONTEXT_LABEL[own.context]),
+        el('span', 'za-cc-quick-action-template', own.template),
+      );
+      const remove = el('button', 'za-cc-quick-action-delete za-cc-btn za-cc-btn-danger', '删除');
+      remove.type = 'button';
+      remove.addEventListener('click', () => {
+        const scope = state.basePacks[scopeKey];
+        const kept = (scope?.quickActions ?? []).filter((candidate) => candidate.id !== own.id);
+        if (scope !== undefined) {
+          if (kept.length === 0) delete scope.quickActions;
+          else scope.quickActions = kept;
+        }
+        renderOverlayPanel();
+      });
+      row.append(remove);
+      wrap.append(row);
+    }
+    wrap.append(renderQuickActionForm(scopeKey));
+    return wrap;
+  }
+
+  function renderQuickActionForm(scopeKey: string): HTMLElement {
+    const form = el('div', 'za-cc-quick-action-form');
+    form.dataset['zaQuickActionForm'] = scopeKey;
+    const label = el('input', 'za-cc-input') as HTMLInputElement;
+    label.type = 'text';
+    label.placeholder = '按钮文字，如「挑重点讲」';
+    label.setAttribute('aria-label', '快捷提问的按钮文字');
+    const template = el('textarea', 'za-cc-textarea') as HTMLTextAreaElement;
+    template.rows = 2;
+    template.placeholder = `点击后发给助手的话，可用 ${QUICK_ACTION_PLACEHOLDERS.join(' / ')}`;
+    template.setAttribute('aria-label', '快捷提问的内容');
+    const context = el('select', 'za-cc-select') as HTMLSelectElement;
+    context.setAttribute('aria-label', '快捷提问的使用场景');
+    for (const value of QUICK_ACTION_CONTEXTS) {
+      const option = el('option', undefined, QUICK_ACTION_CONTEXT_LABEL[value]);
+      option.value = value;
+      context.append(option);
+    }
+    const issue = el('span', 'za-cc-quick-action-issue');
+    const add = el('button', 'za-cc-btn', '添加快捷提问');
+    add.type = 'button';
+    add.dataset['zaQuickActionAdd'] = scopeKey;
+    add.addEventListener('click', () => {
+      const chosen = context.value as QuickActionContext;
+      const problem = quickActionIssue(scopeKey, label.value.trim(), template.value.trim(), chosen);
+      issue.textContent = problem ?? '';
+      if (problem !== null) return;
+      const scope = ensureScope(state.basePacks, scopeKey);
+      scope.quickActions = [
+        ...(scope.quickActions ?? []),
+        {
+          id: `qa-${crypto.randomUUID().slice(0, 8)}`,
+          label: label.value.trim(),
+          template: template.value.trim(),
+          context: chosen,
+        },
+      ];
+      renderOverlayPanel();
+    });
+    form.append(label, template, context, add, issue);
+    return form;
   }
 
   function renderEntries(
@@ -763,8 +993,10 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       pageHead('自动化', [create]),
       notice('无人值守任务不允许自动执行不可撤销的写操作——平台底线，不可配置。', 'lock'),
       notice(
-        '周期自动化只唤醒已打开且已加入会话组的声明工作页，不会自动新建页面。' +
-          '你自建的触发器在目标页未打开、或当前地址与监测地址不一致时只跳过本轮；站点包自动化在离开工作流后会自动停止。',
+        '自动化需先授权站点：Zen 默认不进入任何页面，未授权的站点到点不跑，也不发提示（每行给出授权入口）。' +
+          '周期自动化只唤醒已打开且已加入会话组的声明工作页，不会自动新建页面。' +
+          '你自建的触发器在目标页未打开、或当前地址与监测地址不一致时只跳过本轮；站点包自动化在离开工作流后会自动停止。' +
+          '落在「不辅助的站点」名单内的页面上，两类触发器到点一律不跑，也不发提示——触发器仍显示为启用，等的是你把该站点移出名单。',
       ),
     );
     if (state.loadError !== null) {
@@ -820,6 +1052,28 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       group.append(row);
     }
     return group;
+  }
+
+  /**
+   * 自动化行的站点授权入口（两种行共用）：自动化是无手势唤醒，未授权该 origin 时到点根本注入不进去，
+   * 且不发任何提示——不就地给出授权入口，这一行等于承诺了一份永远不来的周期汇报。
+   * origin 为 null（地址尚未填好/不可解析/pack 未声明站点围栏）时不给入口：无从判定要授权哪个站点。
+   */
+  function appendGrantEntry(row: HTMLElement, origin: string | null): void {
+    if (origin === null || originAuthorized(origin)) return;
+    const grant = el('button', 'za-cc-btn za-cc-row-grant', '授权此站点');
+    grant.type = 'button';
+    grant.addEventListener('click', () => {
+      void grantOrigin(origin).then((granted) => {
+        if (!granted) return;
+        renderAutomationPanel();
+        refreshGrantSection();
+      });
+    });
+    row.append(
+      badge('za-cc-badge-warn', '站点未授权', '自动化需先授权站点：未授权时到点不跑，也不发提示'),
+      grant,
+    );
   }
 
   function renderWatchRow(draft: WatchDraft): HTMLElement {
@@ -900,6 +1154,17 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'),
       );
     }
+    appendGrantEntry(row, originOfUrl(draft.url));
+    // 启用态 + 名单内地址 = 到点静默不跑：不标注则这一行等于承诺了一份永远不来的周期汇报。
+    if (siteDeniesUrl(state.siteDenylist, draft.url)) {
+      row.append(
+        badge(
+          'za-cc-badge-warn',
+          '因站点名单暂不运行',
+          '监测地址在「不辅助的站点」名单内：到点不跑，也不发提示；把该站点移出名单即恢复',
+        ),
+      );
+    }
     return row;
   }
 
@@ -947,6 +1212,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'),
       );
     }
+    appendGrantEntry(row, pack.origin !== undefined && isGrantedOriginEntry(pack.origin) ? pack.origin : null);
     return row;
   }
 
@@ -954,6 +1220,8 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
 
   let baseUrlInput: HTMLInputElement | null = null;
   let executionPreferenceSelect: HTMLSelectElement | null = null;
+  let siteDenySection: HTMLElement | null = null;
+  let grantSection: HTMLElement | null = null;
 
   /** 身份只读展示：形态 + hostUserId 指纹前 8 位；完整标识经复制按钮取用（排障时报给运维）。 */
   function identityField(): HTMLElement {
@@ -1054,7 +1322,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
 
     const pending = section('尚未开放');
     for (const item of [
-      { label: '站点授权管理', anchor: 'P3 商店上架权限模型' },
       { label: '模型与密钥（BYOK）', anchor: 'P4 账号与配额' },
       { label: '数据披露与审计保留期', anchor: 'P4 托管形态' },
       { label: '导出我的配置', anchor: 'P3.5 pack 导入导出' },
@@ -1073,7 +1340,267 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     }
     locked.append(el('p', 'za-cc-hint', '这些是平台底线能力，任何配置不可关闭。'));
 
-    panel.append(connection, execution, preferences, pending, locked);
+    siteDenySection = buildSiteDenySection();
+    grantSection = buildGrantSection();
+    panel.append(connection, execution, preferences, grantSection, siteDenySection, pending, locked);
+  }
+
+  /** 名单增删只换本节点：全局设置页的地址与执行偏好是未提交的输入值，整页重渲会把它们抹掉。 */
+  function refreshSiteDenySection(): void {
+    const next = buildSiteDenySection();
+    siteDenySection?.replaceWith(next);
+    siteDenySection = next;
+  }
+
+  /** 授权增删同律只换本节点。 */
+  function refreshGrantSection(): void {
+    const next = buildGrantSection();
+    grantSection?.replaceWith(next);
+    grantSection = next;
+  }
+
+  /**
+   * 站点黑名单编辑面：写 "*" 全局作用域的 siteDenylist。
+   * 面板只做就地文法自检与增删，不宣称本机拦下了什么——命中站点上不装配任何站点包的判定在服务端。
+   */
+  function buildSiteDenySection(): HTMLElement {
+    const wrap = section('不辅助的站点');
+    wrap.classList.add('za-cc-site-deny');
+    wrap.append(
+      el(
+        'p',
+        'za-cc-hint',
+        '加进名单的站点上，Zen 不装配任何站点包，只留平台基座——判定在服务端，保存后下一轮装配即生效。' +
+          '保存成功后插件同步这份名单：名单内的站点不再激活会话、不再上报页面上下文、不进任务组页面清单，' +
+          '该站点上的站点包自动化与自建触发器到点也一律不跑，且不发提示。' +
+          '一处前提：服务端或本机读不到配置的那一轮不做拦截，该轮照常装配站点包、页面信息照常上行——' +
+          '配置读取失败时以「照常辅助」兜底，不假装名单已经生效。',
+      ),
+    );
+
+    for (const entry of state.siteDenylist) {
+      const row = el('div', 'za-cc-site-deny-entry');
+      row.dataset['zaSiteDeny'] = entry;
+      const remove = el('button', 'za-cc-btn za-cc-btn-danger za-cc-site-deny-remove', '移出名单');
+      remove.type = 'button';
+      remove.addEventListener('click', () => {
+        state.siteDenylist = state.siteDenylist.filter((candidate) => candidate !== entry);
+        refreshSiteDenySection();
+      });
+      row.append(
+        el('span', 'za-cc-site-deny-text', entry),
+        el(
+          'span',
+          'za-cc-hint',
+          entry.includes('://*.') ? '该域及其全部子域' : '该站点（scheme 与端口须完全一致）',
+        ),
+        remove,
+      );
+      wrap.append(row);
+    }
+    if (state.siteDenylist.length === 0) {
+      wrap.append(el('p', 'za-cc-empty', '名单为空：Zen 在所有站点上照常按站点包辅助。'));
+    }
+
+    const input = el('input', 'za-cc-site-deny-input');
+    input.type = 'text';
+    input.placeholder = 'https://example.com';
+    input.setAttribute('aria-label', '要加入不辅助名单的站点');
+    const add = el('button', 'za-cc-btn za-cc-site-deny-add', '加入名单');
+    add.type = 'button';
+    add.addEventListener('click', () => {
+      const value = input.value.trim();
+      if (!isSiteDenyEntry(value)) {
+        setStatus(
+          '站点格式不正确：请填 https://example.com（可带端口）或 https://*.example.com（该域及子域），' +
+            '不支持通配整个网络',
+          true,
+        );
+        return;
+      }
+      if (state.siteDenylist.includes(value)) {
+        setStatus(`${value} 已在名单里`, true);
+        return;
+      }
+      if (state.siteDenylist.length >= MAX_SITE_DENYLIST_ENTRIES) {
+        setStatus(`名单最多 ${MAX_SITE_DENYLIST_ENTRIES} 条`, true);
+        return;
+      }
+      state.siteDenylist = [...state.siteDenylist, value];
+      setStatus(`${value} 已加入待保存的名单，点「保存」后不再进入该站点；已打开的页重载后生效`);
+      refreshSiteDenySection();
+    });
+    const form = el('div', 'za-cc-field-inline');
+    form.append(input, add);
+    wrap.append(
+      form,
+      el(
+        'p',
+        'za-cc-hint',
+        '两种写法：https://example.com 只匹配该站点（scheme 与端口精确，www 与裸域互认）；' +
+          'https://*.example.com 匹配该域及其全部子域。',
+      ),
+    );
+    return wrap;
+  }
+
+  /**
+   * 本机浏览器对某 origin 的实际授权态。只登记探测到的结果：未登记项视同已授予——
+   * 宿主不提供探测面时，本页不得凭空把一个用得好好的站点报成未授权。
+   */
+  const localOriginAccess = new Map<string, boolean>();
+
+  /**
+   * 授权判定的唯一出口：L2 声明 ∩ 本机浏览器权限。
+   * 两者之一缺席，该站点当下就不会被注入——只认 L2 会把「已授权」显示成一个自动化其实跑不起来的状态，
+   * 且不给出任何补回授权的线索（浏览器侧的撤销不通知本页）。
+   */
+  function originAuthorized(origin: string): boolean {
+    return state.grantedOrigins.includes(origin) && localOriginAccess.get(origin) !== false;
+  }
+
+  /** 已授权集在本机的实际状态重探；有变动才重渲（授权面与自动化页同判据，须一并更新）。 */
+  async function syncLocalOriginAccess(): Promise<void> {
+    const probe = deps.hasOriginAccess;
+    if (probe === undefined) return;
+    let changed = false;
+    for (const origin of state.grantedOrigins) {
+      const has = await probe(origin).catch(() => true);
+      if (localOriginAccess.get(origin) === has) continue;
+      localOriginAccess.set(origin, has);
+      changed = true;
+    }
+    if (!changed) return;
+    refreshGrantSection();
+    renderAutomationPanel();
+  }
+
+  /** watch 监测地址 → origin；地址尚未填好或不可解析时为 null（此时不给授权入口）。 */
+  function originOfUrl(value: string): string | null {
+    try {
+      const origin = new URL(value.trim()).origin;
+      return isGrantedOriginEntry(origin) ? origin : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 站点授权：先向浏览器申请（MUST 在手势内同步发起，故本函数第一个动作即 request），
+   * 授予后才进待保存的 L2 授权集。浏览器拒绝时不写 L2——本机拿不到权限，写进去也只是一条永远不生效的声明。
+   */
+  async function grantOrigin(origin: string): Promise<boolean> {
+    // 上限先判：判定是同步的，仍落在手势内；先弹气泡再说「其实加不进去」等于白要一次权限。
+    if (state.grantedOrigins.length >= MAX_GRANTED_ORIGINS && !state.grantedOrigins.includes(origin)) {
+      setStatus(`站点授权最多 ${MAX_GRANTED_ORIGINS} 个`, true);
+      return false;
+    }
+    if (!(await (deps.requestOriginAccess?.(origin) ?? Promise.resolve(true)))) {
+      setStatus(`浏览器未授予 ${origin} 的访问权限：Zen 不会在该站点常驻，自动化到点也跑不起来`, true);
+      return false;
+    }
+    localOriginAccess.set(origin, true);
+    if (!state.grantedOrigins.includes(origin)) state.grantedOrigins = [...state.grantedOrigins, origin];
+    setStatus(`${origin} 已授权，点「保存」后自动化即可在该站点唤醒工作页`);
+    return true;
+  }
+
+  /** 撤销：浏览器权限与 L2 声明一并撤，二者不对称会留下一个自己也说不清的中间态。 */
+  async function revokeOrigin(origin: string): Promise<void> {
+    await deps.revokeOriginAccess?.(origin);
+    localOriginAccess.delete(origin);
+    state.grantedOrigins = state.grantedOrigins.filter((candidate) => candidate !== origin);
+    setStatus(`${origin} 的授权已撤销，点「保存」后不再进入该站点；已打开的页重载后生效`);
+  }
+
+  /**
+   * 站点授权编辑面：写 "*" 全局作用域的 grantedOrigins，并同步向浏览器申请/撤销该 origin 的访问权限。
+   * 授权只决定 Zen 在该站点是否出现，不改变任何工具的风险档位与确认要求——那两项恒由站点包与个人定制决定。
+   */
+  function buildGrantSection(): HTMLElement {
+    const wrap = section('已授权常驻的站点');
+    wrap.classList.add('za-cc-site-grant');
+    wrap.append(
+      el(
+        'p',
+        'za-cc-hint',
+        'Zen 默认不进入任何页面：点图标或用右键唤起时才把执行器放进当前页，离开该页即失效。' +
+          '授权某个站点后，Zen 才可以在该站点常驻——周期自动化据此在你没有操作时也能唤醒工作页。' +
+          '授权只决定 Zen 在这些站点上是否出现，不改变任何操作的风险档位与确认要求。' +
+          '被加进「不辅助的站点」名单的站点即使授权过也不会注入。',
+      ),
+    );
+
+    for (const origin of state.grantedOrigins) {
+      const row = el('div', 'za-cc-site-grant-entry');
+      row.dataset['zaSiteGrant'] = origin;
+      const remove = el('button', 'za-cc-btn za-cc-btn-danger za-cc-site-grant-remove', '撤销授权');
+      remove.type = 'button';
+      remove.addEventListener('click', () => {
+        void revokeOrigin(origin).then(() => {
+          refreshGrantSection();
+          renderAutomationPanel();
+        });
+      });
+      row.append(el('span', 'za-cc-site-grant-text', origin), remove);
+      if (localOriginAccess.get(origin) === false) {
+        const regrant = el('button', 'za-cc-btn za-cc-site-grant-regrant', '重新授权');
+        regrant.type = 'button';
+        regrant.addEventListener('click', () => {
+          void grantOrigin(origin).then((granted) => {
+            if (!granted) return;
+            refreshGrantSection();
+            renderAutomationPanel();
+          });
+        });
+        row.append(
+          badge(
+            'za-cc-badge-warn',
+            '浏览器已撤销访问',
+            '这条声明仍在，但浏览器当下没有给 Zen 该站点的访问权限：自动化到点跑不起来，点「重新授权」即可补回',
+          ),
+          regrant,
+        );
+      }
+      if (siteDeniesUrl(state.siteDenylist, origin)) {
+        row.append(
+          badge('za-cc-badge-warn', '被名单挡住', '该站点同时在「不辅助的站点」名单内：黑名单优先，不注入'),
+        );
+      }
+      wrap.append(row);
+    }
+    if (state.grantedOrigins.length === 0) {
+      wrap.append(el('p', 'za-cc-empty', '尚未授权任何站点：Zen 只在你点图标/用右键唤起的那一页上工作。'));
+    }
+
+    const input = el('input', 'za-cc-site-grant-input');
+    input.type = 'text';
+    input.placeholder = 'https://example.com';
+    input.setAttribute('aria-label', '要授权 Zen 常驻的站点');
+    const add = el('button', 'za-cc-btn za-cc-site-grant-add', '授权站点');
+    add.type = 'button';
+    add.addEventListener('click', () => {
+      const value = input.value.trim();
+      if (!isGrantedOriginEntry(value)) {
+        setStatus('站点格式不正确：请填精确地址 https://example.com（可带端口），不支持通配', true);
+        return;
+      }
+      if (originAuthorized(value)) {
+        setStatus(`${value} 已在授权列表里`, true);
+        return;
+      }
+      void grantOrigin(value).then((granted) => {
+        if (granted) {
+          input.value = '';
+          refreshGrantSection();
+          renderAutomationPanel();
+        }
+      });
+    });
+    const form = el('div', 'za-cc-field-inline');
+    form.append(input, add);
+    wrap.append(form);
+    return wrap;
   }
 
   function renderAll(): void {
@@ -1149,6 +1676,8 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     );
     state.removedEntries = new Set();
     state.verbosity = state.basePacks[GLOBAL_SCOPE]?.preferences?.verbosity ?? '';
+    state.siteDenylist = [...(state.basePacks[GLOBAL_SCOPE]?.siteDenylist ?? [])];
+    state.grantedOrigins = [...(state.basePacks[GLOBAL_SCOPE]?.grantedOrigins ?? [])];
     adoptWatches(overlay?.watches ?? []);
 
     state.tiers = new Map();
@@ -1290,6 +1819,18 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     await deps.saveAutomations(prefs);
   }
 
+  /** 站点黑名单的本机镜像（background 激活判定的数据源）：与自动化同律，仅在 L2 写入成功后落盘。 */
+  async function persistSiteDenylistMirror(): Promise<void> {
+    if (deps.saveSiteDenylist === undefined) return;
+    await deps.saveSiteDenylist([...state.siteDenylist]);
+  }
+
+  /** 站点授权集的本机镜像（background 常驻注册面的数据源之一）：同律，仅在 L2 写入成功后落盘。 */
+  async function persistGrantedOriginsMirror(): Promise<void> {
+    if (deps.saveGrantedOrigins === undefined) return;
+    await deps.saveGrantedOrigins([...state.grantedOrigins]);
+  }
+
   async function save(): Promise<void> {
     const invalid = invalidAutomation();
     if (invalid !== null) {
@@ -1364,8 +1905,10 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       revisionLabel.textContent = `配置版本 ${state.revision}`;
       try {
         await persistAutomationMirror();
+        await persistSiteDenylistMirror();
+        await persistGrantedOriginsMirror();
       } catch {
-        setStatus('个人配置已保存，但本机自动化调度镜像写入失败（重开本页可重试）', true);
+        setStatus('个人配置已保存，但本机镜像写入失败（重开本页可重试）', true);
         return;
       }
       setStatus('已保存');
@@ -1392,9 +1935,10 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       state.loadError = '无法连接服务端，配置中心只显示本机设置。';
       adoptOverlay(null);
     })
-    .then(() => {
+    .then(async () => {
       renderAll();
       if (state.loadError !== null) setStatus(state.loadError, true);
+      await syncLocalOriginAccess();
     });
 
   return { ready, save };

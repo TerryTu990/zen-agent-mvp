@@ -59,8 +59,12 @@ function setNativeValue(el: HTMLInputElement | HTMLTextAreaElement, value: strin
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+/** 密码框回读的固定替代值：服务端敏感闸之外的第二道，页面自声明 role 绕过服务端闭集时仍不外泄真值。 */
+const MASKED_PASSWORD = '[已隐藏的密码字段]';
+
 function readValueOf(el: Element): string {
   const realm = realmOf(el);
+  if (el instanceof realm.HTMLInputElement && el.type === 'password') return MASKED_PASSWORD;
   if (
     el instanceof realm.HTMLInputElement ||
     el instanceof realm.HTMLSelectElement ||

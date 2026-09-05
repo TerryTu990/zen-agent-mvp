@@ -2,6 +2,7 @@
  * content ↔ background 的 Port 内部消息（插件私有，不属 C3 契约）。
  * sessionId 由 background 唯一持有：content 只交原料，background 组 C3 上行帧。
  */
+import type { QuickActionView } from './quick-actions.js';
 import type {
   DownstreamFrame,
   ExecResultFrame,
@@ -9,6 +10,59 @@ import type {
   HitlDecisionValue,
   SnapshotReportFrame,
 } from './frames.js';
+
+/**
+ * 注入自省投影（GET /v1/sessions/:id/injection 的响应形状）：类型 SSOT = packages/contracts
+ * 的 InjectionDescription 族；本包零 @zen-agent 依赖，按 U5 契约手抄镜像——改契约须同步改此处。
+ * 可选字段显式带 `| undefined`，配合 exactOptionalPropertyTypes 允许调用方表达「服务端未给」。
+ */
+export type InjectionOrigin = 'L0' | 'L1' | 'L2';
+export type InjectionRiskTier = 'auto' | 'hitl' | 'forbidden';
+export type InjectionPackSource = 'official' | 'community' | 'local';
+
+export interface InjectionBlockView {
+  kind:
+    | 'system-prompt'
+    | 'sites-index'
+    | 'feature-rules'
+    | 'facts'
+    | 'user-preferences'
+    | 'pack-config'
+    | 'user-rules'
+    | 'user-facts'
+    | 'skill'
+    | 'docs-index';
+  id?: string | undefined;
+  bytes: number;
+  origin?: InjectionOrigin | undefined;
+}
+
+export interface InjectionToolView {
+  toolId: string;
+  baseTier: InjectionRiskTier;
+  effectiveTier: InjectionRiskTier;
+  origin: 'L0' | 'L1';
+  /** 收紧来源作用域键（packId），或哨兵值 'storage-failure'（L2 读失败的治理降级）。 */
+  tightenedBy?: string | undefined;
+}
+
+export interface InjectionDescriptionView {
+  snapshotVersion: string;
+  packId: string | null;
+  featureId: string | null;
+  blocks: InjectionBlockView[];
+  toolIds: string[];
+  tools?: InjectionToolView[] | undefined;
+  packVersion?: string | undefined;
+  packName?: string | undefined;
+  packSource?: InjectionPackSource | undefined;
+  featureTitle?: string | undefined;
+  userConfigRevision?: string | undefined;
+  /** 用户关停 pack 的轮次：packId 已回落 null，据此呈现「已关停」而非「无站点包」。 */
+  disabledPackId?: string | undefined;
+  /** 服务端判定的本轮装配原因闭集；客户端只呈现不推断（U7）。 */
+  reason?: 'pack' | 'generic' | 'base-only' | 'pack-disabled' | 'site-denied' | undefined;
+}
 
 export type SidePanelUiEvent =
   | {
@@ -22,6 +76,8 @@ export const SESSION_PORT_NAME = 'za-session';
 export const SIDE_PANEL_PORT_NAME = 'za-side-panel';
 
 export type MessageDeliveryFailure =
+  // 本机站点黑名单闸门拦下：该帧所属页面在用户的「不辅助的站点」名单内，未出本机。
+  | 'site-denied'
   | 'configuration'
   | 'unauthorized'
   | 'session-expired'
@@ -49,16 +105,34 @@ export type ContentToBackgroundMessage =
 export type BackgroundToContentMessage =
   | { kind: 'frame'; frame: DownstreamFrame }
   | { kind: 'stop-operation' }
+  // 新回合开始：解除页面侧的停止闩。停止是回合级事实，闩在一次停止后保持置位，
+  // 只有这条显式信号（用户发新消息 / 自动回合起跑）才复位它。
+  | { kind: 'resume-operation' }
   // navigate-request 的回执：ok 时 url 为新开页目标地址，供 content 组 exec-result。
   | { kind: 'navigate-result'; requestId: string; ok: boolean; url?: string; error?: string };
 
 export type SidePanelToBackgroundMessage =
   | { kind: 'panel-bind'; groupId: number }
   | { kind: 'browsing-context'; groupId: number; url?: string; title?: string }
-  | { kind: 'user-message'; messageId: string; text: string; displayText?: string; executionPreference: ExecutionPreference }
+  | {
+      kind: 'user-message';
+      messageId: string;
+      text: string;
+      displayText?: string;
+      executionPreference: ExecutionPreference;
+      /** 本轮由快捷提问发起：模板由服务端查表展开，面板只发 id（不持模板副本）。 */
+      quickActionId?: string;
+      /** 随快捷提问带上的页面选区正文；仅右键入口会带。 */
+      selectionText?: string;
+    }
   | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
   // L2 草稿裁决（U8）：面板只回传 draftId+decision，change 不经客户端往返。
   | { kind: 'config-decision'; draftId: string; decision: 'accept' | 'reject' }
+  // 「本页生效」块取数：面板不持有会话与令牌，由 background 转发 GET /v1/sessions/:id/injection。
+  | { kind: 'injection-request' }
+  // 快捷提问 chips 取数：面板不持有会话与令牌，由 background 合并 /v1/packs 与 /v1/user-config 后回投影。
+  // siteDenied = 本机确实跳过了这一页的激活（面板持有该事实）：background 据此连会话都不建。
+  | { kind: 'quick-actions-request'; siteDenied: boolean }
   | { kind: 'stop-operation'; messageId?: string }
   | { kind: 'ping' };
 
@@ -75,6 +149,15 @@ export type BackgroundToSidePanelMessage =
       httpStatus?: number;
     }
   | { kind: 'hitl-result'; hitlId: string; accepted: boolean }
+  // 取数成功即带服务端原样描述；失败只带人读原因（不含令牌与栈细节，SEC-04）。
+  | { kind: 'injection-result'; ok: true; description: InjectionDescriptionView }
+  | { kind: 'injection-result'; ok: false; error: string }
+  // 右键「用 Zen 讲解选中内容」：选区原文送面板输入框，由用户补充意图后自行发送。
+  | { kind: 'compose-quote'; text: string }
+  // 本页可呈现的快捷提问清单（合并 L1/L2 后的投影，不含模板）；空数组 = 本页没有可呈现的条目。
+  | { kind: 'quick-actions'; actions: QuickActionView[] }
+  // 右键选中某条快捷提问：面板按普通用户消息路径发出（本地回声/停止/幂等全部复用）。
+  | { kind: 'compose-quick-action'; actionId: string; label: string; selectionText: string }
   | { kind: 'stop-result'; messageId?: string; accepted: boolean }
   | { kind: 'operation-state'; running: boolean }
   | {
@@ -90,8 +173,8 @@ export type BackgroundToSidePanelMessage =
  * 显式发起模型下，content 加载不自动连会话，须经此握手由 background 决定是否激活（ADR-013 批次④ §5）。
  */
 export type ContentRuntimeMessage =
-  // content 加载完成：autoActivate 为该页 origin 是否命中 za.autoActivate 开关（配置级 dev/demo）。
-  | { kind: 'request-activate'; autoActivate: boolean };
+  // content 加载完成（adr-027：脚本出现在本页即 background 注入或已授权 origin 的动态注册所致）。
+  | { kind: 'request-activate' };
 
 export type BackgroundRuntimeMessage =
   // background 决定激活：content 据此挂面板并连接会话端口。

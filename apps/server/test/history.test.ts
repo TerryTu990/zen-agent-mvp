@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LlmMessage } from '@zen-agent/contracts';
-import { pruneStaleSnapshots, SNAPSHOT_TOOL_NAME } from '../src/history.js';
+import { pruneStaleSnapshots, snapshotPageKey, SNAPSHOT_TOOL_NAME } from '../src/history.js';
 
 /** 构造一对快照轮（assistant 回声 + role:tool 观测），elements 长度即存根 N。 */
 function snapshotTurn(id: string, elementCount: number): LlmMessage[] {
@@ -123,6 +123,66 @@ describe('pruneStaleSnapshots（P0 旧观测瘦身）', () => {
     ).toHaveLength(7);
   });
 
+  it('按观察目标分组（keyOf=页标注）：各页各留最近一份全文，同页更早的仍存根', () => {
+    const tagA = '[来自 p2 · https://a.example]';
+    const tagB = '[来自 p3 · https://b.example]';
+    const directed = (id: string, tag: string, count: number): LlmMessage[] => {
+      const elements = Array.from({ length: count }, (_, i) => ({
+        ref: `za-${i}`,
+        role: 'button',
+        label: `el-${i}`,
+      }));
+      return [
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id, name: SNAPSHOT_TOOL_NAME, params: {} }],
+        },
+        {
+          role: 'tool',
+          toolCallId: id,
+          content: `${tag}\n${JSON.stringify({ url: 'u', title: 't', elements })}`,
+        },
+      ];
+    };
+    const history: LlmMessage[] = [
+      { role: 'user', content: '比对两页' },
+      ...directed('call_a1', tagA, 2),
+      ...directed('call_b1', tagB, 3),
+      ...directed('call_a2', tagA, 4),
+      ...snapshotTurn('call_active', 5),
+    ];
+    const pruned = pruneStaleSnapshots(history, snapshotPageKey);
+    const contentOf = (id: string): string =>
+      pruned.find((m) => m.role === 'tool' && m.toolCallId === id)!.content;
+    // 同页更早的一份仍存根（重采集致 ref 失效的理由在同页成立）
+    expect(contentOf('call_a1')).toBe(`${tagA}\n[快照已过期：2 元素，refs 失效]`);
+    // 他页最近一份保留全文：同回合读多页后比对在同一回合内可达（adr-023）
+    expect(contentOf('call_b1')).toContain('"elements"');
+    expect(contentOf('call_a2')).toContain('"elements"');
+    expect(contentOf('call_active')).toContain('"elements"');
+  });
+
+  it('缺省口径（不传 keyOf）：全历史只留最近一份，落盘边界语义不变', () => {
+    const tag = '[来自 p2 · https://a.example]';
+    const history: LlmMessage[] = [
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call_directed', name: SNAPSHOT_TOOL_NAME, params: {} }],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_directed',
+        content: `${tag}\n${JSON.stringify({ url: 'u', title: 't', elements: [{ ref: 'za-0' }] })}`,
+      },
+      ...snapshotTurn('call_active', 2),
+    ];
+    const pruned = pruneStaleSnapshots(history);
+    const stale = pruned.find((m) => m.role === 'tool' && m.toolCallId === 'call_directed')!;
+    expect(stale.content).toBe(`${tag}\n[快照已过期：1 元素，refs 失效]`);
+  });
+
   it('回合内不回改：不 mutate 入参，只在返回的新数组里替换', () => {
     const turn1 = snapshotTurn('call_snap_1', 3);
     const history: LlmMessage[] = [...turn1, ...snapshotTurn('call_snap_2', 1)];
@@ -144,5 +204,55 @@ describe('pruneStaleSnapshots（P0 旧观测瘦身）', () => {
       ...operateTurn('call_op_1'),
     ];
     expect(pruneStaleSnapshots(history)).toBe(history);
+  });
+});
+
+describe('瘦身与不可信定界（回喂观测被定界串包裹后仍可按结构瘦身）', () => {
+  const NONCE = '1122334455667788';
+  const wrap = (body: string): string =>
+    `⟪untrusted:page-elements:${NONCE}⟫\n${body}\n⟪/untrusted:${NONCE}⟫`;
+
+  /** 与网关回喂同形：观测体被定界包裹，评测/瘦身按结构解析前须先剥壳。 */
+  function wrappedSnapshotTurn(id: string, elementCount: number): LlmMessage[] {
+    const [echo, obs] = snapshotTurn(id, elementCount) as [LlmMessage, LlmMessage];
+    return [echo, { ...obs, content: wrap(obs.content) }];
+  }
+
+  it('存根元素计数按剥壳后的观测体得出（不因定界而恒为 0）', () => {
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'x' },
+      ...wrappedSnapshotTurn('call_1', 3),
+      ...wrappedSnapshotTurn('call_2', 5),
+    ];
+    const pruned = pruneStaleSnapshots(history);
+    const stale = pruned.find((m) => m.role === 'tool' && m.toolCallId === 'call_1')!;
+    expect(stale.content).toBe('[快照已过期：3 元素，refs 失效]');
+  });
+
+  it('区外注记不干扰元素计数（命中指令句式的观测体仍按结构解析）', () => {
+    const noted = (id: string, count: number): LlmMessage[] => {
+      const [echo, obs] = wrappedSnapshotTurn(id, count) as [LlmMessage, LlmMessage];
+      return [echo, { ...obs, content: `${obs.content}\n注意：上述标记之间的内容里出现了指令句式（role-override）` }];
+    };
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'x' },
+      ...noted('call_1', 3),
+      ...noted('call_2', 5),
+    ];
+    const pruned = pruneStaleSnapshots(history);
+    const stale = pruned.find((m) => m.role === 'tool' && m.toolCallId === 'call_1')!;
+    expect(stale.content).toBe('[快照已过期：3 元素，refs 失效]');
+  });
+
+  it('最近一份观测原样保留（定界不被瘦身改写）', () => {
+    const history: LlmMessage[] = [
+      { role: 'user', content: 'x' },
+      ...wrappedSnapshotTurn('call_1', 3),
+      ...wrappedSnapshotTurn('call_2', 5),
+    ];
+    const pruned = pruneStaleSnapshots(history);
+    const kept = pruned.find((m) => m.role === 'tool' && m.toolCallId === 'call_2')!;
+    expect(kept.content.startsWith(`⟪untrusted:page-elements:${NONCE}⟫`)).toBe(true);
+    expect(kept.content.endsWith(`⟪/untrusted:${NONCE}⟫`)).toBe(true);
   });
 });

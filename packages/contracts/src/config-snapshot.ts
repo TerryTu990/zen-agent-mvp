@@ -47,6 +47,42 @@ export interface PackAnchor {
   selectorHint?: string;
 }
 
+/**
+ * 平台内建工具族标识：pack 声明使用哪些平台内建工具面，网关据此按 pack 声明注入（未声明即不注入）。
+ * 值域是平台已实现闭集（非 pack 自定义空间）：'applications' = 投递记录读写（record_application/list_applications）。
+ */
+export type PackBuiltinTool = 'applications';
+
+/** 联合类型的穷举镜像：联合增减成员或此处漏更均编译期爆错（双向同源保证）。 */
+const packBuiltinToolMirror: Record<PackBuiltinTool, true> = {
+  applications: true,
+};
+
+/** 平台已实现内建工具族的运行时闭集（capabilities.builtinTools 载入期交叉校验基准）。 */
+export const packBuiltinTools = Object.keys(packBuiltinToolMirror) as PackBuiltinTool[];
+
+/**
+ * 快捷提问的页面材料声明：selection = 需要选区正文（模板必含 {{selection}}）；
+ * page = 需要当前页地址与标题；none = 纯问法，不带页面材料。
+ */
+export type QuickActionContext = 'selection' | 'page' | 'none';
+
+/**
+ * 快捷提问条目（R-5，L1 pack 声明与 L2 用户覆盖层同形）：只承载「用户轮消息模板」——
+ * 结构上无工具定义/execution/riskTier 表达力，不进 system 注入，展开在服务端网关。
+ * 模板占位符是闭集 {{selection}}/{{url}}/{{title}}（schema 层拒闭集外的 {{…}}）。
+ */
+export interface QuickAction {
+  id: string;
+  /** chip 与右键菜单文案，≤40 字。 */
+  label: string;
+  /** 展开后的用户轮消息，≤2000 字。 */
+  template: string;
+  context: QuickActionContext;
+  /** 缺省 = 整 pack 可见；声明时客户端只在命中的 featureId 上呈现。 */
+  featureIds?: string[];
+}
+
 /** 结构化能力声明（MCP capabilities 范式）：全部可选，知识型 pack 合法缺省。 */
 export interface PackCapabilities {
   /** featureId → 引导锚点清单；装配端消费锚点 = D2。 */
@@ -55,8 +91,10 @@ export interface PackCapabilities {
   skills?: string[];
   /** docs/ 内文档相对路径闭单：载入期与目录扫描对账。 */
   docs?: string[];
-  /** pack 使用的准备 workflows ⊆ 服务端已实现闭集，载入期交叉校验。 */
-  preparation?: { workflows: string[] };
+  /** pack 作者预置的站点专属问法（R-5）：面板 chips 与右键菜单同源消费；不参与注入与工具面。 */
+  quickActions?: QuickAction[];
+  /** pack 声明使用的平台内建工具族 ⊆ 平台已实现闭集，载入期交叉校验；未声明 = 网关不注入任何内建工具面。 */
+  builtinTools?: PackBuiltinTool[];
 }
 
 /** canonical 文件清单 sha256（键 = pack 内相对路径，值 = sha256 hex）；装配端校验启用锚点 = P3.5。 */

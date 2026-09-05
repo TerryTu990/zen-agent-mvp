@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import type { JsonObject } from './json.js';
+import type { QuickAction } from './config-snapshot.js';
 import type { RiskTier } from './tool-definition.js';
 import {
   findAutomationTemplate,
@@ -72,6 +73,26 @@ export interface UserOverlayGlobalScope {
   rules?: UserOverlayEntry[];
   facts?: UserOverlayEntry[];
   preferences?: { verbosity?: UserOverlayVerbosity };
+  /**
+   * 站点黑名单（R1 只收紧）：命中的 origin 上不装配任何站点包，回落仅基座。
+   * 条目两形态——"scheme://host[:port]" 精确 origin 或 "scheme://*.host" 该域及子域；
+   * 文法不含全通配（schema 层拒 "*"）。终判在服务端 compose（U7），客户端跳过激活不构成治理生效。
+   */
+  siteDenylist?: string[];
+  /**
+   * 站点注入授权集（adr-027 轨二）：用户显式授权 Zen 在这些 origin 上常驻内容脚本。
+   * 条目为精确 origin "scheme://host[:port]"，协议闭集 http/https，无通配形态。
+   * 准入维度而非治理维度——授权只决定 agent 在该站点是否存在，不改任何 riskTier / 工具面 / HITL 判定，
+   * 与 restrictions 的只收紧正交。客户端注入面取本集合与浏览器授权的交集，黑名单命中时优先不注入。
+   */
+  grantedOrigins?: string[];
+  /** 跨站自建快捷提问（R-5）：上限 20 条（schema maxItems）。 */
+  quickActions?: QuickAction[];
+  /**
+   * 停用的快捷提问 id（R1 只收紧）：结构上只有 id，无改写模板的表达力——
+   * 用户能让某条不出现，不能让它变成别的问法。命中的 id 网关查表也不认（按未知 id 原样发送）。
+   */
+  disabledQuickActions?: string[];
 }
 
 export interface UserOverlayPackScope {
@@ -80,6 +101,10 @@ export interface UserOverlayPackScope {
   /** 上限 200 条（schema maxItems），facts 同。 */
   rules?: UserOverlayEntry[];
   facts?: UserOverlayEntry[];
+  /** 本 pack 作用域的自建快捷提问（R-5）：上限 20 条（schema maxItems）。 */
+  quickActions?: QuickAction[];
+  /** 停用的快捷提问 id（含 L1 声明与全局 L2 条目）；只收紧，语义同全局作用域。 */
+  disabledQuickActions?: string[];
   restrictions?: UserOverlayRestrictions;
   /** 键值按该 pack 声明的 configSchema（adr-020）校验；schema 不存在或值越界即拒。 */
   packConfig?: JsonObject;

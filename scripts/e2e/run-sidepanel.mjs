@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const EXTENSION_DIR = process.env.ZA_EXTENSION_E2E_DIR
@@ -26,6 +27,17 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+/**
+ * 面板提交即本地回显（气泡先出、草稿即刻离开输入框），界面状态不再蕴含「上行帧已发出」；
+ * 按下标断言 frameRequests 之前必须先等帧真正到达夹具，否则下标取到 undefined 会让比较悄悄成立或误判。
+ */
+async function waitForFrameCount(page, frames, count, label) {
+  for (let attempt = 0; attempt < 400 && frames.length < count; attempt += 1) {
+    await page.waitForTimeout(25);
+  }
+  assert(frames.length >= count, `${label}：夹具只收到 ${frames.length} 个上行帧，期望至少 ${count}`);
+}
+
 async function waitServiceWorker(context) {
   return context.serviceWorkers()[0] ?? context.waitForEvent('serviceworker', { timeout: 10000 });
 }
@@ -33,6 +45,7 @@ async function waitServiceWorker(context) {
 async function main() {
   let context;
   let authServer;
+  let loadedExtensionDir;
   let nextFrameStatus = 401;
   let holdNextTurn = false;
   let delayNextFrameResponse = false;
@@ -177,12 +190,23 @@ async function main() {
 
     console.log('[2/3] 真实 Chromium 加载 MV3 extension…');
     let sw;
+    // 见 extension-fixture：产品清单里 host 权限是 optional，其授权气泡不可被自动化点击。
+    loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
     for (const headless of [true, false]) {
       await run('rm', ['-rf', PROFILE_DIR]);
-      const candidate = await chromium.launchPersistentContext(PROFILE_DIR, {
-        headless,
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
-      });
+      // headless 下 MV3 扩展常起不来（本机即如此），且失败形态既有「启动返回但无 SW」也有「启动挂起」；
+      // 两者都只该触发回退，故启动本身入 try 且给短超时——否则挂起会直接终结整轮，headed 一次都轮不到。
+      let candidate;
+      try {
+        candidate = await chromium.launchPersistentContext(PROFILE_DIR, {
+          headless,
+          ...(headless ? { timeout: 45_000 } : {}),
+          args: [`--disable-extensions-except=${loadedExtensionDir}`, `--load-extension=${loadedExtensionDir}`],
+        });
+      } catch (cause) {
+        console.log(`  启动失败（headless=${headless}）：${cause instanceof Error ? cause.message.split('\n')[0] : cause}`);
+        continue;
+      }
       sw = await waitServiceWorker(candidate).catch(() => null);
       if (sw !== null) {
         context = candidate;
@@ -247,6 +271,7 @@ async function main() {
     await panel.getByText('检查当前页面，不要执行操作', { exact: false }).waitFor();
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '重新激活后重试未使用新会话');
     assert(issuedTokens.length >= 1, '夹具未收到任何匿名激活请求：插件没有自己取身份');
+    await waitForFrameCount(panel, frameRequests, 2, '401 后重试');
     assert(frameRequests[1]?.authorization === `Bearer ${issuedTokens.at(-1)}`, '401 后重试未使用重新激活的令牌');
     assert(frameRequests[0]?.authorization !== frameRequests[1]?.authorization, '401 后重试仍复用了被拒的令牌');
     assert(frameRequests[0]?.sessionId !== frameRequests[1]?.sessionId, '重新激活后仍复用了旧 sessionId');
@@ -260,6 +285,7 @@ async function main() {
     await panel.getByRole('button', { name: '发送消息' }).click();
     await panel.getByText('验证失效会话恢复', { exact: false }).waitFor();
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '404 后直接重试未创建新会话');
+    await waitForFrameCount(panel, frameRequests, 4, '404 后重试');
     assert(frameRequests[2]?.sessionId !== frameRequests[3]?.sessionId, '404 后仍复用了失效 sessionId');
     assert(frameRequests[2]?.messageId === frameRequests[3]?.messageId, '404 重试改变了 messageId，无法保证幂等');
 
@@ -272,6 +298,7 @@ async function main() {
     await panel.getByRole('button', { name: '发送消息' }).click();
     await panel.getByText('验证服务重启中断', { exact: false }).waitFor();
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '', '中断后重新提交未成功');
+    await waitForFrameCount(panel, frameRequests, 6, '409 中断后重新提交');
     assert(frameRequests[4]?.messageId !== frameRequests[5]?.messageId, '中断后重新提交没有生成新的 messageId');
 
     delayNextFrameResponse = true;
@@ -413,6 +440,7 @@ async function main() {
     process.exitCode = 1;
   } finally {
     await context?.close().catch(() => {});
+    if (loadedExtensionDir !== undefined) removeExtensionDir(loadedExtensionDir);
     if (authServer !== undefined) {
       for (const stream of eventStreams.values()) stream.end();
       await new Promise((resolveClose) => authServer.close(() => resolveClose())).catch(() => {});

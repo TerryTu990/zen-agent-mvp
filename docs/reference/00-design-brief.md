@@ -16,7 +16,7 @@
 在任意站点上叠加 agent，按用户所在站点/功能（`packId`/`featureId`）动态装配规则、知识、工具面与
 自动化，提供四档能力（信任阶梯）：
 
-1. **功能讲解**（看）——基于 pack 事实的有据回答，配置未覆盖明确拒答
+1. **功能讲解**（看）——基于 pack 事实的有据回答，配置未覆盖如实说明未能确认
 2. **UI 引导**（指）——高亮/滚动定位目标元素，锚点失配如实降级
 3. **受控代执行**（做）——分级判定 + HITL + 一次性签名指令 + 审计
 4. **自动化**（托管）——pack/用户声明的周期与事件触发任务，需确认项收口到人
@@ -47,7 +47,7 @@ S3 多形态客户端 → S4 七系统拆分+状态外置）。关键维度的�
 | 部署/多租户 | 模块化单体、单租户；多租户模型已裁决（共享内容+租户指针，adr-020） | 三级扩展：垂直 → 会话亲和水平复制 → S4 七系统拆分 |
 | 会话 | 标签组会话、可跨站点（adr-012/013）；上下文治理 P0-P2；组级视野与定向操作（adr-023） | 状态外置、SSE 集群 |
 | HITL | 分级挂起 + 卡片确认 + 任务级授权（adr-016） | 同左 + pending 持久化跨端恢复 |
-| 评测 | 五维度纪律（ZA-EVAL：讲解/引导/工具/HITL/自动化），官方 pack 强制 | 评测门内置发布流程 |
+| 评测 | 六维度纪律（ZA-EVAL：讲解/装配换出/引导/工具/HITL/自动化），官方 pack 强制 | 评测门内置发布流程 |
 
 ## 3. 七系统与职责边界（速览）
 
@@ -83,12 +83,12 @@ S3 多形态客户端 → S4 七系统拆分+状态外置）。关键维度的�
 
 ## 5. 契约清单（各出 `.schema.json` + 契约文档，schema 为准）
 
-- **C1 工具定义**（`tool-definition`）：`{id, featureIds[], description, params, execution 闭集, riskTier('auto'|'hitl'|'forbidden'), adapter, resultSchema, authorization(含 preparation, adr-019)}`；pack v2 字段见 adr-020。
+- **C1 工具定义**（`tool-definition`）：`{id, featureIds[], description, params, execution 闭集, riskTier('auto'|'hitl'|'forbidden'), adapter, resultSchema}`；pack v2 字段见 adr-020。
 - **C2 身份契约**（`identity-claims`）：claims 闭集 `{sub, tenant, roles[], hostUserId, iss, exp}`；`iss` 区分签发形态（adr-022 后为匿名 / P4 平台账号两种）；平台零特权。
 - **C3 客户端接入层**（`client-access-layer`）：五能力 + 消息帧闭集（上行 context-report / user-message / hitl-decision / exec-result；下行 text-delta / tool-card / hitl-request / exec-instruction / guide-action / dom 步进帧族）；P2.5-c 增 `config-draft`/`config-decision`（加法）；adr-023 增上行 `group-pages`（任务组页面清单上报）与下行定向落点 `page`（会话作用域不透明句柄，加法）。
 - **C4 配置快照**（`config-snapshot`）：registry（`manifest.json{version, packs[]}`，演进含 source/hash/租户清单）+ `packs/<packId>/{pack.json, features/<id>/{feature.md, facts.md, tools.json}, skills/, docs/, eval/}`；纯数据（ZA-C-AGENT-03）。
-- **C5 审计事件**（`audit-event`）：全链路事件结构，落盘前脱敏；P2.5-a 增 `user-config-write` 类型与 `userConfigRevision` 字段；adr-023 增 `page{handle, origin?}` 落点页字段（additive）。
-- **C6 模块端口**（TS 类型）：`AssemblyPort / ToolGatePort / LlmPort / AuditPort`（+P2.5-b `UserConfigStore`），全部满足 U1。
+- **C5 审计事件**（`audit-event`）：全链路事件结构，落盘前脱敏；P2.5-a 增 `user-config-write` 类型与 `userConfigRevision` 字段；adr-023 增 `page{handle, origin?}` 落点页字段（additive）；不可信内容定界增 `untrusted-content` 类型（只记定界 kind 与命中的指令句式类别标签，不记原文，additive）。
+- **C6 模块端口**（TS 类型，以 `packages/contracts/src/ports.ts` 导出为准）：`AssemblyPort / ToolGatePort / LlmPort / AuditPort / UserConfigStore`，全部满足 U1。垂直履约端口经 adr-026 退役，核心契约不含站点业务语义。
 - **C7 用户覆盖层**（`user-overlay`，adr-014，P2.5-a 落地）：subject 键控、`"*"` 全局作用域、rules/facts/restrictions/packConfig/preferences；只收紧表达力（ZA-C-AGENT-04）。
 
 ## 6. 关键决策索引（详见 `docs/adr/`）
@@ -99,15 +99,17 @@ D10（adr-010）server 通道与 credentialRef · D11（adr-011）可见页面�
 D12（adr-012）会话=标签组 · D13（adr-013）站点包与跨站任务组 ·
 **D14（adr-014）用户级配置层**：L2 契约、渐进绑定身份（§1 身份形态经 adr-022 修订）、故障语义拆分、U4/U8 配套 ·
 D15（adr-015）Chrome side panel · D16（adr-016）有界履约授权 · D17（adr-017）飞书卡片库存 ·
-D18（adr-018）周期履约触发 · D19（adr-019）pack 声明式 preparation 与自动化 ·
+D18（adr-018）周期履约触发 · D19（adr-019）pack 声明式 preparation 与自动化（preparation 面经 D26 退役，pack 声明式自动化保留）·
 **D20（adr-020）pack 契约 v2**：三来源、capabilities/configSchema、registry 指针、多租户共享内容模型、存储矩阵 ·
 D21（adr-021）用户自建自动化触发器 ·
 **D22（adr-022）匿名自动登录**：安装 id → 短期 JWT、hostUserId 哈希派生、删手填令牌与 demo-token、Google 登录为投产前置条件 ·
-**D23（adr-023）任务组多 tab 工作区**：组级视野（页面清单作为渐进披露第二层注入）与定向操作（不透明页面句柄、围栏按目标页校验、silent 页通道分级、签名覆盖落点）。
+**D23（adr-023）任务组多 tab 工作区**：组级视野（页面清单作为渐进披露第二层注入）与定向操作（不透明页面句柄、围栏按目标页校验、silent 页通道分级、签名覆盖落点）·
+**D27（adr-027）按需注入双轨模型**：不变量 IN（content 脚本只出现在「本会话里被发起过动作的页」与「用户显式授权过 origin 的页」，注入面 = 授权集 − 站点黑名单）；清单删 `content_scripts`、host 权限降为可选；轨一手势/定向帧一次性注入、轨二已授权 origin 动态注册；`grantedOrigins` 是准入维度、与 L2 只收紧正交（U5 五能力语义不变，R9 加「需先授权站点」限定）·
+**D26（adr-026）垂直履约退出核心契约**：C6 回到五端口、C1 删 authorization/preparation、履约与库存两包退役；垂直能力今后只在各站点 pack 的 `tools.json` adapter 中声明。
 
 ## 7. 治理体系（两层，速查入口 `CLAUDE.md`）
 
-- **开发期**：`.claude/rules/ZA-*.md`（COMMON 四类 + WHERE U1-U8 + AGENT 运行期边界 + EVAL 六维评测）
+- **开发期**：`.claude/rules/ZA-*.md`（COMMON 四类 + WHERE U1-U8 + AGENT 运行期边界 + EVAL 六维评测，闭集见 `ZA-C-EVAL-01`）
   + hooks 三件套（secret-guard / bash-guard / verify-on-stop）。
 - **运行期**：`assets/`——system-prompt 基座（`ZA-SYS-*`）+ registry + packs（`ZA-FEAT-*`，仅约束
   本仓官方制品）；MUST NOT 进开发会话（ZA-C-AGENT-01）；pack 纯数据（ZA-C-AGENT-03）；
@@ -118,27 +120,37 @@ D21（adr-021）用户自建自动化触发器 ·
 ```
 zen-agent-mvp/
 ├── CLAUDE.md / README.md
-├── docs/{reference/, adr/（D1-D22）, plans/, design/（产品设计稿+UI 规范）, research/, roadmap.md}
+├── docs/{reference/, adr/（D1-D23）, plans/, design/（产品设计稿+UI 规范）, research/, roadmap.md}
 ├── .claude/{rules/, hooks/, skills/, settings.json}
-├── packages/{contracts, assembly, toolgate, llm-port, audit, fulfillment, card-inventory}
+├── packages/{contracts, assembly, toolgate, llm-port, audit}
 ├── apps/{server, extension}
 ├── assets/{system-prompt.md, manifest.json, packs/<packId>/…}
-├── examples/host-demo/
-└── .za/{events.jsonl, sessions/, user-config/（P2.5）, …}   # 运行态，gitignore
+├── examples/{host-demo/, acceptance/, site-packs/（已下线站点包）}
+└── .za/{events.jsonl, sessions/, user-config/（P2.5）, applications/, …}   # 运行态，gitignore
 ```
 
 ## 9. 验收基准
 
 - **MVP 验收（v1 §9）已达成**：闲鱼生产闭环（讲解/引导/HITL 代执行/自动化 + 全链路脱敏审计）。
 - **平台恒定验收**（任何阶段不豁免）：`pnpm -r build` + 串行 test 绿；依赖 lint（U2）；改 assets/
-  过六维评测（ZA-EVAL）；审计脱敏抽查。
+  过六维评测（闭集见 `ZA-C-EVAL-01`）；审计脱敏抽查。
 - **分期验收**：以 P 线各期验收基准为准（P1 已了结：核心 grep 无 xianyu、第二消费方零核心改动）。
 - **完整产品验收（P4，北极星）**：新用户安装 → Google 登录/试用 → 在目标站点零手工配置完成
-  一次讲解与一次 HITL 代执行 → 在配置中心完成一次个人定制（L2）并在注入透明视图中看到它生效。
+  一次讲解与一次 HITL 代执行 → 在配置中心完成一次个人定制（L2）并在面板「本页生效」块中看到它生效。
 
 ## 10. 当前阶段范围声明
 
-奠基期（治理+契约+骨架）与 P1（内核归一）已完成。当前阶段 = **P2.5 契约先行**
-（C7 user-overlay + pack v2 字段 + C3/C5/C6 扩展，见技术方案 §5），随后 P2.5-b/c 实施与 P2 品牌回归。
+奠基期（治理+契约+骨架）、P1（内核归一）与 **P2.5**（C7 user-overlay + pack v2 字段 + C3/C5/C6 扩展，
+见技术方案 §5）已完成：P2.5-a/b/c 三批连同 L0+配置中心 UI、L3 自动化泛化、E2E 门于 2026-08-05 收敛，
+见 `../reviews/2026-08-05-l0-l3-delivery-report.md`；adr-023（任务组多 tab 工作区）已接受并实施。
+P2 品牌回归只完成产品面（插件 manifest 与 release 产物命名已是 Zen Agent），根包名与发行变体机制未了结。
+生产 registry 只登记 `generic-web` 兜底包，xianyu-seller / yinxiang 已下线到 `examples/site-packs/`。
+下一阶段 = **P3 商店合规**（权限最小化 + CWS 上架）与 **P4 托管服务**（Google 账号登录为正式投产前置
+条件），均未启动。
+
+**已裁决（2026-09-03，adr-025 accepted）并于本批落地**：基座改为通用助手（`assets/system-prompt.md`），
+「拒答边界」评测维度退出闭集；§1 第 1 档与产品规则 R8 改写为事实边界口径——站点功能的陈述以 pack 事实与
+页面证据为准，未覆盖时如实说明未能确认、不臆造站点行为，与站点无关的通用请求不受此限。
+
 本文件修订纪律：定位/铁律/不变量级变更 MUST 经 Terry 裁决并同步 `.claude/rules/` 与 CLAUDE.md，
 一般演进以 ADR 增补、按需回写本文件。

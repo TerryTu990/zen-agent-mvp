@@ -130,7 +130,7 @@ describe('extractPageText：非正文与不可见内容剔除', () => {
     expect(text).toBe('真正的正文');
   });
 
-  it('正文容器内的 nav/aside/script 同样剔除', () => {
+  it('正文容器内的 nav/script 仍剔除，文内旁注（aside）属正文予以保留', () => {
     document.body.innerHTML = `
       <article>
         <nav>文内目录</nav>
@@ -139,7 +139,7 @@ describe('extractPageText：非正文与不可见内容剔除', () => {
         <script>const x = '文内脚本';</script>
       </article>
     `;
-    expect(extractPageText(document).text).toBe('正文段落');
+    expect(extractPageText(document).text).toBe('正文段落\n\n延伸阅读');
   });
 
   it('内联 display:none / visibility:hidden 元素不进结果（含祖先）', () => {
@@ -162,7 +162,21 @@ describe('extractPageText：同源 iframe 下钻', () => {
     document.querySelector('main')!.appendChild(frame);
     frame.contentDocument!.body.innerHTML = '<article><p>帧内正文</p></article>';
 
-    expect(extractPageText(document).text).toBe('顶层正文 帧内正文');
+    expect(extractPageText(document).text).toBe('顶层正文\n\n帧内正文');
+  });
+
+  it('正文根内 open shadow root 里的同源 iframe 同样下钻（采集面与元素快照同界）', () => {
+    document.body.innerHTML = '<main><p>顶层正文</p><div id="host"></div></main>';
+    const shadow = document.querySelector('#host')!.attachShadow({ mode: 'open' });
+    const frame = document.createElement('iframe');
+    shadow.appendChild(frame);
+    // jsdom 不为影子树内的 iframe 建浏览上下文（contentDocument 恒 null），以同源文档替身固定该形态：
+    // 被测的是「影子树内的帧会不会被扫到」，而非 jsdom 的帧实现。
+    const childDoc = document.implementation.createHTMLDocument('');
+    childDoc.body.innerHTML = '<article><p>影子树帧内正文</p></article>';
+    Object.defineProperty(frame, 'contentDocument', { value: childDoc });
+
+    expect(extractPageText(document).text).toContain('影子树帧内正文');
   });
 
   it('正文根之外的同源 iframe 不进正文（小部件/广告帧不得冒充正文）', () => {
@@ -238,8 +252,8 @@ describe('extractPageText：同源 iframe 下钻', () => {
   });
 });
 
-describe('extractPageText：空白归一', () => {
-  it('多空格与换行折叠为单空格，且结果无首尾空白', () => {
+describe('extractPageText：空白归一与块级边界', () => {
+  it('行内空白折叠为单空格、块级边界保留为换行，且结果无首尾空白', () => {
     document.body.innerHTML = `
       <article>
         <p>  第一段   有   多空格  </p>
@@ -248,10 +262,12 @@ describe('extractPageText：空白归一', () => {
       </article>
     `;
     const { text } = extractPageText(document);
-    expect(text).toBe('第一段 有 多空格 第二段 跨行');
+    // 源码里的换行是行内空白（浏览器同样按空格渲染），只有块级边界才成行。
+    expect(text).toBe('第一段 有 多空格\n\n第二段 跨行');
     expect(text).toBe(text.trim());
-    expect(text).not.toMatch(/\s{2}/);
-    expect(text).not.toMatch(/[\n\t]/);
+    expect(text).not.toMatch(/[^\S\n]{2}/);
+    expect(text).not.toMatch(/\n{3}/);
+    expect(text).not.toMatch(/\t/);
   });
 });
 
@@ -289,5 +305,125 @@ describe('extractPageText：空页面', () => {
   it('只有被剔除内容的页面同样返回空串', () => {
     document.body.innerHTML = '<nav>导航</nav><script>const x = 1;</script>';
     expect(extractPageText(document)).toEqual({ text: '', truncated: false });
+  });
+});
+
+describe('extractPageText：多候选正文根（A-PAGE-06 / PC-PAGE-08）', () => {
+  it('多张 <article> 的列表页取最近公共祖先，全部卡片进正文', () => {
+    document.body.innerHTML = `
+      <nav>站点导航</nav>
+      <div id="feed">
+        <article><p>第一条动态</p></article>
+        <article><p>第二条动态</p></article>
+        <article><p>第三条动态</p></article>
+      </div>
+    `;
+    const { text } = extractPageText(document);
+    expect(text).toContain('第一条动态');
+    expect(text).toContain('第二条动态');
+    expect(text).toContain('第三条动态');
+    expect(text).not.toContain('站点导航');
+  });
+
+  it('多候选的公共祖先退到 body 时，导航/页脚仍按退回面剔除', () => {
+    document.body.innerHTML = `
+      <header>站点头</header>
+      <article><p>评论一</p></article>
+      <footer>版权</footer>
+      <article><p>评论二</p></article>
+    `;
+    const { text } = extractPageText(document);
+    expect(text).toBe('评论一\n\n评论二');
+  });
+
+  it('嵌套同类候选不误上提（外层 article 已含内层）', () => {
+    document.body.innerHTML = `
+      <div>侧栏推荐位</div>
+      <article><p>主文</p><article><p>内嵌引用</p></article></article>
+    `;
+    const { text } = extractPageText(document);
+    expect(text).toContain('主文');
+    expect(text).toContain('内嵌引用');
+    expect(text).not.toContain('侧栏推荐位');
+  });
+
+  it('文章头（正文根内的 <header>）保留：标题/作者/日期不再随退回面规则丢失', () => {
+    document.body.innerHTML = `
+      <article>
+        <header><h1>季度财报解读</h1><span>作者：张三</span></header>
+        <p>正文首段</p>
+      </article>
+    `;
+    const { text } = extractPageText(document);
+    expect(text).toContain('季度财报解读');
+    expect(text).toContain('作者：张三');
+  });
+});
+
+describe('extractPageText：块级结构保留（A-PAGE-07 / PC-PAGE-08）', () => {
+  it('标题按级数加 # 前缀，段落与列表项各自成行', () => {
+    document.body.innerHTML = `
+      <article>
+        <h1>大标题</h1>
+        <p>首段</p>
+        <h2>小节</h2>
+        <ul><li>要点一</li><li>要点二</li></ul>
+      </article>
+    `;
+    const lines = extractPageText(document).text.split('\n').filter((line) => line !== '');
+    expect(lines).toEqual(['# 大标题', '首段', '## 小节', '要点一', '要点二']);
+  });
+
+  it('表格按行成段、单元格以 | 分隔（价格/库存表可被逐行差分）', () => {
+    document.body.innerHTML = `
+      <article>
+        <table>
+          <tr><th>商品</th><th>价格</th></tr>
+          <tr><td>甲</td><td>19.9</td></tr>
+        </table>
+      </article>
+    `;
+    const lines = extractPageText(document).text.split('\n').filter((line) => line !== '');
+    expect(lines).toEqual(['商品 | 价格', '甲 | 19.9']);
+  });
+
+  it('<br> 成行；相邻行内元素不被强行拆行', () => {
+    document.body.innerHTML = '<article><p>上行<br>下行</p><p>粗体<b>相连</b></p></article>';
+    expect(extractPageText(document).text).toBe('上行\n下行\n\n粗体 相连');
+  });
+
+  it('open shadow root 内的正文可取到（Web Components 站点不再正文为空）', () => {
+    document.body.innerHTML = '<main><p>轻 DOM 正文</p><div id="host"></div></main>';
+    document.querySelector('#host')!.attachShadow({ mode: 'open' }).innerHTML =
+      '<p>影子正文</p>';
+    const { text } = extractPageText(document);
+    expect(text).toContain('轻 DOM 正文');
+    expect(text).toContain('影子正文');
+  });
+});
+
+describe('extractPageText：按行边界截断', () => {
+  it('截断落在行边界上，不把最后一行切成半句', () => {
+    const head = Array.from({ length: 40 }, (_, i) => `<p>${'甲'.repeat(300)}${i}</p>`).join('');
+    document.body.innerHTML = `<article>${head}</article>`;
+    const { text, truncated } = extractPageText(document);
+    expect(truncated).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(MAX_PAGE_TEXT_LENGTH);
+    // 最后一行是完整段落：其长度与源段落一致（未被从中间切断）。
+    expect(text.split('\n').at(-1)).toMatch(/^甲+\d+$/);
+  });
+});
+
+describe('extractPageText：不可见格式字符消毒（无损）', () => {
+  it('零宽与双向控制符被剔除：下游看到的正文与页面呈现一致', () => {
+    document.body.innerHTML =
+      '<article><p>转账​给‮收款方‬确认﻿</p></article>';
+    expect(extractPageText(document).text).toBe('转账给收款方确认');
+  });
+
+  it('可读字符一字不改：全角标点与块级换行保持原样（无损口径）', () => {
+    document.body.innerHTML =
+      '<article><p>作者\uff1a张三\uff08编辑\uff09</p><p>第二段 正文</p></article>';
+    expect(extractPageText(document).text).toBe('作者\uff1a张三\uff08编辑\uff09\n\n第二段 正文');
   });
 });

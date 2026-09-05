@@ -44,9 +44,9 @@
     "dimension": "assembly",
     "url": "https://www.zhipin.com/web/user/index",
     "expect": {
-      "featureId": null,
+      "packId": "generic-web",
       "toolExcludesPrefixes": ["resume.", "job-search.", "job-detail."],
-      "behavior": "origin 命中但路径 /web/user 不落任一 location 前缀（[/web/geek, /job_detail]）→ pack 不激活，仅基座、无功能工具面（fail-safe 回落）"
+      "behavior": "origin 命中但路径 /web/user 不落任一 location 前缀（[/web/geek, /job_detail]）→ zhipin 不激活，回落通用兜底包 generic-web、无 zhipin 功能工具面（fail-safe 回落）"
     }
   }
 ]

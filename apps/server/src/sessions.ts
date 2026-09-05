@@ -64,10 +64,39 @@ export interface SessionStore {
   delete(sessionId: string): void;
   /** 载入既有会话状态（持久化重放恢复用）；覆盖同 id 内存项。 */
   restore(state: SessionState): void;
+  /**
+   * 注册逐出监听：TTL 清理与显式 delete 逐出既有会话时按注册序同步调用一次。
+   * 网关据此回收该会话的进程内治理态（挂起等待器 / 任务级授权），使其不随会话一起悬挂。
+   * 监听者抛错只记本地错误、不阻断逐出（清理是旁路，不进控制流）。
+   */
+  onEvict(listener: (sessionId: string) => void): void;
+}
+
+/** SessionStore 的逐出通知实现：注册表 + 按序广播；监听者异常隔离，互不影响。 */
+function createEvictionNotifier(): {
+  add(listener: (sessionId: string) => void): void;
+  notify(sessionId: string): void;
+} {
+  const listeners: Array<(sessionId: string) => void> = [];
+  return {
+    add(listener) {
+      listeners.push(listener);
+    },
+    notify(sessionId) {
+      for (const listener of listeners) {
+        try {
+          listener(sessionId);
+        } catch (cause) {
+          console.error('会话逐出回收监听异常（已隔离，不阻断清理）：', cause);
+        }
+      }
+    },
+  };
 }
 
 export function createMemorySessionStore(): SessionStore {
   const sessions = new Map<string, SessionState>();
+  const eviction = createEvictionNotifier();
   const mustGet = (sessionId: string): SessionState => {
     const session = sessions.get(sessionId);
     if (!session) throw new Error(`未知会话：${sessionId}`);
@@ -128,7 +157,11 @@ export function createMemorySessionStore(): SessionStore {
       else turns[messageId] = state;
     },
     delete(sessionId) {
-      sessions.delete(sessionId);
+      // 仅对确实存在的会话广播：重复逐出与未知 id 不应触发第二次回收。
+      if (sessions.delete(sessionId)) eviction.notify(sessionId);
+    },
+    onEvict(listener) {
+      eviction.add(listener);
     },
     restore(state) {
       sessions.set(state.sessionId, {
@@ -407,6 +440,10 @@ export function createPersistentSessionStore(
     restore(state) {
       inner.restore(state);
       touch(state.sessionId);
+    },
+    onEvict(listener) {
+      // 逐出通知统一由内存态发出：本装饰器的 sweep 与 delete 都经 inner.delete 收敛到同一处。
+      inner.onEvict(listener);
     },
     sweep,
     stop() {

@@ -24,6 +24,7 @@ import type {
   ToolCardFrame,
   ToolCardStatus,
   TurnCompleteFrame,
+  TurnCompleteReason,
   UpstreamFrame,
   UserMessageFrame,
 } from '../src/frames.js';
@@ -35,6 +36,7 @@ interface FrameDef {
     status?: { enum?: string[] };
     action?: { enum?: string[] };
     method?: { enum?: string[] };
+    reason?: { enum?: string[] };
   };
 }
 
@@ -108,6 +110,16 @@ const toolCardStatusMirror: Record<ToolCardStatus, true> = {
 
 const guideActionMirror: Record<GuideActionKind, true> = { highlight: true, 'scroll-to': true };
 
+const turnCompleteReasonMirror: Record<TurnCompleteReason, true> = {
+  completed: true,
+  stopped: true,
+  'max-rounds': true,
+  'consecutive-failures': true,
+  'llm-error': true,
+  'llm-timeout': true,
+  'tool-not-available': true,
+};
+
 const httpMethodMirror: Record<HttpMethod, true> = {
   GET: true,
   POST: true,
@@ -142,6 +154,7 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
     keys: keysOf<UserMessageFrame>({
       type: true, sessionId: true, text: true, messageId: true,
       executionPreference: true, automationRunId: true, automationId: true,
+      quickActionId: true, selectionText: true,
     }),
   },
   {
@@ -162,6 +175,7 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
       type: true, sessionId: true, requestId: true, url: true, title: true,
       pageInstanceId: true, elements: true, notices: true, evidence: true,
       text: true, textTruncated: true,
+      elementsTruncated: true, elementsOmitted: true, snapshotEpoch: true,
     }),
   },
   {
@@ -180,7 +194,9 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
   },
   {
     def: 'turnComplete',
-    keys: keysOf<TurnCompleteFrame>({ type: true, sessionId: true, idle: true, messageId: true }),
+    keys: keysOf<TurnCompleteFrame>({
+      type: true, sessionId: true, idle: true, messageId: true, reason: true,
+    }),
   },
   {
     def: 'toolCard',
@@ -192,7 +208,8 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
     def: 'hitlRequest',
     keys: keysOf<HitlRequestFrame>({
       type: true, sessionId: true, hitlId: true, toolCallId: true, toolId: true, reason: true, params: true,
-      targetPage: true, targetUrl: true,
+      targetPage: true, targetUrl: true, effects: true, pack: true, risk: true,
+      tightenedBy: true, ttlMs: true,
     }),
   },
   {
@@ -244,6 +261,12 @@ describe('frames.ts 与 C3 schema 的闭集同构', () => {
   it('tool-card status 枚举一致', () => {
     expect(Object.keys(toolCardStatusMirror).sort()).toEqual(
       [...(defOf('toolCard').properties.status?.enum ?? [])].sort(),
+    );
+  });
+
+  it('turn-complete 终止原因闭集一致', () => {
+    expect(Object.keys(turnCompleteReasonMirror).sort()).toEqual(
+      [...(defOf('turnComplete').properties.reason?.enum ?? [])].sort(),
     );
   });
 

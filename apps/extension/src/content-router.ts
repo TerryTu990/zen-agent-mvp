@@ -1,7 +1,7 @@
 import type { DownstreamFrame } from './frames.js';
 import type { DelegatedExecutor } from './delegated-execution.js';
 import type { PageActionRunner } from './page-action.js';
-import type { Snapshotter } from './page-snapshot.js';
+import { whenDomSettled, type Snapshotter } from './page-snapshot.js';
 import type { ContentToBackgroundMessage } from './messaging.js';
 
 export interface DownstreamRouterDeps {
@@ -37,26 +37,33 @@ export function routeDownstreamFrame(frame: PageDownstreamFrame, deps: Downstrea
         .execute(frame)
         .then((result) => deps.send({ kind: 'exec-result', result }));
       break;
-    case 'snapshot-request': {
-      const { url, title, elements, notices, evidence, text, textTruncated } =
-        deps.snapshot.collect(frame.evidenceRules, frame.includeText === true);
-      deps.send({
-        kind: 'snapshot-report',
-        report: {
-          type: 'snapshot-report',
-          sessionId: frame.sessionId,
-          requestId: frame.requestId,
-          url,
-          pageInstanceId: deps.pageInstanceId,
-          ...(title !== '' ? { title } : {}),
-          elements,
-          ...(notices.length > 0 ? { notices } : {}),
-          ...(text !== undefined ? { text } : {}),
-          ...(textTruncated !== undefined ? { textTruncated } : {}),
-          ...(Object.keys(evidence).length > 0 ? { evidence } : {}),
-        },
+    case 'snapshot-request':
+      // 页面刚变动时采到的是中间态：等 DOM 静默窗（有绝对上限）后再采，纯时序、无治理判定。
+      whenDomSettled(() => {
+        const {
+          url, title, elements, notices, evidence, text, textTruncated,
+          snapshotEpoch, elementsTruncated, elementsOmitted,
+        } = deps.snapshot.collect(frame.evidenceRules, frame.includeText === true);
+        deps.send({
+          kind: 'snapshot-report',
+          report: {
+            type: 'snapshot-report',
+            sessionId: frame.sessionId,
+            requestId: frame.requestId,
+            url,
+            pageInstanceId: deps.pageInstanceId,
+            ...(title !== '' ? { title } : {}),
+            elements,
+            ...(snapshotEpoch !== undefined ? { snapshotEpoch } : {}),
+            ...(elementsTruncated !== undefined ? { elementsTruncated } : {}),
+            ...(elementsOmitted !== undefined ? { elementsOmitted } : {}),
+            ...(notices.length > 0 ? { notices } : {}),
+            ...(text !== undefined ? { text } : {}),
+            ...(textTruncated !== undefined ? { textTruncated } : {}),
+            ...(Object.keys(evidence).length > 0 ? { evidence } : {}),
+          },
+        });
       });
       break;
-    }
   }
 }

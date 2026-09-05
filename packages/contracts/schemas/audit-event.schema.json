@@ -13,9 +13,9 @@
       "minLength": 1
     },
     "type": {
-      "$comment": "事件类型闭集：session-start/session-end（会话）、assembly（装配）、tool-decision（门禁判定）、hitl-verdict（人审裁决）、tool-execution（执行结局）、user-config-write（L2 用户配置写入，adr-014）。",
+      "$comment": "事件类型闭集：session-start/session-end（会话）、assembly（装配）、tool-decision（门禁判定）、hitl-verdict（人审裁决）、tool-execution（执行结局）、user-config-write（L2 用户配置写入，adr-014）、untrusted-content（不可信内容中检测到指令句式，旁路记录）。",
       "type": "string",
-      "enum": ["session-start", "session-end", "assembly", "tool-decision", "hitl-verdict", "tool-execution", "user-config-write"]
+      "enum": ["session-start", "session-end", "assembly", "tool-decision", "hitl-verdict", "tool-execution", "user-config-write", "untrusted-content"]
     },
     "ts": {
       "$comment": "事件时刻，ISO 8601 date-time。",
@@ -101,6 +101,10 @@
     {
       "if": { "properties": { "type": { "const": "user-config-write" } }, "required": ["type"] },
       "then": { "properties": { "data": { "$ref": "#/$defs/userConfigWriteData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "untrusted-content" } }, "required": ["type"] },
+      "then": { "properties": { "data": { "$ref": "#/$defs/untrustedContentData" } } }
     }
   ],
   "$defs": {
@@ -173,6 +177,19 @@
           "$comment": "被关停的 packId（随 packDisabled 一同记录）：关停轮事件顶层 packId 已回落缺省，追溯『哪个 pack 被关停』只此一处；缺省=非关停回落。",
           "type": "string",
           "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "siteDenied": {
+          "$comment": "true = 当前页 origin 命中用户 L2 站点黑名单而回落仅基座；与 packDisabled 分列——「用户不让 Zen 出现在这个站点」与「用户关停了这个 pack」是两种归因，缺省=非黑名单回落。",
+          "const": true
+        },
+        "quickActionId": {
+          "$comment": "本轮由快捷提问发起时的动作 id（C3 user-message.quickActionId，R-5）：R4 可追溯「这一轮的问法从哪来」；缺省 = 用户自行输入的普通回合。",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "quickActionUnresolved": {
+          "$comment": "true = 该 quickActionId 在本轮生效的 L1 声明与 L2 覆盖层中查不到（或已被用户停用），本轮按客户端原文原样发起、未做任何展开。回落仅基座的轮次（packDisabled / siteDenied）里该 pack 的预置问法不在本轮生效面内，故一并按此标注。缺省 = 已展开或非快捷提问轮。",
+          "const": true
         }
       }
     },
@@ -217,7 +234,12 @@
       "properties": {
         "hitlId": { "type": "string", "minLength": 1 },
         "toolCallId": { "type": "string" },
-        "decision": { "type": "string", "enum": ["approve", "reject"] }
+        "decision": { "type": "string", "enum": ["approve", "reject"] },
+        "synthetic": {
+          "$comment": "非用户裁决的服务端合成裁决归因：stopped = 用户中断回合、服务端为挂起确认合成 reject。缺省 = 用户在确认卡上真实裁决；统计 MUST 据此区分「用户拒绝」与「用户中断」。",
+          "type": "string",
+          "enum": ["stopped"]
+        }
       }
     },
     "userConfigWriteData": {
@@ -248,7 +270,7 @@
       }
     },
     "toolExecutionData": {
-      "$comment": "执行结局事件：outcome 闭集——ok 成功回喂 / error 宿主 API 报错 / timeout 指令 ttl 过期或结果未归 / invalid-result 结果未过 resultSchema 校验被拒回喂（U7）/ skipped 本轮未执行且非故障（如自动回合上报的不是被监测页）。skipped MUST NOT 与 ok 合并统计——运行历史据此区分「看过、没变」与「本轮没看成」。不记请求与响应体本身。",
+      "$comment": "执行结局事件：outcome 闭集——ok 成功回喂 / error 宿主 API 报错 / timeout 指令 ttl 过期或结果未归 / invalid-result 结果未过 resultSchema 校验被拒回喂（U7）/ skipped 本轮未执行且非故障（如自动回合上报的不是被监测页）/ issue-rejected 判定放行但签发被拒、未下发指令、零副作用（故无 nonce）/ dispatched-unknown 指令已下发、结果因用户中断未归、副作用未知。skipped MUST NOT 与 ok 合并统计——运行历史据此区分「看过、没变」与「本轮没看成」；issue-rejected MUST NOT 与 error 合并统计——事故回放据此区分「没执行」与「执行失败」，dispatched-unknown 是「停止时副作用可能已发生」的机械可检证据。不记请求与响应体本身。",
       "type": "object",
       "additionalProperties": false,
       "required": ["toolCallId", "toolId", "execution", "outcome"],
@@ -260,7 +282,10 @@
           "$comment": "client 通道的指令 nonce，关联 exec-instruction/exec-result 帧。",
           "type": "string"
         },
-        "outcome": { "type": "string", "enum": ["ok", "error", "timeout", "invalid-result", "skipped"] },
+        "outcome": {
+          "type": "string",
+          "enum": ["ok", "error", "timeout", "invalid-result", "skipped", "issue-rejected", "dispatched-unknown"]
+        },
         "status": {
           "$comment": "宿主 API 响应状态码（有响应时记录）。",
           "type": "integer",
@@ -268,6 +293,24 @@
           "maximum": 599
         },
         "durationMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "untrustedContentData": {
+      "$comment": "不可信内容定界事件载荷：kind = 定界闭集成员（内容出自哪个采集面）；patterns = 命中的可疑指令句式类别标签（去重、按出现序）。【脱敏前置】命中原文与其上下文 MUST NOT 入事件——那是页面数据，入审计即扩泄露面；本事件只作可观察证据，是否照做的判定权仍在模型。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "patterns"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["page-text", "page-elements", "tool-result", "pack-doc", "group-pages"]
+        },
+        "toolCallId": { "type": "string" },
+        "patterns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
       }
     }
   }

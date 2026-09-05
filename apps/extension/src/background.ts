@@ -5,6 +5,7 @@ import {
   createGroupMembers,
   resolveTargetPageMembers,
   routeForFrame,
+  targetPageTabId,
   type FrameRoute,
 } from './group-routing.js';
 import { decideBackgroundNavigate, decideTargetedNavigate } from './navigate-target.js';
@@ -13,7 +14,6 @@ import {
   decideActivation,
   decidePanelVisibility,
   sessionKeyForGroup,
-  autoGroupKey,
   panelGroupKey,
   zenGroupKey,
   panelHistoryKeyForGroup,
@@ -36,6 +36,7 @@ import {
   type BackgroundToSidePanelMessage,
   type BackgroundToContentMessage,
   type ContentToBackgroundMessage,
+  type InjectionDescriptionView,
   type SidePanelToBackgroundMessage,
   type SidePanelUiEvent,
   type ContentRuntimeMessage,
@@ -54,7 +55,6 @@ import {
   type AutoScanRecoveryStatus,
   type AutoScanRun,
   type AutomationDescriptor,
-  type WatchInstance,
   normalizeAutoScanMinutes,
   parseAutoScanRun,
   parseAutomationDescriptors,
@@ -70,6 +70,33 @@ import {
   AUTOMATION_DESCRIPTORS_KEY,
   WATCH_DESCRIPTOR_PACK_ID,
 } from './auto-scan.js';
+import {
+  genericPackIdFromPacks,
+  mergeQuickActions,
+  panelQuickActions,
+  parseQuickActions,
+  quickActionsFromPacks,
+  quickActionsFromUserConfig,
+  selectionQuickActions,
+  type QuickActionView,
+} from './quick-actions.js';
+import {
+  parseSiteDenylist,
+  siteDeniesUrl,
+  siteDenylistFromUserConfig,
+  siteDeniedSkipKey,
+  siteDeniedSkipTabId,
+  SITE_DENYLIST_KEY,
+  tabUrlOf,
+} from './site-denylist.js';
+import {
+  CONTENT_SCRIPT_FILE,
+  decideRegisteredOrigins,
+  GRANTED_ORIGINS_KEY,
+  grantedOriginsFromUserConfig,
+  parseGrantedOrigins,
+  planRegistrations,
+} from './injection.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
 // 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
@@ -81,6 +108,13 @@ const DEFAULT_SERVER_BASE_URL =
 
 // 全局唯一身份提供者：单飞与退避跨会话组共享，避免多组同时激活。
 const identity = createIdentityProvider();
+
+/**
+ * 定向帧注入后等待目标页会话端口接入的上限。
+ * 取值须容得下「注入 → 脚本求值 → 握手 → 端口接入」这一跳；超时按目标不可达丢帧，
+ * 不无限等——带副作用的帧压在没有落点的链上会把后续帧一并卡住。
+ */
+const CONTENT_ATTACH_TIMEOUT_MS = 3000;
 
 interface Session {
   baseUrl: string;
@@ -175,15 +209,6 @@ async function isGroupMapped(groupId: number): Promise<boolean> {
   return typeof stored === 'string' && stored !== '';
 }
 
-function originOf(url: string | undefined): string | null {
-  if (url === undefined) return null;
-  try {
-    return new URL(url).origin;
-  } catch {
-    return null;
-  }
-}
-
 type UpstreamContentMessage = Exclude<
   ContentToBackgroundMessage,
   | { kind: 'ping' }
@@ -212,6 +237,18 @@ interface GroupPagesMessage {
 }
 
 type BridgeUpstreamMessage = UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage | GroupPagesMessage;
+
+/**
+ * 上行帧所属的页面（不变量 SD 的判据）。
+ * `null` = 该帧不归属任何单个页面：面板发起的会话消息、background 自产的回执、
+ * 以及逐条已过滤的组级清单——它们不因某一页被拉黑而消失。
+ * tabId 与 url 同时给出时任一命中即拦：tab 记录与页面自述各有滞后窗口，取并集只会更严
+ * （客户端只收紧、不放宽）。
+ */
+type UpstreamOrigin = { tabId?: number | undefined; url?: string | undefined } | null;
+
+/** 命中页被拒执行的下行指令回执错误码（回执由 background 自产，不归属任何页面）。 */
+const SITE_DENIED_ERROR = 'site-denied';
 
 /**
  * 一个 zen 标签页组的会话桥（ADR-013 批次④：键=tabGroup id，组内共享一个服务端会话、一条 SSE）；
@@ -296,6 +333,23 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   const postToPanels = (message: BackgroundToSidePanelMessage): void => {
     for (const panel of panels) postPanel(panel, message);
   };
+  /**
+   * 不变量 ST 的唯一权威状态：本组当前是否处于停止态。停止手势置位、明确的新回合复位。
+   * 一切会产生页面副作用的路径（帧落页、background 自执行的导航、成员页端口接入）在动手前查它，
+   * 而不是各通路各自持有一段闩——每加一条通路就要记得再加一道防线，正是「停止没停住」反复复发的形状。
+   */
+  let operationStopped = false;
+  /**
+   * 明确的新回合开始：解除停止态，并把它宣告到各成员页（页面侧的闩同样只由新回合复位）。
+   * 与停止手势同为同步广播、不等上行往返——等往返则本回合的第一条指令会被上一次停止挡下，
+   * 而那条指令已经带着服务端签名到达页面，不执行既不上报即是静默失败。
+   */
+  const beginTurn = (): void => {
+    operationStopped = false;
+    for (const member of contentMembers.members()) {
+      postContent(member, { kind: 'resume-operation' });
+    }
+  };
   const updateHistory = (update: (history: SidePanelUiEvent[]) => SidePanelUiEvent[]): void => {
     historyChain = historyChain.then(async () => {
       panelHistory = update(panelHistory);
@@ -310,6 +364,67 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     updateHistory((history) => reducePanelHistory(history, event));
     postToPanels(event);
   };
+  /**
+   * 下行帧落到具体页面的统一出口，不变量 SD 第二句的唯一闸门：命中页不执行任何下行指令。
+   * exec-instruction 另回一条 site-denied 拒绝回执——没有回执，服务端只能把「已下发未回」
+   * 当成超时，用户会以为拉黑生效而实际看不出指令被本机拒了。
+   * 串行链保证两帧的先后序不被闸门的异步取址打乱（页面副作用对顺序敏感）。
+   * 同时是不变量 ST 的落页闸门：停止态查询发生在闸门取址之后、副作用发生之前，
+   * 故「已排队尚未落页」的帧与停止之后才到达的帧一并短路，两者无需分别设防。
+   */
+  let landing: Promise<void> = Promise.resolve();
+  const landOnPage = (frame: DownstreamFrame, tabId: number | undefined, execute: () => void): void => {
+    landing = landing
+      .then(async () => {
+        const denied = await isSiteDeniedPage({ tabId });
+        if (operationStopped) return;
+        if (!denied) {
+          execute();
+          return;
+        }
+        if (frame.type !== 'exec-instruction') return;
+        pipeline = pipeline.then(async () => {
+          await forward({
+            kind: 'exec-result',
+            result: {
+              type: 'exec-result',
+              sessionId: frame.sessionId,
+              nonce: frame.nonce,
+              ok: false,
+              error: SITE_DENIED_ERROR,
+            },
+          }, null);
+        });
+      })
+      .catch(() => {});
+  };
+
+  /**
+   * 定向帧落到未注入目标页的通路：先注入，端口接入后再投递。
+   * 注入失败或端口始终不来即丢帧——与「目标成员不可达」同一处置，禁改投他页。
+   * 注入与端口接入之间最长隔着 CONTENT_ATTACH_TIMEOUT_MS，这段窗口里停止手势与站点拉黑都可能发生：
+   * 真正的投递因此重新排回 landOnPage，闸门恒在副作用发生的那一刻判，而非取址那一刻判过就一路放行。
+   */
+  async function injectAndPostToTab(frame: DownstreamFrame, tabId: number): Promise<void> {
+    if (!(await injectContentScript(tabId))) return;
+    const member = await awaitContentMember(tabId);
+    if (member === undefined) return;
+    landOnPage(frame, tabId, () => postContent(member, { kind: 'frame', frame }));
+  }
+
+  /**
+   * 活跃执行页登记的统一出口，不变量 SD 第三句的唯一闸门：命中页不得成为活跃页——
+   * 否则下行帧全部路由到一个只会被下行闸门丢掉的页，同组未命中页反而失联。
+   * 有页面自报地址时一并判（上行闸门同口径）：tab 记录的地址在导航途中可能还是旧值。
+   * 返回 false = 该页被拒，调用方按「本组当下没有可用执行页」处置。
+   */
+  async function admitActivePage(port: chrome.runtime.Port, reportedUrl?: string): Promise<boolean> {
+    const page = { tabId: port.sender?.tab?.id, ...(reportedUrl !== undefined ? { url: reportedUrl } : {}) };
+    if (await isSiteDeniedPage(page)) return false;
+    contentMembers.markActive(port);
+    return true;
+  }
+
   const postFrame = (route: FrameRoute, frame: DownstreamFrame): void => {
     if (suppressedTurnId !== null) {
       const stoppedTurnCompleted = frame.type === 'turn-complete' &&
@@ -358,7 +473,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       if (frame.type === 'hitl-request') {
         // 自动回合本不应进入人工确认；安全拒绝可让服务端回合收尾并发出明确完成帧，避免单飞锁悬挂。
         pipeline = pipeline.then(async () => {
-          await forward({ kind: 'hitl-decision', hitlId: frame.hitlId, decision: 'reject' });
+          await forward({ kind: 'hitl-decision', hitlId: frame.hitlId, decision: 'reject' }, null);
         });
       }
     }
@@ -380,7 +495,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       // 可改投同源他页并夺焦），违反「批准的目标页＝被导航的那一页」。
       const direct = decideTargetedNavigate(frame, pageHandles);
       if (direct.execute) {
-        void executeNavigateToTab(direct.frame, direct.url, direct.tabId);
+        landOnPage(frame, direct.tabId, () => void executeNavigateToTab(direct.frame, direct.url, direct.tabId));
         return;
       }
       const members = resolveTargetPageMembers(
@@ -389,18 +504,30 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         contentMembers.members(),
         (candidate) => candidate.sender?.tab?.id,
       );
-      // 目标成员不可达或形状不获准（silent 页非 navigate 批次、guide-action 无端口）：丢帧，禁改投。
-      for (const member of members) postContent(member, { kind: 'frame', frame });
+      if (members.length === 0) {
+        // 目标页尚未注入（按需注入模型下这是组内成员的常态）：定向帧到达即注入该页，再投递。
+        // 句柄已退役即 null——那才是真正的目标不可达，丢帧、禁改投。
+        const targetTabId = targetPageTabId(frame, pageHandles);
+        if (targetTabId !== null) {
+          landOnPage(frame, targetTabId, () => void injectAndPostToTab(frame, targetTabId));
+        }
+        return;
+      }
+      for (const member of members) {
+        landOnPage(frame, member.sender?.tab?.id, () => postContent(member, { kind: 'frame', frame }));
+      }
       return;
     }
     const targets = contentMembers.targets('active-page');
     const direct = decideBackgroundNavigate(frame, targets.length);
     if (direct.execute) {
-      void executeNavigateWithoutPage(direct.frame, direct.url);
+      // 组内无 content 成员的冷启动 open_url：没有落地页可判，目标 URL 的治理在服务端签发前（D-2）；
+      // 仍经同一闸门落地，副作用由谁执行不改变它受不变量 ST 约束这件事。
+      landOnPage(frame, undefined, () => void executeNavigateWithoutPage(direct.frame, direct.url));
       return;
     }
     for (const member of targets) {
-      postContent(member, { kind: 'frame', frame });
+      landOnPage(frame, member.sender?.tab?.id, () => postContent(member, { kind: 'frame', frame }));
     }
   };
   const postStatus = (message: string): void => emitUi({ kind: 'status', message });
@@ -679,7 +806,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
                     ok: false,
                     error: verified.error,
                   },
-                });
+                }, null);
                 continue;
               }
               nonceHistory = nonceHistory.filter((entry) => entry.expiresAt >= Date.now());
@@ -697,7 +824,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
                     ok: false,
                     error: 'instruction-nonce-store-failed',
                   },
-                });
+                }, null);
                 continue;
               }
             }
@@ -739,6 +866,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           text: message.text,
           ...('messageId' in message ? { messageId: message.messageId } : {}),
           executionPreference: message.executionPreference,
+          ...(message.quickActionId !== undefined ? { quickActionId: message.quickActionId } : {}),
+          ...(message.selectionText !== undefined ? { selectionText: message.selectionText } : {}),
         };
       case 'auto-scan':
         return autoScanUpstreamFrame(message, sessionId);
@@ -754,8 +883,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  async function forward(message: BridgeUpstreamMessage): Promise<boolean> {
-    return (await deliver(message)).accepted;
+  async function forward(message: BridgeUpstreamMessage, origin: UpstreamOrigin): Promise<boolean> {
+    return (await deliver(message, origin)).accepted;
   }
 
   async function stopTurn(messageId: string): Promise<boolean> {
@@ -774,7 +903,16 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
   }
 
-  async function deliver(message: BridgeUpstreamMessage): Promise<MessageDeliveryResult> {
+  /**
+   * 全部上行帧的统一出口，不变量 SD 第一句的唯一闸门：来源页命中用户站点黑名单的帧不出本机。
+   * 判定先于 ensureSession——命中页连一次建会话都不该在服务端留下痕迹。
+   * 无按形态放行的例外：连拒绝回执也不是从页面来的（background 自产、origin=null），
+   * 任何「某种形状可以过」的口子都等于给页面侧留一条夹带通道。
+   */
+  async function deliver(message: BridgeUpstreamMessage, origin: UpstreamOrigin): Promise<MessageDeliveryResult> {
+    if (origin !== null && (await isSiteDeniedPage(origin))) {
+      return { accepted: false, failure: 'site-denied' };
+    }
     const session = await ensureSession();
     if (session === null) return { accepted: false, ...lastSessionFailure };
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
@@ -860,18 +998,19 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     tabs: chrome.tabs,
     markMemberActive: (tabId) => {
       const member = contentMembers.members().find((candidate) => candidate.sender?.tab?.id === tabId);
-      if (member !== undefined) {
-        contentMembers.markActive(member);
-        scheduleGroupPagesReport();
-      }
+      if (member === undefined) return;
+      void admitActivePage(member).then((admitted) => {
+        if (admitted) scheduleGroupPagesReport();
+      });
     },
     noteExpectedActiveTab: (tabId) => {
       expectedActiveTabId = tabId;
     },
     sendActivate: (tabId) => sendActivate(tabId),
+    // background 自产的导航回执：只含服务端签发时已定值的 URL，不归属任何页面（origin=null）。
     forwardExecResult: (result) => {
       pipeline = pipeline.then(async () => {
-        await forward({ kind: 'exec-result', result });
+        await forward({ kind: 'exec-result', result }, null);
       });
     },
   });
@@ -880,11 +1019,11 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     port: chrome.runtime.Port,
     request: Extract<ContentToBackgroundMessage, { kind: 'navigate-request' }>,
   ): Promise<void> {
-    const outcome = await performNavigate(
-      request.url,
-      port.sender?.tab?.windowId,
-      port.sender?.tab?.id,
-    );
+    // 停止态下不开页（不变量 ST）：发出请求的那条批次可能是停止之前就已落到页面上的，
+    // 页面侧的步间检查点管不到这一步——它的副作用由 background 执行。
+    const outcome = operationStopped
+      ? ({ ok: false, error: 'user-stopped' } as const)
+      : await performNavigate(request.url, port.sender?.tab?.windowId, port.sender?.tab?.id);
     postContent(
       port,
       outcome.ok
@@ -905,11 +1044,15 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
    * 采集本组全量成员页快照（经 tabs API，含无 content 端口的 silent 页）并对齐句柄表。
    * 隔离负数组键（groupIdOf 合成）无法经 tabs.query 枚举 → 不上报；
    * URL 尚不可得的成员先入句柄表（保持句柄稳定）、本帧暂缺行（空 url 帧不合法）。
+   * 落在用户站点黑名单内的成员整条剔除——清单的 url/title 会进注入面被 LLM 读到，
+   * 「别让 Zen 看见这个站点」的意图在这条路上同样成立；剔除先于句柄对齐，不留指向已剔除页的悬空句柄。
    */
   async function collectGroupPages(): Promise<GroupPageEntry[] | null> {
     if (groupId < 0) return null;
-    const tabs = await chrome.tabs.query({ groupId }).catch(() => null);
-    if (tabs === null) return null;
+    const queried = await chrome.tabs.query({ groupId }).catch(() => null);
+    if (queried === null) return null;
+    const denylist = await readSiteDenylist();
+    const tabs = queried.filter((tab) => !siteDeniesUrl(denylist, tabUrlOf(tab)));
     await pageHandlesReady;
     const reconciled = reconcilePageHandles(
       pageHandles,
@@ -921,7 +1064,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     }
     const members: MemberPageInfo[] = [];
     for (const tab of tabs) {
-      const url = tab.url !== undefined && tab.url !== '' ? tab.url : tab.pendingUrl;
+      const url = tabUrlOf(tab);
       if (tab.id === undefined || url === undefined || url === '') continue;
       members.push({
         tabId: tab.id,
@@ -938,17 +1081,25 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     return deriveGroupPages(pageHandles, members, portTabIds, activeTabId);
   }
 
+  async function reportGroupPages(): Promise<void> {
+    if (abort.signal.aborted) return;
+    const pages = await collectGroupPages();
+    if (pages === null || abort.signal.aborted) return;
+    // 组级清单不归属任何单页（origin=null）：命中页的条目已在 collectGroupPages 逐条剔除。
+    pipeline = pipeline
+      .then(async () => {
+        await forward({ kind: 'group-pages', pages }, null);
+      })
+      .catch(() => {});
+  }
+
   // 防抖 300ms 合并突发（开组/批量导航），到期才采集最终全量快照组帧；单页也上报（≥2 页
   // 门槛是服务端注入门槛，审计活跃页标注仍需状态表）。投递走既有串行管线保证与 context-report
   // 的先后序；失败不重试不阻塞——下个触发点自然带来新全量帧。
+  // 到期时宿主可能已不在（SW 回收后定时器仍到期，其捕获的 chrome/fetch 已失效）：采集的同步抛出
+  // 与拒绝一并止于本帧，既不外溢成未处理拒绝，也不让一次失败毒化整条上行串行链。
   const scheduleGroupPagesReport = createTrailingDebounce(300, () => {
-    if (abort.signal.aborted) return;
-    void collectGroupPages().then((pages) => {
-      if (pages === null || abort.signal.aborted) return;
-      pipeline = pipeline.then(async () => {
-        await forward({ kind: 'group-pages', pages });
-      });
-    });
+    void reportGroupPages().catch(() => {});
   });
   // 桥建立（含 SW 重启重建、面板先于 content 接入）即补一帧全量：
   // 服务端状态表不滞留桥空窗期间已关闭/离组的旧页。
@@ -976,12 +1127,59 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     onEmpty();
   }
 
+  /**
+   * 定向帧目标页尚未接入时的等待面：轨一注入后其端口接入即兑现。
+   * 键为 tabId——同一页可能有多帧同时在等，故值为回调数组。
+   */
+  const contentWaiters = new Map<number, Array<() => void>>();
+
+  function memberForTab(tabId: number): chrome.runtime.Port | undefined {
+    return contentMembers.members().find((member) => member.sender?.tab?.id === tabId);
+  }
+
+  /**
+   * 等目标页的会话端口接入，上限 CONTENT_ATTACH_TIMEOUT_MS。
+   * 超时按「目标不可达」返回 undefined：等下去只会把带副作用的帧压在一条已经没有落点的链上。
+   */
+  async function awaitContentMember(tabId: number): Promise<chrome.runtime.Port | undefined> {
+    const existing = memberForTab(tabId);
+    if (existing !== undefined) return existing;
+    await new Promise<void>((resolve) => {
+      const waiters = contentWaiters.get(tabId) ?? [];
+      const done = (): void => {
+        clearTimeout(timer);
+        const list = contentWaiters.get(tabId);
+        if (list !== undefined) {
+          const index = list.indexOf(done);
+          if (index !== -1) list.splice(index, 1);
+          if (list.length === 0) contentWaiters.delete(tabId);
+        }
+        resolve();
+      };
+      const timer = setTimeout(done, CONTENT_ATTACH_TIMEOUT_MS);
+      waiters.push(done);
+      contentWaiters.set(tabId, waiters);
+    });
+    return memberForTab(tabId);
+  }
+
   function attachContent(port: chrome.runtime.Port): void {
     contentMembers.add(port);
+    const attachedTabId = port.sender?.tab?.id;
+    if (attachedTabId !== undefined) {
+      const waiters = contentWaiters.get(attachedTabId);
+      if (waiters !== undefined) {
+        contentWaiters.delete(attachedTabId);
+        for (const waiter of [...waiters]) waiter();
+      }
+    }
+    // 接入即取当前停止态，而不是指望曾经广播过什么：停止后才接入的页拿不到那次广播，
+    // 重连窗口里错过复位广播的页则会永久停摆——两者都是「曾经广播过」这个前提本身不成立。
+    postContent(port, { kind: operationStopped ? 'stop-operation' : 'resume-operation' });
     // navigate 新开页接入即标为活跃：后续 exec/HITL 路由跟随导航到新站点页。
     if (expectedActiveTabId !== null && port.sender?.tab?.id === expectedActiveTabId) {
-      contentMembers.markActive(port);
       expectedActiveTabId = null;
+      void admitActivePage(port);
     }
     scheduleGroupPagesReport();
     port.onMessage.addListener((raw) => {
@@ -1003,21 +1201,135 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       // 保活心跳：其到达已重置 SW 空闲计时器，不转发、不入管线。
       if (message.kind === 'ping') return;
       if (!UPSTREAM_KINDS.has(message.kind)) return;
-      // 上下文上报/用户发言都来自用户视线所在页：即组内活跃页（HITL/exec/guide 的路由目标）。
-      if (message.kind === 'context-report') {
-        contentMembers.markActive(port);
-        scheduleGroupPagesReport();
-        postToPanels({
-          kind: 'task-context',
-          groupId,
-          authorized: true,
-          url: message.url,
-          ...(message.title !== '' ? { title: message.title } : {}),
-        });
-      }
-      pipeline = pipeline.then(async () => { await forward(message); });
+      // 帧与来源页的对应关系随帧带到统一出口：判定只在 deliver 里做一次，此处不做第二次。
+      const senderTabId = port.sender?.tab?.id;
+      const origin: UpstreamOrigin =
+        message.kind === 'context-report'
+          ? { tabId: senderTabId, url: message.url }
+          : message.kind === 'snapshot-report'
+            ? { tabId: senderTabId, url: message.report.url }
+            : { tabId: senderTabId };
+      pipeline = pipeline.then(async () => {
+        // 上下文上报来自用户视线所在页：登记为组内活跃页（HITL/exec/guide 的路由目标）。
+        // 登记与面板抬头恒在闸门之后（命中页既不成为执行落点，也不冒充「任务页面已连接」），
+        // 但不等上行往返：那段窗口内到达的 active-page 下行帧会落到用户刚离开的上一页。
+        if (message.kind === 'context-report' && (await admitActivePage(port, message.url))) {
+          scheduleGroupPagesReport();
+          postToPanels({
+            kind: 'task-context',
+            groupId,
+            authorized: true,
+            url: message.url,
+            ...(message.title !== '' ? { title: message.title } : {}),
+          });
+        }
+        await deliver(message, origin);
+      });
     });
     port.onDisconnect.addListener(() => detachContent(port));
+  }
+
+  /**
+   * 「本页生效」块取数：转发本组会话的 GET /v1/sessions/:id/injection，不新增鉴权面；
+   * 无会话时按需建立会话（首次展开会产生建会话副作用）。失败一律回人读原因
+   * （不含令牌与响应体细节，SEC-04），且不影响会话与投递管线。
+   */
+  async function describeInjection(): Promise<Extract<BackgroundToSidePanelMessage, { kind: 'injection-result' }>> {
+    const session = await ensureSession();
+    if (session === null) return { kind: 'injection-result', ok: false, error: '会话暂不可用，请稍后重试' };
+    try {
+      const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/injection`, {
+        headers: { authorization: `Bearer ${session.token}` },
+        signal: abort.signal,
+      });
+      if (!response.ok) {
+        return { kind: 'injection-result', ok: false, error: `服务端未返回本页装配描述（HTTP ${response.status}）` };
+      }
+      return { kind: 'injection-result', ok: true, description: await response.json() as InjectionDescriptionView };
+    } catch {
+      return { kind: 'injection-result', ok: false, error: '无法连接服务端，请检查网络后重试' };
+    }
+  }
+
+  /**
+   * 本轮取数的作用域：会话已在的组按注入自省给出的 packId/featureId（与「本页生效」块同一口径，
+   * 不另立一套激活判定）；尚无会话时按 generic 兜底包呈现首屏——为一排 chips 建会话会在服务端
+   * 落一条 session-start，那是用户没做任何事就产生的可观察行为。自省读不出即回 null（弃本轮取数）。
+   */
+  async function quickActionScope(
+    packsBody: unknown,
+  ): Promise<{ packId: string | null; featureId: string | null } | null> {
+    const session = sessionPromise === null ? null : await sessionPromise;
+    if (session === null) return { packId: genericPackIdFromPacks(packsBody), featureId: null };
+    const injection = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/injection`, {
+      headers: { authorization: `Bearer ${session.token}` },
+      signal: abort.signal,
+    });
+    if (!injection.ok) return null;
+    const description = await injection.json() as { packId?: unknown; featureId?: unknown };
+    return {
+      packId: typeof description.packId === 'string' ? description.packId : null,
+      featureId: typeof description.featureId === 'string' ? description.featureId : null,
+    };
+  }
+
+  /**
+   * 本页可呈现的快捷提问（R-5）：只经两个无会话投影端点取数（/v1/packs 的 L1 声明 + /v1/user-config
+   * 的 L2 覆盖层，与配置中心同源），合并口径与服务端展开同源。任一环节读不出即回空清单——宁可少给
+   * 入口，也不给一条点下去会被服务端按未知 id 回退的 chip。
+   * 返回的同一份清单同时派生右键菜单：一份数据两入口。
+   */
+  async function resolveQuickActions(siteDenied: boolean): Promise<QuickActionView[]> {
+    // 命中站点黑名单的页连取数都不发：快捷动作属激活后的能力，黑名单是「本页不激活」。
+    // 派生的右键项一并撤掉（兜底入口不属快捷提问，仍留）。
+    if (siteDenied) {
+      await syncContextMenus([]);
+      return [];
+    }
+    try {
+      const baseUrl = await readServerBaseUrl();
+      const token = await identity.getToken(baseUrl);
+      const auth = { authorization: `Bearer ${token}` };
+      const [packsRes, userConfig] = await Promise.all([
+        fetch(`${baseUrl}/v1/packs`, { headers: auth, signal: abort.signal }),
+        fetchUserConfig(baseUrl, token),
+      ]);
+      if (!packsRes.ok) return [];
+      const packsBody: unknown = await packsRes.json();
+      const scope = await quickActionScope(packsBody);
+      if (scope === null) return [];
+      const merged = mergeQuickActions(
+        quickActionsFromPacks(packsBody, scope.packId),
+        quickActionsFromUserConfig(userConfig, scope.packId),
+        scope.featureId,
+      );
+      await syncContextMenus(merged);
+      return merged;
+    } catch {
+      return [];
+    }
+  }
+
+  /** 右键选区：面板可能尚未挂上（本次点击才打开），故先缓存一条、待面板 ready 再投。 */
+  let pendingComposerQuote: string | null = null;
+  function queueComposerQuote(text: string): void {
+    if (panels.size > 0) {
+      postToPanels({ kind: 'compose-quote', text });
+      return;
+    }
+    pendingComposerQuote = text;
+  }
+
+  /** 右键快捷提问：与选区引用同一条「面板可能还没挂上」的时序，故同样先缓存一条。 */
+  let pendingQuickAction: Extract<BackgroundToSidePanelMessage, { kind: 'compose-quick-action' }> | null = null;
+  function queueQuickAction(
+    message: Extract<BackgroundToSidePanelMessage, { kind: 'compose-quick-action' }>,
+  ): void {
+    if (panels.size > 0) {
+      postToPanels(message);
+      return;
+    }
+    pendingQuickAction = message;
   }
 
   function attachPanel(port: chrome.runtime.Port): void {
@@ -1034,6 +1346,14 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         pendingPanels.delete(port);
         panels.add(port);
         postPanel(port, { kind: 'panel-ready' });
+        if (pendingComposerQuote !== null) {
+          postPanel(port, { kind: 'compose-quote', text: pendingComposerQuote });
+          pendingComposerQuote = null;
+        }
+        if (pendingQuickAction !== null) {
+          postPanel(port, pendingQuickAction);
+          pendingQuickAction = null;
+        }
       });
     };
     finishAttach();
@@ -1050,10 +1370,25 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         });
         return;
       }
+      if (message.kind === 'injection-request') {
+        // 只读取数，不入投递管线：透明信息不排在会话消息之后，也不阻塞会话消息。
+        void describeInjection().then((result) => postPanel(port, result));
+        return;
+      }
+      if (message.kind === 'quick-actions-request') {
+        void resolveQuickActions(message.siteDenied).then((actions) =>
+          postPanel(port, { kind: 'quick-actions', actions }),
+        );
+        return;
+      }
       if (message.kind === 'stop-operation') {
         const messageId = message.messageId ?? autoScanRun?.runId ?? undefined;
+        // 置位同步先于一切等待：此刻还在落页串行链上的帧不得再送到页面执行。
+        operationStopped = true;
         void disableAllAutomations();
-        for (const member of contentMembers.targets('active-page')) {
+        // 广播到全部成员端口，不只活跃页：定向批次按帧上句柄反查 tabId 投递，
+        // 落点与谁是活跃页无关，只通知活跃页等于放任其余页把剩余步骤跑完。
+        for (const member of contentMembers.members()) {
           postContent(member, { kind: 'stop-operation' });
         }
         if (messageId === undefined) {
@@ -1069,14 +1404,21 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
               (event) => !(event.kind === 'frame' && event.frame.type === 'hitl-request'),
             ));
           }
-          postStatus(accepted ? '已停止当前任务。' : '停止请求未被服务端接受，请稍后重试。');
+          // 被拒时本机页面侧其实已不可逆地停住（停止态只由新回合复位）：文案须把
+          // 「服务端没停」与「本机已停」分开说，否则用户按「没停下来」去处置一个已经停住的本机。
+          postStatus(
+            accepted
+              ? '已停止当前任务。'
+              : '本机页面操作已停止；服务端未接受停止请求，该任务可能仍在服务端继续，可稍后重试。',
+          );
           postToPanels({ kind: 'stop-result', messageId, accepted });
         });
         return;
       }
       if (message.kind === 'user-message') {
+        beginTurn();
         pipeline = pipeline.then(async () => {
-          const result = await deliver(message);
+          const result = await deliver(message, null);
           if (result.accepted) emitUi({ kind: 'user-echo', text: message.displayText ?? message.text, messageId: message.messageId });
           postToPanels({ kind: 'message-result', messageId: message.messageId, ...result });
         });
@@ -1084,7 +1426,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
       if (message.kind === 'hitl-decision') {
         pipeline = pipeline.then(async () => {
-          const accepted = await forward(message);
+          const accepted = await forward(message, null);
           if (accepted) updateHistory((history) => removeSettledHitl(history, message.hitlId));
           else postPanel(port, { kind: 'history-replay', events: panelHistory });
           postToPanels({ kind: 'hitl-result', hitlId: message.hitlId, accepted });
@@ -1093,7 +1435,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       }
       if (message.kind === 'config-decision') {
         pipeline = pipeline.then(async () => {
-          const result = await deliver(message);
+          const result = await deliver(message, null);
           const terminal = result.accepted || result.httpStatus === 409 || result.httpStatus === 400;
           if (terminal) {
             // 裁决送达或服务端终态拒绝（409 已消费/过期、400 校验不过）：出历史，卡片不再重现可操作态。
@@ -1111,7 +1453,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         });
         return;
       }
-      pipeline = pipeline.then(async () => { await forward(message); });
+      // 面板发起的会话消息不归属任何页面（origin=null）：面板不是被拉黑的那个页。
+      pipeline = pipeline.then(async () => { await forward(message, null); });
     });
     port.onDisconnect.addListener(() => detachPanel(port));
   }
@@ -1150,6 +1493,13 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     return 'settled';
   }
 
+  /** 单飞锁释放：未产生完成帧的轮次必须就地释放，否则悬挂到下周期被恢复判定当成异常。 */
+  async function releaseAutoScanRun(run: AutoScanRun): Promise<void> {
+    if (autoScanRun?.runId !== run.runId) return;
+    autoScanRun = null;
+    await chrome.storage.session.remove(autoScanRunKey);
+  }
+
   async function triggerAutoScan(
     descriptor: AutomationDescriptor,
     tabId: number,
@@ -1163,39 +1513,41 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     if (autoScanRun !== null) return recoverAutoScanRun(autoScanRun);
     const target = contentMembers.members().find((member) => member.sender?.tab?.id === tabId);
     if (target === undefined) return 'unavailable';
-    contentMembers.markActive(target);
-    scheduleGroupPagesReport();
     const run: AutoScanRun = { runId: crypto.randomUUID(), automationId: descriptor.automation.id };
     autoScanRun = run;
     await chrome.storage.session.set({ [autoScanRunKey]: run });
-    postStatus(`自动化「${run.automationId}」已触发。`);
     pipeline = pipeline.then(async () => {
       const current = await chrome.storage.local.get(enabledKey);
       if (current[enabledKey] !== true || autoScanRun?.runId !== run.runId) {
-        if (autoScanRun?.runId === run.runId) {
-          autoScanRun = null;
-          await chrome.storage.session.remove(autoScanRunKey);
-        }
+        await releaseAutoScanRun(run);
         return;
       }
       const [contextMessage, scanMessage] = autoScanDispatch(descriptor, tabUrl, tabTitle, run.runId);
-      if (!(await forward(contextMessage))) {
-        if (autoScanRun?.runId === run.runId) {
-          autoScanRun = null;
-          await chrome.storage.session.remove(autoScanRunKey);
-        }
+      // 自动化的两帧与人工回合走同一个上行出口，闸门因此对无人值守回合同样成立。
+      const origin: UpstreamOrigin = { tabId, url: tabUrl };
+      const context = await deliver(contextMessage, origin);
+      if (context.failure === 'site-denied') {
+        // 命中页：整轮不跑，触发器保持启用（把该站移出名单即恢复）。不发提示——
+        // 用户要的就是「别在这个站点上动」，一条「已暂停」提示本身也是打扰。
+        await releaseAutoScanRun(run);
+        return;
+      }
+      if (!context.accepted) {
+        await releaseAutoScanRun(run);
         await chrome.storage.local.set({ [enabledKey]: false });
         postStatus(`自动化「${run.automationId}」工作页上下文同步失败，已暂停。`);
         return;
       }
+      // 活跃执行页登记与「已触发」提示恒在闸门之后。
+      await admitActivePage(target);
+      scheduleGroupPagesReport();
+      postStatus(`自动化「${run.automationId}」已触发。`);
+      beginTurn();
       // 服务端可拒绝自动回合（adr-021 fail-closed）。被拒的轮次不会有完成帧，
       // 锁必须就地释放，否则悬挂到下周期被恢复判定当成异常并关停触发器。
-      const delivery = await deliver(scanMessage);
+      const delivery = await deliver(scanMessage, origin);
       if (delivery.accepted) return;
-      if (autoScanRun?.runId === run.runId) {
-        autoScanRun = null;
-        await chrome.storage.session.remove(autoScanRunKey);
-      }
+      await releaseAutoScanRun(run);
       if (decideAutoScanDelivery(delivery.httpStatus) === 'pause') {
         await chrome.storage.local.set({ [enabledKey]: false });
         postStatus(
@@ -1213,7 +1565,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   /** 本组 tab 集/URL 可能变化（tabs.onUpdated/onRemoved）→ 防抖后重报全量清单。 */
   const notifyGroupTabsChanged = (): void => scheduleGroupPagesReport();
 
-  return { attachContent, attachPanel, triggerAutoScan, configurationChanged, notifyGroupTabsChanged, close };
+  return { attachContent, attachPanel, queueComposerQuote, queueQuickAction, triggerAutoScan, configurationChanged, notifyGroupTabsChanged, close };
 }
 
 type GroupBridge = ReturnType<typeof createGroupBridge>;
@@ -1240,7 +1592,142 @@ function bridgeFor(groupId: number): GroupBridge {
   return bridge;
 }
 
+/**
+ * 本机站点黑名单缓存读回（来自 refreshAutomationDescriptors 的那次 /v1/user-config）。
+ * 缓存缺失/读失败一律回空名单：治理终判在服务端 compose，客户端不确定时不拦（U7）。
+ */
+async function readSiteDenylist(): Promise<string[]> {
+  const items: Record<string, unknown> = await chrome.storage.local
+    .get(SITE_DENYLIST_KEY)
+    .catch(() => ({}) as Record<string, unknown>);
+  return parseSiteDenylist(items[SITE_DENYLIST_KEY]);
+}
+
+/**
+ * 轨一的一次性注入（不变量 IN 的 (a) 半）：把插件自带的 content 产物打进目标页。
+ * 载荷恒为 CONTENT_SCRIPT_FILE——pack 与 L2 都无从改写它（R2）。
+ * 失败即返回 false（该 origin 未授权且无 activeTab / 页面不可注入），调用方按「本页无 content」处置：
+ * 不降级、不改投、不伪装成功。content 侧的重复注入守卫使本调用幂等。
+ */
+async function injectContentScript(tabId: number): Promise<boolean> {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: [CONTENT_SCRIPT_FILE] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 已授权 origin 的本机缓存读回（来自 refreshAutomationDescriptors 的那次 /v1/user-config）。 */
+async function readGrantedOrigins(): Promise<string[]> {
+  const items: Record<string, unknown> = await chrome.storage.local
+    .get(GRANTED_ORIGINS_KEY)
+    .catch(() => ({}) as Record<string, unknown>);
+  return parseGrantedOrigins(items[GRANTED_ORIGINS_KEY]);
+}
+
+/**
+ * 轨二的常驻注册面对齐（不变量 IN 的 (b) 半）：注册集 = L2 投影 ∩ 本机 chrome.permissions − 站点黑名单。
+ * 每次全量对齐而非增量补丁：授权、L2、黑名单三方任一变动都只在这一处收敛，
+ * 「注册了什么」因此恒可由三方当刻状态推出，不依赖历史事件是否都被收到。
+ * 注册与注销严格对称，且只碰本族 id（其余注入面不属本机制）。
+ */
+async function syncContentScriptRegistrations(): Promise<void> {
+  try {
+    const denylist = await readSiteDenylist();
+    const granted = await chrome.permissions.getAll().catch(() => ({}) as { origins?: string[] });
+    const desired = decideRegisteredOrigins({
+      l2Origins: await readGrantedOrigins(),
+      grantedPatterns: granted.origins ?? [],
+      deniedBy: (origin) => siteDeniesUrl(denylist, origin),
+    });
+    const existing = await chrome.scripting.getRegisteredContentScripts().catch(() => []);
+    const plan = planRegistrations(desired, existing.map((item) => item.id));
+    if (plan.unregister.length > 0) {
+      await chrome.scripting.unregisterContentScripts({ ids: plan.unregister }).catch(() => {});
+    }
+    if (plan.register.length > 0) await chrome.scripting.registerContentScripts(plan.register).catch(() => {});
+  } catch {
+    // 注册面对齐失败不影响会话主链路；下一次配置变更或冷启动再对齐。
+  }
+}
+
+/**
+ * 不变量 SD 的唯一判定：该页是否落在用户站点黑名单内。三处闸门（上行出口 / 下行落页 /
+ * 活跃页登记）与激活闸门共用它，判定逻辑因此只有一份。
+ * tabId 与 url 同时给出时任一命中即拦：tab 记录与页面自述各有滞后窗口，取并集只会更严。
+ * 名单为空时不查 tab：绝大多数用户名单为空，省掉每次一趟 tabs.get。
+ * 取址口径与组页面清单同源（tabUrlOf）：导航尚未提交的新页地址只在 pendingUrl 上。
+ */
+async function isSiteDeniedPage(page: { tabId?: number | undefined; url?: string | undefined }): Promise<boolean> {
+  const denylist = await readSiteDenylist();
+  if (denylist.length === 0) return false;
+  if (siteDeniesUrl(denylist, page.url)) return true;
+  if (page.tabId === undefined) return false;
+  const tab = await chrome.tabs.get(page.tabId).catch(() => null);
+  return tab !== null && siteDeniesUrl(denylist, tabUrlOf(tab));
+}
+
+/**
+ * 「本机确实跳过了这一页的激活」的事实登记/撤销。
+ * 面板的客户端自述只认这条事实——按「当前 URL 命中名单」推断会在「拉黑前已激活、
+ * 地址早已上报」这条最常见流程上说假话，而那一轮服务端确实见过该页、它的 site-denied
+ * 抬头比客户端的猜测权威。
+ */
+async function noteActivationSkipped(tabId: number, skipped: boolean): Promise<void> {
+  const key = siteDeniedSkipKey(tabId);
+  await (skipped
+    ? chrome.storage.session.set({ [key]: true })
+    : chrome.storage.session.remove(key)
+  ).catch(() => {});
+  // 快捷提问属激活后的能力：本机跳过了这一页的激活，右键项就一条都不该留着。
+  // 面板那一侧自然不会有（命中页面板根本不建组、不连端口），右键菜单是全局的，须显式撤。
+  if (skipped) await syncContextMenus([]);
+}
+
+/**
+ * 撤销不再成立的「跳过激活」登记。面板的客户端自述只认这条事实：名单条目被移出、
+ * 或该页早已导航离开命中站点之后仍留着它，面板就会对着一个照常辅助的页说「本站不辅助」。
+ * 不确定一律撤销（tab 已关闭 / 名单读不到）：多撤一次只是让服务端描述照常呈现，留着才是说假话。
+ */
+async function revokeStaleActivationSkip(tabId: number): Promise<void> {
+  const key = siteDeniedSkipKey(tabId);
+  const items = await chrome.storage.session.get(key).catch(() => ({}) as Record<string, unknown>);
+  if (items[key] !== true) return;
+  if (await isSiteDeniedPage({ tabId })) return;
+  await noteActivationSkipped(tabId, false);
+}
+
+/** 名单变更后逐条复核全部登记：变更事件不带受影响的 tab 集，只能全表过一遍。 */
+async function revokeStaleActivationSkips(): Promise<void> {
+  const items = await chrome.storage.session.get(null).catch(() => ({}) as Record<string, unknown>);
+  for (const [key, value] of Object.entries(items)) {
+    const tabId = siteDeniedSkipTabId(key);
+    if (tabId !== null && value === true) await revokeStaleActivationSkip(tabId);
+  }
+}
+
+/**
+ * 把执行器放进该页并通知它挂面板连接（不变量 IN 轨一的唯一出口）。
+ * 注入与激活恒同出一口：任何激活入口都必须先保证 content 在场，否则「已激活」只是一句空话。
+ * executeScript 失败（该 origin 未授权且无 activeTab / 页面本身不可注入）即就此收手，连激活也不发——
+ * 本页保持无 content，不降级、不改投，页面能力随之缺席，服务端按目标不可达处置。
+ * 客户端不为此单独提示：失败对用户不可观察，能力缺席由服务端的 silent 页叙述兜住。
+ * content 侧的重复注入守卫使本调用幂等。
+ * 本函数内的黑名单判定是**兜底**：它在全部激活入口（握手 / 工具栏图标 / 组内导航补发 /
+ * 拖入已映射组 / navigate 代执行开页）的最后一步，保证任何入口都发不出激活。
+ * 用户可见副作用（建组、登记 zen 组、绑面板）发生在各入口更早处，故握手与图标两个入口
+ * 另有一处早退判定（见 handleRequestActivate / handleIconClick）——那处管副作用，这处管激活，
+ * 两处职责不同，不是重复判定（判定逻辑仍只有 isSiteDeniedPage 一份）。
+ * 每条路径都就地登记/撤销「本机跳过了这一页的激活」的事实，面板的客户端自述只认它。
+ */
 async function sendActivate(tabId: number): Promise<void> {
+  if (await isSiteDeniedPage({ tabId })) {
+    await noteActivationSkipped(tabId, true);
+    return;
+  }
+  await noteActivationSkipped(tabId, false);
+  if (!(await injectContentScript(tabId))) return;
   const message: BackgroundRuntimeMessage = { kind: 'activate' };
   await chrome.tabs.sendMessage(tabId, message).catch(() => {});
 }
@@ -1266,63 +1753,28 @@ async function migrateLegacyGroupTitle(groupId: number): Promise<void> {
   }
 }
 
-/** 同窗同源 autoActivate 既有组（须仍映射会话）：供 autoJoin，避免既有多页场景重复建组。 */
-async function findAutoJoinGroup(windowId: number, origin: string): Promise<number | null> {
-  const key = autoGroupKey(windowId, origin);
-  const stored = (await chrome.storage.session.get(key))[key];
-  if (typeof stored !== 'number') return null;
-  return (await isGroupMapped(stored)) ? stored : null;
-}
-
 /**
- * content 加载后的激活握手：按 decideActivation 决定组内换页恢复 / autoActivate 加入既有组 / 新建组 / 不激活。
- * 决策后统一以 chrome.tabs.sendMessage 通知该页挂面板连接（content 侧 activate 幂等）。
+ * content 就位后的激活握手：按 decideActivation 决定组内换页恢复或不激活。
+ * 脚本在页内不构成「该页要开会话」的理由——轨二已授权 origin 上的常驻注册同样会送来这条握手，
+ * 建组只发生在手势入口。决策后以 chrome.tabs.sendMessage 通知该页挂面板连接（content 侧幂等）。
  */
-async function handleRequestActivate(
-  request: ContentRuntimeMessage,
-  sender: chrome.runtime.MessageSender,
-): Promise<void> {
+async function handleRequestActivate(sender: chrome.runtime.MessageSender): Promise<void> {
   const tab = sender.tab;
   if (tab?.id === undefined) return;
   const tabId = tab.id;
+  // 早退管副作用：下面的登记 zen 组 / 绑面板会被用户看见，判定必须先于它们发生。
+  if (await isSiteDeniedPage({ tabId })) {
+    await noteActivationSkipped(tabId, true);
+    return;
+  }
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
-  const origin = originOf(tab.url);
   // zen 组登记先于会话建立：会话尚未映射时组内导航的新页也须重连，否则该页 content 永久沉默。
   const groupIsMapped =
     tabGroupId !== TAB_GROUP_ID_NONE &&
     ((await isGroupMapped(tabGroupId)) || (await isZenGroup(tabGroupId)));
-  let autoJoinGroupId: number | null = null;
-  if (request.autoActivate && origin !== null && tab.windowId !== undefined) {
-    autoJoinGroupId = await findAutoJoinGroup(tab.windowId, origin);
-  }
-  const decision = decideActivation({
-    tabGroupId,
-    groupIsMapped,
-    autoActivate: request.autoActivate,
-    autoJoinGroupId,
-  });
-  let activeGroupId: number;
-  switch (decision.kind) {
-    case 'none':
-      return;
-    case 'reconnect':
-      activeGroupId = decision.groupId;
-      break;
-    case 'join':
-      await chrome.tabs.group({ tabIds: tabId, groupId: decision.groupId }).catch(() => {});
-      activeGroupId = decision.groupId;
-      break;
-    case 'create': {
-      // tab 已属某标签组（用户既有分组，或宿主自动化的受控组）则采用该组当会话组——
-      // 会话键即 tabGroup id（groupIdOf），无需夺 tab 新建；仅未分组 tab 才建 zen 组。
-      const groupId = tabGroupId !== TAB_GROUP_ID_NONE ? tabGroupId : await createZenGroup(tabId);
-      activeGroupId = groupId;
-      if (origin !== null && tab.windowId !== undefined) {
-        await chrome.storage.session.set({ [autoGroupKey(tab.windowId, origin)]: groupId });
-      }
-      break;
-    }
-  }
+  const decision = decideActivation({ tabGroupId, groupIsMapped });
+  if (decision.kind === 'none') return;
+  const activeGroupId = decision.groupId;
   await migrateLegacyGroupTitle(activeGroupId);
   await markZenGroup(activeGroupId);
   if (tab.windowId !== undefined) {
@@ -1335,6 +1787,12 @@ async function handleRequestActivate(
 /** 图标点击：未分组 tab 新建独立 zen 组（同 origin 多组独立）；已属某组则采用该组当会话组。 */
 async function handleIconClick(tab: chrome.tabs.Tab): Promise<void> {
   if (tab.id === undefined) return;
+  // 同 handleRequestActivate：早退管副作用（建组/登记/绑面板），激活本身仍由 sendActivate 兜底。
+  // 工具栏手势自身的面板 enable/open 不在此判定内——那两步必须在手势内同步发出，中间不得 await。
+  if (await isSiteDeniedPage({ tabId: tab.id })) {
+    await noteActivationSkipped(tab.id, true);
+    return;
+  }
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
   const groupId = tabGroupId === TAB_GROUP_ID_NONE ? await createZenGroup(tab.id) : tabGroupId;
   await migrateLegacyGroupTitle(groupId);
@@ -1362,7 +1820,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
 chrome.runtime.onMessage.addListener((raw, sender) => {
   const message = raw as ContentRuntimeMessage | null;
-  if (message?.kind === 'request-activate') void handleRequestActivate(message, sender);
+  if (message?.kind === 'request-activate') void handleRequestActivate(sender);
 });
 
 chrome.action.onClicked.addListener((tab) => {
@@ -1377,6 +1835,73 @@ chrome.action.onClicked.addListener((tab) => {
   });
 });
 
+const SELECTION_MENU_ID = 'za-explain-selection';
+
+/** 派生自快捷提问清单的菜单项 id 前缀；其后缀即 quickActionId。 */
+const QUICK_ACTION_MENU_PREFIX = 'za-qa:';
+
+/** 已注册的派生菜单项 id → label：点击回执要带 label 作本地回声，chrome 的 info 不回传标题。 */
+const quickActionMenuLabels = new Map<string, string>();
+
+/**
+ * 右键菜单 = 兜底入口 + 快捷提问清单派生项（一份数据两入口）。兜底项「用 Zen 讲解选中内容」常驻：
+ * 它不带 quickActionId、走既有引用块路径由用户补充意图，与本页有没有 selection 类问法无关。
+ * 入参只决定其后追加什么：null = 尚不知道本页有哪些条目（SW 冷启、面板未开），不追加；
+ * [] = 已知本页没有可呈现条目（命中站点黑名单或全被停用），不追加；非空 = 逐条按 label 追加。
+ * create 对已存在 id 会抛重复，故每次先 removeAll。
+ */
+async function syncContextMenus(actions: QuickActionView[] | null): Promise<void> {
+  await chrome.contextMenus.removeAll().catch(() => {});
+  quickActionMenuLabels.clear();
+  chrome.contextMenus.create({
+    id: SELECTION_MENU_ID,
+    title: '用 Zen 讲解选中内容',
+    contexts: ['selection'],
+  });
+  if (actions === null) return;
+  for (const action of selectionQuickActions(actions)) {
+    const menuId = `${QUICK_ACTION_MENU_PREFIX}${action.id}`;
+    quickActionMenuLabels.set(menuId, action.label);
+    chrome.contextMenus.create({ id: menuId, title: action.label, contexts: ['selection'] });
+  }
+}
+
+void syncContextMenus(null);
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  const menuId = String(info.menuItemId);
+  const label = quickActionMenuLabels.get(menuId);
+  if (menuId !== SELECTION_MENU_ID && label === undefined) return;
+  const text = (info.selectionText ?? '').trim();
+  if (text === '' || tab?.id === undefined) return;
+  const tabId = tab.id;
+  const selectionTab = tab;
+  // 菜单点击即用户手势：enable/open 与 action 点击同路径发出，中间不得 await（否则手势失效）。
+  void runToolbarSidePanelAction({
+    enablePanel: () => chrome.sidePanel.setOptions({ tabId, path: 'sidepanel.html', enabled: true }),
+    openPanel: () => chrome.sidePanel.open({ tabId }),
+    activatePage: () => handleIconClick(selectionTab),
+  })
+    .then(async () => {
+      const groupId = (await chrome.tabs.get(tabId)).groupId ?? TAB_GROUP_ID_NONE;
+      if (groupId === TAB_GROUP_ID_NONE) return;
+      const bridge = bridgeFor(groupId);
+      if (label === undefined) {
+        bridge.queueComposerQuote(text);
+        return;
+      }
+      bridge.queueQuickAction({
+        kind: 'compose-quick-action',
+        actionId: menuId.slice(QUICK_ACTION_MENU_PREFIX.length),
+        label,
+        selectionText: text,
+      });
+    })
+    .catch(() => {
+      console.error('Zen Agent 选区讲解入口失败');
+    });
+});
+
 async function readAutomationDescriptors(): Promise<AutomationDescriptor[]> {
   const items = await chrome.storage.local.get(AUTOMATION_DESCRIPTORS_KEY);
   return parseAutomationDescriptors(items[AUTOMATION_DESCRIPTORS_KEY]);
@@ -1389,15 +1914,18 @@ async function disableAllAutomations(): Promise<void> {
   if (Object.keys(entries).length > 0) await chrome.storage.local.set(entries);
 }
 
-/** 用户自建触发器（overlay.watches）：任一环节失败即回空——宁可不调度，绝不按不确定的实例发起无人值守回合。 */
-async function fetchWatchInstances(baseUrl: string, token: string): Promise<WatchInstance[]> {
+/**
+ * L2 个人配置的单次拉取：自建触发器与站点黑名单同源于这一次响应，不为任一项另发请求。
+ * 任一环节失败即回 null，由各派生方按自身的不确定语义处置。
+ */
+async function fetchUserConfig(baseUrl: string, token: string): Promise<unknown> {
   try {
     const response = await fetch(`${baseUrl}/v1/user-config`, {
       headers: { authorization: `Bearer ${token}` },
     });
-    return response.ok ? watchesFromUserConfig(await response.json()) : [];
+    return response.ok ? await response.json() : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -1409,10 +1937,21 @@ async function refreshAutomationDescriptors(): Promise<void> {
   try {
     const baseUrl = await readServerBaseUrl();
     const token = await identity.getToken(baseUrl);
-    const [response, watches] = await Promise.all([
+    const [response, userConfig] = await Promise.all([
       fetch(`${baseUrl}/v1/automation-descriptors`, { headers: { authorization: `Bearer ${token}` } }),
-      fetchWatchInstances(baseUrl, token),
+      fetchUserConfig(baseUrl, token),
     ]);
+    // 站点黑名单缓存只在本轮确实拿到 L2 配置时覆写；拉取失败保留上次名单——
+    // 名单是隐私开关，网络抖动不该把它静默清空（宁可多挡一站）。应答成功但无该键即用户已清空，照实写空。
+    if (userConfig !== null) {
+      await chrome.storage.local.set({
+        [SITE_DENYLIST_KEY]: siteDenylistFromUserConfig(userConfig),
+        // 已授权 origin 与黑名单同源于这一次响应：注册面的三方之一在此落盘，随后统一对齐。
+        [GRANTED_ORIGINS_KEY]: grantedOriginsFromUserConfig(userConfig),
+      });
+    }
+    await syncContentScriptRegistrations();
+    const watches = watchesFromUserConfig(userConfig);
     if (!response.ok) return;
     const body = await response.json() as { descriptors?: unknown };
     const descriptors = parseAutomationDescriptors(body.descriptors);
@@ -1526,6 +2065,20 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     void syncAutoScanAlarms();
     return;
   }
+  // background 的 L2 刷新（refreshAutomationDescriptors）以一次 storage.local.set 同写这两个镜像键，故它们可能同批到达：
+  // 两者各自的处置必须都执行，任一分支不得吞掉另一分支（注册面只由两者的当刻交集推出，对齐一次即可）。
+  const grantedChanged = changes[GRANTED_ORIGINS_KEY] !== undefined;
+  const denylistChanged = changes[SITE_DENYLIST_KEY] !== undefined;
+  if (grantedChanged || denylistChanged) {
+    void syncContentScriptRegistrations();
+    if (denylistChanged) {
+      // 名单变更即重报组页面清单：服务端持有的旧清单里，命中页的 url/title 仍在按 active 优先
+      // 进模型注入面——不重报则用户拉黑之后那条记录仍旧一直被读到。
+      for (const bridge of groups.values()) bridge.notifyGroupTabsChanged();
+      void revokeStaleActivationSkips();
+    }
+    return;
+  }
   if (Object.keys(changes).some((key) => key.startsWith('za.autoScan.'))) {
     // 配置中心保存后本机调度镜像先落盘：顺带重取描述符，新建的用户触发器无需重启即可排程。
     void refreshAutomationDescriptors().then(() => syncAutoScanAlarms());
@@ -1555,6 +2108,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       });
     }
   }
+  // 该页可能已导航离开命中站点：跳过登记随事实撤销，面板不再对着照常辅助的页说「本站不辅助」。
+  if (changeInfo.url !== undefined) void revokeStaleActivationSkip(tabId);
   // 同文档导航（url 变而无 status）：整页加载会带 status，故 url-only 专指 SPA 子路由切换；
   // 促已激活页重报上下文让服务端重新装配。hash/back-forward 另有 content 侧 window 监听即时补报，
   // 此路对其为幂等重报（同 url 的 context-report 无副作用），主要覆盖 pushState/replaceState。
@@ -1588,7 +2143,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 // 关闭的 tab 可能是某组成员（事件不带组号）：广播全部在场桥重报清单。
-chrome.tabs.onRemoved.addListener(() => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void chrome.storage.session.remove(siteDeniedSkipKey(tabId)).catch(() => {});
   for (const bridge of groups.values()) bridge.notifyGroupTabsChanged();
 });
 

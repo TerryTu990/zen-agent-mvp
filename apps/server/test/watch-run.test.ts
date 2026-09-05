@@ -393,6 +393,38 @@ describe('watch 自动回合：变化检测与报告收口（R6）', () => {
   );
 });
 
+describe('watch 目标站点在用户站点黑名单内（R3/R8）', () => {
+  it(
+    '报告轮同样按仅基座装配：assembly 事件带 siteDenied、不归属任何 pack',
+    async () => {
+      const hostUserId = 'watch-site-denied';
+      const token = await signToken(hostUserId);
+      const overlay = {
+        schemaVersion: 1,
+        subject: { tenant: TENANT, hostUserId },
+        packs: { '*': { siteDenylist: [WATCH_ORIGIN] } },
+        watches: [watchEntry()],
+      };
+      expect((await putOverlay(token, overlay)).status, '黑名单 + watch 应可共存写入').toBe(200);
+      const sessionId = await createSession(token);
+      const sse = await openSse(token, sessionId);
+      try {
+        await postFrame(token, sessionId, { type: 'context-report', sessionId, url: WATCH_URL });
+        // 首轮只建基线（不产报告、不落 assembly 事件）；第二轮有变化才走到报告装配。
+        await driveWatchRun(token, sessionId, sse, 'denied_run_1', { labels: ['ORD-3001 待发货'] });
+        await driveWatchRun(token, sessionId, sse, 'denied_run_2', { labels: ['ORD-3001 已发货'] });
+        const assembly = auditEventsFor(sessionId).filter((event) => event['type'] === 'assembly');
+        expect(assembly).toHaveLength(1);
+        expect(eventData(assembly[0]!)['siteDenied']).toBe(true);
+        expect(assembly[0]!['packId']).toBeUndefined();
+      } finally {
+        sse.close();
+      }
+    },
+    30_000,
+  );
+});
+
 describe('watch 自动回合：无人值守只读底线（R7，结构强制）', () => {
   it(
     '模型请求写工具即 deny 并留审计；全程无代执行指令、无 HITL 卡',

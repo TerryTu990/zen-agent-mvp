@@ -134,6 +134,56 @@ declare namespace chrome {
     };
     const onStartup: { addListener(callback: () => void): void };
     const onInstalled: { addListener(callback: () => void): void };
+    /** 打开扩展选项页（配置中心）；已打开时聚焦既有标签页。 */
+    function openOptionsPage(): Promise<void>;
+  }
+
+  namespace contextMenus {
+    interface OnClickData {
+      menuItemId: string | number;
+      /** contexts:['selection'] 项被点击时的页面选中文本。 */
+      selectionText?: string;
+    }
+    function create(createProperties: {
+      id: string;
+      title: string;
+      contexts: string[];
+    }): void;
+    function removeAll(): Promise<void>;
+    const onClicked: {
+      addListener(callback: (info: OnClickData, tab?: tabs.Tab) => void): void;
+    };
+  }
+
+  namespace scripting {
+    /** 一次性注入（轨一）：目标页须由手势授予 activeTab 或已授权 host 权限，否则 reject。 */
+    function executeScript(injection: {
+      target: { tabId: number };
+      files: string[];
+    }): Promise<unknown>;
+    interface RegisteredContentScript {
+      id: string;
+      matches?: string[];
+      js?: string[];
+      runAt?: string;
+      persistAcrossSessions?: boolean;
+    }
+    /** 动态注册（轨二）：只对已授权 origin 常驻注册，载荷恒为插件自带文件。 */
+    function registerContentScripts(scripts: RegisteredContentScript[]): Promise<void>;
+    function unregisterContentScripts(filter: { ids: string[] }): Promise<void>;
+    function getRegisteredContentScripts(): Promise<RegisteredContentScript[]>;
+  }
+
+  namespace permissions {
+    interface Descriptor {
+      origins?: string[];
+      permissions?: string[];
+    }
+    /** 只能在用户手势内调用；返回是否授予。 */
+    function request(descriptor: Descriptor): Promise<boolean>;
+    function remove(descriptor: Descriptor): Promise<boolean>;
+    function contains(descriptor: Descriptor): Promise<boolean>;
+    function getAll(): Promise<{ origins?: string[]; permissions?: string[] }>;
   }
 
   namespace alarms {

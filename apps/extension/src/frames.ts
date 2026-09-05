@@ -43,6 +43,10 @@ export interface UserMessageFrame {
   automationRunId?: string;
   /** 发起本自动回合的自动化 id；服务端据此定位只读模板并强制该轮工具面（缺失则整条只读强制不可达）。 */
   automationId?: string;
+  /** 本轮由快捷提问发起：模板在服务端查表展开，客户端只发 id（不持模板副本、不做插值）。 */
+  quickActionId?: string;
+  /** 随快捷提问带上的页面选区正文（填模板的 {{selection}}）；仅在带 quickActionId 时有意义。 */
+  selectionText?: string;
 }
 
 export interface HitlDecisionFrame {
@@ -92,6 +96,12 @@ export interface SnapshotReportFrame {
   pageInstanceId?: string;
   title?: string;
   elements: SnapshotElement[];
+  /** true=elements 只是配额内的子集，agent MUST NOT 据此断言页面上没有某控件；缺省/false=清单完整。 */
+  elementsTruncated?: boolean;
+  /** 被配额丢弃的可交互元素个数（0=恰好用满配额而无丢弃）。elementsTruncated 缺席时本字段不得出现。 */
+  elementsOmitted?: number;
+  /** 客户端快照世代（自 1 起单调递增）：ref 对元素黏附，服务端原样落入 dom 判定上下文，标定当前 ref 闭集的代次。 */
+  snapshotEpoch?: number;
   notices?: string[];
   /** 页面正文纯文本，仅 includeText 请求时采集；未请求或页面无正文一律缺席（空串非法）。 */
   text?: string;
@@ -145,11 +155,21 @@ export interface TextDeltaFrame {
   priority?: 'safety';
 }
 
+export type TurnCompleteReason =
+  | 'completed'
+  | 'stopped'
+  | 'max-rounds'
+  | 'consecutive-failures'
+  | 'llm-error'
+  | 'llm-timeout'
+  | 'tool-not-available';
+
 export interface TurnCompleteFrame {
   type: 'turn-complete';
   sessionId: string;
   messageId?: string;
   idle: boolean;
+  reason?: TurnCompleteReason;
 }
 
 export interface ToolCardFrame {
@@ -171,6 +191,27 @@ export interface HitlPageDisplay {
   origin?: string;
 }
 
+/** pack registry 登记来源（来源徽章数据源）；与 C4 PackSource 同闭集。 */
+export type PackSource = 'official' | 'community' | 'local';
+
+/**
+ * 确认卡机械摘要条目：服务端把 toolgate 校验后的净化终值步骤按最近快照元素表反解所得。
+ * 卡正文据此呈现「将真正发生什么」，而非模型在 params 里自述的 summary/plan。
+ */
+export interface HitlEffect {
+  action: string;
+  target: string;
+  valuePreview?: string;
+}
+
+/** 确认卡来源 pack 展示（R4 作用站点与来源 pack）：服务端组装消毒，客户端只渲染。 */
+export interface HitlPackDisplay {
+  packId: string;
+  name?: string;
+  source?: PackSource;
+  origin?: string;
+}
+
 export interface HitlRequestFrame {
   type: 'hitl-request';
   sessionId: string;
@@ -182,6 +223,15 @@ export interface HitlRequestFrame {
   targetPage?: HitlPageDisplay;
   /** navigate 类调用（open_url/site_navigate/单步 navigate 批次）的目标 URL：卡正文 MUST 呈现，服务端已消毒。 */
   targetUrl?: string;
+  /** 服务端反解的机械摘要：卡正文 MUST 优先呈现，模型自述只作次要信息。 */
+  effects?: HitlEffect[];
+  pack?: HitlPackDisplay;
+  /** 风险行文案：服务端按净化终值机械派生。 */
+  risk?: string;
+  /** 本次确认由用户自己收紧分级而来时标注（R4 可追溯）。 */
+  tightenedBy?: 'L2';
+  /** 批准后签发的一次性指令有效期（毫秒）。 */
+  ttlMs?: number;
 }
 
 export interface ExecRequest {

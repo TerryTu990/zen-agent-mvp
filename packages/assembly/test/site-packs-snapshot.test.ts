@@ -29,9 +29,7 @@ describe('站点包根 examples/site-packs（已下线站点包保持可装配�
       packId: resolved.packId,
       featureId: resolved.featureId,
     });
-    expect(composed.tools.map((tool) => tool.id)).toEqual([
-      'xianyu-orders.page-operate', 'xianyu-shipping.execute-intent',
-    ]);
+    expect(composed.tools.map((tool) => tool.id)).toEqual(['xianyu-orders.page-operate']);
   });
 
   it('印象笔记站点包装配写笔记工具（未登记进 registry 时本例即红）', async () => {

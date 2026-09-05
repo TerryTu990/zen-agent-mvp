@@ -14,9 +14,9 @@
     "dimension": "assembly",
     "url": "https://codeflow.asia/pricing",
     "expect": {
-      "featureId": null,
+      "packId": "generic-web",
       "toolExcludesPrefixes": ["codeflow-token."],
-      "behavior": "origin 命中但路径 /pricing 不落在 location 前缀 [/console] → pack 不激活，仅基座，无功能工具面（fail-safe 回落）"
+      "behavior": "origin 命中但路径 /pricing 不落在 location 前缀 [/console] → codeflow-console 不激活，回落通用兜底包 generic-web，无 codeflow 功能工具面（fail-safe 回落）"
     }
   }
 ]

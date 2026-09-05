@@ -37,10 +37,11 @@ release/
 ├── current-release -> releases/<deploy-id>/ # 当前完整部署描述符（原子切换）
 ├── releases/           # 每次部署的 compose + deployment.env（无 secret）
 ├── snapshots/          # 不可变版本目录；至少保留当前和上一版
-│   └── <version>/
+│   └── <version>/      # 三件套缺一不可，deploy-server.sh 上传前即断言
+│       ├── system-prompt.md
 │       ├── manifest.json
 │       └── packs/…
-├── lark-cli/           # 0700；飞书 general profile 与 token 刷新状态
+├── lark-cli/           # 0700；镜像内 lark-cli 的配置卷（履约退役后无服务端消费者，见 adr-026「发布链路残余」）
 └── data/za/             # 审计 events.jsonl + 会话 sessions/（可写挂载，容器重建不丢）
 ```
 
@@ -58,9 +59,11 @@ Chrome 的“加载已解压的扩展程序”不能选择 zip 文件，必须�
 
 当前生产扩展：
 
-- zip：`/Users/terrytu/Workspace2025/Working/zen-agent-mvp/release/artifacts/zen-agent-extension-0.4.0.zip`
-- 已解压、可直接选择的目录：`/Users/terrytu/Workspace2025/Working/zen-agent-mvp/release/artifacts/zen-agent-extension-0.4.0`
-- Chrome 文件选择器中应看到该目录内有 `manifest.json`、`options.html`、`dist/` 和 `icons/`；选择这个目录本身，不要进入 `dist/`，也不要选择 zip。
+- 版本取 `apps/extension/manifest.json` 的 `version`（当前 **0.10.1**），`release/build-extension.sh` 产出
+  `release/artifacts/zen-agent-extension-<version>.zip`；本机没有对应版本的 zip 就先跑一次打包。
+- 解压出可直接选择的目录（Chrome 只认目录，不认 zip）：
+  `unzip -o release/artifacts/zen-agent-extension-<version>.zip -d release/artifacts/zen-agent-extension-<version>`
+- Chrome 文件选择器中应看到该目录内有 `manifest.json`、`options.html`、`sidepanel.html`、`sidepanel.css`、`dist/` 和 `icons/`；选择这个目录本身，不要进入 `dist/`，也不要选择 zip。
 
 安装步骤：
 
@@ -90,8 +93,6 @@ release/build-extension.sh             # 3. （插件有变更时）打 zip
 ```
 
 首次部署前提（人工，一次性）：服务器 `/root/zen-agent/.env` 按 `remote/env.example` 填好真值；
-飞书启用时在受控 `lark-cli/` 卷完成 `general` profile 授权；发布冒烟会在三项卡密配置启用时执行
-`whoami`（不回显身份正文）；1panel 反代已指向
-`127.0.0.1:9010`（SSE 需关闭响应缓冲，见 04-deployment §6）。
+1panel 反代已指向 `127.0.0.1:9010`（SSE 需关闭响应缓冲，见 04-deployment §6）。
 
-原子激活的远端 health/单副本/镜像/快照/数据卷/飞书检查负责自动回滚；随后公网域名 health 是报告型反代检查，失败会终止发布报告但不会回滚已经验证健康的服务端 release。
+原子激活的远端 health/单副本/镜像/快照/数据卷检查负责自动回滚；随后公网域名 health 是报告型反代检查，失败会终止发布报告但不会回滚已经验证健康的服务端 release。

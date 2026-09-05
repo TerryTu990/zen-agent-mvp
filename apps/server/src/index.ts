@@ -6,18 +6,14 @@ import { createServer } from 'node:http';
 import type {
   AssemblyPort,
   AuditPort,
-  CardInventoryPort,
-  FulfillmentCoordinatorPort,
   LlmPort,
   ToolGatePort,
   UserConfigStore,
 } from '@zen-agent/contracts';
 import { createAssemblyPort } from '@zen-agent/assembly';
-import { createToolGatePort, type BoundedFulfillmentPolicy } from '@zen-agent/toolgate';
+import { createToolGatePort } from '@zen-agent/toolgate';
 import { createLlmPort } from '@zen-agent/llm-port';
 import { createAuditPort } from '@zen-agent/audit';
-import { createLarkBaseCardInventoryPort } from '@zen-agent/card-inventory';
-import { createFulfillmentCoordinator } from '@zen-agent/fulfillment';
 import { createTokenVerifier } from './auth.js';
 import {
   createMemorySessionStore,
@@ -49,6 +45,10 @@ export interface ServerOptions {
   heartbeatMs?: number;
   /** agent loop 单回合轮数上限，默认 12；dom 代操作一批页面操作固定耗 2 轮（操作+复核快照）。 */
   maxTurnRounds?: number;
+  /** 同工具同因连续失败的止损上限；缺省 3。 */
+  maxConsecutiveFailures?: number;
+  /** 人工确认卡的等待上限（毫秒）；缺省不设＝不启用上限，与基线等价。 */
+  hitlTimeoutMs?: number;
   /** 代执行指令/等待客户端结果 TTL；缺省 60000ms。测试可缩短以验证主动超时。 */
   execInstructionTtlMs?: number;
   /** 等待客户端 snapshot-report 的上限毫秒；缺省 15000ms。测试可缩短以验证快照超时路径。 */
@@ -80,68 +80,6 @@ export interface ServerOptions {
   userConfigDir?: string;
   /** 配置草稿（teach 流）有效期毫秒；缺省 10 分钟。 */
   configDraftTtlMs?: number;
-  /** generic 兜底 pack 的服务端准入名单（origin 精确值闭集）；缺省/空 = generic 永不激活（fail-closed，U7）。 */
-  genericAllowlist?: string[];
-  /** ADR-016：运营者预批准的服务端有界履约策略；不从客户端或模型上下文接受。 */
-  fulfillmentPolicies?: BoundedFulfillmentPolicy[];
-  /** Phase 3：可选飞书轻量卡密库存；未配置时不组装连接器，既有人工 intent 测试路径不变。 */
-  cardInventory?: {
-    baseToken: string;
-    tableId: string;
-    guideUrl: string;
-    profile?: string;
-    cliPath?: string;
-  };
-  /** 可信宿主可直接注入库存端口（测试/sidecar）；与 cardInventory CLI 配置互斥。 */
-  cardInventoryPort?: CardInventoryPort;
-  /** cardInventoryPort 模式下的固定使用说明 URL。 */
-  cardInventoryGuideUrl?: string;
-  /** 站点商品 id → 库存 productKey 闭集映射；仅服务端配置，供声明式零参数 prepare 工具引擎使用。 */
-  fulfillmentProductKeys?: Record<string, string>;
-}
-
-export function parseFulfillmentProductKeys(raw: string | undefined): Record<string, string> {
-  if (raw === undefined || raw.trim() === '') return {};
-  const parsed: unknown = JSON.parse(raw);
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('ZA_FULFILLMENT_PRODUCT_KEYS_JSON 必须是 JSON 对象');
-  }
-  const result: Record<string, string> = {};
-  for (const [productId, productKey] of Object.entries(parsed)) {
-    const normalizedId = productId.trim();
-    const normalizedKey = typeof productKey === 'string' ? productKey.trim() : '';
-    if (normalizedId === '' || normalizedKey === '' || normalizedId !== productId) {
-      throw new Error('ZA_FULFILLMENT_PRODUCT_KEYS_JSON 的键和值必须是非空规范字符串');
-    }
-    result[normalizedId] = normalizedKey;
-  }
-  return result;
-}
-
-/**
- * ZA_GENERIC_ALLOWLIST 解析：逗号分隔，三种条目形态——`*`（任意站点）、`scheme://*.host`（该域及其子域）、
- * origin 精确值。空/未设 → []（generic 永不激活）；非法条目抛错（启动期 fail-fast）。
- * www/裸域互认在比对点归一（canonicalizeOrigin），此处只验值形。
- */
-export function parseGenericAllowlist(raw: string | undefined): string[] {
-  const entries = (raw ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '');
-  for (const entry of entries) {
-    if (entry === '*') continue;
-    let valid = false;
-    try {
-      // `scheme://*.host` 的 `*.` 不是合法 hostname，验值形时以占位 label 代入再校验其余部分。
-      const probe = entry.replace('://*.', '://wildcard-probe.');
-      valid = new URL(probe).origin === probe;
-    } catch {
-      valid = false;
-    }
-    if (!valid) {
-      throw new Error(
-        `ZA_GENERIC_ALLOWLIST 含非法条目：${entry}（须为 * / scheme://*.host / scheme://host[:port]，逗号分隔）`,
-      );
-    }
-  }
-  return entries;
 }
 
 export interface ServerPorts {
@@ -149,7 +87,6 @@ export interface ServerPorts {
   toolgate: ToolGatePort;
   llm: LlmPort;
   audit: AuditPort;
-  fulfillment?: FulfillmentCoordinatorPort;
   /** L2 用户覆盖层存储（adr-014）：assembly 与网关写入通道共用同一实例；缺省 = 未启用 L2。 */
   userConfigStore?: UserConfigStore;
 }
@@ -177,44 +114,13 @@ export async function assemblePorts(options: ServerOptions): Promise<ServerPorts
     toolOwnership,
     signingSecret: options.signingSecret,
     ...(options.execInstructionTtlMs !== undefined ? { ttlMs: options.execInstructionTtlMs } : {}),
-    fulfillmentPolicies: options.fulfillmentPolicies ?? [],
     ...(options.resolveCredential ? { resolveCredential: options.resolveCredential } : {}),
   });
-  if (options.cardInventory !== undefined && options.cardInventoryPort !== undefined) {
-    throw new Error('飞书 CLI 配置与注入库存端口不可同时设置');
-  }
-  const inventory =
-    options.cardInventoryPort ??
-    (options.cardInventory
-      ? createLarkBaseCardInventoryPort({
-          baseToken: options.cardInventory.baseToken,
-          tableId: options.cardInventory.tableId,
-          ...(options.cardInventory.profile !== undefined
-            ? { profile: options.cardInventory.profile }
-            : {}),
-          ...(options.cardInventory.cliPath !== undefined
-            ? { cliPath: options.cardInventory.cliPath }
-            : {}),
-        })
-      : undefined);
-  const guideUrl = options.cardInventory?.guideUrl ?? options.cardInventoryGuideUrl;
-  if ((inventory === undefined) !== (guideUrl === undefined)) {
-    throw new Error('卡密库存端口与使用说明 URL 必须同时配置');
-  }
-  const fulfillment =
-    inventory !== undefined && guideUrl !== undefined
-      ? createFulfillmentCoordinator({
-          inventory,
-          toolgate,
-          guideUrl,
-        })
-      : undefined;
   return {
     assembly,
     toolgate,
     llm: createLlmPort({ allowedProviders: options.allowedProviders }),
     audit: createAuditPort({ sinkPath: options.auditSinkPath }),
-    ...(fulfillment !== undefined ? { fulfillment } : {}),
     ...(userConfigStore !== undefined ? { userConfigStore } : {}),
   };
 }
@@ -269,8 +175,6 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     assembly: ports.assembly,
     llm: ports.llm,
     toolgate: ports.toolgate,
-    ...(ports.fulfillment !== undefined ? { fulfillment: ports.fulfillment } : {}),
-    fulfillmentProductKeys: options.fulfillmentProductKeys ?? {},
     audit: ports.audit,
     verifier: createTokenVerifier({
       jwtSecret: options.jwtSecret,
@@ -280,6 +184,10 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     store,
     heartbeatMs: options.heartbeatMs ?? 15_000,
     maxTurnRounds: options.maxTurnRounds ?? 12,
+    ...(options.maxConsecutiveFailures !== undefined
+      ? { maxConsecutiveFailures: options.maxConsecutiveFailures }
+      : {}),
+    ...(options.hitlTimeoutMs !== undefined ? { hitlTimeoutMs: options.hitlTimeoutMs } : {}),
     ...(options.snapshotTimeoutMs !== undefined
       ? { snapshotTimeoutMs: options.snapshotTimeoutMs }
       : {}),
@@ -287,7 +195,6 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     compressThreshold: options.compressThreshold ?? 0.6,
     corsOrigin: options.corsOrigin ?? '*',
     applicationsDir: options.applicationsDir ?? '.za/applications',
-    genericAllowlist: options.genericAllowlist ?? [],
     activationJwtSecret: options.jwtSecret,
     ...(userConfig !== undefined ? { userConfig } : {}),
   });

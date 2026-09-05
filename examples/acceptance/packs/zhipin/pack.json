@@ -11,5 +11,8 @@
     { "urlPattern": "zhipin\\.com/job_detail", "featureId": "job-detail" },
     { "urlPattern": "zhipin\\.com/web/geek/job", "featureId": "job-search" }
   ],
-  "features": ["resume", "job-search", "job-detail"]
+  "features": ["resume", "job-search", "job-detail"],
+  "capabilities": {
+    "builtinTools": ["applications"]
+  }
 }

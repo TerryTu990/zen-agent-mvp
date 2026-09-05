@@ -1,39 +1,67 @@
 /**
- * M4 评测 runner：协议层直驱 evals/scenarios.json 五维度场景（讲解/拒答/装配换出/引导/工具/HITL），
+ * 功能配置评测 runner：协议层直驱场景集六维度（讲解正确/装配换出/引导命中/工具触发/HITL 触发/自动化触发），
  * 不经浏览器/插件——runner 自己扮演客户端：fetch 发上行帧、读 SSE 下行帧，
- * 收到 exec-instruction 即代插件之职 fetch 宿主 API 回 exec-result，收到 hitl-request 按场景裁决表回 hitl-decision。
- * 每场景跑 RUNS 次、全 3/3 通过才算过（ZA-C-EVAL-02）；额外跑 HITL happy 场景后校验审计事件链完整性
- * 与脱敏（Goal-f）。环境编排复用 scripts/e2e/run-m3.mjs 的形态（mock LLM + node dist/main.js + 宿主 API mock）。
+ * 收到 exec-instruction 即代插件之职 fetch 宿主 API 回 exec-result，收到 hitl-request 按场景 expect.hitlVerdict 回裁决。
+ * 判据分三层：回答文本（mustMention/mustNotMention/judges）、服务端治理判定（expectDecisions 读本跑审计区间）、
+ * 宿主环境态（hostState/hostCalls）。每场景跑 RUNS 次、全过才算过（ZA-C-EVAL-02）；跑完再校验审计事件链
+ * 完整性与脱敏。`--check` 子命令不起 server 自检判据本身（探针字面在位 + 判据可证伪）。
+ * 环境编排复用 scripts/e2e/run-m3.mjs 的形态（mock LLM + node dist/main.js + 宿主 API mock）。
  */
-import { spawn } from 'node:child_process';
-import { createHash, createHmac } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMockLlm } from '../mock-llm/server.mjs';
+import { PROBE_LITERALS, startMockLlm } from '../mock-llm/server.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const SERVER_DIST = join(REPO_ROOT, 'apps', 'server', 'dist', 'main.js');
 const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
 // 装配快照根（server 载入）+ pack 级评测发现根（ADR-013 §4：扫 packs 各 eval/scenarios.json 逐 pack 跑）。
-// 两根分阶段各起一台 server（同端口先后独占）：host-demo 根跑存量 13 场景 + 其 pack 发现；
-// acceptance 根跑 codeflow-console/mail-126 两验收 pack（origin 为 codeflow.asia/mail.126.com，与 host-demo 不同源，故须独立载入）。
+// 四根分阶段各起一台 server（同端口先后独占）——各根的 pack origin 互不相同，须独立载入。当前分布：
+//   host-demo   evals/scenarios.json 的 17 条主场景（该根下无 pack 级 eval 集）
+//   acceptance  5 个验收 pack 共 43 条：codeflow-console 2 / generic-web 14 / mail-126 3 / xianyu-seller 19 / zhipin 5
+//   assets      生产 pack generic-web 14 条
+//   site-packs  已下线站点包 25 条：xianyu-seller 18 / yinxiang 7
 const SNAPSHOT_ROOT = join(REPO_ROOT, 'examples', 'host-demo', 'config');
 const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
 const COMMERCE_ROOT = join(REPO_ROOT, 'assets');
 const SITE_PACKS_ROOT = join(REPO_ROOT, 'examples', 'site-packs');
 const AUDIT_SCHEMA_PATH = join(REPO_ROOT, 'packages', 'contracts', 'schemas', 'audit-event.schema.json');
 const AUDIT_SINK_PATH = join(REPO_ROOT, '.za', 'eval-events.jsonl');
+// L2 用户配置落点单列一份：automation 维度要写用户自建触发器，写进开发常用的 .za/user-config
+// 会污染 e2e/手动调试的既有状态；评测每次从空开始。
+const USER_CONFIG_DIR = join(REPO_ROOT, '.za', 'eval-user-config');
 const RUN_DATE = (() => {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 })();
-const REPORT_PATH = join(REPO_ROOT, 'evals', 'runs', `${RUN_DATE}-commerce-phase2.md`);
+/**
+ * 报告溯源锚：报告只声明"输入哈希"不足以复现——同一份 assets 在不同 commit 下由不同 runner/服务端跑出。
+ * git 不可用（非仓库/无 git）时退回 'unknown' 而非抛错：评测本身不依赖版本控制。
+ */
+function gitRevision() {
+  const read = (args) => {
+    try {
+      return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+    } catch {
+      return null;
+    }
+  };
+  const commit = read(['rev-parse', '--short', 'HEAD']);
+  const porcelain = read(['status', '--porcelain']);
+  return { commit: commit === null || commit === '' ? 'unknown' : commit, dirty: porcelain !== '' };
+}
+
+const GIT_REVISION = gitRevision();
+const REPORT_PATH = join(REPO_ROOT, 'evals', 'runs', `${RUN_DATE}-${GIT_REVISION.commit}-eval.md`);
 
 const JWT_SECRET = 'za-test-secret';
+const JWT_TENANT = 'eval-tenant';
+const JWT_HOST_USER_ID = 'host-eval-user';
 const SIGNING_SECRET = 'za-test-signing-secret';
 const JWT_ISS = 'zen-agent-demo';
 const SERVER_PORT = Number(process.env.ZA_EVAL_SERVER_PORT ?? 8791);
@@ -48,16 +76,6 @@ const TURN_TIMEOUT_MS = Number(process.env.ZA_EVAL_TURN_TIMEOUT_MS ?? 15000);
 const QUIET_MS = Number(process.env.ZA_EVAL_QUIET_MS ?? 500);
 const POLL_MS = Number(process.env.ZA_EVAL_POLL_MS ?? 120);
 
-/**
- * hitl 维度场景没有机器可读的"裁决策略"字段（scenarios.json 契约只有 mustMention/mustNotMention/behavior，
- * 后者是人工走查判据）；runner 扮演客户端时必须显式决定点确认还是拒绝，按现有两个 hitl 场景语义固定映射
- * （m3-hitl-01 取消 ORD-1001 期望"已为你取消" → approve；m3-hitl-02 取消 ORD-1002 期望"已取消该操作" → reject）。
- */
-const HITL_DECISION_BY_SCENARIO = {
-  'm3-hitl-01': 'approve',
-  'm3-hitl-02': 'reject',
-};
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -71,9 +89,9 @@ function signTestJwt() {
   const payload = base64url(
     JSON.stringify({
       sub: 'eval-user',
-      tenant: 'eval-tenant',
+      tenant: JWT_TENANT,
       roles: ['user'],
-      hostUserId: 'host-eval-user',
+      hostUserId: JWT_HOST_USER_ID,
       iss: JWT_ISS,
       exp: Math.floor(Date.now() / 1000) + 600,
     }),
@@ -87,21 +105,41 @@ function sendApiJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-/** 宿主 API mock：仅实现 tools.json adapter 命中的三个端点，代执行(exec-instruction)由 runner 直接 fetch 本服务。 */
+/** 宿主初态：每跑重置，使「批准后状态已变 / 拒绝后状态未变」成为可断言的环境事实而非文本自述。 */
+function createHostState() {
+  return {
+    orders: {
+      'ORD-1001': { status: 'pending' },
+      'ORD-1002': { status: 'pending' },
+      'ORD-1003': { status: 'completed' },
+    },
+    calls: [],
+  };
+}
+
+/**
+ * 宿主 API mock：仅实现 tools.json adapter 命中的三个端点，代执行(exec-instruction)由 runner 直接 fetch 本服务。
+ * 有状态——cancel/purge 真改订单状态、每次请求登记进 calls；控制面暴露 reset/snapshot 供每跑重置与事后断言。
+ */
 function startHostServer() {
+  let state = createHostState();
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', HOST_BASE);
     const path = decodeURIComponent(url.pathname);
+    state.calls.push({ method: req.method, path });
     const cancelMatch = /^\/api\/orders\/([^/]+)\/cancel$/.exec(path);
     if (req.method === 'POST' && cancelMatch) {
-      sendApiJson(res, 200, { ok: true, orderId: cancelMatch[1] });
+      const orderId = cancelMatch[1];
+      if (state.orders[orderId] !== undefined) state.orders[orderId].status = 'cancelled';
+      sendApiJson(res, 200, { ok: true, orderId });
       return;
     }
     if (req.method === 'GET' && path === '/api/orders') {
-      sendApiJson(res, 200, { ok: true, count: 2 });
+      sendApiJson(res, 200, { ok: true, count: Object.keys(state.orders).length });
       return;
     }
     if (req.method === 'DELETE' && path === '/api/orders') {
+      state.orders = {};
       sendApiJson(res, 200, { ok: true });
       return;
     }
@@ -109,10 +147,19 @@ function startHostServer() {
   });
   return new Promise((resolveHost) => {
     server.listen(HOST_PORT, '127.0.0.1', () =>
-      resolveHost({ close: () => new Promise((r) => server.close(() => r())) }),
+      resolveHost({
+        reset: () => {
+          state = createHostState();
+        },
+        snapshot: () => structuredClone(state),
+        close: () => new Promise((r) => server.close(() => r())),
+      }),
     );
   });
 }
+
+/** 当前宿主 mock 控制面（main 起服后赋值）；--check 不起服，判据以 createHostState() 的初态代入。 */
+let hostControl = null;
 
 function run(command, args, options) {
   return new Promise((resolveRun, rejectRun) => {
@@ -140,7 +187,7 @@ function startServer(snapshotRoot = SNAPSHOT_ROOT) {
       ZA_LLM_BASE_URL: `http://127.0.0.1:${MOCK_LLM_PORT}/v1`,
       ZA_LLM_MODEL: 'mock-model',
       ZA_AUDIT_SINK: AUDIT_SINK_PATH,
-      ZA_GENERIC_ALLOWLIST: HOST_BASE,
+      ZA_USER_CONFIG_DIR: USER_CONFIG_DIR,
     },
   });
   child.stdout.on('data', (d) => process.stdout.write(`[server] ${d}`));
@@ -261,7 +308,11 @@ async function executeInstruction(sessionId, token, frame, scenario) {
       body:
         navigateStep !== null
           ? { url: navigateStep.url }
-          : { reads: {}, completedSteps: steps.length === 0 ? 1 : steps.length },
+          : {
+              // 场景可声明 read 采集值，使工具返回体承载页面来源的不可信内容（定界维度需要）。
+              reads: scenario.execResultReads ?? {},
+              completedSteps: steps.length === 0 ? 1 : steps.length,
+            },
     });
     return;
   }
@@ -302,7 +353,7 @@ async function executeInstruction(sessionId, token, frame, scenario) {
 /**
  * 单回合通用驱动：轮询下行帧，side-effect 地处理 hitl-request（按裁决表回决策）与 exec-instruction
  * （fetch 宿主 API 回 exec-result），并在文本/引导帧安静 QUIET_MS 后判定回合结束。
- * explain/refusal/tool/hitl/guide 五维度共用本函数——引导与工具/HITL 只是"途中多几帧"，终态判据一致。
+ * 各维度共用本函数——引导/工具/HITL/自动化只是"途中多几帧"，终态判据一致。
  */
 async function driveTurn(sessionId, token, scenario, bus) {
   const handledHitl = new Set();
@@ -315,7 +366,7 @@ async function driveTurn(sessionId, token, scenario, bus) {
     for (const frame of bus.all()) {
       if (frame.type === 'hitl-request' && !handledHitl.has(frame.hitlId)) {
         handledHitl.add(frame.hitlId);
-        const decision = HITL_DECISION_BY_SCENARIO[scenario.id] ?? 'approve';
+        const decision = scenario.expect?.hitlVerdict ?? 'approve';
         await postFrame(sessionId, token, {
           type: 'hitl-decision',
           sessionId,
@@ -368,6 +419,179 @@ async function driveTurn(sessionId, token, scenario, bus) {
 }
 
 /**
+ * 词界判定：命中处两侧须非「字母/数字/下划线」。英文等价 \b；中文因逐字成词，等价于"该词不与其他汉字连写"
+ * ——「页面」在「这个页面是」里不成词，故 token 判据不会像子串那样对常见短词恒真。
+ */
+function isWordChar(ch) {
+  return ch !== undefined && /[\p{L}\p{N}_]/u.test(ch);
+}
+
+function containsToken(text, keyword) {
+  if (keyword === '') return false;
+  for (let from = 0; ; from += 1) {
+    const at = text.indexOf(keyword, from);
+    if (at < 0) return false;
+    if (!isWordChar(text[at - 1]) && !isWordChar(text[at + keyword.length])) return true;
+    from = at;
+  }
+}
+
+/** 判据类型闭集：kind 决定匹配语义，闭集外的 kind 一律判失败（防拼错静默恒真）。 */
+const JUDGE_KINDS = {
+  substring: (text, judge) => (judge.anyOf ?? []).some((keyword) => text.includes(keyword)),
+  token: (text, judge) => (judge.anyOf ?? []).some((keyword) => containsToken(text, keyword)),
+  regex: (text, judge) => new RegExp(judge.pattern, judge.flags ?? '').test(text),
+};
+
+/** 单条 judge 的可读目标描述，用于失败原因。 */
+function describeJudge(judge) {
+  return judge.kind === 'regex' ? `/${judge.pattern}/` : `[${(judge.anyOf ?? []).join('|')}]`;
+}
+
+/** 逐条 judge 连乘：任一不成立即该跑失败（"不得出现"仍走 mustNotMention）。 */
+function evaluateJudges(judges, text) {
+  const reasons = [];
+  for (const judge of judges) {
+    const match = JUDGE_KINDS[judge.kind];
+    if (match === undefined) {
+      reasons.push(`判据 kind「${judge.kind}」不在闭集 [${Object.keys(JUDGE_KINDS).join('|')}] 内`);
+      continue;
+    }
+    if (!match(text, judge)) {
+      reasons.push(`${judge.kind} 判据未命中 ${describeJudge(judge)}；实际文本：「${text}」`);
+    }
+  }
+  return reasons;
+}
+
+function auditSize() {
+  return existsSync(AUDIT_SINK_PATH) ? statSync(AUDIT_SINK_PATH).size : 0;
+}
+
+/**
+ * 读审计 sink 自 fromByte 起的新增事件。runner 串行跑场景，故该区间即本跑独占的事件；
+ * 事件按行 append 且落盘同步，字节偏移与行边界对齐。非法行忽略——行完整性由 checkAuditIntegrity 另判。
+ */
+function readAuditSince(fromByte) {
+  if (!existsSync(AUDIT_SINK_PATH)) return [];
+  const buf = readFileSync(AUDIT_SINK_PATH);
+  return buf
+    .subarray(Math.min(fromByte, buf.length))
+    .toString('utf8')
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line)];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/** 期望判定 → 实际判定的失守归因（治理事件判据的可读结论）。 */
+const VERDICT_DIAGNOSIS = {
+  'hitl:allow': '该弹卡而未弹（期望挂起人审，实际直接放行）',
+  'hitl:deny': '期望挂起人审，实际直接拒绝',
+  'deny:allow': '该拒而未拒（期望拒绝，实际直接放行）',
+  'deny:hitl': '该拒而未拒（期望拒绝，实际只挂起人审）',
+  'allow:hitl': '期望直接放行，实际挂起人审',
+  'allow:deny': '期望直接放行，实际被拒',
+};
+
+function describeDecision(decision) {
+  const effective = decision.effectiveTier === undefined ? '' : `,effectiveTier=${decision.effectiveTier}`;
+  return `${decision.verdict}(riskTier=${decision.riskTier}${effective})`;
+}
+
+/**
+ * 治理判定判据：判据落在服务端决策留下的审计事实上，而非弹卡帧数——分级被误降为 auto 直执时，
+ * 帧计数可能仍然自洽，但 tool-decision 的 verdict 必然改变，故此判据能证伪那类回归。
+ * 期望 toolId 在区间内没有任何 tool-decision 事件 = 治理被绕过（工具执行了却没经过决策点）。
+ */
+function evaluateDecisions(expectDecisions, events) {
+  const decisions = events.filter((event) => event.type === 'tool-decision').map((event) => event.data);
+  const hitlByToolCall = new Map(
+    events
+      .filter((event) => event.type === 'hitl-verdict' && typeof event.data?.toolCallId === 'string')
+      .map((event) => [event.data.toolCallId, event.data.decision]),
+  );
+  const reasons = [];
+  for (const want of expectDecisions) {
+    const sameTool = decisions.filter((decision) => decision.toolId === want.toolId);
+    if (sameTool.length === 0) {
+      const seen = decisions.map((d) => `${d.toolId}:${d.verdict}`).join(', ') || '无';
+      reasons.push(`治理被绕过：本跑审计区间内没有 toolId=${want.toolId} 的 tool-decision 事件（区间内实际判定 [${seen}]）`);
+      continue;
+    }
+    const matched = sameTool.filter(
+      (decision) =>
+        decision.verdict === want.verdict &&
+        (want.riskTier === undefined || decision.riskTier === want.riskTier) &&
+        (want.effectiveTier === undefined || decision.effectiveTier === want.effectiveTier) &&
+        (want.unattendedReadOnly === undefined || decision.unattendedReadOnly === want.unattendedReadOnly),
+    );
+    if (matched.length === 0) {
+      const diagnosis = VERDICT_DIAGNOSIS[`${want.verdict}:${sameTool[0].verdict}`];
+      const wanted = [
+        `verdict=${want.verdict}`,
+        ...(want.riskTier === undefined ? [] : [`riskTier=${want.riskTier}`]),
+        ...(want.effectiveTier === undefined ? [] : [`effectiveTier=${want.effectiveTier}`]),
+        ...(want.unattendedReadOnly === undefined ? [] : [`unattendedReadOnly=${want.unattendedReadOnly}`]),
+      ].join('/');
+      reasons.push(
+        `${want.toolId} 治理判定期望 ${wanted}，实际 [${sameTool.map(describeDecision).join(', ')}]` +
+          `${diagnosis === undefined ? '' : `——${diagnosis}`}`,
+      );
+      continue;
+    }
+    if (want.hitlDecision !== undefined) {
+      const actual = matched.map((decision) => hitlByToolCall.get(decision.toolCallId)).filter((v) => v !== undefined);
+      if (!actual.includes(want.hitlDecision)) {
+        reasons.push(
+          `${want.toolId} 期望人审裁决 ${want.hitlDecision}，实际 [${actual.join(', ') || '区间内无配对 hitl-verdict 事件'}]`,
+        );
+      }
+    }
+  }
+  return reasons;
+}
+
+function readStatePath(root, dotted) {
+  return dotted.split('.').reduce((cur, key) => (cur === undefined || cur === null ? undefined : cur[key]), root);
+}
+
+function sameCall(call, want) {
+  return call.method === want.method && call.path === want.path;
+}
+
+/**
+ * 宿主状态判据：断言代执行留下的真实副作用。批准路径断言状态已变、拒绝路径断言状态未变且调用未发生——
+ * 「未确认即执行」这类失守在文本层可能仍自洽，在状态层必红。
+ */
+function evaluateHostExpectations(expect, host) {
+  const reasons = [];
+  for (const [path, want] of Object.entries(expect.hostState ?? {})) {
+    const actual = readStatePath(host, path);
+    if (JSON.stringify(actual) !== JSON.stringify(want)) {
+      reasons.push(`宿主状态 ${path} 期望 ${JSON.stringify(want)}，实际 ${JSON.stringify(actual)}`);
+    }
+  }
+  const observed = host.calls.map((call) => `${call.method} ${call.path}`).join(', ') || '无';
+  for (const want of expect.hostCalls ?? []) {
+    if (!host.calls.some((call) => sameCall(call, want))) {
+      reasons.push(`宿主未收到期望调用 ${want.method} ${want.path}；实际调用 [${observed}]`);
+    }
+  }
+  for (const forbidden of expect.hostCallsAbsent ?? []) {
+    if (host.calls.some((call) => sameCall(call, forbidden))) {
+      reasons.push(`宿主收到了不应发生的调用 ${forbidden.method} ${forbidden.path}；实际调用 [${observed}]`);
+    }
+  }
+  return reasons;
+}
+
+/**
  * guide 维度场景是否为"失配/降级"用例：scenarios.json 未开放机器可读的 hit/miss 字段，
  * 但两个已知 guide 场景恰以 mustNotMention 是否存在为界——命中场景(m2-guide-01)只有 behavior，
  * 失配场景(m2-guide-02)带 mustNotMention 断言不出现"已为你定位"。据此推断，不硬编码场景 id。
@@ -391,6 +615,7 @@ function evaluateOutcome(scenario, outcome) {
       reasons.push(`出现禁止关键词「${keyword}」；实际文本：「${text}」`);
     }
   }
+  reasons.push(...evaluateJudges(expect.judges ?? [], text));
   if (scenario.dimension === 'guide') {
     if (isGuideDegradeCase(expect)) {
       if (outcome.guideFrame !== null) {
@@ -507,21 +732,17 @@ function discoverPackScenarios(root) {
 
 /**
  * pack 级「装配」维度（ADR-013 §4 验收）：只经 /injection 自省端口断言装配结果，不驱动 LLM。
- * scenario.url 为完整 URL（含 pack origin），context-report 后拉取注入描述断言 featureId 与工具面投影
+ * scenario.url 为完整 URL（含 pack origin），context-report 后拉取注入描述断言 packId/featureId 与工具面投影
  * （toolIncludes 须命中、toolExcludesPrefixes 前缀不得出现——后者证跨 pack 隔离与 fail-safe 回落）。
+ * packId 断言用于"站点 pack 不命中→落到哪"的判别：仅基座（null）与通用兜底包是两种不同结局，
+ * 只断 featureId 分不开。
  */
-async function runAssemblyInjection(scenario, token) {
-  const auth = { authorization: `Bearer ${token}` };
-  const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
-  const sessionId = created.sessionId;
-  await postFrame(sessionId, token, { type: 'context-report', sessionId, url: scenario.url });
-  await sleep(100);
-  const injection = await (
-    await fetch(`${SERVER_BASE}/v1/sessions/${sessionId}/injection`, { headers: auth })
-  ).json();
-  const expect = scenario.expect ?? {};
+function judgeInjection(expect, injection) {
   const toolIds = Array.isArray(injection.toolIds) ? injection.toolIds : [];
   const reasons = [];
+  if ('packId' in expect && injection.packId !== expect.packId) {
+    reasons.push(`装配 packId 期望 ${JSON.stringify(expect.packId)}，实际 ${JSON.stringify(injection.packId)}`);
+  }
   if ('featureId' in expect && injection.featureId !== expect.featureId) {
     reasons.push(`装配 featureId 期望 ${JSON.stringify(expect.featureId)}，实际 ${JSON.stringify(injection.featureId)}`);
   }
@@ -536,7 +757,30 @@ async function runAssemblyInjection(scenario, token) {
       reasons.push(`工具面出现禁止前缀 ${prefix} 的工具 [${leaked.join(', ')}]`);
     }
   }
-  return { pass: reasons.length === 0, reasons };
+  return reasons;
+}
+
+/**
+ * scenario.siteDenylist 声明本场景的前置 L2 站点黑名单：先写入 overlay 再上报页面，
+ * 断言完毕无论成败都写回空态——黑名单是 subject 级持久状态，泄漏出去会静默改变后续场景的装配面。
+ */
+async function runAssemblyInjection(scenario, token) {
+  const auth = { authorization: `Bearer ${token}` };
+  const siteDenylist = scenario.siteDenylist ?? [];
+  if (siteDenylist.length > 0) await putUserConfig(token, [], siteDenylist);
+  try {
+    const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
+    const sessionId = created.sessionId;
+    await postFrame(sessionId, token, { type: 'context-report', sessionId, url: scenario.url });
+    await sleep(100);
+    const injection = await (
+      await fetch(`${SERVER_BASE}/v1/sessions/${sessionId}/injection`, { headers: auth })
+    ).json();
+    const reasons = judgeInjection(scenario.expect ?? {}, injection);
+    return { pass: reasons.length === 0, reasons };
+  } finally {
+    if (siteDenylist.length > 0) await putUserConfig(token, []);
+  }
 }
 
 /**
@@ -577,7 +821,73 @@ async function runHitlNoReuse(scenario, token) {
   }
 }
 
-async function runScenarioOnce(scenario, token) {
+/**
+ * 写 L2 用户配置（面板写入面）：automation 维度要先有用户自建触发器，服务端才认这个 automationId；
+ * assembly 维度的站点黑名单场景要先有 globalScope.siteDenylist，服务端 compose 才会回落仅基座。
+ * 两者都为空即写回空态——跑完不给后续场景留状态（overlay 会随 subject 落盘、跨场景可见）。
+ */
+async function putUserConfig(token, watches, siteDenylist = []) {
+  const res = await fetch(`${SERVER_BASE}/v1/user-config`, {
+    method: 'PUT',
+    headers: authHeaders(token),
+    body: JSON.stringify({
+      schemaVersion: 1,
+      subject: { tenant: JWT_TENANT, hostUserId: JWT_HOST_USER_ID },
+      packs: siteDenylist.length > 0 ? { '*': { siteDenylist } } : {},
+      ...(watches.length > 0 ? { watches } : {}),
+    }),
+  });
+  if (!res.ok) throw new Error(`用户配置写入失败：${res.status} ${await res.text()}`);
+}
+
+/**
+ * automation 维度（adr-021 R7 无人值守底线）：以用户自建只读 watch 发起无人值守回合。
+ * 至少两轮——首轮只建基线，之后各轮换出 snapshotSequence 的下一份快照制造变化、驱动报告轮。
+ * 报告轮工具面为空：模型幻觉出的写工具调用 MUST 被服务端 deny 并落 unattendedReadOnly 归因，
+ * 既不弹卡（无人可确认）也不签发指令——判据落在审计判定与宿主状态上，不看模型是否"自觉"。
+ */
+async function runAutomationScenario(scenario, token) {
+  const watchUrl = scenario.url ?? `${HOST_BASE}/${scenario.page}`;
+  const watch = { ...scenario.watch, templateId: 'page-watch', url: watchUrl, minutes: 5, enabled: true };
+  await putUserConfig(token, [watch]);
+  const auth = { authorization: `Bearer ${token}` };
+  const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
+  const sessionId = created.sessionId;
+  const bus = createFrameBus();
+  const sse = await openSse(sessionId, token, bus);
+  try {
+    await postFrame(sessionId, token, { type: 'context-report', sessionId, url: watchUrl });
+    await sleep(80);
+    let outcome = { text: '', guideFrame: null, frames: [] };
+    for (let round = 0; round < (scenario.snapshotSequence?.length ?? 2); round += 1) {
+      const framesBefore = bus.all().length;
+      const accepted = await postFrame(sessionId, token, {
+        type: 'user-message',
+        sessionId,
+        text: scenario.question,
+        automationId: watch.id,
+        automationRunId: `eval-auto-${randomUUID()}`,
+      });
+      if (!accepted.ok) {
+        return { pass: false, reasons: [`自动回合未被受理：${accepted.status} ${await accepted.text()}`] };
+      }
+      // 多轮共用同一 bus：本轮首帧到达前 driveTurn 会把上一轮的"已安静"误判为本轮结束，
+      // 故先等本轮真有新帧再进入安静判定。
+      await waitFor(() => bus.all().length > framesBefore, {
+        label: `自动回合第 ${round + 1} 轮下行帧`,
+        timeoutMs: TURN_TIMEOUT_MS,
+        intervalMs: POLL_MS,
+      });
+      outcome = await driveTurn(sessionId, token, scenario, bus);
+    }
+    return evaluateOutcome(scenario, outcome);
+  } finally {
+    sse.close();
+    await putUserConfig(token, []);
+  }
+}
+
+async function runScenarioCore(scenario, token) {
   if (scenario.dimension === 'assembly-swap') {
     return runAssemblySwap(scenario, token);
   }
@@ -586,6 +896,9 @@ async function runScenarioOnce(scenario, token) {
   }
   if (scenario.dimension === 'hitl' && scenario.expect?.hitlCount !== undefined) {
     return runHitlNoReuse(scenario, token);
+  }
+  if (scenario.dimension === 'automation') {
+    return runAutomationScenario(scenario, token);
   }
   const auth = { authorization: `Bearer ${token}` };
   const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
@@ -605,12 +918,39 @@ async function runScenarioOnce(scenario, token) {
     for (const pages of scenario.groupPagesReports ?? []) {
       await postFrame(sessionId, token, { type: 'group-pages', sessionId, pages });
     }
-    await postFrame(sessionId, token, { type: 'user-message', sessionId, text: scenario.question });
+    // scenario.quickActionId 声明本轮以快捷提问发起（R-5）：客户端只发 id 与选区正文，
+    // 模板由服务端查表展开——判据据此才能分辨「模板进了用户轮」与「模板漏进 system」。
+    await postFrame(sessionId, token, {
+      type: 'user-message',
+      sessionId,
+      text: scenario.question,
+      ...(scenario.quickActionId !== undefined ? { quickActionId: scenario.quickActionId } : {}),
+      ...(scenario.selectionText !== undefined ? { selectionText: scenario.selectionText } : {}),
+    });
     const outcome = await driveTurn(sessionId, token, scenario, bus);
     return evaluateOutcome(scenario, outcome);
   } finally {
     sse.close();
   }
+}
+
+/**
+ * 一跑 = 重置宿主状态 → 记审计偏移 → 驱动场景 → 在本跑独占的审计区间与宿主状态上追加判据。
+ * 治理与副作用判据必须包住整跑：它们判的是"这一跑里服务端到底判了什么、宿主到底被改成什么"。
+ */
+async function runScenarioOnce(scenario, token) {
+  hostControl?.reset();
+  const auditFrom = auditSize();
+  const outcome = await runScenarioCore(scenario, token);
+  const expect = scenario.expect ?? {};
+  const extra = [];
+  if (Array.isArray(expect.expectDecisions)) {
+    extra.push(...evaluateDecisions(expect.expectDecisions, readAuditSince(auditFrom)));
+  }
+  if (expect.hostState !== undefined || expect.hostCalls !== undefined || expect.hostCallsAbsent !== undefined) {
+    extra.push(...evaluateHostExpectations(expect, hostControl?.snapshot() ?? createHostState()));
+  }
+  return extra.length === 0 ? outcome : { pass: false, reasons: [...outcome.reasons, ...extra] };
 }
 
 function loadAuditValidator() {
@@ -686,14 +1026,18 @@ function renderReport({ results, auditReport, dimensionSummary }) {
     }
   };
   sourceHash.update(readFileSync(SCENARIOS_PATH));
+  // 四个快照根都进哈希：前 16 个场景的装配输入就在 host-demo 根，漏掉它则该根改动不改哈希（报告谎报复现性）。
+  addTree(SNAPSHOT_ROOT);
   addTree(ACCEPTANCE_ROOT);
   addTree(COMMERCE_ROOT);
   addTree(SITE_PACKS_ROOT);
   const project = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
   const lines = [];
-  lines.push(`# Zen Commerce Agent Phase 2 评测报告 — ${RUN_DATE}`);
+  lines.push(`# zen-agent 功能配置评测报告 — ${RUN_DATE}`);
   lines.push('');
-  lines.push(`证据环境：评测输入 SHA-256 \`${sourceHash.digest('hex')}\`；Node \`${project.engines.node}\`；\`${project.packageManager}\`；LLM=确定性 mock（非真实模型）。`);
+  lines.push(`代码版本：commit \`${GIT_REVISION.commit}\`；工作区 ${GIT_REVISION.dirty ? '**有未提交改动（dirty）**' : 'clean'}。`);
+  lines.push(`证据环境：评测输入 SHA-256 \`${sourceHash.digest('hex')}\`（覆盖 evals/scenarios.json 与四个快照根 examples/host-demo/config、examples/acceptance、assets、examples/site-packs）；Node \`${project.engines.node}\`；\`${project.packageManager}\`。`);
+  lines.push(`跑法：llmMode=\`mock\`（确定性替身，非真实模型）；runs=${RUNS}。`);
   lines.push(`runner：\`scripts/evals/run.mjs\`；每场景重复 ${RUNS} 次，需 ${RUNS}/${RUNS} 全过才算该场景通过（ZA-C-EVAL-02）。`);
   lines.push('');
   lines.push('## 场景通过率');
@@ -719,7 +1063,7 @@ function renderReport({ results, auditReport, dimensionSummary }) {
     }
     lines.push('');
   }
-  lines.push('## 五维度覆盖');
+  lines.push('## 维度覆盖');
   lines.push('');
   lines.push('| dimension | 场景数 | 全绿场景数 |');
   lines.push('|---|---|---|');
@@ -792,6 +1136,7 @@ async function main() {
   try {
     mkdirSync(dirname(AUDIT_SINK_PATH), { recursive: true });
     rmSync(AUDIT_SINK_PATH, { force: true });
+    rmSync(USER_CONFIG_DIR, { recursive: true, force: true });
 
     console.log('[1/4] 构建 server…');
     await run('pnpm', ['--filter', '@zen-agent/server', 'run', 'build']);
@@ -807,6 +1152,7 @@ async function main() {
 
     console.log('[4/4] 起宿主 API mock…');
     const host = await startHostServer();
+    hostControl = host;
     cleanups.push(() => host.close());
 
     const token = signTestJwt();
@@ -849,7 +1195,7 @@ async function main() {
     await runPackSets(ACCEPTANCE_ROOT, token, results);
     await stopServer2();
 
-    console.log('\n换起 Zen Commerce Agent 生产快照 server…');
+    console.log('\n换起生产快照 server（assets）…');
     const stopServer3 = makeStop(startServer(COMMERCE_ROOT));
     cleanups.push(stopServer3);
     await waitServerReady();
@@ -902,4 +1248,106 @@ async function main() {
   process.exit(failure || !allPassed ? 1 : 0);
 }
 
-main();
+// ---- --check：判据自检（PC-EVAL-05）。不起 server、不跑 LLM，纯静态+空输入推演 ----
+
+/** 哨兵注入：packId/featureId 与工具面都取不可能命中的值，使任何真装配判据都必红。 */
+const CHECK_SENTINEL_INJECTION = {
+  packId: '__za-check-no-pack__',
+  featureId: '__za-check-no-feature__',
+  toolIds: ['__za-check-no-tool__'],
+};
+/** 空回合结局：无文本、无引导帧、无任何下行帧（timedOut 置 false，免超时兜底判据掩盖恒真判据）。 */
+const CHECK_EMPTY_OUTCOME = { text: '', guideFrame: null, frames: [], timedOut: false };
+
+/** 探针字面仍在其源文件内——字面漂移会让 mock 的注入内容探针静默恒 MISS/失活。 */
+function checkProbeLiterals() {
+  const problems = [];
+  for (const probe of PROBE_LITERALS) {
+    const path = join(REPO_ROOT, probe.sourceFile);
+    if (!existsSync(path)) {
+      problems.push(`探针「${probe.literal}」的 sourceFile 不存在：${probe.sourceFile}`);
+      continue;
+    }
+    if (!readFileSync(path, 'utf8').includes(probe.literal)) {
+      problems.push(`探针字面「${probe.literal}」已不在 ${probe.sourceFile}（${probe.why}）——该探针已静默失效`);
+    }
+  }
+  return problems;
+}
+
+/** --check 的场景全集：本目录 scenarios.json + 四个快照根下自动发现的 pack 级评测。 */
+function collectScenarioSets() {
+  const sets = [{ label: 'evals/scenarios.json', scenarios: JSON.parse(readFileSync(SCENARIOS_PATH, 'utf8')) }];
+  for (const root of [SNAPSHOT_ROOT, ACCEPTANCE_ROOT, COMMERCE_ROOT, SITE_PACKS_ROOT]) {
+    for (const { packId, scenarios } of discoverPackScenarios(root)) {
+      sets.push({ label: `${root.slice(REPO_ROOT.length + 1)}/packs/${packId}`, scenarios });
+    }
+  }
+  return sets;
+}
+
+/**
+ * 场景判据在"空回答 + 零帧 + 零审计事件 + 宿主初态"上失败的理由。
+ * 一条也没有 = 该场景的判据恒真（如只写 mustNotMention 的场景，agent 什么都不答也算过），无法证伪。
+ * 非 evaluateOutcome 路径的两个维度另按其自有判据的必要输入判定。
+ */
+function falsifiableReasons(scenario) {
+  const expect = scenario.expect ?? {};
+  if (scenario.dimension === 'assembly') return judgeInjection(expect, CHECK_SENTINEL_INJECTION);
+  if (scenario.dimension === 'assembly-swap') {
+    return typeof scenario.featureId === 'string' ? [`比对换出后 featureId=${scenario.featureId}`] : [];
+  }
+  if (scenario.dimension === 'hitl' && expect.hitlCount !== undefined) {
+    return expect.hitlCount >= 1 ? [`比对独立 hitl-request 次数=${expect.hitlCount}`] : [];
+  }
+  return [
+    ...evaluateOutcome(scenario, CHECK_EMPTY_OUTCOME).reasons,
+    ...evaluateDecisions(expect.expectDecisions ?? [], []),
+    ...evaluateHostExpectations(expect, createHostState()),
+  ];
+}
+
+function checkJudgeKinds(scenario) {
+  return (scenario.expect?.judges ?? [])
+    .filter((judge) => JUDGE_KINDS[judge.kind] === undefined)
+    .map((judge) => `judges 的 kind「${judge.kind}」不在闭集 [${Object.keys(JUDGE_KINDS).join('|')}] 内`);
+}
+
+function runSelfCheck() {
+  console.log('评测判据自检（--check：不起 server、不调 LLM）\n');
+  const probeProblems = checkProbeLiterals();
+  console.log(`[1/2] 注入内容探针字面（${PROBE_LITERALS.length} 条）…`);
+  for (const problem of probeProblems) console.log(`  - ${problem}`);
+  console.log(probeProblems.length === 0 ? '  全部在位 ✅' : `  ${probeProblems.length} 条失效 ❌`);
+
+  const sets = collectScenarioSets();
+  const scenarioProblems = [];
+  let scenarioCount = 0;
+  console.log(`\n[2/2] 场景判据可证伪性（${sets.length} 个场景集）…`);
+  for (const { label, scenarios } of sets) {
+    for (const scenario of scenarios) {
+      scenarioCount += 1;
+      for (const problem of checkJudgeKinds(scenario)) {
+        scenarioProblems.push(`${label} / ${scenario.id}：${problem}`);
+      }
+      if (falsifiableReasons(scenario).length === 0) {
+        scenarioProblems.push(
+          `${label} / ${scenario.id}（${scenario.dimension}）：判据在「空回答 + 零帧 + 零事件」上仍全过——恒真，无法证伪`,
+        );
+      }
+    }
+  }
+  for (const problem of scenarioProblems) console.log(`  - ${problem}`);
+  console.log(
+    scenarioProblems.length === 0
+      ? `  ${scenarioCount} 个场景判据均可被证伪 ✅`
+      : `  ${scenarioCount} 个场景中 ${scenarioProblems.length} 项问题 ❌`,
+  );
+
+  const ok = probeProblems.length === 0 && scenarioProblems.length === 0;
+  console.log(ok ? '\n判据自检通过 ✅' : '\n判据自检未通过 ❌');
+  process.exit(ok ? 0 : 1);
+}
+
+if (process.argv.includes('--check')) runSelfCheck();
+else main();

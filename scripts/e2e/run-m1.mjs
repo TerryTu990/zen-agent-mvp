@@ -6,14 +6,16 @@
  *   b 换出  ← m1-swap-01 + m1-explain-04（跳 order-detail 问"这个页面显示的是什么？"：
  *            气泡含 订单号/状态/金额；并经独立会话断言 GET /injection 的 featureId
  *            order-list→order-detail、blocks 换出）
- *   e 拒答  ← m1-refusal-01（order-list "今天北京天气怎么样？"，断言含"职责范围/无关"、
- *            无 晴/雨/气温、无 MOCK-BASE-MISSING）
- * 其余 evals 场景（explain-01/03、refusal-02）属离线评测 runner（M4）范围，非本 E2E 冒烟集。
+ *   e 通用问答  ← 基座通用化后（2026-09-03，470d3a9）站点无关问题不再拒答而是直接应答：
+ *            order-list 页问 "今天北京天气怎么样？"，断言命中 mock 的通用问答哨兵
+ *            MOCK-GENERAL-QA-HIT（该哨兵由 mock 在 system 含基座字面「通用助手」时产出，
+ *            故它同时证明基座已随装配到达模型；缺失时 mock 回 MOCK-BASE-MISSING，断言即红）。
+ * 其余 evals 场景属离线评测 runner 范围，非本 E2E 冒烟集。
  *
  * 环境编排（谁先谁后）：构建 extension → 起 mock LLM(8788) → 起 server(8787) →
  *   静态托管 host-demo(4173) → chromium launchPersistentContext 加载扩展（优先 headless 新架构，
  *   不支持扩展则回退 headed）；身份零预置——插件自己匿名激活，脚本只经 service worker target
- *   注入 chrome.storage.local 的 serverBaseUrl 与 autoActivate。
+ *   注入 chrome.storage.local 的 serverBaseUrl，再以 activateTab 复现图标手势（见 extension-fixture）。
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -23,6 +25,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { activate } from './anon-identity.mjs';
+import { activateTab, assertNoZenInjection, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 import { startMockLlm } from '../mock-llm/server.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -38,6 +41,9 @@ const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
 const ORDER_LIST_URL = `${HOST_BASE}/order-list.html`;
 const ORDER_DETAIL_URL = `${HOST_BASE}/order-detail.html?orderId=ORD-1001`;
+/** 第三方站点（端口不同即不同 origin）：用户从未在其上发起动作，也从未授权它。 */
+const STRANGER_PORT = HOST_PORT + 1;
+const STRANGER_URL = `http://127.0.0.1:${STRANGER_PORT}/index.html`;
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css' };
 
@@ -55,6 +61,25 @@ function startStaticHost() {
   return new Promise((resolveHost) => {
     server.listen(HOST_PORT, '127.0.0.1', () =>
       resolveHost({ close: () => new Promise((r) => server.close(() => r())) }),
+    );
+  });
+}
+
+/** 第三方站点的最小静态服务：只回一张与 zen 无关的页面，供不变量 IN 的反例断言使用。 */
+function startStrangerHost() {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': MIME['.html'] });
+    res.end('<!doctype html><meta charset="utf-8"><title>第三方站点</title><main id="stranger">与 zen 无关的页面</main>');
+  });
+  return new Promise((resolveHost) => {
+    server.listen(STRANGER_PORT, '127.0.0.1', () =>
+      resolveHost({
+        close: () =>
+          new Promise((r) => {
+            server.closeAllConnections?.();
+            server.close(() => r());
+          }),
+      }),
     );
   });
 }
@@ -231,12 +256,11 @@ async function runScenarios(context, worker, extensionId, hostPage, panelPage) {
   assert((await panelPage.locator('.za-msg[data-role="assistant"]').count()) === 1, 'SW 重启后对话重复');
   console.log('  [pass] service worker 重启：同一会话恢复且对话未重复');
 
-  // e 拒答（order-list，同页复用会话）
+  // e 通用问答（order-list，同页复用会话）：基座通用化后站点无关问题直接应答
   await sendMessage(panelPage, '今天北京天气怎么样？');
-  const e = await waitAssistantBubble(panelPage, 1, (t) => t.includes('职责范围') || t.includes('无关'));
-  assert(!/[晴雨]|气温/.test(e), `场景 e 泄露天气内容：「${e}」`);
-  assert(!e.includes('MOCK-BASE-MISSING'), `场景 e 基座规则缺失（MOCK-BASE-MISSING）：「${e}」`);
-  console.log(`  [pass] e 拒答：「${e}」`);
+  const e = await waitAssistantBubble(panelPage, 1, (t) => t.includes('MOCK-GENERAL-QA-HIT'));
+  assert(!e.includes('MOCK-BASE-MISSING'), `场景 e 基座未随装配到达模型（MOCK-BASE-MISSING）：「${e}」`);
+  console.log(`  [pass] e 通用问答：「${e}」`);
 
   // b 换出（宿主页跳转，Side Panel 会话保持）
   await hostPage.goto(ORDER_DETAIL_URL, { waitUntil: 'load' });
@@ -273,12 +297,18 @@ async function main() {
     console.log('[4/5] 静态托管 host-demo…');
     const host = await startStaticHost();
     cleanups.push(() => host.close());
+    // 与 host-demo 同时起：cleanups 逆序执行，晚起的先关；第三方站点若关在浏览器之前，
+    // 会卡在浏览器尚未释放的 keep-alive 连接上。
+    const stranger = await startStrangerHost();
+    cleanups.push(() => stranger.close());
 
     console.log('[5/5] 启动 chromium 加载扩展…');
     const userDataDir = join(REPO_ROOT, '.za', 'e2e-profile');
+    const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+    cleanups.push(() => removeExtensionDir(loadedExtensionDir));
     const launchArgs = [
-      `--disable-extensions-except=${EXTENSION_DIR}`,
-      `--load-extension=${EXTENSION_DIR}`,
+      `--disable-extensions-except=${loadedExtensionDir}`,
+      `--load-extension=${loadedExtensionDir}`,
     ];
     let context = null;
     let sw = null;
@@ -299,20 +329,15 @@ async function main() {
     if (!context || !sw) throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
     cleanups.push(() => context.close());
 
-    // 身份零预置：插件首次用到时自己完成匿名激活。经 service worker 只注入服务端地址；
-    // za.autoActivate 命中 host origin 使 reload 后自动激活（显式发起模型下 content 不自动连会话，
-    // autoActivate 供自动化驱动等价"打开即注入"）。
-    await sw.evaluate(
-      async ([base, origin]) => {
-        await chrome.storage.local.set({
-          'za.serverBaseUrl': base,
-          'za.autoActivate': [origin],
-        });
-      },
-      [SERVER_BASE, HOST_BASE],
-    );
+    // 身份零预置：插件首次用到时自己完成匿名激活。经 service worker 只注入服务端地址。
+    await sw.evaluate(async (base) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base });
+    }, SERVER_BASE);
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
+    // 按需注入：脚本不再随页面常驻，由图标手势的自动化等价把它放进这一页。
+    const orderTabId = await sw.evaluate(async () => (await chrome.tabs.query({ active: true }))[0]?.id ?? null);
+    await activateTab(sw, orderTabId);
     await new Promise((r) => setTimeout(r, 400));
     const extensionId = new URL(sw.url()).host;
     const panel = await context.newPage();
@@ -323,6 +348,19 @@ async function main() {
     console.log('场景断言：');
     await runScenarios(context, sw, extensionId, page, panel);
     await assertInjectionSwap();
+
+    // 不变量 IN 的反例：用户没对这一页发起任何动作，也没授权它的 origin——页面上不该有任何注入痕迹。
+    console.log('  · 未打开面板的第三方页面上 document 无 zen 注入痕迹');
+    const strangerPage = await context.newPage();
+    await strangerPage.goto(STRANGER_URL, { waitUntil: 'load' });
+    await new Promise((r) => setTimeout(r, 600));
+    const strangerTabId = await sw.evaluate(async (url) => {
+      const tabs = await chrome.tabs.query({});
+      return tabs.find((tab) => (tab.url ?? '') === url)?.id ?? null;
+    }, STRANGER_URL);
+    assert(typeof strangerTabId === 'number', '未找到第三方页标签');
+    await assertNoZenInjection(sw, strangerPage, strangerTabId);
+    await strangerPage.close();
 
     console.log('\nM1 E2E 全部场景通过 ✅');
   } catch (error) {

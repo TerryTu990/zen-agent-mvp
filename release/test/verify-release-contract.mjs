@@ -12,8 +12,11 @@ if (!compose.includes('ZA_SYSTEM_PROMPT_PATH: /app/snapshot/system-prompt.md')) 
 if (!dockerfile.includes('ZA_SYSTEM_PROMPT_PATH=/app/snapshot/system-prompt.md')) {
   throw new Error('runtime prompt default must point at the snapshot');
 }
-if (envExample.includes('ZA_FEISHU_CARD_GUIDE_URL') || !envExample.includes('ZA_FULFILLMENT_GUIDE_URL')) {
-  throw new Error('Feishu guide env contract drifted from server configuration');
+// adr-026 起服务端不再解析任何履约 env；旧键名与其继任者都不得回流到部署模板。
+for (const retired of ['ZA_FEISHU_CARD_GUIDE_URL', 'ZA_FULFILLMENT_GUIDE_URL']) {
+  if (envExample.includes(retired)) {
+    throw new Error(`retired fulfillment env key resurfaced in env.example: ${retired}`);
+  }
 }
 for (const marker of [
   'await port.listSites()',

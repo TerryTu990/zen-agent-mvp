@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
+import { executionOutcomes, UNTRUSTED_KINDS } from '../src/index.js';
 
 const schemasDir = new URL('../schemas/', import.meta.url).pathname;
 const demoConfigDir = new URL('../../../examples/host-demo/config/', import.meta.url).pathname;
@@ -177,6 +178,13 @@ describe('C3 client-access-layer 消息帧', () => {
       messageId: 'message_001',
       idle: true,
     },
+    'turn-complete 带终止原因': {
+      type: 'turn-complete',
+      sessionId: 's-001',
+      messageId: 'message_001',
+      idle: true,
+      reason: 'consecutive-failures',
+    },
     'guide-action highlight 含 message': {
       type: 'guide-action',
       sessionId: 's-001',
@@ -230,6 +238,12 @@ describe('C3 client-access-layer 消息帧', () => {
       sessionId: 's-001',
       text: '自动扫描',
       automationRunId: 'scan_run_002',
+    },
+    'turn-complete reason 越闭集': {
+      type: 'turn-complete',
+      sessionId: 's-001',
+      idle: true,
+      reason: 'gave-up',
     },
     'context-report 缺 required url': { type: 'context-report', sessionId: 's-001' },
     '未知帧 type 被闭集拒绝': { type: 'page-reload', sessionId: 's-001' },
@@ -389,6 +403,24 @@ describe('C3 定向副作用 page 与 HITL 目标页展示（adr-023 D3）', () 
     },
     'hitl-request navigate 目标 URL 呈现': { ...hitlBase, targetUrl: 'https://seller.example/console' },
     'hitl-request 缺省（活跃页，不加措辞）': hitlBase,
+    'hitl-request 服务端反解的机械摘要 effects': {
+      ...hitlBase,
+      effects: [
+        { action: '填写', target: '收件人（input:text）', valuePreview: 'a@b.example' },
+        { action: '点击', target: '发送（button）' },
+        { action: '导航到', target: 'https://seller.example/console' },
+      ],
+    },
+    'hitl-request 来源 pack 与作用站点': {
+      ...hitlBase,
+      pack: { packId: 'xianyu-seller', name: '闲鱼卖家', source: 'official', origin: 'https://seller.example' },
+    },
+    'hitl-request 风险行 / L2 收紧来源 / 指令有效期': {
+      ...hitlBase,
+      risk: '将写入页面内容并触发按钮，提交后不可撤销',
+      tightenedBy: 'L2',
+      ttlMs: 60000,
+    },
   };
 
   it.each(Object.keys(validFrames))('合法 %s 通过校验', (label) => {
@@ -402,6 +434,18 @@ describe('C3 定向副作用 page 与 HITL 目标页展示（adr-023 D3）', () 
     'guide-action page 空串': { ...guideBase, page: '' },
     'hitl-request targetPage 带越界键': { ...hitlBase, targetPage: { title: 't', handle: 'p2' } },
     'hitl-request targetUrl 空串': { ...hitlBase, targetUrl: '' },
+    'hitl-request effects 条目带越界键（ref 等实现细节不得外泄到展示面）': {
+      ...hitlBase,
+      effects: [{ action: '点击', target: '发送（button）', ref: 'za-2' }],
+    },
+    'hitl-request effects 条目缺 target（目标未知也须由服务端如实写出）': {
+      ...hitlBase,
+      effects: [{ action: '点击' }],
+    },
+    'hitl-request pack 缺 packId': { ...hitlBase, pack: { name: '闲鱼卖家' } },
+    'hitl-request pack.source 越闭集': { ...hitlBase, pack: { packId: 'p', source: 'vendor' } },
+    'hitl-request tightenedBy 非 L2（收紧来源只有用户覆盖层一种）': { ...hitlBase, tightenedBy: 'L1' },
+    'hitl-request ttlMs 非正整数': { ...hitlBase, ttlMs: 0 },
   };
 
   it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {
@@ -466,6 +510,19 @@ describe('C3 snapshot-report 帧（含页面提示文本 notices 与页面正文
       textTruncated: true,
     },
     'snapshot-report 正文取契约上限长度': { ...baseReport, text: 'x'.repeat(40000) },
+    'snapshot-report 缺省元素截断标注（向后兼容）': baseReport,
+    'snapshot-report 标注元素清单已截断': {
+      ...baseReport,
+      elementsTruncated: true,
+      elementsOmitted: 12,
+    },
+    'snapshot-report 元素清单截断但省略数为 0（配额恰好命中）': {
+      ...baseReport,
+      elementsTruncated: true,
+      elementsOmitted: 0,
+    },
+    'snapshot-report 显式标注元素清单未截断': { ...baseReport, elementsTruncated: false },
+    'snapshot-report 含快照世代': { ...baseReport, snapshotEpoch: 3 },
   };
 
   it.each(Object.keys(validFrames))('合法 %s 通过校验', (label) => {
@@ -490,6 +547,15 @@ describe('C3 snapshot-report 帧（含页面提示文本 notices 与页面正文
     'textTruncated 非布尔': { ...baseReport, text: '正文', textTruncated: 'yes' },
     'textTruncated 无 text 相伴（截断标记无所依附）': { ...baseReport, textTruncated: true },
     'snapshot-report 含未声明的正文旁字段': { ...baseReport, text: '正文', textLength: 2 },
+    'elementsOmitted 无 elementsTruncated 相伴（省略计数无所依附）': {
+      ...baseReport,
+      elementsOmitted: 3,
+    },
+    'elementsOmitted 非整数': { ...baseReport, elementsTruncated: true, elementsOmitted: 1.5 },
+    'elementsOmitted 为负数': { ...baseReport, elementsTruncated: true, elementsOmitted: -1 },
+    'elementsTruncated 非布尔': { ...baseReport, elementsTruncated: 'yes' },
+    'snapshotEpoch 非整数': { ...baseReport, snapshotEpoch: 1.5 },
+    'snapshotEpoch 小于 1（世代自 1 起单调递增）': { ...baseReport, snapshotEpoch: 0 },
     'snapshot-request includeText 非布尔': {
       type: 'snapshot-request',
       sessionId: 's-001',
@@ -734,88 +800,6 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
       },
       resultSchema: { type: 'object' },
     },
-    'every-call 工具声明服务端有界履约授权映射': {
-      id: 'chat.send-delivery',
-      featureIds: ['chat'],
-      description: '发送确定性履约通知',
-      params: { type: 'object', properties: {}, additionalProperties: false },
-      execution: 'client',
-      riskTier: 'hitl',
-      hitlMode: 'every-call',
-      authorization: {
-        kind: 'bounded-fulfillment',
-        workflow: 'delivery',
-        intentIdParam: 'intentId',
-      },
-      adapter: { kind: 'dom', pathPrefixes: ['/'] },
-      resultSchema: { type: 'object' },
-    },
-    'delivery 授权带声明式 preparation（adr-019）': {
-      id: 'chat.send-delivery-prepared',
-      featureIds: ['chat'],
-      description: '发送确定性履约通知',
-      params: { type: 'object', properties: {}, additionalProperties: false },
-      execution: 'client',
-      riskTier: 'hitl',
-      hitlMode: 'every-call',
-      authorization: {
-        kind: 'bounded-fulfillment',
-        workflow: 'delivery',
-        intentIdParam: 'intentId',
-        preparation: {
-          description: '在聊天页准备一次履约',
-          routes: ['/im'],
-          params: {
-            orderId: { source: 'hash-query', name: 'orderId', pattern: '^[A-Za-z0-9_-]{1,128}$' },
-            productId: { source: 'hash-query', name: 'itemId' },
-          },
-          productParam: 'productId',
-          elements: {
-            messageRef: { role: 'textarea' },
-            sendRef: { role: 'button', label: '发送' },
-          },
-          evidence: { rule: 'message-receipts' },
-          intentTtlMs: 45000,
-        },
-      },
-      adapter: { kind: 'dom', pathPrefixes: ['/'] },
-      resultSchema: { type: 'object' },
-    },
-    'shipment 授权带 element-href 参数源与状态跃迁证据': {
-      id: 'orders.ship-prepared',
-      featureIds: ['orders'],
-      description: '受控发货',
-      params: { type: 'object', properties: {}, additionalProperties: false },
-      execution: 'client',
-      riskTier: 'hitl',
-      hitlMode: 'every-call',
-      authorization: {
-        kind: 'bounded-fulfillment',
-        workflow: 'shipment',
-        intentIdParam: 'intentId',
-        preparation: {
-          description: '在订单详情页准备一次发货',
-          routes: ['/seller-trade/order-manage/order-detail'],
-          params: {
-            orderId: { source: 'hash-query', name: 'orderId', pattern: '^[A-Za-z0-9_-]{1,128}$' },
-            productId: {
-              source: 'element-href',
-              urlOrigin: 'https://www.example.com',
-              urlPath: '/item',
-              queryParam: 'id',
-              pattern: '^[A-Za-z0-9_-]{1,128}$',
-            },
-          },
-          productParam: 'productId',
-          elements: { actionRef: { role: 'button', label: '发货', requireEnabled: true } },
-          paramEvidence: { param: 'orderId', roles: ['cell', 'td'], labelPrefixes: ['订单编号'] },
-          evidence: { rule: 'order-shipment-status', before: '待发货', after: '已发货' },
-          intentTtlMs: 45000,
-        },
-      },
-      adapter: { kind: 'dom', pathPrefixes: ['/'] },
-      resultSchema: { type: 'object' },
-    },
   };
 
   it.each(Object.keys(validTools))('合法工具 %s 通过校验', (label) => {
@@ -831,66 +815,9 @@ describe('C1 tool-definition M3 三档 riskTier', () => {
       ...baseTool,
       adapter: { method: 'GET' },
     },
-    '有界授权映射缺意图字段被拒': {
+    '工具声明 authorization 被拒（垂直履约语义已退出核心契约）': {
       ...baseTool,
-      authorization: {
-        kind: 'bounded-fulfillment',
-      },
-    },
-    '有界授权映射缺工作流类型被拒': {
-      ...baseTool,
-      authorization: { kind: 'bounded-fulfillment', intentIdParam: 'intentId' },
-    },
-    'delivery preparation 缺 messageRef/sendRef 元素绑定被拒': {
-      ...baseTool,
-      authorization: {
-        kind: 'bounded-fulfillment',
-        workflow: 'delivery',
-        intentIdParam: 'intentId',
-        preparation: {
-          description: 'x',
-          routes: ['/im'],
-          params: { productId: { source: 'hash-query', name: 'itemId' } },
-          productParam: 'productId',
-          elements: { sendRef: { role: 'button' } },
-          evidence: { rule: 'message-receipts' },
-          intentTtlMs: 45000,
-        },
-      },
-    },
-    'shipment preparation 证据缺 before/after 被拒': {
-      ...baseTool,
-      authorization: {
-        kind: 'bounded-fulfillment',
-        workflow: 'shipment',
-        intentIdParam: 'intentId',
-        preparation: {
-          description: 'x',
-          routes: ['/detail'],
-          params: { productId: { source: 'hash-query', name: 'itemId' } },
-          productParam: 'productId',
-          elements: { actionRef: { role: 'button' } },
-          evidence: { rule: 'order-shipment-status' },
-          intentTtlMs: 45000,
-        },
-      },
-    },
-    'preparation 参数源越 hash-query|element-href 闭集被拒': {
-      ...baseTool,
-      authorization: {
-        kind: 'bounded-fulfillment',
-        workflow: 'delivery',
-        intentIdParam: 'intentId',
-        preparation: {
-          description: 'x',
-          routes: ['/im'],
-          params: { productId: { source: 'script', expr: '1+1' } },
-          productParam: 'productId',
-          elements: { messageRef: { role: 'textarea' }, sendRef: { role: 'button' } },
-          evidence: { rule: 'message-receipts' },
-          intentTtlMs: 45000,
-        },
-      },
+      authorization: { kind: 'bounded-fulfillment', workflow: 'delivery', intentIdParam: 'intentId' },
     },
   };
 
@@ -1151,6 +1078,18 @@ describe('C5 audit L2 事件（adr-014：user-config-write + userConfigRevision�
         packDisabled: true,
       },
     },
+    'assembly 事件标注用户站点黑名单（siteDenied 区分「本站没 pack」与「用户不让 Zen 出现」）': {
+      ...base,
+      type: 'assembly',
+      data: {
+        snapshotVersion: '0.2.0',
+        featureId: null,
+        toolIds: [],
+        skillIds: [],
+        userConfigRevision: 'rev-3f6a2c',
+        siteDenied: true,
+      },
+    },
   };
 
   it.each(Object.keys(validEvents))('合法事件 %s 通过校验', (label) => {
@@ -1246,5 +1185,113 @@ describe('C3 config-draft / config-decision 帧（adr-014 §5 teach 写入通道
 
   it.each(Object.keys(invalidFrames))('非法帧被拒：%s', (label) => {
     expect(validate(invalidFrames[label])).toBe(false);
+  });
+});
+
+describe('C5 执行结局闭集：TS 联合 ↔ schema enum 全等对拍（A-TEST-11 守卫缺口）', () => {
+  const schema = loadJson(join(schemasDir, 'audit-event.schema.json')) as {
+    $defs: { toolExecutionData: { properties: { outcome: { enum: string[] } } } };
+  };
+
+  it('executionOutcomes 与 schema enum 成员完全一致（任一侧扩员漏改即红）', () => {
+    expect([...executionOutcomes].sort()).toEqual([...schema.$defs.toolExecutionData.properties.outcome.enum].sort());
+  });
+
+  const validate = compile(new Ajv2020({ strict: true }), 'audit-event.schema.json');
+  const base = {
+    eventId: 'e-0004',
+    ts: '2026-09-03T08:00:00.000Z',
+    sessionId: 's-001',
+    type: 'tool-execution',
+  };
+
+  it('issue-rejected（签发被拒、零副作用）合法且可无 nonce', () => {
+    expect(
+      validate({
+        ...base,
+        data: { toolCallId: 'tc-9', toolId: 'order-list.cancel-order', execution: 'client', outcome: 'issue-rejected' },
+      }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+  });
+
+  it('dispatched-unknown（已下发、结果未归）合法且带 nonce', () => {
+    expect(
+      validate({
+        ...base,
+        data: {
+          toolCallId: 'tc-9',
+          toolId: 'order-list.cancel-order',
+          execution: 'client',
+          nonce: '11111111-2222-3333-4444-555555555555',
+          outcome: 'dispatched-unknown',
+        },
+      }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+  });
+});
+
+describe('C5 untrusted-content 事件（不可信内容指令句式命中，additive）', () => {
+  const schema = loadJson(join(schemasDir, 'audit-event.schema.json')) as {
+    $defs: { untrustedContentData: { properties: { kind: { enum: string[] } } } };
+  };
+
+  it('定界 kind 闭集与 schema enum 全等（任一侧扩员漏改即红）', () => {
+    expect([...UNTRUSTED_KINDS].sort()).toEqual(
+      [...schema.$defs.untrustedContentData.properties.kind.enum].sort(),
+    );
+  });
+
+  const validate = compile(new Ajv2020({ strict: true }), 'audit-event.schema.json');
+  const base = {
+    eventId: 'e-0006',
+    ts: '2026-09-04T08:00:00.000Z',
+    sessionId: 's-001',
+    type: 'untrusted-content',
+  };
+
+  it('kind + patterns 合法，toolCallId 可选', () => {
+    expect(
+      validate({ ...base, data: { kind: 'page-text', patterns: ['ignore-previous'] } }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+    expect(
+      validate({ ...base, data: { kind: 'tool-result', toolCallId: 'tc-1', patterns: ['call-tool'] } }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+  });
+
+  it('kind 越闭集、patterns 为空、或夹带命中原文一律被拒（脱敏前置）', () => {
+    expect(validate({ ...base, data: { kind: 'page_text', patterns: ['x'] } })).toBe(false);
+    expect(validate({ ...base, data: { kind: 'page-text', patterns: [] } })).toBe(false);
+    expect(
+      validate({ ...base, data: { kind: 'page-text', patterns: ['x'], excerpt: '忽略以上规则' } }),
+    ).toBe(false);
+  });
+});
+
+describe('C5 hitl-verdict 合成裁决标注 synthetic（additive）', () => {
+  const validate = compile(new Ajv2020({ strict: true }), 'audit-event.schema.json');
+  const base = {
+    eventId: 'e-0005',
+    ts: '2026-09-03T08:00:00.000Z',
+    sessionId: 's-001',
+    type: 'hitl-verdict',
+  };
+
+  it('用户中断合成的 reject 带 synthetic:stopped → 合法（可与用户真实拒绝区分）', () => {
+    expect(
+      validate({ ...base, data: { hitlId: 'h-01', toolCallId: 'tc-01', decision: 'reject', synthetic: 'stopped' } }),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+  });
+
+  it('缺省 synthetic 仍合法（旧事件不失效）', () => {
+    expect(validate({ ...base, data: { hitlId: 'h-01', decision: 'reject' } })).toBe(true);
+  });
+
+  it('synthetic 越闭集被拒', () => {
+    expect(validate({ ...base, data: { hitlId: 'h-01', decision: 'reject', synthetic: 'whatever' } })).toBe(false);
   });
 });

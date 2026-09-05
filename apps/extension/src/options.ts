@@ -2,6 +2,7 @@
  * 选项页宿主：把 chrome.storage.local 的本机设置（服务端地址 / 执行偏好 / 自动化调度镜像）接到配置中心四页上，
  * 并以匿名身份（adr-022）取得本页读写 L2 所需的令牌；令牌值不入 DOM（ZA-C-SEC-04）。
  * 自动化偏好双写：L2（治理可见、服务端合并）+ 本地 `za.autoScan.*`（background alarm 的调度数据源）。
+ * 站点黑名单同律双写：L2 + 本机 `za.siteDenylist`（background 激活判定的数据源），保存成功即同步。
  */
 import {
   AUTOMATION_DESCRIPTORS_KEY,
@@ -13,6 +14,8 @@ import { mountConfigCenter } from './config-center.js';
 import { EXECUTION_PREFERENCE_KEY, parseExecutionPreference } from './execution-preference.js';
 import { createIdentityProvider } from './identity.js';
 import { normalizeTrustedServerBaseUrl } from './server-url.js';
+import { SITE_DENYLIST_KEY } from './site-denylist.js';
+import { GRANTED_ORIGINS_KEY, originMatchPattern } from './injection.js';
 
 const BASEURL_KEY = 'za.serverBaseUrl';
 
@@ -80,5 +83,16 @@ void chrome.storage.local.get(null).then(async (items) => {
       }
       if (Object.keys(entries).length > 0) await chrome.storage.local.set(entries);
     },
+    async saveSiteDenylist(entries) {
+      await chrome.storage.local.set({ [SITE_DENYLIST_KEY]: entries });
+    },
+    async saveGrantedOrigins(entries) {
+      await chrome.storage.local.set({ [GRANTED_ORIGINS_KEY]: entries });
+    },
+    // 授权气泡只在用户手势内弹得出来：配置中心的按钮回调里同步发起，中间不得插入 await。
+    requestOriginAccess: (origin) => chrome.permissions.request({ origins: [originMatchPattern(origin)] }),
+    revokeOriginAccess: (origin) => chrome.permissions.remove({ origins: [originMatchPattern(origin)] }),
+    // 本机权限是注册面的合取项之一：浏览器侧的撤销（站点访问改回「点击时」）不通知本页，只能主动对账。
+    hasOriginAccess: (origin) => chrome.permissions.contains({ origins: [originMatchPattern(origin)] }),
   });
 });

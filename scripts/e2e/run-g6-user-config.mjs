@@ -24,6 +24,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { ANON_TENANT, activate } from './anon-identity.mjs';
+import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -326,6 +327,19 @@ async function panelText(panel) {
   return (await locator.count()) === 0 ? '' : (await locator.innerText()).trim();
 }
 
+/**
+ * 等一轮问答收敛并取回本轮的那次 LLM 请求。判据先看 mock 请求增长再看面板文本：
+ * 面板重载会复原历史气泡，同一句回复可能是上一轮留下的——只看文本会在本轮请求尚未到达时就放行，
+ * 随后按序号取到 undefined。
+ */
+async function awaitTurn(panel, mock, since, reply, label) {
+  await waitFor(
+    async () => mock.requests.length > since && (await panelText(panel)).includes(reply),
+    { label },
+  );
+  return mock.requests[since];
+}
+
 async function sendMessage(panel, text) {
   await panel.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 20_000 });
   await panel.locator('#za-input').fill(text);
@@ -339,6 +353,11 @@ async function fetchInjection(serverBase, sessionId, token) {
   });
   assert(response.ok, `注入自省端点 HTTP ${response.status}`);
   return response.json();
+}
+
+/** 插件自建会话、脚本不持有其 id：取审计中自 since 以来最近一条 session-start 的 sessionId；尚无新会话即 null。 */
+function newSessionIdSince(since) {
+  return auditLines().slice(since).findLast((event) => event.type === 'session-start')?.sessionId ?? null;
 }
 
 /** 插件自建会话、脚本不持有其 id：取审计中自 since 以来最近一条 assembly 事件的 sessionId。 */
@@ -436,11 +455,13 @@ async function main() {
     console.log('[4/6] 真实 Chromium 加载 MV3 extension…');
     let context;
     let sw;
+    const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+    cleanups.push(() => removeExtensionDir(loadedExtensionDir));
     for (const headless of [true, false]) {
       rmSync(PROFILE_DIR, { recursive: true, force: true });
       const candidate = await chromium.launchPersistentContext(PROFILE_DIR, {
         headless,
-        args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+        args: [`--disable-extensions-except=${loadedExtensionDir}`, `--load-extension=${loadedExtensionDir}`],
       });
       const page = candidate.pages()[0] ?? (await candidate.newPage());
       await page.goto(ORDER_LIST_URL, { waitUntil: 'load' }).catch(() => {});
@@ -458,14 +479,13 @@ async function main() {
     cleanups.push(() => context.close());
 
     // 身份零预置：插件自己生成安装 id 并匿名激活；脚本读回它换算主身份的 subject（overlay 归属键）。
-    await sw.evaluate(async ([base, origin]) => {
-      await chrome.storage.local.set({
-        'za.serverBaseUrl': base,
-        'za.autoActivate': [origin],
-      });
-    }, [serverBase, HOST_BASE]);
+    await sw.evaluate(async (base) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base });
+    }, serverBase);
     const page = context.pages()[0];
     await page.reload({ waitUntil: 'load' });
+    const orderTabId = await sw.evaluate(async () => (await chrome.tabs.query({ active: true }))[0]?.id ?? null);
+    await activateTab(sw, orderTabId);
     await new Promise((r) => setTimeout(r, 400));
     const extensionId = new URL(sw.url()).host;
     const panel = await context.newPage();
@@ -506,8 +526,9 @@ async function main() {
     // B2 下轮注入含该规则 + 注入自省 origin=L2
     const requestsBeforeB2 = mock.requests.length;
     await sendMessage(panel, '订单列表页能做什么？');
-    await waitFor(async () => (await panelText(panel)).includes(EXPLAIN_REPLY), { label: 'B2 讲解回合完成' });
-    const b2System = systemTextOf(mock.requests[requestsBeforeB2]);
+    const b2System = systemTextOf(
+      await awaitTurn(panel, mock, requestsBeforeB2, EXPLAIN_REPLY, 'B2 讲解回合完成'),
+    );
     assert(b2System.includes(RULE_TEXT), 'B2：下轮 system 注入未含已确认的个人规则');
     assert(b2System.includes(L2_ENTRY_MARKER), 'B2：个人规则注入缺来源标注（来源：对话确认）');
     assert(b2System.includes(teachRule.id), 'B2：个人规则注入缺条目 id（R4 逐条可追溯）');
@@ -613,15 +634,23 @@ async function main() {
     // 换身份即换会话（background 侦听 za.installId 变更后作废旧会话）：宿主页重载使新会话重新拿到页面上下文，
     // 否则新会话 currentUrl 为空、装配回落「仅基座」，L1/L2 两分支都无从观察。
     await page.reload({ waitUntil: 'load' });
-    await new Promise((r) => setTimeout(r, 600));
+    // 「新会话已拿到页面上下文」是可观察的：注入自省（面板「本页生效」块的同一取数口径）在 context-report
+    // 落地前报仅基座、落地后报出本页 pack。等这个信号而不是等一段时长——后者与页面重载耗时赛跑。
+    await waitFor(
+      async () => {
+        const sessionId = newSessionIdSince(auditBaseC);
+        if (sessionId === null) return false;
+        return (await fetchInjection(serverBase, sessionId, tokenDegraded)).packId === PACK_ID;
+      },
+      { label: 'C 段新会话拿到页面上下文（注入自省报出本页 pack）' },
+    );
     await panel.reload({ waitUntil: 'load' });
     await panel.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 20_000 });
 
     // C2 rules 不可读 → 会话正常纯 L1
     const requestsBeforeC2 = mock.requests.length;
     await sendMessage(panel, '订单列表页能做什么？');
-    await waitFor(async () => (await panelText(panel)).includes(EXPLAIN_REPLY), { label: 'C2 讲解回合正常完成' });
-    const c2Request = mock.requests[requestsBeforeC2];
+    const c2Request = await awaitTurn(panel, mock, requestsBeforeC2, EXPLAIN_REPLY, 'C2 讲解回合正常完成');
     const c2System = systemTextOf(c2Request);
     assert(c2System.includes(L1_MARKER), 'C2：L1 功能规则未注入（rules 读失败应 fail-open 纯 L1）');
     assert(!c2System.includes(L2_ENTRY_MARKER), 'C2：降级轮不应出现任何 L2 条目');

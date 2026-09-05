@@ -2,7 +2,7 @@
 
 ## 状态
 
-提议（2026-08-04，随 `plans/2026-08-04-site-pack-and-user-config-tech-plan.md` 定稿；
+已接受（2026-09-03 转已接受：C7 user-overlay 契约、UserConfigStore 端口、compose 只收紧合并与 teach 确认写入通道全部实施，见 G1/G2/G3 批次 commit 与 `packages/contracts/schemas/user-overlay.schema.json`。原始记录：2026-08-04，随 `plans/2026-08-04-site-pack-and-user-config-tech-plan.md` 定稿；
 了结 adr-013「跨会话用户记忆挂锚点 ADR-014」与产品形态文档待决 D1。编号补 adr-013/adr-015 预留位）
 
 ## 背景

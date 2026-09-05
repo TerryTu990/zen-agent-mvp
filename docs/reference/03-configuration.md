@@ -1,15 +1,44 @@
 # 配置参考（站点包 + 环境变量）
 
-> 参考型文档：结构、字段、示例的权威导览。schema 事实权威在 `packages/contracts/schemas/`（registry / pack / tool-definition），env 读取权威在 `apps/server/src/main.ts`；本文与之冲突时以代码为准。
+> 参考型文档：结构、字段、示例的权威导览。schema 事实权威在 `packages/contracts/schemas/`（registry / pack / tool-definition / user-overlay），env 读取权威在 `apps/server/src/main.ts`；本文与之冲突时以代码为准。
 > 快照不可变纪律（U4）：改配置 = 发新版本（升 version + 替换目录内容），运行时永不就地改写。
 
-## 1. 配置三层总览
+## 1. 配置分层总览
 
 | 层 | 位置 | 角色 |
 |---|---|---|
-| 快照根（站点包） | `ZA_SNAPSHOT_ROOT` 指向的目录 | registry + packs 两级站点配置；当前验收用 `examples/acceptance`，生产预留 `assets/`（首个生产功能落地时补 manifest） |
-| 稳定基座 | `ZA_SYSTEM_PROMPT_PATH`（默认 `assets/system-prompt.md`） | 跨功能不变的 agent 治理基座（ZA-SYS-*） |
+| 稳定基座（L0） | `ZA_SYSTEM_PROMPT_PATH`（默认 `assets/system-prompt.md`） | 跨站点不变的 agent 治理基座（ZA-SYS-*） |
+| 快照根 / 站点包（L1） | `ZA_SNAPSHOT_ROOT` 指向的目录 | registry + packs 两级站点配置（版本化不可变，U4） |
+| 用户覆盖层（L2） | `ZA_USER_CONFIG_DIR`（默认 `.za/user-config`） | subject=(tenant, hostUserId) 维度的运行期覆盖；契约与只收紧语义见 `02-contracts.md` C7，本文只列落点与 env |
 | 服务端 env | `ZA_*` 环境变量 | 端口/密钥/LLM 上游/落盘路径等运行参数（§4 全表） |
+
+**「在哪些站点辅助」的开关归用户，不归运营者**：generic 兜底包无部署级准入名单——无站点 pack 命中且页面有 http(s) origin 即激活；
+要让 Zen 不出现在某站点，走 L2 全局作用域的 `siteDenylist`（配置中心「不辅助的站点」面板可增删）。
+命中即回落仅基座（站点包与通用兜底包都不装配），**终判在服务端 compose**：客户端据同一份名单跳过激活只是隐私侧不上报，不构成治理生效。
+客户端侧不是若干点状判定，而是一条可陈述、可验收的**不变量 SD**：*URL 命中名单的页面对服务端完全惰性——
+不发出任何上行帧、不接受任何下行指令的执行、不被登记为活跃执行页，也不激活*。
+它由三处统一出口施加、共用同一份判定：上行帧的统一出口（覆盖 `context-report` / `snapshot-report` /
+`exec-result` / 自动化回合的 `user-message` 等全部种类，无论来自 content 端口还是周期自动化）、
+下行帧落到页面的统一出口（`exec-instruction` / `guide-action` / `snapshot-request`）、活跃执行页登记。
+只掐上行而不管下行等于「照做但不告诉你」，故两个方向都收。
+**唯一允许自命中页上行的例外**是 `{ok:false, error:'site-denied'}` 形态的拒绝回执（不含任何页面数据）——
+没有它，服务端只能把「已下发未回」当超时，用户会以为拉黑生效却看不出指令其实被本机拒了。
+面板「本页生效」块在**本机确实跳过了该页激活**（background 在跳过当刻登记的事实）时改显示客户端自述，
+且自述只陈述当下与此后、不断言过去；该页若在拉黑前已激活、服务端确实见过它，则照常显示服务端的
+`site-denied` 抬头——那是更权威的事实，不得被客户端的猜测顶掉。
+拉黑前已上报的地址仍留在服务端会话上下文里，故下一轮 compose 仍按该 origin 判 `site-denied`。
+**尚未收进不变量的边界**：`site_navigate` 与站点索引仍不认名单（模型仍可能提到该站点、仍可导航过去，
+只是到了那里发不出帧也执行不了指令）。命中页的 content script 注入自 adr-027 起归入不变量 IN：
+黑名单优先于授权，两轨都不注入——但拉黑只挡此后的注入，**拉黑前已注入的页里 content 不随名单变更消失，
+需重载该页才彻底退出**；其间上行闸门照挡（不激活、不上报上下文、不进任务组页面清单）。
+**降级语义（fail-open）**：L2 读失败（用户配置存储不可用）的那一轮读不到名单，黑名单整体不生效、该站点照常装配——
+黑名单是隐私偏好而非安全边界，存储抖动期让整个产品停摆代价更大；
+该轮在审计 assembly 事件里带 `userConfigDegraded` 可判读。同轮的工具面另按 fail-closed 一律 `forbidden`——那是执行授权，与此不同类。
+
+**快照根当前事实（2026-09-03）**：生产快照根 = `assets/`（`manifest.json` registry 2.0.0），**只登记通用兜底包 `generic-web`**；
+站点包 `xianyu-seller` / `yinxiang` 已下线到 `examples/site-packs/`（完整可装配的快照根，测试与评测继续覆盖），
+重新上架＝把 pack 目录放回 `assets/packs/` 并登记进 `assets/manifest.json`（版本须与 `pack.json` 一致，否则拒载）。
+验收/评测另用 `examples/acceptance`。
 
 ## 2. 站点包目录结构（快照根全貌）
 
@@ -32,7 +61,7 @@
         ├── docs/                     # 可选：站点操作文档（渐进披露）
         │   └── <name>.md             #   frontmatter title/summary 进索引，正文经 pack_doc 按需读
         └── eval/                     # 可选：评测场景（装配器不加载，评测脚本用）
-            └── scenarios.json        #   讲解/引导/工具/HITL/拒答 五维度
+            └── scenarios.json        #   讲解/装配换出/引导/工具/HITL/自动化 六维度
 ```
 
 **legacy 形态**：根 manifest 无 `packs` 数组时按单 pack 处理（`config-snapshot.schema.json`，缺省 packId=`default`、无 site 围栏），旧快照零迁移可用。
@@ -48,7 +77,8 @@
 3. 新建 `packs/wiki-example/features/wiki-page/{feature.md, facts.md, tools.json}`（§3.2）
 4. （可选）`docs/`、`skills/`、`eval/`
 5. 重启服务端（快照惰性载入一次并缓存；坏配置启动期 fail-fast 报 `快照拒载：…`）
-6. 扩展 manifest.json 的 `host_permissions`/`content_scripts.matches` 加该 origin（客户端能注入的前提）
+6. 若该站点要用周期自动化，在配置中心「全局设置 → 已授权常驻的站点」授权该 origin
+   （adr-027 轨二：无手势唤醒要求该 origin 已授权；会话内点图标即用，不需预先声明）
 
 ### 3.1 pack.json
 
@@ -72,12 +102,33 @@
 | 字段 | 必填 | 语义 |
 |---|---|---|
 | `packId` / `version` | ✅ | 须与目录名、registry 登记一致 |
+| `name` | ⬜ | pack 人读名（packs 页 / 注入透明视图 / 确认卡展示，如"闲鱼卖家"）；缺省=展示回退 packId |
 | `summary` | ⬜ | 一句话站点用途——进"已安装站点索引"（跨站发现层），缺省回退 packId |
-| `site.origin` | ✅ | 激活围栏：`scheme://host[:port]` 精确匹配（无路径无尾斜杠）；同时是 http/server 工具请求与 navigate 目标的 origin 围栏 |
+| `generic` | ⬜ | `const true`：声明本 pack 为"无站点 pack 命中"时的兜底包；**与 `site` 互斥**、禁声明 `automations`（schema allOf 强制），不参与 origin/location 匹配与站点索引；无站点 pack 命中且页面有 http(s) origin 即**无条件激活**（无部署级准入名单；用户可用 L2 站点黑名单按站点关停），激活时以活跃页 origin 运行时绑定；registry 至多登记一个 |
+| `site` | 条件 | **非 generic 时必填；`generic: true` 时 MUST 省略**（schema allOf 强制，写了即拒载） |
+| `site.origin` | ✅（有 `site` 时） | 激活围栏：`scheme://host[:port]` 精确匹配（无路径无尾斜杠）；同时是 http/server 工具请求与 navigate 目标的 origin 围栏 |
 | `site.locations` | ⬜ | 路径前缀数组（最长前缀胜出）；省略=整站 `["/"]` |
+| `site.exclude` | ⬜ | 否定路径前缀数组（Tampermonkey `@exclude` 范式）：命中任一前缀即不匹配本 pack，判定优先于 `locations` |
 | `tenant` | ⬜ | per-origin 身份路由键：`claims.tenant` 匹配它时会话记住该 origin 的宿主身份；单租户/无宿主身份诉求可省 |
 | `featureIdRules` | ✅ | pack 激活后的 url→featureId 有序映射（ECMAScript 正则，首个命中生效） |
 | `features` | ⬜ | 功能闭单；声明则启动校验目录齐备（缺失拒载），省略则按目录扫描 |
+| `automations` | ⬜ | 周期自动化声明（adr-019，≤5 条，纯调度/提示词数据不承载治理）：每条 `{id, prompt, workRoutes, executionPreference, defaultPeriodMinutes?}`——`workRoutes` 是工作页判定前缀（激活页 URL 去 origin 后的 path+hash 须以任一前缀开头，origin 恒取 `site.origin`），`executionPreference` 闭集 `auto` / `dom-only` / `prefer-client-api` / `prefer-server-api`，`defaultPeriodMinutes` 省略时按 5 分钟。`id` 跨 pack 唯一（载入期查重拒载）；generic pack 禁声明 |
+| `engines.contract` | ⬜ | 平台兼容声明（VS Code engines 范式，adr-020）：对 contracts 导出 `contractVersion` 的 semver range；载入期比对，range 非法或不满足即拒载（不降级猜测） |
+| `capabilities` | ⬜ | 结构化能力声明（MCP capabilities 范式），全部可选，知识型 pack（仅 feature.md+facts.md）合法缺省：`skills`（`skills/` 目录闭单，与目录**双向对账**——声明多一项或目录多一项均拒载）、`docs`（`docs/` 内相对路径闭单，同样双向对账）、`anchors`（featureId → 引导锚点数组 `{id, role, label, selectorHint?}`，契约定义的结构化锚点登记位，失配降级、不作准入门槛；装配端尚未接线消费，现行实践仍把定位锚点写在 `facts.md`，见 §3.3） |
+| `configSchema` | ⬜ | pack 声明的用户可配置点（adr-020）：一份**扁平顶层** JSON Schema 对象——必带 `type: "object"` + `properties`（键闭集即可配置点）+ `additionalProperties: false`，顶层不得出现 `$ref`/`allOf`/`patternProperties` 等组合关键字（键的值 schema 可任意复杂，复用走 `$defs` + 值内 `$ref`）。载入期校验形态与可编译性，两者任一不过即拒载；L2 `packConfig` 写入期按它校验（未声明或值越界即拒），注入期按同一份顶层 `properties` 取键，故写入端与注入端同源。取值以结构化数据注入，不改变工具 riskTier 与治理面 |
+| `integrity` | ⬜ | canonical 文件清单 sha256（U4 不可变的机械化验证）：键=pack 内相对路径、值=sha256 hex。装配端校验启用锚点=打包分发落地时，当前只做契约校验、不比对内容 |
+
+**generic 兜底包最小形态**（`assets/packs/generic-web/pack.json` 即此形态）：无 `site`、无 `automations`，激活完全由服务端准入名单决定。
+
+```json
+{
+  "packId": "generic-web",
+  "version": "0.3.0",
+  "generic": true,
+  "featureIdRules": [{ "urlPattern": ".*", "featureId": "browse" }],
+  "features": ["browse"]
+}
+```
 
 ### 3.2 tools.json（三种 adapter 各一例）
 
@@ -146,11 +197,11 @@
 ### 3.3 feature.md / facts.md 要点
 
 - `feature.md`（规则·守）：编号 `ZA-FEAT-NN`；讲清"该功能内 agent 怎么讲、什么必经工具、什么不做"。操作类功能记得写"先 `page_snapshot` 后动作、以页面证据复核成败"与 task 标题保持纪律。
-- `facts.md`（事实）：页面构成、元素定位锚点（aria-label/文本/角色，勿依赖动态 id）、操作 API、站点组件库交互注意（如自绘下拉须点选项）。事实不足会直接导致讲解臆造与操作失误——参照 `examples/acceptance/packs/mail-126` 的写法。
+- `facts.md`（事实）：页面构成、元素定位锚点（aria-label/文本/角色，勿依赖动态 id）、操作 API、站点组件库交互注意（如自绘下拉须点选项）。事实不足会直接导致讲解臆造与操作失误——参照 `examples/acceptance/packs/mail-126` 的写法；`examples/site-packs/packs/xianyu-seller` 是含 `automations` 的完整站点包样例。
 
 ## 4. 服务端环境变量全表
 
-事实权威：`apps/server/src/main.ts`（读取与校验）+ `packages/llm-port/src/index.ts`（LLM 三项惰性读取）。
+事实权威：`apps/server/src/main.ts`（读取与启动期校验）+ `packages/llm-port/src/index.ts`（LLM 上游六项惰性读取：base/model/key + 三层超时）。
 
 ### 必填（缺失拒启）
 
@@ -169,7 +220,7 @@
 | `ZA_CORS_ORIGIN` | `*` | `Access-Control-Allow-Origin` 响应头 |
 | `ZA_JWT_ISS_ALLOWLIST` | `zen-agent-anon` | 外部签发方的 iss 白名单（逗号分隔）；匿名激活签发的 `zen-agent-anon` 由服务端在组装时无条件并入，覆盖或漏填此项都不会让服务端拒绝自己签发的令牌 |
 | `ZA_MAX_TURN_ROUNDS` | `12` | agent loop 单回合轮数上限（跨站任务建议 40） |
-| `ZA_GENERIC_ALLOWLIST` | 空（generic 兜底永不激活） | 通用兜底 pack 的准入名单（逗号分隔），条目三形态：`*`（任意站点）/ `scheme://*.host`（该域及其子域）/ origin 精确值；非法条目启动期拒启。活跃页 origin 命中才激活 generic pack（无 http/https origin 的静默页一律不激活，`*` 也不例外）。名单含 `*` 时另放行**静默页冷启动**的 `open_url` 内建工具：会话保持仅基座装配，只多一个通用开页入口 |
+| `ZA_MAX_CONSECUTIVE_FAILURES` | `3` | 同工具同因连续失败的止损上限：达此值即终结回合（`turn-complete.reason=consecutive-failures`），任一次成功清零；与 `ZA_MAX_TURN_ROUNDS` 并列，先到者生效。取值须为正整数，写错拒启 |
 
 ### LLM 上游（openai 兼容；调用时惰性读取）
 
@@ -180,6 +231,9 @@
 | `ZA_LLM_API_KEY` | 可选 | 上游 Bearer 密钥 |
 | `ZA_LLM_CONTEXT_WINDOW` | `200000` | 历史压缩的上下文窗口 token 数 |
 | `ZA_LLM_COMPRESS_THRESHOLD` | `0.6` | 压缩触发比例（(0,1]） |
+| `ZA_LLM_TIMEOUT_MS` | 未设（不启用该层） | 单次上游调用（含流式读取全程）的绝对上限毫秒 |
+| `ZA_LLM_FIRST_CHUNK_MS` | 未设（不启用该层） | 请求发出到收到首个响应字节的上限毫秒（上游挂起不再让回合永远转圈） |
+| `ZA_LLM_IDLE_MS` | 未设（不启用该层） | 相邻响应字节之间的静默上限毫秒（每收到一片即重置） |
 
 ### 路径与数据（相对路径按进程 cwd 解析——容器内用绝对路径）
 
@@ -189,14 +243,8 @@
 | `ZA_AUDIT_SINK` | `.za/events.jsonl` | 审计事件落点（append-only JSONL，落盘前脱敏，旁路 fail-open） |
 | `ZA_SESSION_DIR` | `.za/sessions` | 会话持久化目录（`<sessionId>.jsonl`，TTL 清理，fail-open） |
 | `ZA_SESSION_TTL_MS` | `3600000` | 会话闲置 TTL（1h） |
-| `ZA_FULFILLMENT_POLICIES_JSON` | `[]` | ADR-016 有界履约策略 JSON 数组；首期每个商品分别为 `xianyu-shipping.execute-intent` 与 `xianyu-fulfillment.execute-intent` 配置独立策略，绑定账号、站点 origin、商品、有效期、单笔数量、每日限额与 `dayBoundaryOffsetMinutes`；缺少任一工具策略时对应阶段 fail-closed，与工具声明联合校验非法则拒绝启动 |
-| `ZA_FEISHU_CARD_BASE_TOKEN` | 无 | 飞书卡密库存 Base token；与表 ID、使用说明 URL 三项同时配置才启用，不是应用凭证 |
-| `ZA_FEISHU_CARD_TABLE_ID` | 无 | 飞书卡密库存表 ID |
-| `ZA_FULFILLMENT_GUIDE_URL` | 无 | 固定写入履约通知的 HTTPS 使用说明链接，不接受模型或客户端覆盖 |
-| `ZA_FULFILLMENT_PRODUCT_KEYS_JSON` | `{}` | 闲鱼 `itemId` 到飞书 `product_key` 的服务端 JSON 对象；为空时不向模型注入零参数真实履约准备工具 |
-| `ZA_FEISHU_PROFILE` | `general` | `lark-cli` profile；运行时 token 获取/刷新复用飞书项目现有边界 |
-| `ZA_LARK_CLI_PATH` | `lark-cli` | 可选 CLI 可执行文件路径（容器/sidecar 部署时显式设置） |
-| `LARKSUITE_CLI_CONFIG_DIR` | CLI 默认目录；生产为 `/data/lark-cli` | 飞书 profile 与 token 刷新状态目录；生产必须挂服务器受控持久卷，不进镜像或仓库 |
+| `ZA_USER_CONFIG_DIR` | `.za/user-config` | L2 用户覆盖层存储目录（C7；按 subject 二级分段落一个 JSON 文件，临时文件 + 同目录 rename 原子写）。**容器部署必须外置到持久卷并给运行用户写权限**——落在镜像层时写入抛 `write-failed`，且 overlay 随容器重建丢失 |
+| `ZA_APPLICATIONS_DIR` | `.za/applications` | 投递记录业务日志目录（`record_application`/`list_applications` 内建工具落点，按天 `<YYYY-MM-DD>.jsonl`）；record-only 旁路 fail-open，与审计事件流分立。同样须随容器持久化 |
 
 ### 凭证
 
@@ -208,7 +256,15 @@
 
 ### 客户端（扩展）配置
 
-扩展经 `chrome.storage.local` 配置：`za.serverBaseUrl`（默认 `http://127.0.0.1:8787`）、`za.autoActivate`（origin 数组，命中即自动挂面板——**仅验收自动化用**，产品默认点图标激活）。身份键 `za.installId`（安装 id）与 `za.anonToken`（激活所得令牌缓存）由扩展自行维护，非用户配置项。
+扩展经 `chrome.storage.local` 配置：`za.serverBaseUrl`（默认 `http://127.0.0.1:8787`）。
+身份键 `za.installId`（安装 id）与 `za.anonToken`（激活所得令牌缓存）、
+注入面缓存键 `za.siteDenylist` / `za.grantedOrigins`（均为 L2 的本机镜像，配置中心保存后同步）
+由扩展自行维护，非用户直接配置项。
+
+**注入模型（adr-027）**：产品清单不声明任何 `content_scripts`，插件默认不进入任何页面。
+会话内能力由 background 在用户手势或服务端定向帧到达时逐次注入（轨一）；
+周期自动化要求该 origin 已在配置中心授权，授权后按 origin 动态注册常驻脚本（轨二）。
+旧的 `za.autoActivate` 已删除——它是纯客户端 origin 名单，与「准入判定不下放客户端」（U7）有张力。
 
 ## 5. 运行数据落点（`.za/`，已 gitignore）
 
@@ -216,3 +272,8 @@
 |---|---|---|
 | `.za/events.jsonl` | 审计事件（C5 schema，脱敏后） | record-only 旁路；审计故障不进控制流（U6） |
 | `.za/sessions/<id>.jsonl` | 会话事件流（claims 投影 + 对话历史） | append-only + 重启重放；含对话内容，按敏感数据对待 |
+| `.za/user-config/<tenant 段>/<hostUserId 段>.json` | L2 用户覆盖层（C7 结构：个人规则/事实、只收紧限制、pack 配置与偏好、自建触发器） | 事实源、非缓存：原子写，读失败降级到 lastGood 并标 `stale`；路径段经 URL 编码 + `-<sha256 前 8 hex>` 后缀消歧，勿按 subject 原值猜路径；含用户内容，按敏感数据对待 |
+| `.za/applications/<YYYY-MM-DD>.jsonl` | 投递记录业务日志（company/position/reason 等业务字段） | record-only 旁路 fail-open；与审计流分立（审计不收工具 params，U6） |
+
+四者均随 `.za/` 落在进程 cwd 下（相对路径），容器部署 MUST 逐个映射到持久卷——尤其 `.za/user-config`：
+它是 L2 的事实源而非缓存，丢失即用户配置丢失，写不进即 `PUT /v1/user-config` 失败。

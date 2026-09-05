@@ -6,6 +6,7 @@
 import type { RiskTier, ToolExecution } from './tool-definition.js';
 import type { HitlDecisionValue } from './client-access-layer.js';
 import type { UserConfigSubject, UserOverlay } from './user-overlay.js';
+import type { UntrustedKind } from './untrusted.js';
 
 export type AuditEventType =
   | 'session-start'
@@ -14,11 +15,27 @@ export type AuditEventType =
   | 'tool-decision'
   | 'hitl-verdict'
   | 'tool-execution'
-  | 'user-config-write';
+  | 'user-config-write'
+  | 'untrusted-content';
 
 export type GateVerdict = 'allow' | 'hitl' | 'deny';
 
-export type ExecutionOutcome = 'ok' | 'error' | 'timeout' | 'invalid-result' | 'skipped';
+/**
+ * 执行结局闭集（与 schema enum 全等，contracts 测试对拍守卫）：
+ * issue-rejected = 判定放行但签发被拒、零指令下发、零副作用（无 nonce），与「已签发并执行失败」不可混记；
+ * dispatched-unknown = 指令已下发、结果因用户中断未归，副作用未知。
+ */
+export const executionOutcomes = [
+  'ok',
+  'error',
+  'timeout',
+  'invalid-result',
+  'skipped',
+  'issue-rejected',
+  'dispatched-unknown',
+] as const;
+
+export type ExecutionOutcome = (typeof executionOutcomes)[number];
 
 export type ClientKind = 'extension' | 'sdk' | 'shell';
 
@@ -89,6 +106,16 @@ export interface AssemblyEvent extends AuditEventBase {
     packDisabled?: true;
     /** 被关停的 packId（随 packDisabled 一同记录）：关停轮事件顶层 packId 已回落缺省，追溯「哪个 pack 被关停」只此一处。 */
     disabledPackId?: string;
+    /** true = 当前页 origin 命中用户 L2 站点黑名单而回落仅基座；与 packDisabled 分列归因。缺省 = 非黑名单回落。 */
+    siteDenied?: true;
+    /** 本轮由快捷提问发起时的动作 id（C3 user-message.quickActionId）：R4 可追溯本轮问法来源；缺省 = 普通输入回合。 */
+    quickActionId?: string;
+    /**
+     * true = 该 quickActionId 在本轮生效的 L1/L2 中查不到或已被停用，本轮按客户端原文原样发起；
+     * 回落仅基座的轮次（packDisabled / siteDenied）里该 pack 的预置问法即不在本轮生效面内。
+     * 缺省 = 已展开或非快捷提问轮。
+     */
+    quickActionUnresolved?: true;
   };
 }
 
@@ -121,6 +148,8 @@ export interface HitlVerdictEvent extends AuditEventBase {
     hitlId: string;
     toolCallId?: string;
     decision: HitlDecisionValue;
+    /** 'stopped' = 用户中断回合、服务端为挂起确认合成的 reject；缺省 = 用户在确认卡上真实裁决。 */
+    synthetic?: 'stopped';
   };
 }
 
@@ -152,6 +181,20 @@ export interface UserConfigWriteEvent extends AuditEventBase {
   };
 }
 
+/**
+ * 不可信内容里检测到指令句式：定界之外的第二层可观察证据（判定权仍在模型，服务端不改写用户可见内容）。
+ * 只记 kind 与命中的句式类别标签——命中原文属页面数据，入事件即扩泄露面（脱敏前置）。
+ */
+export interface UntrustedContentEvent extends AuditEventBase {
+  type: 'untrusted-content';
+  data: {
+    kind: UntrustedKind;
+    toolCallId?: string;
+    /** 命中的可疑指令句式类别标签，按出现顺序去重。 */
+    patterns: string[];
+  };
+}
+
 export type AuditEvent =
   | SessionStartEvent
   | SessionEndEvent
@@ -159,4 +202,5 @@ export type AuditEvent =
   | ToolDecisionEvent
   | HitlVerdictEvent
   | ToolExecutionEvent
-  | UserConfigWriteEvent;
+  | UserConfigWriteEvent
+  | UntrustedContentEvent;

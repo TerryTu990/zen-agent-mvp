@@ -13,10 +13,12 @@ import type {
   InjectionToolDescriptor,
   JsonObject,
   PackAutomation,
+  PackBuiltinTool,
   PackDescriptor,
   PackFeatureDescriptor,
   PackManifest,
   PackToolDescriptor,
+  QuickAction,
   ReadPackDocResult,
   RegistryManifest,
   RiskTier,
@@ -29,15 +31,16 @@ import type {
   UserInjectionEntry,
   UserOverlay,
   UserOverlayEntry,
+  UserOverlayGlobalScope,
   UserOverlayPackScope,
   UserOverlayRestrictions,
+  UserOverlayVerbosity,
 } from '@zen-agent/contracts';
 import {
   checkContractCompatibility,
   compileConfigSchema,
   contractVersion,
-  isDomTool,
-  preparationWorkflows,
+  packBuiltinTools,
 } from '@zen-agent/contracts';
 import type { PackSource } from '@zen-agent/contracts';
 
@@ -95,6 +98,8 @@ interface LoadedPack {
   rules: CompiledRule[];
   features: Map<string, FeatureAssets>;
   skills: SkillAsset[];
+  /** pack 声明的平台内建工具族（capabilities.builtinTools，载入期已过闭集校验）；未声明为空数组。 */
+  builtinTools: PackBuiltinTool[];
   /** docs/ 渐进披露索引；docs/ 为空则 null（零注入）。 */
   docsIndex: string | null;
   /** docs/ 绝对目录（readPackDoc 围栏基准）；docsIndex=null 时为 null。 */
@@ -103,6 +108,11 @@ interface LoadedPack {
   automations: PackAutomation[];
   /** pack 声明的用户可配置点（adr-020）；null = 未声明（L2 packConfig 写入期无表项即拒）。 */
   configSchema: JsonObject | null;
+  /**
+   * pack 预置的快捷提问（R-5）：只经 listPacks 投影透出，compose 全程不读——
+   * 它是「用户轮的问法」，不是装配面的一部分（U8）。未声明为空数组。
+   */
+  quickActions: QuickAction[];
 }
 
 interface LoadedSnapshot {
@@ -178,42 +188,9 @@ function loadFeature(
         `快照拒载：功能 ${featureId} 的 tools.json[${index}] 不过 tool-definition 契约：${errorsText(validateTool)}`,
       );
     }
-    const tool = element as ToolDefinition;
-    assertPreparationIntegrity(featureId, index, tool);
-    return tool;
+    return element as ToolDefinition;
   });
   return { featureRules, facts, tools, title };
-}
-
-/** preparation 跨字段完整性（schema 表达不了的引用一致性）：不满足即拒载（fail-closed）。 */
-function assertPreparationIntegrity(featureId: string, index: number, tool: ToolDefinition): void {
-  const preparation = tool.authorization?.preparation;
-  if (preparation === undefined) return;
-  const reject = (reason: string): never => {
-    throw new Error(`快照拒载：功能 ${featureId} 的 tools.json[${index}] preparation ${reason}`);
-  };
-  if (!(preparation.productParam in preparation.params)) {
-    reject(`productParam "${preparation.productParam}" 不是 params 的键`);
-  }
-  if (!('orderId' in preparation.params)) {
-    reject('params 缺 orderId（两类履约工作流的端口输入均要求订单号派生源）');
-  }
-  if (preparation.paramEvidence !== undefined && !(preparation.paramEvidence.param in preparation.params)) {
-    reject(`paramEvidence.param "${preparation.paramEvidence.param}" 不是 params 的键`);
-  }
-  if (!isDomTool(tool)) reject('仅支持 dom 工具（证据配方在 adapter.snapshotEvidence）');
-  else {
-    const rule = (tool.adapter.snapshotEvidence ?? []).find((r) => r.id === preparation.evidence.rule);
-    if (rule === undefined) {
-      reject(`evidence.rule "${preparation.evidence.rule}" 不在 adapter.snapshotEvidence 中`);
-    } else {
-      for (const status of [preparation.evidence.before, preparation.evidence.after]) {
-        if (status !== undefined && !rule.statuses.includes(status)) {
-          reject(`evidence 状态 "${status}" 不在规则 "${rule.id}" 的 statuses 闭集中`);
-        }
-      }
-    }
-  }
 }
 
 function loadSkills(packRoot: string): SkillAsset[] {
@@ -379,10 +356,10 @@ function assertPackV2Semantics(pack: PackManifest, skills: SkillAsset[], docFile
   }
   assertClosedList(pack.packId, 'skills', pack.capabilities?.skills, skills.map((s) => s.id));
   assertClosedList(pack.packId, 'docs', pack.capabilities?.docs, docFiles);
-  for (const workflow of pack.capabilities?.preparation?.workflows ?? []) {
-    if (!(preparationWorkflows as readonly string[]).includes(workflow)) {
+  for (const builtin of pack.capabilities?.builtinTools ?? []) {
+    if (!(packBuiltinTools as readonly string[]).includes(builtin)) {
       throw new Error(
-        `快照拒载：pack ${pack.packId} capabilities.preparation.workflows 声明 ${workflow} 不在服务端已实现闭集 [${preparationWorkflows.join(', ')}] 内`,
+        `快照拒载：pack ${pack.packId} capabilities.builtinTools 声明 ${builtin} 不在平台内建工具闭集 [${packBuiltinTools.join(', ')}] 内`,
       );
     }
   }
@@ -451,7 +428,9 @@ function loadPack(
     docsIndex: docs.docsIndex,
     docsDir: docs.docsDir,
     automations: pack.automations ?? [],
+    builtinTools: pack.capabilities?.builtinTools ?? [],
     configSchema: pack.configSchema ?? null,
+    quickActions: pack.capabilities?.quickActions ?? [],
   };
 }
 
@@ -560,10 +539,12 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
     rules,
     features,
     skills: loadSkills(options.snapshotRoot),
+    builtinTools: [],
     docsIndex: docs.docsIndex,
     docsDir: docs.docsDir,
     automations: [],
     configSchema: null,
+    quickActions: [],
   };
   return {
     version: manifest.version,
@@ -668,6 +649,44 @@ async function readL2(
   }
 }
 
+/**
+ * origin 归一（黑名单比对用）：仅 www 与裸域互认（剥一层前导 www.），其余子域不互认——
+ * 站点常以两种形态对外服务，精确匹配会各漏一半；scheme/port 仍须精确。
+ */
+function canonicalizeOrigin(origin: string): string {
+  try {
+    const url = new URL(origin);
+    url.hostname = url.hostname.replace(/^www\./, '');
+    return url.origin;
+  } catch {
+    return origin;
+  }
+}
+
+/**
+ * L2 站点黑名单单条比对（文法与 C7 siteDenyEntry 同源）：`scheme://*.host` 命中该域及其子域
+ * （scheme 精确、不比对端口），其余按归一 origin 精确比对。文法无全通配——纵使绕过写入期校验
+ * 存下 `*`，此处也只当普通条目比对而不命中，黑名单不可能一条关停全部站点。
+ * 通配形态下 origin 不可解析（静默页/空串）即不命中。
+ */
+export function siteDenylistMatches(entry: string, origin: string): boolean {
+  const wildcard = entry.match(/^([a-z][a-z0-9+.-]*):\/\/\*\.(.+)$/i);
+  if (wildcard !== null) {
+    const [, scheme = '', suffix = ''] = wildcard;
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      return false;
+    }
+    if (parsed.protocol !== `${scheme.toLowerCase()}:`) return false;
+    const host = parsed.hostname.toLowerCase();
+    const domain = suffix.toLowerCase();
+    return host === domain || host.endsWith(`.${domain}`);
+  }
+  return canonicalizeOrigin(entry) === canonicalizeOrigin(origin);
+}
+
 const RISK_TIER_RANK: Record<RiskTier, number> = { auto: 0, hitl: 1, forbidden: 2 };
 
 function maxTier(a: RiskTier, b: RiskTier): RiskTier {
@@ -694,6 +713,66 @@ function renderUserEntry(entry: UserOverlayEntry): UserInjectionEntry {
     id: entry.id,
     text: `[${entry.id}] ${neutralizeStructuralMarkers(entry.text)}（来源：${USER_ENTRY_ORIGIN_LABELS[entry.origin]}）`,
   };
+}
+
+/**
+ * 回答详略三档 → 对模型可执行的注入指令：档位本身是枚举值，模型无从据枚举名推出篇幅要求，
+ * 故此处把每档展开为具体的写作约束（用户塑形要真的改变行为，而非只留在配置里）。
+ */
+const VERBOSITY_DIRECTIVES: Record<UserOverlayVerbosity, string> = {
+  concise:
+    '回答详略：用户要求简洁。直接给结论与必需步骤，正文控制在三句或三个要点以内；省略背景铺垫、同义复述与不影响执行的解释，需要展开时先问。',
+  standard:
+    '回答详略：用户要求标准。先给结论，再补必要的前提与关键步骤；篇幅适中，不逐项展开可省略的背景，也不压缩掉执行所需的信息。',
+  detailed:
+    '回答详略：用户要求详细。先给结论，再逐条说明步骤、前提、边界与失败时的处理，可举例说明；不因篇幅省略关键中间步骤。',
+};
+
+/** L2 偏好合并：pack 作用域覆盖 "*" 全局（后写者生效，与规则/事实的注入序同口径）。 */
+function resolveUserPreferences(overlay: UserOverlay, scopeIds: string[]): UserInjectionEntry[] {
+  let verbosity: UserOverlayVerbosity | undefined;
+  for (const scopeId of scopeIds) {
+    const declared = overlay.packs[scopeId]?.preferences?.verbosity;
+    if (declared !== undefined) verbosity = declared;
+  }
+  return verbosity === undefined ? [] : [{ id: 'verbosity', text: VERBOSITY_DIRECTIVES[verbosity] }];
+}
+
+/**
+ * configSchema 声明的键闭集 = 顶层 properties 的键。契约把 configSchema 收紧为扁平顶层声明
+ * （必带 type:object + properties + additionalProperties:false，顶层禁组合关键字，载入期拒非法形态），
+ * 故本朴素扫描与写入期的 ajv 全量校验同源；非对象 properties 只可能出现在契约外的调用面，取空闭集。
+ */
+function declaredConfigKeys(configSchema: JsonObject | null): Set<string> {
+  const properties = configSchema?.['properties'];
+  if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {
+    return new Set();
+  }
+  return new Set(Object.keys(properties));
+}
+
+/**
+ * pack 用户配置渲染：只注入 pack 已声明的键——pack 升级收窄 configSchema 后，旧 overlay 里
+ * 残留的键在写入期已无从拦截，故运行期逐条失效（收入 invalidRefs）而非整体拒绝。
+ * 值文本与 L2 条目同守结构清洗，字符串值无法伪造平台注入的章节边界。
+ */
+function resolvePackConfig(
+  packConfig: JsonObject | undefined,
+  configSchema: JsonObject | null,
+): { entries: UserInjectionEntry[]; invalidRefs: string[] } {
+  if (packConfig === undefined) return { entries: [], invalidRefs: [] };
+  const declared = declaredConfigKeys(configSchema);
+  const entries: UserInjectionEntry[] = [];
+  const invalidRefs: string[] = [];
+  for (const [key, value] of Object.entries(packConfig)) {
+    if (!declared.has(key)) {
+      invalidRefs.push(`packConfig:${key}`);
+      continue;
+    }
+    const rendered = typeof value === 'string' ? value : JSON.stringify(value);
+    entries.push({ id: key, text: `${key}：${neutralizeStructuralMarkers(rendered)}` });
+  }
+  return { entries, invalidRefs };
 }
 
 /** featureId 过滤：条目缺省 featureId = 整 pack 生效；有值须 === 当前 featureId 才注入。 */
@@ -756,6 +835,7 @@ function assembleInjection(
   packId: string | null,
   featureId: string | null,
   l2?: L2Context,
+  pageOrigin?: string,
 ): AssembledInjection {
   const bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
   const l2Active = l2 !== undefined;
@@ -765,8 +845,19 @@ function assembleInjection(
       ? l2.overlay.packs[packId]
       : undefined;
   const packDisabled = (requestedScope as UserOverlayPackScope | undefined)?.enabled === false;
+  // L2 站点黑名单命中：与 enabled:false 共用同一条回落（仅基座），两者以各自标注区分归因。
+  // 读失败降级时读不到名单，故不回落——存储故障不得让治理看起来已生效（标注只随真判定产出）。
+  const siteDenied =
+    l2Active &&
+    !l2.degraded &&
+    l2.overlay !== null &&
+    pageOrigin !== undefined &&
+    ((l2.overlay.packs['*'] as UserOverlayGlobalScope | undefined)?.siteDenylist ?? []).some(
+      (entry) => siteDenylistMatches(entry, pageOrigin),
+    );
+  const baseOnlyFallback = packDisabled || siteDenied;
   const disabledPackId = packDisabled ? packId : null;
-  const activePackId = packDisabled ? null : packId;
+  const activePackId = baseOnlyFallback ? null : packId;
 
   // 站点索引跨功能稳定（不随 featureId 变），全局计算、只按当前激活 pack 标注（当前）；<2 site → null。
   const sitesIndex = buildSitesIndex(snapshot, activePackId);
@@ -803,8 +894,26 @@ function assembleInjection(
 
   const userRules: UserInjectionEntry[] = [];
   const userFacts: UserInjectionEntry[] = [];
+  let userPreferences: UserInjectionEntry[] = [];
+  let packConfig: UserInjectionEntry[] = [];
+  let packConfigInvalidRefs: string[] = [];
   if (l2Active && !l2.degraded && l2.overlay !== null) {
     const scopeIds = activePackId !== null ? ['*', activePackId] : ['*'];
+    userPreferences = resolveUserPreferences(l2.overlay, scopeIds);
+    for (const entry of userPreferences) {
+      blocks.push({ kind: 'user-preferences', id: entry.id, bytes: bytes(entry.text), origin: 'L2' });
+    }
+    if (pack !== null) {
+      const resolved = resolvePackConfig(
+        (requestedScope as UserOverlayPackScope | undefined)?.packConfig,
+        pack.configSchema,
+      );
+      packConfig = resolved.entries;
+      packConfigInvalidRefs = resolved.invalidRefs;
+      for (const entry of packConfig) {
+        blocks.push({ kind: 'pack-config', id: entry.id, bytes: bytes(entry.text), origin: 'L2' });
+      }
+    }
     for (const scopeId of scopeIds) {
       const scope = l2.overlay.packs[scopeId];
       if (scope === undefined) continue;
@@ -847,7 +956,7 @@ function assembleInjection(
         }),
       );
     } else {
-      const restrictions = packDisabled
+      const restrictions = baseOnlyFallback
         ? undefined
         : (requestedScope as UserOverlayPackScope | undefined)?.restrictions;
       const packToolIds = new Set(
@@ -861,14 +970,18 @@ function assembleInjection(
       invalidRefs = merged.invalidRefs;
     }
   }
+  const allInvalidRefs = [...invalidRefs, ...packConfigInvalidRefs];
   const l2Extras: Partial<ComposeResult> = l2Active
     ? {
         ...(l2.revision !== undefined ? { userConfigRevision: l2.revision } : {}),
         ...(l2.degraded ? { userConfigDegraded: 'fail-open-closed' as const } : { userRules, userFacts }),
+        ...(userPreferences.length > 0 ? { userPreferences } : {}),
+        ...(packConfig.length > 0 ? { packConfig } : {}),
         ...(effectiveTools !== undefined ? { effectiveTools } : {}),
-        ...(invalidRefs.length > 0 ? { invalidRefs } : {}),
+        ...(allInvalidRefs.length > 0 ? { invalidRefs: allInvalidRefs } : {}),
         ...(l2.stale === true ? { userConfigStale: true as const } : {}),
         ...(disabledPackId !== null ? { packDisabled: true as const, disabledPackId } : {}),
+        ...(siteDenied ? { siteDenied: true as const } : {}),
       }
     : {};
 
@@ -884,12 +997,16 @@ function assembleInjection(
       tools: structuredClone(visibleTools),
       docsIndex: pack === null ? null : pack.docsIndex,
       sitesIndex,
+      ...(pack !== null && pack.builtinTools.length > 0 ? { builtinTools: [...pack.builtinTools] } : {}),
       ...l2Extras,
     },
     description: {
       snapshotVersion: snapshot.version,
       packId: pack === null ? null : pack.packId,
-      featureId,
+      // 回落仅基座的轮次里本功能根本没装配：透明视图随 packId 一并置 null，
+      // 否则「本页生效」块会报一条本轮不存在的功能（R6 载体不许说谎）。
+      // 只收紧这份视图——compose 的回合归属与审计口径仍以 packDisabled/siteDenied 标注区分归因。
+      featureId: baseOnlyFallback ? null : featureId,
       blocks,
       toolIds: visibleTools.map((tool) => tool.id),
       ...(pack !== null ? { packVersion: pack.version, packSource: pack.source } : {}),
@@ -898,6 +1015,16 @@ function assembleInjection(
       ...(effectiveTools !== undefined ? { tools: structuredClone(effectiveTools) } : {}),
       ...(l2Active && l2.revision !== undefined ? { userConfigRevision: l2.revision } : {}),
       ...(disabledPackId !== null ? { disabledPackId } : {}),
+      // 黑名单先于关停判读：命中站点上纵使该 pack 未被关停也仍回落仅基座，站点判定才是主因。
+      reason: siteDenied
+        ? 'site-denied'
+        : disabledPackId !== null
+          ? 'pack-disabled'
+          : pack === null
+            ? 'base-only'
+            : pack.generic
+              ? 'generic'
+              : 'pack',
     },
   };
 }
@@ -921,13 +1048,13 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
         ...(pack.generic ? { generic: true } : {}),
       };
     },
-    async compose({ packId, featureId, subject }) {
+    async compose({ packId, featureId, subject, origin }) {
       const l2 = await readL2(options.userConfigStore, subject);
-      return assembleInjection(getSnapshot(), packId, featureId, l2).compose;
+      return assembleInjection(getSnapshot(), packId, featureId, l2, origin).compose;
     },
-    async describeInjection({ packId, featureId, subject }) {
+    async describeInjection({ packId, featureId, subject, origin }) {
       const l2 = await readL2(options.userConfigStore, subject);
-      return assembleInjection(getSnapshot(), packId, featureId, l2).description;
+      return assembleInjection(getSnapshot(), packId, featureId, l2, origin).description;
     },
     async readPackDoc({ packId, docPath }): Promise<ReadPackDocResult> {
       if (packId === null) return { ok: false, error: '无激活 pack，无可读文档' };
@@ -1024,6 +1151,7 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
               : {}),
           })),
           ...(pack.configSchema !== null ? { configSchema: pack.configSchema } : {}),
+          ...(pack.quickActions.length > 0 ? { quickActions: pack.quickActions } : {}),
         });
       }
       return structuredClone(descriptors);

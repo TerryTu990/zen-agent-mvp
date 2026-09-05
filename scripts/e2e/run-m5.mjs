@@ -14,7 +14,7 @@
  *            （every-call：即便已有任务级授权仍单独弹卡，批准）→ 提交生效（#sb-result 可见变化）→ 收尾。
  *
  * 断言另含：审计 jsonl 的 assembly/tool-decision/tool-execution 事件带 packId 且出现两个不同 packId（host-a / site-b）；
- * 持久化会话历史含站点边界标记（切到站点乙 origin）。za.autoActivate 只配站点甲，站点乙靠 navigate 入组。
+ * 持久化会话历史含站点边界标记（切到站点乙 origin）。只对站点甲做图标手势等价，站点乙靠 navigate 入组。
  */
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -23,6 +23,7 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { startMockLlm } from '../mock-llm/server.mjs';
+import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -52,6 +53,10 @@ const HOST_A_ORIGIN = `http://127.0.0.1:${HOST_A_PORT}`;
 const HOST_B_ORIGIN = `http://127.0.0.1:${HOST_B_PORT}`;
 const ORDER_LIST_URL = `${HOST_A_ORIGIN}/order-list.html`;
 const BOUNDARY_MARKER = '【站点边界】';
+// 停止后的收尾文案由服务端产出（apps/server/src/gateway.ts 回合收口），不经模型。
+const STOP_CLOSURE_NOTICE = '已停止当前任务。';
+// 停止演练批次的 toolCallId 由 mock 剧本 driveStop 固定下发。
+const STOP_DRILL_CALL_ID = 'call_stop_operate';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css' };
 
@@ -202,6 +207,21 @@ function readSessionHistory() {
     .join('\n');
 }
 
+/** 最近一次落盘的会话历史消息序列（停止语义按消息结构判，不靠文本子串）。 */
+function readSessionMessages() {
+  for (const line of readSessionHistory().split('\n').reverse()) {
+    if (line === '') continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record?.t === 'history' && Array.isArray(record.history)) return record.history;
+  }
+  return [];
+}
+
 async function runScenarios(context, packAPage, panelPage, sw) {
   const pageCountBeforeFence = context.pages().length;
 
@@ -274,15 +294,41 @@ async function runScenarios(context, packAPage, panelPage, sw) {
   await approveOneCard(panelPage, '停止演练：等待任务授权');
   await panelPage.locator('[data-za-action][data-mode="stop"]:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
   await panelPage.locator('[data-za-action][data-mode="stop"]').click();
-  await waitFor(async () => (await panelText(panelPage)).includes('已按用户要求停止'), {
-    label: '停止演练：等待停止总结', timeoutMs: 20000,
+  // 停止＝立刻收手（adr-024 D2）：本回合不再请求模型，收尾文案由服务端就地产出。
+  await waitFor(async () => (await panelText(panelPage)).includes(STOP_CLOSURE_NOTICE), {
+    label: '停止演练：等待停止收尾', timeoutMs: 20000,
   });
+  // 步间检查点回的真实 exec-result 迟于合成回执到达；留出送达窗口再判面板，避免抢在上行之前误绿。
+  await new Promise((r) => setTimeout(r, 2000));
+  const stopPanelText = await panelText(panelPage);
+  assert(
+    !stopPanelText.includes('409') && !stopPanelText.includes('状态冲突'),
+    `停止演练：停止后面板不应出现上行冲突提示，实际 ${stopPanelText.slice(-200)}`,
+  );
+  console.log('  [pass] 停止后同批迟到回执幂等受理：面板无 409/状态冲突提示');
   await sendMessage(panelPage, '停止演练：停止后重试');
   await waitFor(async () => (await hitlCardCount(panelPage)) > 0, {
     label: '停止演练：等待重新授权', timeoutMs: 20000,
   });
   await panelPage.locator('[data-za-hitl-reject]').click();
-  console.log('  [pass] 停止语义：中止余下 DOM 步骤、回传 user-stopped、吊销任务授权，重试重新询问');
+  // 重试轮的 HITL 卡已出现＝停止轮已落盘，此时读历史无竞态（回合在服务端串行）。
+  const stopMessages = readSessionMessages();
+  const stopObsIndex = stopMessages.findIndex(
+    (message) => message.role === 'tool' && message.toolCallId === STOP_DRILL_CALL_ID,
+  );
+  assert(stopObsIndex >= 0, '停止演练：会话历史缺停止批次的观测');
+  assert(
+    stopMessages[stopObsIndex].content === '{"error":"user-stopped"}',
+    `停止演练：停止批次观测应只有 user-stopped（余下步骤零执行、无 reads），实际 ${stopMessages[stopObsIndex].content}`,
+  );
+  const stopClosure = stopMessages[stopObsIndex + 1];
+  assert(
+    stopClosure?.role === 'assistant' &&
+      stopClosure.toolCalls === undefined &&
+      stopClosure.content === STOP_CLOSURE_NOTICE,
+    `停止演练：user-stopped 之后应直接是服务端收尾、停止后零模型轮，实际 ${JSON.stringify(stopClosure)}`,
+  );
+  console.log('  [pass] 停止语义：余下 DOM 步骤零执行、user-stopped 回喂后零模型轮、服务端就地收尾，吊销任务授权后重试重新询问');
 
   // 审计断言：assembly/tool-decision/tool-execution 均带 packId，且出现两个不同 packId。
   const events = readAuditEvents();
@@ -345,9 +391,11 @@ async function main() {
 
     console.log('[5/5] 启动 chromium 加载扩展…');
     const userDataDir = join(REPO_ROOT, '.za', 'e2e-profile-m5');
+    const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+    cleanups.push(() => removeExtensionDir(loadedExtensionDir));
     const launchArgs = [
-      `--disable-extensions-except=${EXTENSION_DIR}`,
-      `--load-extension=${EXTENSION_DIR}`,
+      `--disable-extensions-except=${loadedExtensionDir}`,
+      `--load-extension=${loadedExtensionDir}`,
     ];
     let context = null;
     let sw = null;
@@ -368,19 +416,15 @@ async function main() {
     if (!context || !sw) throw new Error('Chromium 无法加载扩展（headless 与 headed 均失败）');
     cleanups.push(() => context.close());
 
-    // 身份零预置：插件自己匿名激活。za.autoActivate 只配站点甲：站点甲页 reload 后自动激活建组；
-    // 站点乙由 navigate 入组（不靠 autoActivate）。
-    await sw.evaluate(
-      async ([base, origin]) => {
-        await chrome.storage.local.set({
-          'za.serverBaseUrl': base,
-          'za.autoActivate': [origin],
-        });
-      },
-      [SERVER_BASE, HOST_A_ORIGIN],
-    );
+    // 身份零预置：插件自己匿名激活。只对站点甲页做图标手势的自动化等价（建组 + 注入）；
+    // 站点乙由 navigate 代执行开页入组，其注入走 background 的组内补发路径。
+    await sw.evaluate(async (base) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base });
+    }, SERVER_BASE);
     const packAPage = context.pages()[0];
     await packAPage.reload({ waitUntil: 'load' });
+    const packATabId = await sw.evaluate(async () => (await chrome.tabs.query({ active: true }))[0]?.id ?? null);
+    await activateTab(sw, packATabId);
     await new Promise((r) => setTimeout(r, 400));
     const extensionId = new URL(sw.url()).host;
     const panel = await context.newPage();

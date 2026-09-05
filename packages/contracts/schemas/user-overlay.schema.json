@@ -117,6 +117,52 @@
       "maxItems": 5,
       "items": { "$ref": "#/$defs/watch" }
     },
+    "quickAction": {
+      "$comment": "用户自建快捷提问条目（R-5 L2），与 L1 pack.json capabilities.quickActions 同形：id 为查表键、label 为 chip 与右键菜单文案、template 为展开后的用户轮消息、context 声明它需要什么页面材料。只承载「用户轮消息模板」——结构上无工具定义/execution/adapter/riskTier 表达力，故不构成能力扩张（AGENT-04）；MUST NOT 进 system 注入，展开在服务端网关。占位符闭集 {{selection}}/{{url}}/{{title}}，闭集外的 {{…}} 一律拒；context=selection 的模板 MUST 含 {{selection}}。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "template", "context"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "template": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "not": { "pattern": "\\{\\{(?!(?:selection|url|title)\\}\\})" }
+        },
+        "context": { "type": "string", "enum": ["selection", "page", "none"] },
+        "featureIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/featureId" }
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "子模式内重复声明 template 仅为满足 Ajv strict；约束本体在上方 properties。",
+          "if": { "properties": { "context": { "const": "selection" } }, "required": ["context"] },
+          "then": { "properties": { "template": { "type": "string", "pattern": "\\{\\{selection\\}\\}" } } }
+        }
+      ]
+    },
+    "quickActionList": {
+      "$comment": "单作用域自建快捷提问上限 20：与 L1 同界，chips 一排的可读上界。",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/quickAction" }
+    },
+    "disabledQuickActions": {
+      "$comment": "停用清单（R1 只收紧）：只有 id，结构上无改写模板的表达力——用户能让某条快捷提问不出现，不能让它变成别的问法。命中的条目在面板 chips 与右键菜单上都不呈现，网关查表也不认（按未知 id 原样发送）。上限 60 = 一处页面上可见的三份声明面（L1 pack 20 + L2 全局 20 + L2 pack 级 20）各自停满的上界。",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 60,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" }
+    },
     "verbosity": {
       "type": "string",
       "enum": ["concise", "standard", "detailed"]
@@ -135,8 +181,20 @@
         }
       }
     },
+    "siteDenyEntry": {
+      "$comment": "站点黑名单条目文法，两形态：\"scheme://host[:port]\" 精确 origin（比对时 www 与裸域互认，scheme/port 精确）；\"scheme://*.host\" 该域及其子域（scheme 精确，不带端口——通配形态不比对端口）。刻意不设全通配：\"*\" 等价于关停整个产品，是危险且无意义的表达，文法层即拒。",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^(?:[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*(?::[0-9]{1,5})?|[A-Za-z][A-Za-z0-9+.-]*://\\*\\.[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*)$"
+    },
+    "grantedOrigin": {
+      "$comment": "站点注入授权条目文法：只收精确 origin \"scheme://host[:port]\"，协议闭集 http/https。刻意不设通配形态——授权是「才注入」的正向集合，通配等价于把注入面重新放回 <all_urls>，与按需注入模型（adr-027）正面冲突。",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^https?://[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*(?::[0-9]{1,5})?$"
+    },
     "globalScope": {
-      "$comment": "\"*\" 全局作用域：跨站规则/事实与偏好（零配置站点的个人定制载体，注入序在 L1 之后、pack 级 L2 之前）。结构上无 enabled/restrictions/packConfig（无对应工具面可收紧/取值）；偏好仅 verbosity（automations 锚定 pack 声明，无全局语义）。",
+      "$comment": "\"*\" 全局作用域：跨站规则/事实与偏好（零配置站点的个人定制载体，注入序在 L1 之后、pack 级 L2 之前）。结构上无 enabled/restrictions/packConfig（无对应工具面可收紧/取值）；偏好仅 verbosity（automations 锚定 pack 声明，无全局语义）。siteDenylist 与 grantedOrigins 只居本作用域：二者都是「Zen 在哪些站点上出现」的跨站点声明，不锚定任何 pack。",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -148,6 +206,24 @@
           "properties": {
             "verbosity": { "$ref": "#/$defs/verbosity" }
           }
+        },
+        "quickActions": { "$ref": "#/$defs/quickActionList" },
+        "disabledQuickActions": { "$ref": "#/$defs/disabledQuickActions" },
+        "siteDenylist": {
+          "$comment": "用户级站点黑名单（R1 只收紧）：命中的 origin 上不装配任何站点包，回落仅基座——结构上只能减少装配面，无任何放宽表达力。判定归服务端 compose（U7 终判在服务端；客户端跳过激活只是不上报，不构成治理生效）。条目上限 200，语义同全局作用域（黑名单跨站点，无 pack 级语义）。",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 200,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/siteDenyEntry" }
+        },
+        "grantedOrigins": {
+          "$comment": "站点注入授权集（adr-027 轨二）：用户显式授权 Zen 在这些 origin 上常驻内容脚本，watch 自动化据此在无手势时仍可唤醒工作页。**它是准入维度，不是治理维度**——授权只决定 agent 在该站点是否存在，MUST NOT 改变任何工具的 riskTier、工具面成员或 HITL 判定，故与 restrictions 的「只收紧」（R1）正交、物理分离。客户端注入面恒取本集合与浏览器 chrome.permissions 的**交集**：本机多授权不构成治理放行（U7 终判仍在服务端 compose），L2 多声明也拿不到浏览器授权。与 siteDenylist 相交时黑名单优先（不注入）。条目上限 50。",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/grantedOrigin" }
         }
       }
     },
@@ -159,6 +235,8 @@
         "enabled": { "const": false },
         "rules": { "$ref": "#/$defs/entryList" },
         "facts": { "$ref": "#/$defs/entryList" },
+        "quickActions": { "$ref": "#/$defs/quickActionList" },
+        "disabledQuickActions": { "$ref": "#/$defs/disabledQuickActions" },
         "restrictions": { "$ref": "#/$defs/restrictions" },
         "packConfig": { "type": "object", "minProperties": 1 },
         "preferences": { "$ref": "#/$defs/packPreferences" }

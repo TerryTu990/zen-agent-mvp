@@ -4,7 +4,7 @@
  */
 import type { JsonObject } from './json.js';
 
-/** 执行通道闭集（U3）：MVP 只实现 client，server 枚举保留不删。 */
+/** 执行通道闭集（U3）：client 与 server 均已实现；client 内按 adapter.kind 分形（http / dom）。 */
 export type ToolExecution = 'client' | 'server';
 
 /** 操作分级闭集（分级矩阵落点）：服务端 fail-closed 判定（U7），未知值一律 deny。 */
@@ -16,85 +16,6 @@ export type RiskTier = 'auto' | 'hitl' | 'forbidden';
  */
 export type HitlMode = 'per-task' | 'every-call';
 
-/**
- * ADR-016：确定性履约工具只声明一次性服务端意图 id 的参数名。
- * 商品、订单、数量、页面和固定步骤均来自可信连接器登记的意图，不采信模型自报。
- */
-export interface BoundedFulfillmentAuthorization {
-  kind: 'bounded-fulfillment';
-  /** 固定副作用种类；toolgate 据此拒绝把发货 intent 用在消息工具上或反向错配。 */
-  workflow: 'shipment' | 'delivery';
-  /** 模型只传服务端一次性意图 id；商品/订单/数量/消息步骤由可信连接器登记，不采信模型自报。 */
-  intentIdParam: string;
-  /** adr-019：有此声明才注入配套零参数 prepare 工具（prepare.<toolId>），服务端引擎按声明派生业务输入。 */
-  preparation?: IntentPreparation;
-}
-
-/** workflow 联合类型的穷举镜像：联合增减成员或此处漏更均编译期爆错（双向同源保证）。 */
-const preparationWorkflowMirror: Record<BoundedFulfillmentAuthorization['workflow'], true> = {
-  delivery: true,
-  shipment: true,
-};
-
-/** 服务端已实现履约工作流的运行时闭集（capabilities.preparation.workflows 载入期交叉校验基准）。 */
-export const preparationWorkflows = Object.keys(
-  preparationWorkflowMirror,
-) as BoundedFulfillmentAuthorization['workflow'][];
-
-/** 从激活页 URL 的 hash query 段取参；取值 trim 后须非空且通过可选 pattern。 */
-export interface HashQueryParamSource {
-  source: 'hash-query';
-  name: string;
-  pattern?: string;
-}
-
-/** 从快照元素 href 取参：精确匹配 origin+path、恰含 queryParam 一个查询参数、无 hash 无凭证、命中元素唯一。 */
-export interface ElementHrefParamSource {
-  source: 'element-href';
-  urlOrigin: string;
-  urlPath: string;
-  queryParam: string;
-  pattern?: string;
-}
-
-export type PreparationParamSource = HashQueryParamSource | ElementHrefParamSource;
-
-/** DOM ref 绑定：按 role[+label] 在快照内唯一命中，不唯一即拒绝准备。 */
-export interface PreparationElementBinding {
-  role: string;
-  label?: string;
-  requireEnabled?: true;
-}
-
-/** 参数值必须在指定 role 元素的 label 中唯一回显（去空白后 = 值 或 = 前缀[+可选冒号]+值）。 */
-export interface PreparationParamEvidence {
-  param: string;
-  roles: string[];
-  labelPrefixes?: string[];
-}
-
-/** 证据绑定：rule 引用同工具 adapter.snapshotEvidence 的 id；shipment 另需 before/after 状态跃迁。 */
-export interface PreparationEvidence {
-  rule: string;
-  before?: string;
-  after?: string;
-}
-
-/**
- * adr-019 声明式 intent 准备（原语闭集 v1）：站点知识全量入 pack 声明，服务端引擎解释；
- * 任何字段缺失/证据不唯一/不匹配即拒绝（fail-closed），声明外形态不解释。
- */
-export interface IntentPreparation {
-  description: string;
-  routes: string[];
-  params: Record<string, PreparationParamSource>;
-  productParam: string;
-  elements: Record<string, PreparationElementBinding>;
-  paramEvidence?: PreparationParamEvidence;
-  evidence: PreparationEvidence;
-  intentTtlMs: number;
-}
-
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /** client 通道适配：宿主 API 请求模板，{{param}} 占位符由服务端代入实参后签名下发。 */
@@ -105,7 +26,7 @@ export interface ClientAdapter {
   bodyTemplate?: JsonObject | string;
 }
 
-/** server 通道适配（U3 保留段，MVP 定形不实现）：凭证只写引用名，真值运行时注入。 */
+/** server 通道适配（服务端直调，已实现）：凭证只写引用名，真值由执行器边界运行时注入。 */
 export interface ServerAdapter {
   method: HttpMethod;
   urlTemplate: string;
@@ -143,8 +64,6 @@ interface ToolDefinitionBase {
   riskTier: RiskTier;
   /** 缺省 per-task；every-call 使 toolgate 对本工具跳过任务级授权复用、次次挂起确认（对外不可撤回动作）。 */
   hitlMode?: HitlMode;
-  /** 可选的服务端有界自动授权；无有效可信意图即 deny，由另一人工工具承接。 */
-  authorization?: BoundedFulfillmentAuthorization;
   /** 结果契约：exec-result.body 校验不过即 invalid-result、不回喂 agent（U7）。 */
   resultSchema: JsonObject;
 }

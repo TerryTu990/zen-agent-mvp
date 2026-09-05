@@ -48,6 +48,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
+import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -130,18 +131,23 @@ async function countListItems(panel) {
  */
 async function bootstrapLogin() {
   mkdirSync(PROFILE_DIR, { recursive: true });
-  const context = await chromium.launchPersistentContext(PROFILE_DIR, {
-    headless: false,
-    args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
-  });
-  const goofish = context.pages()[0] ?? (await context.newPage());
-  await goofish.goto(GOOFISH_ORIGIN).catch(() => {});
-  const feishu = await context.newPage();
-  await feishu.goto(FEISHU_DOC_URL === '' ? 'https://feishu.cn' : FEISHU_DOC_URL).catch(() => {});
-  console.log(`profile 目录：${PROFILE_DIR}`);
-  console.log('在打开的窗口里分别登录 goofish 与飞书（飞书需能打开目标文档），完成后关闭整个浏览器窗口。');
-  await new Promise((settle) => context.once('close', settle));
-  console.log('登录态已写入 profile；接着跑：node --env-file=<测试根>/.env scripts/e2e/run-g6-real-site.mjs --runs=3');
+  const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+  try {
+    const context = await chromium.launchPersistentContext(PROFILE_DIR, {
+      headless: false,
+      args: [`--disable-extensions-except=${loadedExtensionDir}`, `--load-extension=${loadedExtensionDir}`],
+    });
+    const goofish = context.pages()[0] ?? (await context.newPage());
+    await goofish.goto(GOOFISH_ORIGIN).catch(() => {});
+    const feishu = await context.newPage();
+    await feishu.goto(FEISHU_DOC_URL === '' ? 'https://feishu.cn' : FEISHU_DOC_URL).catch(() => {});
+    console.log(`profile 目录：${PROFILE_DIR}`);
+    console.log('在打开的窗口里分别登录 goofish 与飞书（飞书需能打开目标文档），完成后关闭整个浏览器窗口。');
+    await new Promise((settle) => context.once('close', settle));
+    console.log('登录态已写入 profile；接着跑：node --env-file=<测试根>/.env scripts/e2e/run-g6-real-site.mjs --runs=3');
+  } finally {
+    removeExtensionDir(loadedExtensionDir);
+  }
 }
 
 function run(command, args) {
@@ -238,8 +244,6 @@ async function startRealServer({ auditPath, sessionDir, userConfigDir }) {
     systemPromptPath: join(REPO_ROOT, 'assets/system-prompt.md'),
     auditSinkPath: auditPath, sessionDir, userConfigDir, heartbeatMs: 60_000,
     allowedProviders: ['openai-compatible'],
-    // 真实站点两端都无专属 pack：须显式准入 generic 兜底（缺省 fail-closed 永不激活）。
-    genericAllowlist: [GOOFISH_ORIGIN, new URL(FEISHU_DOC_URL).origin],
   });
 }
 
@@ -251,6 +255,14 @@ async function driveOnce(runIndex, context, sw, extensionId, auditPath) {
   await searchPage.goto(`${GOOFISH_ORIGIN}/search?q=${encodeURIComponent(SEARCH_KEYWORD)}`, {
     waitUntil: 'domcontentloaded',
   });
+  // 图标手势的自动化等价：建 Zen 组并把 content 放进搜索页（adr-027 轨一，按需注入）。
+  const searchTabId = await sw.evaluate(async (origin) => {
+    const [tab] = await chrome.tabs.query({ url: `${origin}/*` });
+    return tab?.id ?? null;
+  }, GOOFISH_ORIGIN);
+  assert(typeof searchTabId === 'number', '未找到 goofish 搜索页标签');
+  await activateTab(sw, searchTabId);
+
   const panel = await context.newPage();
   await panel.setViewportSize({ width: 420, height: 900 });
   await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
@@ -382,16 +394,22 @@ async function main() {
     const serverBase = `http://127.0.0.1:${server.port}`;
 
     console.log('[3/4] 打开持久化 profile 的真实 Chromium（须已登录 goofish 与飞书）…');
+    // 产品清单里 host 权限是 optional，其授权气泡不可被自动化点击，故以「用户已授权站点访问」
+    // 为前置装载（见 extension-fixture）。装载目录每次现复制一份到临时区，用完即删。
+    const loadedExtensionDir = prepareExtensionDir(EXTENSION_DIR);
+    cleanups.push(() => removeExtensionDir(loadedExtensionDir));
     const context = await chromium.launchPersistentContext(PROFILE_DIR, {
       headless: false,
-      args: [`--disable-extensions-except=${EXTENSION_DIR}`, `--load-extension=${EXTENSION_DIR}`],
+      args: [`--disable-extensions-except=${loadedExtensionDir}`, `--load-extension=${loadedExtensionDir}`],
     });
     cleanups.push(() => context.close());
     const sw = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker', { timeout: 20_000 });
-    // 身份零预置：插件自己匿名激活（持久化 profile 上安装 id 跨次复用）；脚本只读回它用于脱敏与泄漏断言。
-    await sw.evaluate(async ([base, origins]) => {
-      await chrome.storage.local.set({ 'za.serverBaseUrl': base, 'za.autoActivate': origins });
-    }, [serverBase, [GOOFISH_ORIGIN, new URL(FEISHU_DOC_URL).origin]]);
+    // 身份零预置：插件自己匿名激活；脚本只读回安装 id 用于脱敏与泄漏断言。
+    // 解包扩展的 id 由装载路径决定，而装载目录每次现建：每次运行都是一个新的扩展身份，
+    // 其 chrome.storage 从空开始——安装 id 与令牌缓存不跨次复用，登录态则留在 profile 的页面会话里。
+    await sw.evaluate(async (base) => {
+      await chrome.storage.local.set({ 'za.serverBaseUrl': base });
+    }, serverBase);
     for (let attempt = 0; attempt < 60 && installId === ''; attempt += 1) {
       installId = await sw.evaluate(async () => (await chrome.storage.local.get('za.installId'))['za.installId'] ?? '');
       if (installId === '') await new Promise((r) => setTimeout(r, 500));

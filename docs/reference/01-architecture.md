@@ -1,26 +1,27 @@
 # zen-agent-mvp 架构（双版本：MVP 模块化单体 ↔ 标准版七系统）
 
 > 人读层参考文档。事实权威：契约细节见 `02-contracts.md` 与各 `.schema.json`、`ports.ts`；配置面见 `03-configuration.md`；部署见 `04-deployment.md`；本文负责解释结构、边界、流程与权衡。
-> 决策"为什么"见 `../adr/`（adr-001..013），分期计划见 `../roadmap.md`。
-> 本文已吸收 adr-010..013 演进（server/dom 通道、会话组、站点包、任务级授权、上下文治理）与 adr-023（任务组多 tab 工作区：组级视野与定向操作）。
+> 决策"为什么"见 `../adr/`（adr-001..023），分期计划见 `../roadmap.md`。
+> 本文已吸收 adr-010..016 演进（server/dom 通道、会话组、站点包与跨站任务组、上下文治理、L2 用户配置层、side panel）、adr-019..021（pack 声明式周期自动化、pack 契约 v2 与 registry 布局、用户自建触发器）、adr-022（匿名激活）、adr-023（任务组多 tab 工作区：组级视野与定向操作）与 adr-027（按需注入双轨模型，不变量 IN），含 P2.5 契约层（C7 user-overlay + `config-draft`/`config-decision` 帧 + `UserConfigStore` 端口 + `user-config-write` 审计事件）。
 
 ## 1. 目标与范围
 
 ### 1.1 目标
 
-在 ToB 内部系统（宿主系统）上叠加一个嵌入式"功能辅助智能体"：按用户当前所在功能（`featureId`）动态装配规则 / skills / 工具集，提供三项能力——
+在任意站点上叠加一个**可被用户塑形的浏览器 agent harness**（"浏览器 agent 的 Claude Code / AI 时代的 Tampermonkey"）：按用户所在站点/功能（`packId`/`featureId`）动态装配规则、知识、工具面与自动化，提供四档能力（信任阶梯）——
 
-1. **功能讲解**：这个页面 / 字段 / 流程是什么、怎么用；
-2. **UI 引导**：高亮 / 滚动到目标元素（"该点这里"）；
-3. **API 调用协助**：以用户身份代发宿主 API 请求，替用户完成操作。
+1. **功能讲解**（看）：这个页面 / 字段 / 流程是什么、怎么用；
+2. **UI 引导**（指）：高亮 / 滚动到目标元素（"该点这里"）；
+3. **受控代执行**（做）：分级判定 + HITL 确认 + 一次性签名指令 + 全链路审计，替用户完成操作；
+4. **自动化**（托管）：pack 声明的周期任务（adr-018/019）与用户自建周期触发器（平台内建模板闭集 + 参数层 `watches`，自动回合只读强制，adr-021），需确认项收口到人。
 
-宗旨基准（一切复杂度的自证问题）：**如何让 agent 更准确地辅助用户使用宿主系统**。答不上来的复杂度不引入。
+宗旨基准（一切复杂度的自证问题，**两问皆答不上不引入**）：**如何让 agent 更准确地辅助用户使用当前站点，或让用户在治理边界内更自由地塑形这种辅助**。塑形自由不得以松动治理边界（§2.2 边界铁律 / §5 不变量）为代价。
 
 ### 1.2 范围
 
 本文覆盖两个版本形态及其间的升级路径：
 
-- **MVP**：Chrome 插件客户端 + 模块化单体服务端（一个 Node 进程），git 文件即配置，客户端代执行通道，单租户多用户。
+- **MVP**：Chrome 插件客户端（side panel，adr-015）+ 模块化单体服务端（一个 Node 进程），配置双源（L1 = git 文件快照 registry + packs；L2 = 用户覆盖层经 `UserConfigStore` 端口），`client` 代执行 + `server` 直调双通道，单租户多用户。
 - **标准版**：三形态客户端（插件 / 嵌入 SDK / 浏览器壳）+ 七系统独立部署，配置中心后台化，双执行通道，多租户、状态外置、水平扩展。
 
 不在本文范围：各契约的字段级定义（→ `02-contracts.md`）、开发期治理红线（→ `.claude/rules/ZA-*.md`）、运行期治理制品（→ `assets/`）。
@@ -29,15 +30,15 @@
 
 ### 2.1 背景
 
-- 宿主系统多为 legacy / cookie 会话的企业内部系统，普遍**不可改造或改造成本高**——接入层必须自足（拿不到宿主配合时所有能力自给）。
+- 目标站点是任意第三方站点（企业内部系统、公网 SaaS、平台后台皆在其列），普遍**不可改造或改造成本高**且多为 cookie 会话——接入层必须自足（拿不到站点配合时所有能力自给）。
 - 机制层大量复用 zen-flux-mvp 已验证的模式：装配三元组、tool_call 门禁、HITL 卡片、事件旁路审计、provider 插拔、eval 纪律。**只复制模式与契约、不共享代码**（两产品演进方向不同，见 adr-005）。
 
 ### 2.2 约束与边界铁律
 
-- **装配对 agent 透明**：治理（注入哪些规则/skills/工具白名单）不可被对话内容改变。
+- **装配对 agent 透明**：治理（注入哪些规则/skills/工具白名单）不可被对话内容改变（已升格 U8）。
 - **决策永远在服务端**：分级判定与 HITL 挂起在服务端 fail-closed；客户端零治理判定（见 adr-003）。
 - **审计永远旁路**：record-only，审计故障不进控制流。
-- **平滑升级不变量 U1-U7**（SSOT §4）：本文 §5 逐条展开；它们同时是开发期架构红线（`.claude/rules/`）。
+- **平滑升级不变量 U1-U8**（SSOT §4）：本文 §5 逐条展开；它们同时是开发期架构红线（`.claude/rules/`）。
 - 工具链：Node ≥22、pnpm workspace + catalog、TS 5.8 全 ESM 严格、vitest 串行。
 
 ## 3. 总体架构
@@ -48,7 +49,7 @@
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│ 浏览器：宿主系统页面（legacy，不可改造）——会话=标签组（adr-012/013）      │
+│ 浏览器：目标站点页面（第三方，不可改造）——会话=标签组（adr-012/013）      │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │ ① apps/extension（Chrome 插件 = 客户端接入层，实现 C3 五能力）    │  │
 │  │    身份获取 │ 上下文上报 │ 会话 UI+HITL 卡片 │ 页面动作 │ 代执行   │  │
@@ -69,8 +70,8 @@
 │     内建工具注入：guide_highlight / page_snapshot / pack_doc /        │
 │     site_navigate / open_url（渐进披露，随装配条件注入，不入 tools.json）│
 │      │              │               │              │               │
-│  ────┴── 端口注入（C6：Assembly/ToolGate/CardInventory/Fulfillment/ │
-│          Llm/Audit Port，                                           │
+│  ────┴── 端口注入（C6：Assembly/ToolGate/Llm/Audit/               │
+│          UserConfigStore Port，                                     │
 │          U1 只传 JSON 可序列化值；U2 模块间禁直接 import）──────        │
 │      │              │               │              │               │
 │  ┌───▼────────┐ ┌───▼─────────┐ ┌───▼──────────┐ ┌─▼────────────┐  │
@@ -96,7 +97,7 @@
 
 会话状态默认落盘 `.za/sessions/`（append-only 事件流 + 重启重放 + TTL 清理，fail-open），**接口按可外置设计**——这是 S4 状态外置的前提。
 
-**执行通道现状（三态）**：`client`（HTTP 代执行——插件在页面环境以用户 cookie 发宿主请求）、`client+dom`（可见页面代操作——服务端签发闭集步骤批次，插件每步高亮步进）、`server`（服务端直调——`credentialRef` 运行时凭证注入，平台级只读 API）。三态均已实现，通道仍是工具定义的配置维度（U3 的"MVP 只实现 client"已被 adr-010/011 演进取代）。
+**执行通道现状**：`execution` 闭集两值均已实现——`client`（插件在页面环境以用户会话代执行，按 `adapter.kind` 分形为 http 代发宿主请求 / dom 可见页面代操作：服务端签发闭集步骤批次，插件每步高亮步进）与 `server`（服务端直调——`credentialRef` 运行时凭证注入，平台级只读 API）。通道仍是工具定义的配置维度，dom 是 client 下的 adapter 分形而非第三个通道值（U3 的"MVP 只实现 client"已被 adr-010/011 演进取代）。
 
 ### 3.2 标准版：七系统独立部署
 
@@ -135,7 +136,7 @@
 |---|---|---|---|---|---|
 | ① | 客户端接入层 | 身份获取、上下文上报（featureId+白名单快照）、会话 UI+HITL 卡片、页面动作（高亮）、代执行 | 零治理判定；不解析工具语义，只按签名指令执行并回传 | `apps/extension` | 三形态各自实现同一 C3 契约 |
 | ② | 会话网关 | 验 token、会话生命周期、装配（featureId→基座+规则块+skills+工具白名单，每轮换出）、agent loop、SSE 下发 | 不做工具执行判定（委托③）；不持 LLM 密钥（委托④） | `apps/server` 内模块 | 独立服务，状态外置 |
-| ③ | 工具执行层 | **唯一决策点**（分级矩阵+身份校验，fail-closed）+ 双通道执行器 + observation 规整回喂 | 不产生对话内容；不绕过分级矩阵 | `packages/toolgate`（仅 client 通道） | 独立服务，双通道 |
+| ③ | 工具执行层 | **唯一决策点**（分级矩阵+身份校验，fail-closed）+ 双通道执行器 + observation 规整回喂 | 不产生对话内容；不绕过分级矩阵 | `packages/toolgate`（client/server 双通道均已实现；client 内 http/dom 两种 adapter 分形） | 独立服务，双通道 |
 | ④ | LLM 接入层 | provider 白名单插拔、密钥托管、配额计量、故障切换 | 不感知业务语义与装配内容 | `packages/llm-port` | 独立服务 |
 | ⑤ | 配置中心 | featureId 管理、四件配置（规则 md / skills / 工具定义 / 分级矩阵）、版本化快照发布 | 只产出快照，不参与运行时决策 | git 文件 + `assets/` 布局 | 独立后台系统 |
 | ⑥ | 身份联邦 | 信任契约：短期 JWT 签发/验签/透传；平台零特权、不建账号 | 不存用户凭证；不代宿主鉴权 | 网关内验签模块 | 独立 / 复用企业 IAM |
@@ -143,7 +144,7 @@
 
 ## 4. 关键流程
 
-三条时序覆盖三项产品能力的主干路径。全程 ⑦ audit 旁路记录，下文不再重复标注。
+以下时序覆盖讲解、装配换出、受控代执行与任务组协作的主干路径（自动化档的调度与只读强制见 adr-019/021）。全程 ⑦ audit 旁路记录，下文不再重复标注。
 
 ### 4.1 讲解问答（最短闭环）
 
@@ -195,9 +196,7 @@ agent(LLM) ─tool_call(工具 id + params)─► ②网关 ─► ③toolgate�
 
 要点（U7 的运行时形态）：判定与挂起全部在服务端；客户端拿到的只是"一次性、短时效、签名过"的指令，执行结果必须过服务端 schema 校验才进 agent 上下文。
 
-**任务级 HITL 授权（adr-013，对 4.3 的演进）**：hitl 工具批准后，toolgate 以 `(sessionId, task)` 登记授权（滑动闲置 TTL，默认 15min）——同会话同任务标题的后续调用**跨工具共享**放行（含带 task 的 `site_navigate`），不再逐次弹卡。两个例外不并入复用：`hitlMode: 'every-call'` 工具（发信等对外不可撤回动作，次次单独确认，批准也不登记）与授权卡未呈现任务计划的 navigate 批准。用户点「停止」吊销本会话全部授权；授权卡展示 agent 声明的 `plan`（任务级大步骤），用户批准的即这份计划。dom 步骤校验永远先于授权复用——已授权任务的非法批次照样 deny（fail-closed 不被 grant 绕过）。
-
-**有界自动履约（adr-016）**：可信连接器先通过进程内端口登记一次性履约意图，绑定账号、精确页面 URL/页面生命周期、商品、规范化订单、数量、消息/发送 ref、回执基线与固定正文；模型工具只传 opaque `intentId`。toolgate 匹配服务端策略并原子预占全局订单键，只构造 `fill → click`。服务端 Ed25519 私钥签名会话、绝对时限与最终请求，插件仅信任生产 HTTPS（本机开发例外）SSE 公钥，并在副作用前验签、验过期、持久化 nonce 去重。DOM 两步成功不等于送达：网关在原指令时限内强制请求发送后快照，回执仍绑定同一 URL/页面实例且数量恰增 1 才记 `completed`；其余均 `uncertain` 且不自动重试。输入值由插件不采集、网关再剥离，策略/正文不进模型或审计。
+**任务级 HITL 授权（adr-013，对 4.3 的演进）**：hitl 工具批准后，toolgate 以 `(sessionId, packId, packOrigin, task)` 四元组登记授权（滑动闲置 TTL，默认 15min；后三项取自服务端自持事实而非模型自述，防跨 pack 同名 task 蹭授权）——同会话同作用域同任务标题的后续调用**跨工具共享**放行（含带 task 的 `site_navigate`），不再逐次弹卡。两个例外不并入复用：`hitlMode: 'every-call'` 工具（发信等对外不可撤回动作，次次单独确认，批准也不登记）与授权卡未呈现任务计划的 navigate 批准。用户点「停止」中止在途批次、拒绝待确认卡片，并吊销本会话全部任务级授权（adr-024 D2，`ToolGatePort.revokeHitlGrants`；吊销失败只记本地错误、不阻断停止）；会话逐出回收同样先吊销再回收，吊销失败即原样保留治理态——回收异常不得演变成治理放宽。授权卡展示 agent 声明的 `plan`（任务级大步骤），用户批准的即这份计划。dom 步骤校验永远先于授权复用——已授权任务的非法批次照样 deny（fail-closed 不被 grant 绕过）。
 
 ### 4.4 dom 可见页面代操作（adr-011：观察 → 操作 → 复核）
 
@@ -212,7 +211,7 @@ agent ─tool_call(dom 工具: task+plan+steps[闭集动作])─► ③toolgate
 ①插件 ─exec-result─► 服务端校验 → 回喂 ─► agent 重新 page_snapshot 复核页面证据
 ```
 
-要点：agent 以页面实际变化（复核快照）判定业务成败，不以执行 ok 为准；`fill` 支持 input/textarea 与 contenteditable 富文本；用户「停止」即吊销授权且中止批次。
+要点：agent 以页面实际变化（复核快照）判定业务成败，不以执行 ok 为准；`fill` 支持 input/textarea 与 contenteditable 富文本；用户「停止」即中止批次并吊销本会话全部任务级授权（见 §4.3 任务级授权段）。
 
 ### 4.5 跨站任务组（adr-013：navigate → 回合内换装 → 任务续作）
 
@@ -249,7 +248,38 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
 
 要点：渐进披露由此定型为三层——已安装站点索引（"可以去哪"）→ 任务组页面清单（"现在开着哪"）→ pack docs 索引（"细节去哪查"）。**工具白名单仍按活跃页装配，定向只改副作用落点、不扩权**：pack dom 工具只能定向到落在本 pack 围栏内的组内页；平台内建导航（site_navigate/open_url）可定向组内任意页（含 silent 页——导航即其激活通路），定向快照则要求目标页在场内容脚本通道（silent 页拒并引导先激活）。定向不改变活跃页，故不触发站点边界标记，代之以观测页标注；HITL 卡的目标页/目标地址由服务端组装消毒后呈现，用户裁决时知道副作用落在哪一页；定向单步 navigate 的落点由签名帧句柄钉死（background 直执行，不跑同源复用判定）。
 
-## 5. 升级路径（U1-U7 逐条展开）
+### 4.8 按需注入双轨模型（adr-027：不变量 IN）
+
+```
+不变量 IN：content 脚本只出现在两类页面上——
+  (a) 用户在本会话里对其发起了动作的页（图标 / 右键 / 快捷动作 / 服务端下发的定向帧）
+  (b) 用户为 watch 自动化显式授权过 origin 的页
+其余任何页面上 document 无 zen 注入痕迹。注入面 = 授权集 − 站点黑名单。
+
+轨一 会话内按需注入
+  用户手势 / 服务端定向帧到达 ─► ①插件 background 句柄→tabId 解析
+    → 站点黑名单闸门 → chrome.scripting.executeScript(dist/content.js) → 既有 port 通道
+  注入与激活同出一口（sendActivate），组内导航补发 / 拖入已映射组 / navigate 开页由此继承
+  定向帧到达时目标页未注入：注入 → 等端口接入 → 投递重新排回落页闸门（停止/黑名单在副作用那一刻判）
+轨二 watch 自动化的显式 origin 授权
+  配置中心「授权此站点」→ chrome.permissions.request({origins}) → L2 grantedOrigins
+  注册面 = L2 投影 ∩ 本机 chrome.permissions − 站点黑名单
+  配置中心显示的授权态同取交集（chrome.permissions.contains 逐条对账）：
+    本机缺失即标「浏览器已撤销访问」+「重新授权」，自动化页「站点未授权」同口径
+    → chrome.scripting.registerContentScripts（确定性 id，注册前按 id 注销即幂等）
+  撤销授权 / 落进黑名单 → unregisterContentScripts（对称注销）
+```
+
+要点：清单不再声明任何 `content_scripts`，`host_permissions` 降为 `optional_host_permissions`，
+`activeTab` 保留为手势注入的基础。注入面的授权集取**交集**而非并集——本机 `chrome.permissions`
+多出来的 origin 不构成治理放行（终判恒在服务端 compose，U7），L2 多出来的 origin 也拿不到浏览器授权。
+`grantedOrigins` 是准入维度而非治理维度：授权只决定 agent 在该站点是否存在，不改任何工具的
+riskTier / 工具面成员 / HITL 判定，故与 L2「只收紧」正交（schema 上与 `restrictions` 物理分离）。
+注入与注册的载荷恒为插件自带的 `dist/content.js`——pack 与 L2 都无从携带可执行代码（R2）。
+接受的代价：watch 自动化在未授权 origin 上不再零配置可用（R9 限定），跨导航的会话连续性依赖 origin 授权
+（`activeTab` 在导航到新文档后被浏览器收回）。
+
+## 5. 升级路径（U1-U8 逐条展开）
 
 本节为规范性契约段落，MUST / SHOULD 语义按 RFC 2119。每条不变量的结构：约束内容 → 它如何保证 MVP→标准版平滑升级 → 违反时的代价。
 
@@ -271,15 +301,17 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
 - 现状：**双通道均已实现**（adr-010 提前落地 server 直调——本条不变量的价值已兑现：补 server 执行器时 agent/网关/客户端全部无感）。client 通道内又按 adapter 分形为 http 代执行与 dom 页面代操作（adr-011），分形在 adapter 维度、不扩 execution 闭集。
 - 违反代价：把通道写死进类型或流程分支后，任何新执行形态都是全链路改造。
 
-### U4 配置 = 版本化不可变快照，文件布局与配置中心产出物同构
+### U4 配置双源：L1 不可变快照同构 + L2 UserConfigStore 端口
 
-- 约束：C4 快照一经产出 MUST 不可变（改配置=发新版本）；MVP 的 `assets/features/<id>/` 文件布局 MUST 与标准版配置中心的发布产出物结构同构。
-- 如何保平滑：升级=换生产端（git 文件 → 配置中心后台+发布流水线），消费端（assembly 装配引擎）零改动；灰度与回滚天然获得（切快照版本号）。
-- 违反代价：布局不同构则 S2 需要双写/迁移适配层，配置回归风险全落在装配引擎上。
+- 约束（L1）：C4 快照一经产出 MUST 不可变（改配置=发新版本）；`assets/manifest.json`（registry）+ `assets/packs/<packId>/{pack.json, features/<id>/{feature.md, facts.md, tools.json}, skills/<fn>/SKILL.md}` 布局 MUST 与标准版配置中心的发布产出物结构同构（adr-020）。
+- 约束（L2）：用户覆盖层（C7 user-overlay，adr-014）MUST 只经 `UserConfigStore` 端口读写、以 revision（内容 hash）可追溯，显式排除在同构与不可变约束之外；此两源之外 MUST NOT 存在配置源（判定："快照布局之外且非 `UserConfigStore` 端口"的配置源即旁门）。L2 自带三约束：只收紧（riskTier 合并恒 `max(L1, L2)`）、可审计（revision 入 C5 `user-config-write` 与决策事件的 `userConfigRevision` 互证）、可追溯（注入组合逐条标注来源）。
+- 如何保平滑：L1 升级=换生产端（git 文件 → 配置中心后台+发布流水线），消费端（assembly 装配引擎）零改动，灰度与回滚天然获得（切快照版本号）；L2 存储外置时只换端口实现，读写语义与校验点不移动。
+- 违反代价：布局不同构则 S2 需要双写/迁移适配层，配置回归风险全落在装配引擎上；L2 绕开端口直读文件则 revision 不可追溯、只收紧无处校验，用户层退化为不可审计的旁门配置源。
 
 ### U5 客户端接入层契约五能力不随形态变
 
 - 约束：C3 的五能力（身份获取 / 上下文上报 / 会话 UI+HITL / 页面动作 / 代执行）与消息帧 MUST 对三形态一致；形态差异 MUST 封装在各形态实现内部，不外泄进契约。
+- adr-027 后的核对：按需注入只换「谁在何时把执行器放进页面」，属形态实现内部；C3 上下行帧族与五能力语义一字不动，故不构成对本条的改动。插件形态用 `chrome.scripting`，SDK / 浏览器壳各自决定注入方式——形态无关性正是本条要的。
 - adr-023 后的延伸面：多 tab 工作区的定向落点以**会话作用域不透明页面句柄**表达（插件映射到 tab、SDK 映射到 iframe/视图、浏览器壳映射到自有页对象），Chrome tabId 等形态原生标识 MUST NOT 进入契约、服务端状态与审计事件；句柄的不透明性由契约测试钉死（schema 只约束长度、无 pattern；服务端只作等值比对）。
 - 如何保平滑：S3 增加嵌入 SDK / 浏览器壳时，服务端一行不改；新形态只需通过同一套契约验收（同一组接入层契约测试 SHOULD 作为三形态共同验收门）。
 - 违反代价：契约随形态分叉后，网关被迫按客户端类型分支，三形态变三套后端。
@@ -297,6 +329,12 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
 - adr-023 后的延伸面（定向操作）：目标句柄 MUST 命中服务端自持的组页面状态表；pack dom 工具的围栏 MUST 按**目标页 URL**（origin + pathPrefixes）校验；silent 页（无 content script 通道）除单步 navigate 外 MUST 拒签；一次性签名 MUST 覆盖定向落点（签名序列以 `targetPage` 键承载本帧 `page` 值）。全部判定在签发前完成，MUST NOT 回退到活跃页执行、MUST NOT 静默降级；投递侧仍保持每帧至多一个成员且不可达时不改投。
 - 如何保平滑：安全模型从 MVP 第一天就是标准版形态——拆 ③ 为独立服务时，信任边界不移动、不需要重新安全评审整个链路。
 - 违反代价：任何"客户端先判一下"的捷径都会在拆分时变成不可信边界上的治理漏洞（另见 adr-002 对该模型残余风险的权衡）。
+
+### U8 装配与治理对对话免疫
+
+- 约束：装配注入与各层治理配置（L0 基座 / L1 pack / L2 收紧）MUST NOT 被对话内容或模型输出直接改变；对话→配置的唯一通路是显式确认写入通道（服务端产草稿 `config-draft` → 用户裁决 `config-decision` → schema + 只收紧校验 → 入库，adr-014）；治理注入 MUST 每轮全量重建，结构上不参与历史压缩与记忆。
+- 如何保平滑：治理来源与对话历史结构性分离——S2 配置中心接管 L1、L2 存储外置后写入通道与校验点原地不动；teach / 记忆类功能无论落在哪一端都只能产出草稿，新增形态不需要重新论证记忆边界。
+- 违反代价：任何"对话内容直写治理配置"的捷径都是记忆投毒面——被注入的规则此后每轮生效、无人确认过，审计里也没有写入事件可追溯，U7 的服务端判定即使完好也在依据被污染的配置作出。
 
 ## 6. 风险与权衡
 
@@ -320,8 +358,6 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
 | `packages/contracts` | C1-C6 全部 schema + TS 类型 | 零依赖底座：schema、端口类型、内建工具结构契约 | 任何实现逻辑 |
 | `packages/assembly` | C4 消费端（AssemblyPort） | 快照载入（registry/legacy 二形态）、pack 激活解析、注入组合、docs 渐进披露、site/工具归属枚举 | 运行时改写快照（U4）；治理判定 |
 | `packages/toolgate` | C1/C2 消费端（ToolGatePort） | 唯一决策点（分级/身份/围栏/dom 校验/任务级授权/定向目标页解析与通道分级）、一次性签名签发/核销、server 直调执行器 | 产生对话内容；持 LLM 密钥 |
-| `packages/card-inventory` | C6 CardInventoryPort | 飞书 Base 同订单查重、单卡预占与 sent/manual 回填；CLI 错误脱敏 | 模型调用；页面操作；并发事务伪装 |
-| `packages/fulfillment` | C6 FulfillmentCoordinatorPort | 先预占库存、生成固定通知、登记 opaque intent、按回执回填 | DOM 执行；toolgate 决策；记录卡密 |
 | `packages/llm-port` | C6 LlmPort | openai 兼容流式对接、provider 白名单、密钥 env 托管、toolId 出网净化、实参非法诊断 | 感知业务语义与装配内容 |
 | `packages/audit` | C5 生产端（AuditPort） | record-only 旁路落盘、落盘前脱敏 | 进入控制流（故障吞掉） |
 | `apps/server` | 唯一组装点（U2） | 内部六模块：gateway（回合循环/内建工具/HITL 挂起恢复/自愈重试/任务组页面清单注入）、auth（验签）、sessions（持久化 + 组页面状态表）、compress（P1 压缩）、history（P0 瘦身）、activation（匿名身份签发，adr-022） | 第二组装点；横向 import |

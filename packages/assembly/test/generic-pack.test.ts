@@ -32,6 +32,24 @@ describe('generic-web pack 装配（examples/acceptance registry，通用站点�
     expect(sites.map((s) => s.packId)).not.toContain('generic-web');
   });
 
+  it('listPacks 投影 pack 预置的快捷提问（R-5 L1 声明面）', async () => {
+    const pack = (await port.listPacks()).find((p) => p.packId === 'generic-web');
+    expect(pack?.quickActions?.map((action) => action.id)).toEqual(['explain-selection', 'summarize-page']);
+    const explain = pack?.quickActions?.[0];
+    expect(explain?.context).toBe('selection');
+    expect(explain?.template).toContain('{{selection}}');
+  });
+
+  it('快捷提问不进任何装配产物：system 注入、事实块与工具面都不含其模板（U8 零触碰）', async () => {
+    const composed = await port.compose({ sessionId: 's-qa', packId: 'generic-web', featureId: 'browse' });
+    const injected = [composed.systemPrompt, composed.featureRules ?? '', composed.facts ?? '']
+      .concat(composed.skills.map((skill) => skill.content))
+      .join('\n');
+    expect(injected).not.toContain('{{selection}}');
+    expect(injected).not.toContain('解释选中内容');
+    expect(Object.keys(composed)).not.toContain('quickActions');
+  });
+
   it('browse 工具面 = 仅 browse.page-operate（client/dom + hitl per-task）', async () => {
     const composed = await port.compose({ sessionId: 's1', packId: 'generic-web', featureId: 'browse' });
     expect(composed.tools.map((t) => t.id)).toEqual(['browse.page-operate']);

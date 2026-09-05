@@ -274,3 +274,115 @@ describe('promptHitl 目标页标注与目标 URL（adr-023 D3：服务端给什
     expect(messages.querySelector('.za-hitl-target-page')?.textContent).toContain('工单 #4521');
   });
 });
+
+describe('promptHitl R4 五要素与防误触（UI 规范 §5/§8；服务端给什么渲染什么）', () => {
+  const domFrame = (overrides: Partial<HitlRequestFrame> = {}): HitlRequestFrame =>
+    hitlRequest({
+      toolId: 'browse.page-operate',
+      params: {
+        task: '发一条消息',
+        summary: '整理订单列表',
+        plan: ['打开订单列表', '整理数据'],
+        steps: [{ action: 'fill', ref: 'za-1', value: 'x' }],
+      },
+      effects: [
+        { action: '填写', target: '收件人（input:text）', valuePreview: 'attacker@evil.example' },
+        { action: '点击', target: '发 送（button）' },
+      ],
+      ...overrides,
+    });
+
+  it('卡上呈现服务端反解的真实动作，而非只有模型自述的 summary/plan（A-SEC-02）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(domFrame());
+
+    const effects = messages.querySelector('.za-hitl-effects');
+    expect(effects).not.toBeNull();
+    expect(effects?.textContent).toContain('填写');
+    expect(effects?.textContent).toContain('收件人（input:text）');
+    expect(effects?.textContent).toContain('attacker@evil.example');
+    expect(effects?.textContent).toContain('发 送（button）');
+  });
+
+  it('模型自述降为次要信息并标注来源：不得与服务端反解的动作混为一谈', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(domFrame());
+
+    const claim = messages.querySelector('.za-hitl-claim');
+    expect(claim?.textContent).toContain('整理订单列表');
+    expect(claim?.textContent).toContain('agent 自述');
+    // 自述块与真实动作块是两个不同节点：真实动作不来自 params。
+    expect(messages.querySelector('.za-hitl-effects')?.textContent).not.toContain('整理订单列表');
+  });
+
+  it('effects 缺省（服务端未下发机械摘要）→ 不本地从 params 推断动作，只留自述块', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const { effects: _effects, ...withoutEffects } = domFrame();
+    void ui.promptHitl(withoutEffects);
+
+    expect(messages.querySelector('.za-hitl-effects')).toBeNull();
+    expect(messages.querySelector('.za-hitl-claim')?.textContent).toContain('整理订单列表');
+  });
+
+  it('来源 pack 与作用站点、风险行、治理小字按 §5 五要素渲染（服务端字段）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(
+      domFrame({
+        pack: { packId: 'xianyu-seller', name: '闲鱼卖家', source: 'official', origin: 'https://seller.goofish.com' },
+        risk: '将触发页面按钮：一旦触发提交，平台无法为你撤销。',
+        ttlMs: 60000,
+      }),
+    );
+
+    const pack = messages.querySelector('.za-hitl-pack');
+    expect(pack?.textContent).toContain('闲鱼卖家');
+    expect(pack?.textContent).toContain('官方');
+    expect(pack?.textContent).toContain('https://seller.goofish.com');
+    expect(messages.querySelector('.za-hitl-risk')?.textContent).toContain('平台无法为你撤销');
+    const gov = messages.querySelector('.za-hitl-gov')?.textContent ?? '';
+    expect(gov).toContain('一次性签名指令');
+    expect(gov).toContain('60 秒内有效');
+    expect(gov).toContain('全程审计留痕');
+  });
+
+  it('pack 无 name 时回退 packId；ttlMs 缺省时治理小字不编造有效期', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(domFrame({ pack: { packId: 'host-demo' } }));
+
+    expect(messages.querySelector('.za-hitl-pack')?.textContent).toContain('host-demo');
+    const gov = messages.querySelector('.za-hitl-gov')?.textContent ?? '';
+    expect(gov).toContain('一次性签名指令');
+    expect(gov).not.toContain('有效');
+  });
+
+  it('tightenedBy=L2：标注这是用户自己设置的确认项（R4 来源可追溯）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(domFrame({ tightenedBy: 'L2' }));
+    expect(messages.querySelector('.za-hitl-tightened')?.textContent).toContain('你自己设置的确认项');
+
+    ui.cancelHitl();
+    void ui.promptHitl(domFrame());
+    expect(messages.querySelector('.za-hitl-tightened')).toBeNull();
+  });
+
+  it('卡挂载后默认焦点落「拒绝」（§8 防误触放权）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(domFrame());
+
+    expect(document.activeElement).toBe(messages.querySelector('[data-za-hitl-reject]'));
+  });
+});

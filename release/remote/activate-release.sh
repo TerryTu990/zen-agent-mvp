@@ -86,13 +86,6 @@ validate_release() {
       echo 'lark-cli 不可执行' >&2
       return 1
     }
-    # 只有三项卡密配置同时存在时才要求 general（或显式 profile）可读、可刷新。
-    compose "${release_dir}" exec -T zen-agent sh -eu -c '
-      if [ -n "${ZA_FEISHU_CARD_BASE_TOKEN:-}" ] && [ -n "${ZA_FEISHU_CARD_TABLE_ID:-}" ] && [ -n "${ZA_FULFILLMENT_GUIDE_URL:-}" ]; then
-        umask 077
-        lark-cli --profile "${ZA_FEISHU_PROFILE:-general}" whoami >/dev/null
-      fi
-    ' || { echo '飞书 profile smoke 失败' >&2; return 1; }
   fi
 }
 

@@ -5,6 +5,7 @@
  */
 import type { JsonObject, JsonValue } from './json.js';
 import type { HttpMethod, SnapshotEvidenceRule } from './tool-definition.js';
+import type { PackSource } from './config-snapshot.js';
 
 /** 五能力闭集（U5）：任何客户端形态实现同一组能力。 */
 export type ClientCapability =
@@ -55,6 +56,14 @@ export interface UserMessageFrame {
    * 回落会把无人值守轮交还完整工具面，R7 只读底线随之失守。
    */
   automationId?: string;
+  /**
+   * 本轮由快捷提问发起（R-5）：服务端在激活 pack 的 L1 声明与该 subject 的 L2 覆盖层中按此 id 查表，
+   * 取其 template 展开为本轮用户轮消息。查不到或已被用户停用即按 text 原样发起并在审计标注——
+   * 快捷提问是问法不是授权，不改变工具面、riskTier 与任何判定。
+   */
+  quickActionId?: string;
+  /** 随快捷提问带上的页面选区正文（填入模板的 {{selection}}）：页面数据不是指令；仅在带 quickActionId 时有意义。 */
+  selectionText?: string;
 }
 
 export interface HitlDecisionFrame {
@@ -99,6 +108,12 @@ export interface SnapshotReportFrame {
   pageInstanceId?: string;
   title?: string;
   elements: SnapshotElement[];
+  /** true=elements 只是配额内的子集，agent MUST NOT 据此断言页面上没有某控件；缺省/false=清单完整。 */
+  elementsTruncated?: boolean;
+  /** 被配额丢弃的可交互元素个数（0=恰好用满配额而无丢弃）。elementsTruncated 缺席时本字段不得出现。 */
+  elementsOmitted?: number;
+  /** 客户端快照世代（自 1 起单调递增）：ref 对元素黏附，服务端原样落入 dom 判定上下文标定 ref 闭集的代次。 */
+  snapshotEpoch?: number;
   /** 页面当前可见的告警/校验/状态提示文本（客户端去重截断）：供 agent 识别表单校验等拦截性提示。 */
   notices?: string[];
   /** 页面正文纯文本，仅 includeText 请求时采集；未请求或页面无正文一律缺席（空串非法）。与 elements 同属不可信观察。 */
@@ -164,11 +179,26 @@ export interface TextDeltaFrame {
   priority?: 'safety';
 }
 
+/**
+ * 回合终止原因闭集：面板据此分流后续动作（如 max-rounds 提示「继续」），
+ * 评测按取值断言而非 grep 文案。服务端唯一产出，客户端只渲染、不判定（U7）。
+ */
+export type TurnCompleteReason =
+  | 'completed'
+  | 'stopped'
+  | 'max-rounds'
+  | 'consecutive-failures'
+  | 'llm-error'
+  | 'llm-timeout'
+  | 'tool-not-available';
+
 export interface TurnCompleteFrame {
   type: 'turn-complete';
   sessionId: string;
   messageId?: string;
   idle: boolean;
+  /** 缺省=未标注（旧客户端兼容）。 */
+  reason?: TurnCompleteReason;
 }
 
 export interface ToolCardFrame {
@@ -194,6 +224,30 @@ export interface HitlPageDisplay {
   origin?: string;
 }
 
+/**
+ * 确认卡机械摘要条目：服务端把 toolgate 校验后的净化终值步骤按最近快照元素表反解所得（U8）。
+ * 用户裁决的是「将真正发生什么」，不是模型在 params 里自述的 summary/plan。
+ */
+export interface HitlEffect {
+  /** 动作措辞（点击/填写/读取/导航到…），取自服务端闭集映射。 */
+  action: string;
+  /** 目标描述：元素反解为「标签（角色）」；导航步为目标地址；反解不出即如实标注目标未知，不猜测。 */
+  target: string;
+  /** fill/select 的写入值摘要（消毒+截断）；密码/文件类控件与反解不出的目标一律省略（fail-closed）。 */
+  valuePreview?: string;
+}
+
+/** 确认卡来源 pack 展示（R4 作用站点与来源 pack）：服务端组装消毒，客户端只渲染徽章与措辞。 */
+export interface HitlPackDisplay {
+  packId: string;
+  /** pack.json name；未声明时省略，展示回退 packId。 */
+  name?: string;
+  /** registry 登记来源（来源徽章数据源）。 */
+  source?: PackSource;
+  /** 作用站点：site pack 取 site.origin，generic pack 取激活时绑定的活跃页 origin；无围栏时省略。 */
+  origin?: string;
+}
+
 export interface HitlRequestFrame {
   type: 'hitl-request';
   sessionId: string;
@@ -207,6 +261,16 @@ export interface HitlRequestFrame {
   targetPage?: HitlPageDisplay;
   /** navigate 类调用（open_url/site_navigate/单步 navigate 批次）的目标 URL：卡正文 MUST 呈现，服务端已消毒。 */
   targetUrl?: string;
+  /** 服务端反解的机械摘要：卡正文 MUST 优先呈现，params 内模型自述只作次要信息。 */
+  effects?: HitlEffect[];
+  /** 工具所属激活 pack 的展示信息；无 pack（仅基座）时省略。 */
+  pack?: HitlPackDisplay;
+  /** 风险行文案（UI 规范 §5 五要素之一）：服务端按净化终值机械派生，不取模型自述。 */
+  risk?: string;
+  /** 本次确认由用户自己收紧分级而来时标注（R4 可追溯）；pack 默认即需确认时省略。 */
+  tightenedBy?: 'L2';
+  /** 批准后签发的一次性指令有效期（毫秒）：治理小字据此标注有效期。 */
+  ttlMs?: number;
 }
 
 /** 服务端已定值的最终请求，客户端不做模板求值。 */
@@ -250,7 +314,7 @@ export interface DomExecRequest {
   kind: 'dom';
   steps: DomStep[];
   /**
-   * 副作用指令的机械执行围栏：服务端只钉可核对的维度（有界履约钉 URL+页面实例，定向批次钉状态表目标页 URL），
+   * 副作用指令的机械执行围栏：服务端只钉可核对的维度（当前只有定向批次钉状态表目标页 URL），
    * 客户端逐字段等值比较、未钉维度不参与判定，不承担治理判定。
    */
   expectedPageUrl?: string;

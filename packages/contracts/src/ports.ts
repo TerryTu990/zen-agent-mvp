@@ -9,6 +9,7 @@ import type { RiskTier, ToolDefinition } from './tool-definition.js';
 import type { UserConfigSubject, UserOverlay } from './user-overlay.js';
 import type { IdentityClaims } from './identity-claims.js';
 import type {
+  DomStep,
   ExecInstructionFrame,
   ExecResultFrame,
   GroupPageEntry,
@@ -16,7 +17,7 @@ import type {
   SnapshotEvidence,
 } from './client-access-layer.js';
 import type { AuditEvent, GateVerdict } from './audit-event.js';
-import type { PackAutomation, PackSource } from './config-snapshot.js';
+import type { PackAutomation, PackBuiltinTool, PackSource, QuickAction } from './config-snapshot.js';
 
 // ---- AssemblyPort（②会话网关 ← ⑤配置中心：featureId 定位 + 注入组合）----
 
@@ -47,6 +48,11 @@ export interface ComposeInput {
    * revision，合并个人规则/事实与工具面收紧；缺省 = 纯 L1 装配（无 L2 参与）。
    */
   subject?: UserConfigSubject;
+  /**
+   * 当前页 origin（scheme://host[:port]）：提供时按 L2 全局作用域 siteDenylist 判定站点黑名单，
+   * 命中即回落仅基座并置 siteDenied；缺省 = 不做站点判定，装配面与不带本字段时严格等价。
+   */
+  origin?: string;
 }
 
 export interface SkillAsset {
@@ -82,6 +88,11 @@ export interface ComposeResult {
   /** 激活 pack 的 docs/ 渐进披露索引（frontmatter 标题+摘要）；docs/ 为空或无 pack 时为 null。 */
   docsIndex: string | null;
   /**
+   * 激活 pack 声明的平台内建工具族（pack.json capabilities.builtinTools）：网关据此按声明注入内建工具面。
+   * 缺省 = 未声明或无 pack 激活 → 不注入任何内建工具面（缺省即不注入，非缺省即全给）。
+   */
+  builtinTools?: PackBuiltinTool[];
+  /**
    * 已安装站点索引（渐进披露第一层，跨功能稳定）：列出平台可辅助的全部带 site 的 pack（用途+可达 URL），
    * 当前激活 pack 标注（当前）。仅 ≥2 个带 site 的 pack 时非 null（单 site/legacy 无跨站意义 → null）。
    */
@@ -91,6 +102,17 @@ export interface ComposeResult {
    * 缺省 = 纯 L1 装配（无 L2 参与）或 degraded（读失败无缓存，以 userConfigDegraded 标注替代）。
    */
   userConfigRevision?: string;
+  /**
+   * L2 生效偏好的渲染条目（id = 偏好键，如 "verbosity"）：pack 作用域覆盖 "*" 全局后逐项渲染，
+   * 注入序居 L2 段首（个人规则可再覆盖粗粒度偏好）；缺省 = 无 L2 参与、未设偏好或读失败降级。
+   */
+  userPreferences?: UserInjectionEntry[];
+  /**
+   * 当前激活 pack 的用户配置渲染条目（id = 配置键）：只含该 pack 在 pack.json configSchema 中
+   * 已声明的键——未声明键逐条失效并收入 invalidRefs（pack 更新后收窄声明空间时的运行期兜底）。
+   * 缺省 = 无 L2 参与、pack 未声明可配置点或用户未填值。
+   */
+  packConfig?: UserInjectionEntry[];
   /** L2 个人规则渲染块（按当前 featureId 过滤，注入序在 L1 之后、"*" 先于 pack 级）；缺省 = 无 L2 参与或读失败 fail-open。 */
   userRules?: UserInjectionEntry[];
   /** L2 个人事实渲染块；语义同 userRules。 */
@@ -99,6 +121,12 @@ export interface ComposeResult {
   packDisabled?: true;
   /** 被关停的 packId（随 packDisabled 一同产出）：关停轮 packId 已回落 null，审计与配置中心据此追溯是哪个 pack 被关停；缺省 = 非关停轮。 */
   disabledPackId?: string;
+  /**
+   * true = 入参 origin 命中用户 L2 站点黑名单，本轮按仅基座装配（packId 已为 null）——
+   * 与 packDisabled 分列：前者是「用户不让 Zen 出现在这个站点」，后者是「用户关停了这个 pack」。
+   * 缺省 = 未传 origin、未命中黑名单或 L2 未参与。
+   */
+  siteDenied?: true;
   /**
    * 工具面逐项生效分级（与 describeInjection 的 tools 同源同值）：disabledTools 条目从 agent 可见
    * tools 移除但在此保留并置 effectiveTier:'forbidden'（幻觉调用仍被拒）；缺省 = 无 L2 参与。
@@ -117,12 +145,17 @@ export interface ComposeResult {
 }
 
 export interface InjectionBlock {
-  /** 'user-rules'/'user-facts' = L2 个人条目（每条一个 block，id=条目 id，origin:'L2'）。 */
+  /**
+   * 'user-rules'/'user-facts' = L2 个人条目（每条一个 block，id=条目 id，origin:'L2'）；
+   * 'user-preferences'/'pack-config' 同为每项一个 block，id 分别为偏好键与配置键。
+   */
   kind:
     | 'system-prompt'
     | 'sites-index'
     | 'feature-rules'
     | 'facts'
+    | 'user-preferences'
+    | 'pack-config'
     | 'user-rules'
     | 'user-facts'
     | 'skill'
@@ -171,6 +204,15 @@ export interface InjectionDescription {
   userConfigRevision?: string;
   /** 被关停的 packId（与 ComposeResult.disabledPackId 同源同值）：关停轮 packId 已回落 null，透明视图据此如实呈现「已关停」而非「无 pack」；缺省 = 非关停轮。 */
   disabledPackId?: string;
+  /**
+   * 本轮装配面之所以如此的原因闭集（R4 透明性）：'pack' 站点包命中 / 'generic' 通用兜底包 /
+   * 'base-only' 无 pack 命中仅基座 / 'pack-disabled' 用户关停后回落仅基座 /
+   * 'site-denied' 本页 origin 命中用户站点黑名单后回落仅基座。后两者同属「用户主动导致的回落」，
+   * 分列使透明视图能说清是关停了哪个 pack 还是整站不辅助；黑名单命中优先——
+   * 纵使该 pack 同时被关停，本站也仍会回落仅基座。
+   * 服务端判定，客户端只呈现不推断（U7）；缺省 = 旧版本服务端未标注。
+   */
+  reason?: 'pack' | 'generic' | 'base-only' | 'pack-disabled' | 'site-denied';
 }
 
 /** pack docs 正文按需读取（渐进披露的 pack_doc 内建工具后端）：只读当前激活 pack 的 docs/。 */
@@ -260,6 +302,11 @@ export interface PackDescriptor {
   automations: PackAutomationDescriptor[];
   /** pack 声明的用户可配置点（adr-020）；未声明时省略。 */
   configSchema?: JsonObject;
+  /**
+   * pack 预置的快捷提问（R-5）：纯展示/查表投影，不参与 compose 的任何注入产物——
+   * 装配引擎只在本投影里透出它，网关据此展开用户轮消息，配置中心据此列出可停用条目。未声明时省略。
+   */
+  quickActions?: QuickAction[];
 }
 
 export interface AssemblyPort {
@@ -295,93 +342,19 @@ export interface DomGateContext {
   path: string;
   /** 快照页 origin（ADR-013）：site pack 的非 navigate dom 步须 === 工具所属 pack origin，越界即 deny。 */
   origin?: string;
-  /** 当前快照完整 URL：有界履约意图必须与其精确绑定，防在另一订单聊天页复用。 */
-  url?: string;
-  /** 快照所属 content script 页面生命周期，防快照后切页/刷新再执行。 */
-  pageInstanceId?: string;
-  /** 最近快照元素的最小语义，用于有界履约固定校验输入框与发送按钮。 */
+  /** 最近快照元素的最小语义：按 ref 反查 role，判定敏感控件与确认卡「将发生什么」。 */
   elements?: SnapshotElement[];
-  /** 最近快照按 pack 配方生成的结构化证据；服务端可信准备器只消费闭集统计，不读取消息正文。 */
+  /** 最近快照按 pack 配方生成的结构化证据：只含闭集状态统计，不含消息正文。 */
   evidence?: Record<string, SnapshotEvidence>;
 }
-
-export interface PrepareFulfillmentIntentInput {
-  /** 库存写入前由 toolgate 原子预留策略/订单/日额度所得的一次性票据；缺失不得登记 intent。 */
-  authorizationId: string;
-  accountId: string;
-  toolId: string;
-  productId: string;
-  orderId: string;
-  quantity: number;
-  pageUrl: string;
-  /** 可信连接器绑定的页面生命周期；必须与执行前最近快照一致。 */
-  pageInstanceId: string;
-  /** 可信连接器只提交语义字段；toolgate 固定构造恰好一组 fill→click。 */
-  messageRef: string;
-  sendRef: string;
-  message: string;
-  receiptEvidenceId: string;
-  receiptBaselineCount: number;
-  receiptSuccessStatuses: string[];
-  expiresAt: number;
-}
-
-export interface PrepareShipmentIntentInput {
-  authorizationId: string;
-  accountId: string;
-  toolId: string;
-  productId: string;
-  orderId: string;
-  quantity: number;
-  pageUrl: string;
-  pageInstanceId: string;
-  /** 当前详情页唯一、可用且标签为“发货”的按钮 ref。 */
-  actionRef: string;
-  statusEvidenceId: string;
-  statusBaseline: string;
-  statusSuccessStatuses: string[];
-  expiresAt: number;
-}
-
-export interface PreauthorizeFulfillmentInput {
-  accountId: string;
-  toolId: string;
-  productId: string;
-  orderId: string;
-  quantity: number;
-  pageUrl: string;
-  expiresAt: number;
-}
-
-export interface PreauthorizeFulfillmentResult {
-  authorizationId: string;
-}
-
-export interface PrepareFulfillmentIntentResult {
-  intentId: string;
-}
-
-export interface ConfirmFulfillmentReceiptInput {
-  sessionId: string;
-  toolCallId: string;
-  pageUrl: string;
-  pageInstanceId: string;
-  evidence: Record<string, SnapshotEvidence>;
-}
-
-export interface ConfirmFulfillmentReceiptResult {
-  confirmed: boolean;
-  state: 'completed' | 'uncertain';
-}
-
-export type ConfirmShipmentStatusInput = ConfirmFulfillmentReceiptInput;
-export type ConfirmShipmentStatusResult = ConfirmFulfillmentReceiptResult;
 
 /**
  * ADR-013 任务组：工具所属激活 pack 的 site 上下文（网关按激活 pack 计算传入）。
  * packOrigin 缺省=legacy 无 site pack（沿用平台 claims 身份、不校 origin 围栏）。
  */
 interface PackScopeInput {
+  /** 工具所属激活 pack 的 id（取自装配结果，非模型自述）：任务级授权的作用域指纹分量；缺省=无 pack 作用域。 */
+  packId?: string;
   /** 工具所属激活 pack 的 origin 围栏：站点 pack = site.origin；generic pack = 网关以活跃页 origin 填充；有值即启用 origin 围栏 + per-origin 身份口径。 */
   packOrigin?: string;
   /**
@@ -422,12 +395,25 @@ export interface GateDecisionInput extends PackScopeInput {
    * params.targetPage 有值而本表缺省/未命中一律拒签（U7 fail-closed，禁回退活跃页）；无 targetPage 的调用不消费本表。
    */
   groupPages?: GroupPageEntry[];
+  /**
+   * 本回合无人在场（adr-024 D1，网关按 automationRun 判定后传入）：生效档为 hitl 一律 deny
+   * 且不消费任务级授权；缺省=人工回合，判定逐字节同基线。
+   */
+  unattended?: true;
 }
 
 /** 判定结果：分级矩阵 + 身份/实参校验，任一不过即 deny（fail-closed，U7）。 */
 export interface GateDecision {
   verdict: GateVerdict;
   reason?: string;
+  /**
+   * hitl 判定随附的净化终值步骤（已剥模型幻觉键、ref 已验出自最近快照）：网关据此组装确认卡的
+   * 机械摘要——用户批准的必须是将被签发执行的内容，而非模型在 params 里自述的 summary/plan。
+   * 纯数据、不参与任何判定；非 hitl 判定一律缺省。
+   */
+  sanitizedSteps?: DomStep[];
+  /** 随 sanitizedSteps 下发的一次性指令有效期（毫秒）：确认卡治理小字据此如实标注，客户端不自拟。 */
+  instructionTtlMs?: number;
 }
 
 export interface IssueExecInstructionInput extends PackScopeInput {
@@ -443,6 +429,8 @@ export interface IssueExecInstructionInput extends PackScopeInput {
   userConfig?: GateUserConfigInput;
   /** 会话组页面状态表快照：签发前独立重解析定向目标（语义同 GateDecisionInput.groupPages，U7 封 TOCTOU）。 */
   groupPages?: GroupPageEntry[];
+  /** 本回合无人在场（语义同 GateDecisionInput.unattended）；缺省=人工回合。 */
+  unattended?: true;
 }
 
 export interface AcceptExecResultInput {
@@ -458,34 +446,42 @@ export interface Observation {
   error?: string;
 }
 
-/** 任务级 HITL 授权登记：hitl 获批后记 grant，同会话同任务的后续调用（跨工具）decide 直接放行（一任务一授权）。 */
+/**
+ * 任务级 HITL 授权登记：hitl 获批后记 grant，同会话同 pack 同 origin 的同任务后续调用（跨工具）
+ * decide 直接放行（一任务一授权）。作用域指纹 = (sessionId, packId, packOrigin, task)——
+ * 前三项是服务端自持事实，唯一由模型提供的 task 不做归一化。
+ */
 export interface HitlGrantInput {
   sessionId: string;
   /** agent 声明的任务标题（params.task）：授权作用域即用户在确认卡上看到并批准的这个任务。 */
   task: string;
+  /** 批准时激活 pack 的 id（语义同 GateDecisionInput.packId）；缺省须与 decide 侧同样缺省才命中。 */
+  packId?: string;
+  /** 批准时激活 pack 的 origin（语义同 GateDecisionInput.packOrigin）；缺省须与 decide 侧同样缺省才命中。 */
+  packOrigin?: string;
 }
 
 export interface ToolGatePort {
   /** 插件经已鉴权 SSE 响应取得的 Ed25519 SPKI 公钥；仅用于指令验签。 */
   getExecVerificationKey(): Promise<{ algorithm: 'Ed25519'; publicKey: string }>;
-  /** 库存写前原子校验并占住策略、订单和日额度；失败不得触达库存。 */
-  preauthorizeFulfillment(input: PreauthorizeFulfillmentInput): Promise<PreauthorizeFulfillmentResult>;
-  /** 库存/intent 准备失败时释放尚未转执行态的预授权。 */
-  releaseFulfillmentAuthorization(authorizationId: string): Promise<void>;
-  /** 仅供 apps/server 内可信连接器调用；不暴露为模型工具或客户端 API。 */
-  prepareFulfillmentIntent(input: PrepareFulfillmentIntentInput): Promise<PrepareFulfillmentIntentResult>;
-  /** 登记固定单击“发货”的一次性 intent；模型只取得 opaque id。 */
-  prepareShipmentIntent(input: PrepareShipmentIntentInput): Promise<PrepareFulfillmentIntentResult>;
-  /** DOM 执行成功后，以发送后新快照回执确认最终交付；未精确增加 1 一律 uncertain。 */
-  confirmFulfillmentReceipt(input: ConfirmFulfillmentReceiptInput): Promise<ConfirmFulfillmentReceiptResult>;
-  /** 订单动作后以新快照状态枚举确认“已发货”；不匹配即 uncertain。 */
-  confirmShipmentStatus(input: ConfirmShipmentStatusInput): Promise<ConfirmShipmentStatusResult>;
   decide(input: GateDecisionInput): Promise<GateDecision>;
   /**
-   * 登记任务级授权：同 (sessionId,task) 的后续 decide 放行（跨工具共享，every-call 工具除外），
-   * 滑动 TTL 过期 / exec-result=user-stopped 吊销后回到 hitl。
+   * 批准恢复期复核（adr-024 D3）：approve 之后、签发之前以当轮最新上下文重跑判定链
+   * （分级 + L2 收紧终值 + 身份 + 围栏 + dom 步骤 ref 出自最近快照）。
+   * 通过=allow；任一不过=deny reason `approval-stale`（用户批准的是当时那个动作，不是长期通行证）。
+   * 只判定不落状态：既不登记也不消费任务级授权。
+   */
+  reconfirmApproval(input: GateDecisionInput): Promise<GateDecision>;
+  /**
+   * 登记任务级授权：同 (sessionId,packId,packOrigin,task) 的后续 decide 放行（跨工具共享，every-call 工具除外），
+   * 滑动 TTL 过期 / 用户停止吊销后回到 hitl。
    */
   grantHitl(input: HitlGrantInput): Promise<void>;
+  /**
+   * 吊销本会话全部任务级授权（adr-024 D2）：用户点停止即收回自动执行授权，后续同任务回到 hitl。
+   * 幂等；无授权的会话是无操作。
+   */
+  revokeHitlGrants(sessionId: string): Promise<void>;
   /** 前提：decide 已放行（allow 或 hitl 获批）。签发即登记一次性 nonce。 */
   issueExecInstruction(input: IssueExecInstructionInput): Promise<ExecInstructionFrame>;
   /** 核销 nonce、验 ttl、按 resultSchema 校验后规整；任一不过返回 ok=false 的 observation。 */
@@ -496,149 +492,6 @@ export interface ToolGatePort {
    * 不经 nonce/客户端回传（那是 client 通道）；凭证解析不到时按未配置处理返回 ok=false。
    */
   executeServer(input: IssueExecInstructionInput): Promise<Observation>;
-}
-
-// ---- CardInventoryPort（飞书只承担轻量库存账本；卡密不得进入模型/审计/日志）----
-
-export type CardInventoryStatus = 'available' | 'reserved' | 'sent' | 'manual';
-export type CardInventoryStage = 'reserved' | 'shipping-attempted' | 'shipped-confirmed' | 'delivery-attempted';
-
-export type CardInventoryError =
-  | 'inventory-unavailable'
-  | 'inventory-empty'
-  | 'inventory-ambiguous'
-  | 'inventory-paused'
-  | 'inventory-write-failed'
-  | 'inventory-invalid-record';
-
-export interface ReserveCardInput {
-  productKey: string;
-  orderId: string;
-}
-
-export type ReserveCardResult =
-  | {
-      ok: true;
-      cardId: string;
-      /** 仅在服务端履约编排内短暂流转；MUST NOT 进入模型、审计或日志。 */
-      cardSecret: string;
-      status: 'reserved';
-      stage: CardInventoryStage;
-      reused: boolean;
-    }
-  | {
-      ok: true;
-      cardId: string;
-      status: 'sent' | 'manual';
-      reused: true;
-    }
-  | { ok: false; error: CardInventoryError };
-
-export interface BeginCardDeliveryInput {
-  cardId: string;
-  orderId: string;
-}
-
-export interface ConfirmCardShipmentInput extends BeginCardDeliveryInput {
-  confirmed: boolean;
-  note?: string;
-}
-
-export interface SettleCardInput {
-  cardId: string;
-  orderId: string;
-  status: 'sent' | 'manual';
-  note?: string;
-}
-
-export type SettleCardResult =
-  | { ok: true }
-  | { ok: false; error: CardInventoryError };
-
-export interface CardInventoryPort {
-  /** 同订单优先复用；否则领取一条 available 并先写 reserved。单执行器串行前提见实施计划。 */
-  reserve(input: ReserveCardInput): Promise<ReserveCardResult>;
-  /** 点击发货前写 shipping-attempted；该状态重启后不得再次点击。 */
-  beginShipment(input: BeginCardDeliveryInput): Promise<SettleCardResult>;
-  /** 订单状态复核后写 shipped-confirmed；不明确则写 manual。 */
-  confirmShipment(input: ConfirmCardShipmentInput): Promise<SettleCardResult>;
-  /** 在浏览器副作用前持久化 attempt 闩锁；重启后看到该闩锁只能转人工，不得重发。 */
-  beginDelivery(input: BeginCardDeliveryInput): Promise<SettleCardResult>;
-  /** 页面回执明确后写 sent；任何不明确结果写 manual。 */
-  settle(input: SettleCardInput): Promise<SettleCardResult>;
-}
-
-export interface PrepareCardFulfillmentInput {
-  accountId: string;
-  toolId: string;
-  productId: string;
-  productKey: string;
-  orderId: string;
-  quantity: number;
-  pageUrl: string;
-  pageInstanceId: string;
-  messageRef: string;
-  sendRef: string;
-  receiptEvidenceId: string;
-  receiptBaselineCount: number;
-  receiptSuccessStatuses: string[];
-  expiresAt: number;
-}
-
-export interface PrepareCardShipmentInput {
-  accountId: string;
-  toolId: string;
-  productId: string;
-  productKey: string;
-  orderId: string;
-  quantity: number;
-  pageUrl: string;
-  pageInstanceId: string;
-  actionRef: string;
-  statusEvidenceId: string;
-  statusBaseline: string;
-  statusSuccessStatuses: string[];
-  expiresAt: number;
-}
-
-export type PrepareCardFulfillmentResult =
-  | { ok: true; intentId: string }
-  | {
-      ok: false;
-      error:
-        | CardInventoryError
-        | 'already-sent'
-        | 'manual-review'
-        | 'shipment-required'
-        | 'fulfillment-paused'
-        | 'unsupported-quantity'
-        | 'authorization-denied'
-        | 'intent-registration-failed';
-    };
-
-export interface SettleCardFulfillmentInput {
-  intentId: string;
-  outcome: 'sent' | 'manual';
-  note?: string;
-}
-
-export type SettleCardFulfillmentResult =
-  | { ok: true }
-  | { ok: false; error: CardInventoryError | 'unknown-intent' | 'outcome-conflict' };
-
-export interface FulfillmentCoordinatorPort {
-  /** 预授权后先预占卡密，再登记一次性订单发货 intent。 */
-  prepareShipment(input: PrepareCardShipmentInput): Promise<PrepareCardFulfillmentResult>;
-  /** 先由 toolgate 原子占住授权/额度，再领取卡密并登记不向模型暴露正文的一次性 intent。 */
-  prepare(input: PrepareCardFulfillmentInput): Promise<PrepareCardFulfillmentResult>;
-  /** 发货副作用前持久化 shipping-attempted。 */
-  beginShipment(intentId: string): Promise<SettleCardFulfillmentResult>;
-  /** 状态复核成功写 shipped-confirmed；不明确由 settle(manual) 终止。 */
-  confirmShipment(intentId: string): Promise<SettleCardFulfillmentResult>;
-  /** toolgate 放行后、浏览器指令签发前写入不可重放的发送尝试闩锁。 */
-  beginDelivery(intentId: string): Promise<SettleCardFulfillmentResult>;
-  /** 站点回执闭环后回填库存终态；失败必须阻断后续自动处理。 */
-  settle(input: SettleCardFulfillmentInput): Promise<SettleCardFulfillmentResult>;
 }
 
 // ---- UserConfigStore（L2 用户覆盖层存储端口，adr-014：事实源在服务端，换实现不换端口）----
@@ -700,6 +553,22 @@ export interface LlmChatRequest {
   tools?: LlmToolSpec[];
 }
 
+/**
+ * 上游失败类别闭集：消费侧据此如实分流（配置错误不得渲染成服务故障，R6），
+ * 类别本身不含任何响应体原文与凭证形态（SEC-04）。
+ * invalid-tool-args=模型产出的实参 JSON 非法/截断，可回喂重试自愈。
+ */
+export type LlmErrorKind =
+  | 'invalid-tool-args'
+  | 'context-overflow'
+  | 'rate-limit'
+  | 'quota'
+  | 'auth'
+  | 'endpoint-invalid'
+  | 'transport'
+  | 'stream-interrupted'
+  | 'timeout';
+
 export type LlmStreamEvent =
   | { kind: 'text-delta'; delta: string }
   | { kind: 'tool-call'; toolCallId: string; name: string; params: JsonObject }
@@ -707,8 +576,15 @@ export type LlmStreamEvent =
       kind: 'done';
       stopReason: 'end' | 'tool-call' | 'error';
       error?: string;
-      /** 错误类别（stopReason=error 时可选）：invalid-tool-args=模型产出的实参 JSON 非法/截断，可回喂重试自愈。 */
-      errorKind?: 'invalid-tool-args';
+      /** 错误类别（stopReason=error 时可选）。 */
+      errorKind?: LlmErrorKind;
+      /**
+       * errorKind='invalid-tool-args' 时随附出错调用的标识：消费侧据此以「同 toolCallId 的 role:tool 观测」
+       * 回喂错误让模型自纠，而不必伪造用户消息或另起 id。
+       */
+      invalidToolCall?: { toolCallId: string; name: string };
+      /** 上游因输出长度上限截断本次回答（finish_reason=length）；消费侧须如实告知用户回答不完整。 */
+      truncated?: true;
       /** 上游返回 token 用量时透传（缺省=上游未报，消费侧回退字符近似估算）。 */
       usage?: { inputTokens: number; outputTokens: number };
     };

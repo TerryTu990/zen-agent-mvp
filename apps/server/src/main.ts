@@ -3,8 +3,7 @@
  * ZA_LLM_BASE_URL / ZA_LLM_API_KEY / ZA_LLM_MODEL 由 llm-port 在调用时读取，此处只做启动期提示。
  */
 import { ANON_ISS } from './activation.js';
-import { parseFulfillmentProductKeys, parseGenericAllowlist, startServer } from './index.js';
-import type { BoundedFulfillmentPolicy } from '@zen-agent/toolgate';
+import { startServer } from './index.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -55,42 +54,34 @@ if (!Number.isFinite(compressThreshold) || compressThreshold <= 0 || compressThr
   console.error('ZA_LLM_COMPRESS_THRESHOLD 不是 (0,1] 区间小数，拒绝启动');
   process.exit(1);
 }
-let genericAllowlist: string[] = [];
-try {
-  genericAllowlist = parseGenericAllowlist(process.env['ZA_GENERIC_ALLOWLIST']);
-} catch (cause) {
-  console.error(`${cause instanceof Error ? cause.message : String(cause)}，拒绝启动`);
-  process.exit(1);
-}
-let fulfillmentPolicies: BoundedFulfillmentPolicy[] = [];
-try {
-  const raw = process.env['ZA_FULFILLMENT_POLICIES_JSON'];
-  if (raw !== undefined && raw.trim() !== '') {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error('必须是 JSON 数组');
-    fulfillmentPolicies = parsed as BoundedFulfillmentPolicy[];
+// LLM 分层超时（llm-port）由该端口就地读取；网关侧两项（连续失败预算、人工确认等待上限）在此解析为
+// ServerOptions 后经组装点注入，与其余配置共用同一条通路。启动期取值校验把「配置写错」挡在启动时，
+// 而不是推迟成运行期的静默不生效。未设置＝该项不启用。
+for (const name of [
+  'ZA_LLM_TIMEOUT_MS',
+  'ZA_LLM_FIRST_CHUNK_MS',
+  'ZA_LLM_IDLE_MS',
+  'ZA_MAX_CONSECUTIVE_FAILURES',
+  'ZA_HITL_TIMEOUT_MS',
+] as const) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') continue;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    console.error(`${name} 不是正整数，拒绝启动`);
+    process.exit(1);
   }
-} catch (cause) {
-  console.error(`ZA_FULFILLMENT_POLICIES_JSON 非法：${cause instanceof Error ? cause.message : String(cause)}，拒绝启动`);
-  process.exit(1);
 }
-let fulfillmentProductKeys: Record<string, string> = {};
-try {
-  fulfillmentProductKeys = parseFulfillmentProductKeys(process.env['ZA_FULFILLMENT_PRODUCT_KEYS_JSON']);
-} catch (cause) {
-  console.error(`${cause instanceof Error ? cause.message : String(cause)}，拒绝启动`);
-  process.exit(1);
+
+/** 已过启动期校验的正整数 env；未设或空串返回 undefined（＝该项不启用）。 */
+function positiveIntEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  return Number(raw);
 }
-const cardBaseToken = process.env['ZA_FEISHU_CARD_BASE_TOKEN'];
-const cardTableId = process.env['ZA_FEISHU_CARD_TABLE_ID'];
-const cardGuideUrl = process.env['ZA_FULFILLMENT_GUIDE_URL'];
-const cardConfigValues = [cardBaseToken, cardTableId, cardGuideUrl];
-if (cardConfigValues.some((value) => value !== undefined) && cardConfigValues.some((value) => !value)) {
-  console.error(
-    'ZA_FEISHU_CARD_BASE_TOKEN、ZA_FEISHU_CARD_TABLE_ID、ZA_FULFILLMENT_GUIDE_URL 必须同时设置，拒绝启动',
-  );
-  process.exit(1);
-}
+
+const maxConsecutiveFailures = positiveIntEnv('ZA_MAX_CONSECUTIVE_FAILURES');
+const hitlTimeoutMs = positiveIntEnv('ZA_HITL_TIMEOUT_MS');
 if (!process.env['ZA_LLM_BASE_URL']) {
   console.warn('ZA_LLM_BASE_URL 未设置：LLM 调用将以"服务暂时不可用"降级');
 }
@@ -106,6 +97,8 @@ startServer({
     .filter((iss) => iss !== ''),
   snapshotRoot,
   maxTurnRounds,
+  ...(maxConsecutiveFailures !== undefined ? { maxConsecutiveFailures } : {}),
+  ...(hitlTimeoutMs !== undefined ? { hitlTimeoutMs } : {}),
   compressContextWindow,
   compressThreshold,
   corsOrigin: process.env['ZA_CORS_ORIGIN'] ?? '*',
@@ -114,22 +107,6 @@ startServer({
   sessionDir: process.env['ZA_SESSION_DIR'] ?? '.za/sessions',
   applicationsDir: process.env['ZA_APPLICATIONS_DIR'] ?? '.za/applications',
   userConfigDir: process.env['ZA_USER_CONFIG_DIR'] ?? '.za/user-config',
-  genericAllowlist,
-  fulfillmentPolicies,
-  fulfillmentProductKeys,
-  ...(cardBaseToken && cardTableId && cardGuideUrl
-    ? {
-        cardInventory: {
-          baseToken: cardBaseToken,
-          tableId: cardTableId,
-          guideUrl: cardGuideUrl,
-          profile: process.env['ZA_FEISHU_PROFILE'] ?? 'general',
-          ...(process.env['ZA_LARK_CLI_PATH']
-            ? { cliPath: process.env['ZA_LARK_CLI_PATH'] }
-            : {}),
-        },
-      }
-    : {}),
   sessionTtlMs,
   allowedProviders: ['openai-compatible'],
   resolveCredential,

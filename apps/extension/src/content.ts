@@ -25,7 +25,18 @@ function activate(): void {
   const pageAction = createPageActionRunner(
     createDomGuidePage(document, (ref) => snapshot.resolve(ref)),
   );
+  /**
+   * 停止闩：一次停止之后保持置位，直到 background 明确宣告新回合（resume-operation）。
+   * 不在每次批次开头复位——停止之后放行的第一条 exec-instruction 会因此抹掉已置位的状态并照常执行，
+   * 而页面上是否还能动作是回合级的事实，不是单条批次的事实。
+   */
   let stopRequested = false;
+  /**
+   * 在跑批次自己的中止位：入场时取当刻的闩，此后只由停止置位、不随新回合复位。
+   * 用户按下停止后随即发新消息，那条复位只该放行新批次；上一次停止里的批次不得从半程续跑。
+   * 单个标志即可——同一时刻至多一条批次在跑（服务端逐条签发、background 落页串行）。
+   */
+  let runAborted = false;
   let port: chrome.runtime.Port | null = null;
   let reconnectTimer: number | null = null;
   const pendingNavigations = new Map<string, (result: { ok: boolean; url?: string; error?: string }) => void>();
@@ -62,12 +73,12 @@ function activate(): void {
   const domRunner = createDomStepRunner(
     (ref) => snapshot.resolve(ref),
     undefined,
-    () => stopRequested,
+    () => stopRequested || runAborted,
     navigate,
   );
   const executor = createDelegatedExecutor(fetch, {
     async run(steps) {
-      stopRequested = false;
+      runAborted = stopRequested;
       send({ kind: 'operation-state', running: true });
       try {
         return await domRunner.run(steps);
@@ -81,6 +92,11 @@ function activate(): void {
     const message = raw as BackgroundToContentMessage;
     if (message.kind === 'stop-operation') {
       stopRequested = true;
+      runAborted = true;
+      return;
+    }
+    if (message.kind === 'resume-operation') {
+      stopRequested = false;
       return;
     }
     if (message.kind === 'navigate-result') {
@@ -133,27 +149,30 @@ function activate(): void {
   window.addEventListener('popstate', announceIfVisible);
 }
 
-async function matchesAutoActivate(): Promise<boolean> {
-  try {
-    const items = await chrome.storage.local.get('za.autoActivate');
-    const list = items['za.autoActivate'];
-    return Array.isArray(list) && list.includes(location.origin);
-  } catch {
-    return false;
+/**
+ * 重复注入守卫（adr-027 轨一）：本脚本按需逐次注入，同一文档可能被注入多次
+ * （手势重复、导航补发与定向帧到达撞在一起）。标记落在隔离世界的 window 上、随文档存活，
+ * 第二次注入整体空转——两套 runtime 监听与两条会话端口会让同一条指令执行两次。
+ */
+declare global {
+  interface Window {
+    __zaInjected?: true;
   }
 }
 
 function boot(): void {
   if (window.top !== window) return;
+  if (window.__zaInjected === true) return;
+  window.__zaInjected = true;
   chrome.runtime.onMessage.addListener((raw) => {
     const message = raw as BackgroundRuntimeMessage | null;
     if (message?.kind === 'activate') activate();
     else if (message?.kind === 'refresh-context' && document.visibilityState === 'visible') liveAnnounce?.();
   });
-  void matchesAutoActivate().then((autoActivate) => {
-    const request: ContentRuntimeMessage = { kind: 'request-activate', autoActivate };
-    void chrome.runtime.sendMessage(request).catch(() => {});
-  });
+  // 握手只报「content 已就位」：脚本出现在本页这件事本身就是 background 注入的结果，
+  // 是否接入会话由 background 按标签组状态判定，页面侧不持任何 origin 名单。
+  const request: ContentRuntimeMessage = { kind: 'request-activate' };
+  void chrome.runtime.sendMessage(request).catch(() => {});
 }
 
 boot();

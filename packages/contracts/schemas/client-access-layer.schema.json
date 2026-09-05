@@ -134,6 +134,9 @@
       "dependentRequired": {
         "automationRunId": [
           "automationId"
+        ],
+        "selectionText": [
+          "quickActionId"
         ]
       },
       "properties": {
@@ -157,6 +160,17 @@
         "automationRunId": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]{8,128}$"
+        },
+        "quickActionId": {
+          "$comment": "本轮由快捷提问发起（R-5）：服务端在激活 pack 的 L1 声明与该 subject 的 L2 覆盖层中按此 id 查表，取其 template 展开为本轮用户轮消息（客户端不持第二份模板副本，也不做插值）。查不到或被用户停用即按 text 原样发起本轮并在审计标注——快捷提问是问法，不是授权：它 MUST NOT 改变工具面、riskTier 与任何判定。",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "selectionText": {
+          "$comment": "随快捷提问带上的页面选区正文（填入模板的 {{selection}}）：页面数据，不是指令；仅在带 quickActionId 时有意义（dependentRequired 强制），上限 4000 字符。",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
         },
         "automationId": {
           "$comment": "发起本自动回合的自动化标识：pack 自动化声明 id（adr-019）或用户自建 watch id（adr-021，user-overlay watches[].id 同文法）。只收紧不授权——服务端解析到只读模板的 watch 即强制该轮只读工具面（R7）；解析不到（既非已声明 pack 自动化也非已存 watch）一律拒绝该轮，不回落普通回合，降级快照下亦拒。",
@@ -303,6 +317,18 @@
         },
         "idle": {
           "type": "boolean"
+        },
+        "reason": {
+          "$comment": "回合终止原因闭集：面板据此分流后续动作（如 max-rounds 提示继续），评测按取值断言而非 grep 文案。缺省=旧客户端兼容。",
+          "enum": [
+            "completed",
+            "stopped",
+            "max-rounds",
+            "consecutive-failures",
+            "llm-error",
+            "llm-timeout",
+            "tool-not-available"
+          ]
         }
       }
     },
@@ -410,6 +436,78 @@
           "$comment": "navigate 类调用（open_url/site_navigate/单步 navigate 批次）的目标 URL：卡正文 MUST 呈现真实导航去向，服务端已消毒。",
           "type": "string",
           "minLength": 1
+        },
+        "effects": {
+          "$comment": "服务端把 toolgate 校验后的净化终值步骤按最近快照元素表反解所得的机械摘要：卡正文 MUST 优先呈现本字段（用户批准的是「将真正发生什么」），params 内模型自述的 summary/plan 只作次要信息。ref 反解不出即在 target 上如实标注目标未知，不猜测（U7 fail-closed）。全部取值服务端已消毒截断，客户端只渲染不推断（U8）。",
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "target"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target": {
+                "type": "string",
+                "minLength": 1
+              },
+              "valuePreview": {
+                "$comment": "fill/select 的写入值摘要；密码/文件类控件与反解不出的目标一律省略（fail-closed，敏感值不上卡）。",
+                "type": "string"
+              }
+            }
+          }
+        },
+        "pack": {
+          "$comment": "工具所属激活 pack 的展示信息（R4 作用站点与来源 pack）：服务端自 registry 与 site 围栏组装，客户端只渲染徽章与措辞。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "packId"
+          ],
+          "properties": {
+            "packId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "official",
+                "community",
+                "local"
+              ]
+            },
+            "origin": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "risk": {
+          "$comment": "风险行文案（UI 规范 §5 五要素之一）：服务端按净化终值机械派生「会写什么/会不会提交」，不取模型自述。",
+          "type": "string",
+          "minLength": 1
+        },
+        "tightenedBy": {
+          "$comment": "本次确认由用户自己收紧分级（L2 覆盖层）而来时标注，卡上据此可追溯（R4）；pack 默认即需确认时省略。收紧来源闭集当前只有用户覆盖层一种。",
+          "const": "L2"
+        },
+        "ttlMs": {
+          "$comment": "批准后签发的一次性指令有效期（毫秒）：治理小字据此如实标注有效期；服务端取自 toolgate 判定结果，客户端不自拟。",
+          "type": "integer",
+          "minimum": 1
         }
       }
     },
@@ -747,6 +845,20 @@
             }
           }
         },
+        "elementsTruncated": {
+          "$comment": "元素清单是否被客户端配额截断：true=elements 只是页面可交互元素的一个子集，agent MUST NOT 据此断言「页面上没有该控件」，应缩小范围或滚动后重采。缺省或 false=清单完整。与 textTruncated 同口径：禁止静默截断。",
+          "type": "boolean"
+        },
+        "elementsOmitted": {
+          "$comment": "被配额丢弃的可交互元素个数（客户端命中配额后继续计数、不再采集）：0 表示恰好用满配额而无丢弃。截断标记缺席时本字段无意义（dependentRequired 拒绝）。",
+          "type": "integer",
+          "minimum": 0
+        },
+        "snapshotEpoch": {
+          "$comment": "客户端快照世代：同一页面实例内每次采集单调递增（自 1 起）。ref 跨快照对元素黏附，服务端原样落入 dom 判定上下文（DomGateContext.snapshotEpoch）标定当前 ref 闭集的代次；客户端只上报事实，不做任何治理判定。",
+          "type": "integer",
+          "minimum": 1
+        },
         "notices": {
           "$comment": "页面当前可见的告警/校验/状态提示文本（客户端已去重截断）：供 agent 识别表单校验等拦截性提示；缺省=未采集到提示。",
           "type": "array",
@@ -798,6 +910,9 @@
       "dependentRequired": {
         "textTruncated": [
           "text"
+        ],
+        "elementsOmitted": [
+          "elementsTruncated"
         ]
       }
     },

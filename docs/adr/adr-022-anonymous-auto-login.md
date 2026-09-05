@@ -2,7 +2,7 @@
 
 ## 状态
 
-提议（2026-08-06，Terry 裁决；**修订 adr-014 §1 的三签发形态表**——签发形态收敛为两种：
+已接受（2026-09-03 转已接受：匿名激活端点与 hostUserId 哈希派生已实施并在生产运行，见 `packages/contracts/schemas/activation.schema.json` 与 `apps/server/src/activation.ts`。原始记录：2026-08-06，Terry 裁决；**修订 adr-014 §1 的三签发形态表**——签发形态收敛为两种：
 当前匿名自动登录 → P4 Google 账号；了结「通用插件默认身份」的形态待定）
 
 ## 背景

@@ -1,7 +1,8 @@
 # 部署参考（Docker）
 
 > 参考型文档：服务端容器化部署的权威导览。产物权威：根 `Dockerfile` / `docker-compose.yml` / `.dockerignore`；env 语义见 `03-configuration.md` §4。
-> 客户端（Chrome 扩展）不在本文范围——它经企业策略/商店分发，只需把 `za.serverBaseUrl` 指向部署地址。
+> 客户端（Chrome 扩展）的服务端接入不在本文范围——它经企业策略/商店分发，只需把 `za.serverBaseUrl` 指向部署地址；
+> 与分发直接相关的**权限声明**见 §7。
 
 ## 1. 设计原则
 
@@ -11,6 +12,7 @@
    - **容器日志（stdout/stderr）**= 运维排障流：启动信息、请求异常、LLM 上游错误、fail-open 告警（均已脱敏，SEC-04）；交给容器平台采集（`docker logs` / Loki / CloudWatch）。
    - **审计文件（`/data/za/events.jsonl`）**= 治理证据流：C5 schema、record-only、落盘前脱敏；**必须落持久卷**，否则容器重建即丢审计。二者语义不同，勿把审计导到 stdout、也勿指望容器日志替代审计。
 4. **数据可写卷**：`/data/za`（审计 + 会话持久化）挂 named volume / PV，容器重建会话可恢复。
+   L2 用户覆盖层（`ZA_USER_CONFIG_DIR`）与投递记录（`ZA_APPLICATIONS_DIR`）的缺省是**相对路径** `.za/user-config` / `.za/applications`，镜像**未**固化——按 cwd 落到 WORKDIR `/app/server`（root 属主的镜像层，进程以 `node` 用户运行），写入会失败（L2 报 `write-failed`；投递记录 record-only 旁路、静默丢）且不在持久卷内。启用 L2 必须显式把二者设为 `/data/za/` 下的绝对路径。
 
 ## 2. 镜像构成（根 `Dockerfile`）
 
@@ -18,15 +20,16 @@
 
 - **builder**：`node:22-slim` + corepack 固定 `pnpm@10.32.1` → `pnpm install --frozen-lockfile --filter @zen-agent/server...`（含 workspace 依赖拓扑）→ 递归 build → **`pnpm deploy` 收敛生产依赖**。
   - 为什么必须 `pnpm deploy`：workspace `workspace:*` 是软链，直接拷 `node_modules` 不可移植；且 `packages/contracts/schemas/*.json` 是**运行时** `require.resolve` 读取的非 dist 资产，deploy 会把它们随包实体带入——只拷 `dist/` 的天真多阶段构建会在启动期崩。
-- **runtime**：`node:22-slim`，仅含 deploy 产物与固定版本 `lark-cli`；站点包及 `system-prompt.md` 均来自同一个只读快照卷，以 `node` 非 root 用户运行。
+- **runtime**：`node:22-slim`，仅含 deploy 产物；站点包及 `system-prompt.md` 均来自同一个只读快照卷，以 `node` 非 root 用户运行。
 - 镜像内默认 env：`ZA_HOST=0.0.0.0`（容器内必须对外，否则端口发布后外部不可达）、数据路径固定绝对路径 `/data/za/*`（规避"相对 cwd"陷阱——本机 `pnpm start` 的 cwd 是 `apps/server`，`.za/` 会落在意外位置）。
 - `HEALTHCHECK`：内置 `GET /healthz`（无鉴权存活探针，仅证明进程在监听）。免鉴权路径只此一条与 `POST /v1/activation`（匿名激活端点本身就是发令牌的），其余路径一律先过验签——`GET /` 返回 401 是预期而非故障。
 
 ## 3. 快速开始（compose）
 
 ```bash
-# 1) 准备快照根（宿主机目录，含 manifest.json + packs/*）
-export ZA_SNAPSHOT_HOST_DIR=$PWD/examples/acceptance
+# 1) 准备快照根（宿主机目录，MUST 含 system-prompt.md + manifest.json + packs/*）
+#    仓库内满足三件套的现成目录只有生产快照根 assets/
+export ZA_SNAPSHOT_HOST_DIR=$PWD/assets
 
 # 2) 注入 secret 与 LLM 上游（生产走 secret 管理，不写文件）
 export ZA_JWT_SECRET=…  ZA_SIGNING_SECRET=…
@@ -41,6 +44,8 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 
 `docker-compose.yml` 已声明：快照只读卷（`:ro`）、`za-data` 数据卷、必填变量 `${VAR:?required}` 缺失即拒启（与服务端 `requireEnv` fail-fast 语义一致）。
 
+**快照根三件套缺一不可**：镜像把 `ZA_SYSTEM_PROMPT_PATH` 固化为 `/app/snapshot/system-prompt.md`，快照根缺基座文件即装配器「快照拒载」、服务端打印启动失败并退出（`restart: unless-stopped` 下表现为重启循环，`/healthz` 始终不通）；`release/deploy-server.sh` 上传前也断言 `manifest.json` 与 `system-prompt.md` 同时在场。挂只有 `manifest.json + packs/` 的目录（如 `examples/acceptance`）必须同时覆盖 `ZA_SYSTEM_PROMPT_PATH` 指向另一个可读的基座文件——各 e2e 脚本就是这么做的。
+
 ## 4. 环境变量清单（容器视角）
 
 完整语义见 `03-configuration.md` §4；容器部署最小集：
@@ -51,7 +56,12 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 | LLM 上游 | `ZA_LLM_BASE_URL` `ZA_LLM_API_KEY` `ZA_LLM_MODEL` | openai 兼容端点 |
 | 快照 | `ZA_SNAPSHOT_ROOT=/app/snapshot` | 指向只读卷挂载点 |
 | 已在镜像固化（可覆盖） | `ZA_HOST=0.0.0.0` `ZA_PORT=8787` `ZA_AUDIT_SINK=/data/za/events.jsonl` `ZA_SESSION_DIR=/data/za/sessions` `ZA_SYSTEM_PROMPT_PATH=/app/snapshot/system-prompt.md` | prompt 与 registry/pack 成为同一不可变快照；绝对路径规避 cwd 陷阱 |
-| 按需 | `ZA_CORS_ORIGIN` `ZA_JWT_ISS_ALLOWLIST` `ZA_MAX_TURN_ROUNDS` `ZA_GENERIC_ALLOWLIST` `ZA_CRED_*` | 见配置参考；`ZA_GENERIC_ALLOWLIST` 决定通用兜底 pack 在哪些站点激活（缺省不激活，`*` 另放行静默页冷启动开页）；`ZA_JWT_ISS_ALLOWLIST` 只管外部签发方——匿名激活的 iss 由服务端无条件并入白名单，既有 `.env` 留旧值也不会让服务端拒绝自己签发的令牌 |
+| 未固化的数据路径（须显式设） | `ZA_USER_CONFIG_DIR` `ZA_APPLICATIONS_DIR` | 缺省 `.za/user-config` / `.za/applications`（相对 cwd）；容器内落在 `/app/server` 镜像层不可写也不持久，启用 L2 须设为 `/data/za/user-config` / `/data/za/applications` |
+| 按需 | `ZA_CORS_ORIGIN` `ZA_JWT_ISS_ALLOWLIST` `ZA_MAX_TURN_ROUNDS` `ZA_MAX_CONSECUTIVE_FAILURES` `ZA_LLM_TIMEOUT_MS` `ZA_LLM_FIRST_CHUNK_MS` `ZA_LLM_IDLE_MS` `ZA_CRED_*` | 见配置参考；四项编排韧性旋钮（连续失败止损上限 + LLM 三层超时）均须正整数，写错拒启，缺省为不启用超时；`ZA_JWT_ISS_ALLOWLIST` 只管外部签发方——匿名激活的 iss 由服务端无条件并入白名单，既有 `.env` 留旧值也不会让服务端拒绝自己签发的令牌 |
+
+**没有「通用兜底包在哪些站点激活」的部署开关**：generic pack 在无站点 pack 命中且页面有 http(s) origin 时无条件激活，
+「不让 Zen 出现在本站」由用户自己的 L2 站点黑名单（`siteDenylist`，配置中心「不辅助的站点」面板增删）决定，终判在服务端 compose。
+既有 `.env` 里残留的 `ZA_GENERIC_ALLOWLIST` 不再被读取，删掉即可，留着也不影响启动。
 
 ## 5. 站点配置的发布与回滚
 
@@ -60,13 +70,35 @@ curl -fsS http://127.0.0.1:8787/healthz    # → {"ok":true}
 - **发布新站点/改配置**：升 `manifest.json` version，上传到不可变 `snapshots/<version>`，以目标镜像强制调用 `listSites()`/`allTools()` 完整加载，再激活版本化 release。
 - **回滚**：服务器侧 `flock` 内恢复上一 release 的 compose、镜像和快照，复验 health、单副本、镜像及挂载后才算成功；首次失败则停止新服务。`current-release` 软链只在冒烟全绿后原子切换。
 - **勿做**：exec 进容器改快照文件（违反 U4，且下次重建即丢）。
-- **远端发布**：`release/deploy-server.sh --snapshot assets` 创建 `releases/<deploy-id>`；healthz、单副本、镜像/挂载、`/data/za` 非 root 写读删或飞书 smoke 失败时恢复完整旧 release。服务端必须保持单实例：当前文件会话存储的消息幂等占位只保证进程内原子，扩展为多副本前必须迁移到支持唯一约束/CAS 的共享存储。首次从单体 compose 升级时保存实际旧 compose 并验证其可重放后才登记回滚基线。未显式传快照会 fail-closed。公网域名 health 与匿名激活（`POST /v1/activation`，唯一登录路径）属激活后的反代报告检查，失败不回滚已在服务器本机全绿的 release。
+- **远端发布**：`release/deploy-server.sh --snapshot assets` 创建 `releases/<deploy-id>`；healthz、单副本、镜像/挂载、`/data/za` 非 root 写读删失败时恢复完整旧 release。服务端必须保持单实例：当前文件会话存储的消息幂等占位只保证进程内原子，扩展为多副本前必须迁移到支持唯一约束/CAS 的共享存储。首次从单体 compose 升级时保存实际旧 compose 并验证其可重放后才登记回滚基线。未显式传快照会 fail-closed。公网域名 health 与匿名激活（`POST /v1/activation`，唯一登录路径）属激活后的反代报告检查，失败不回滚已在服务器本机全绿的 release。
 
 ## 6. 运维检查单
 
 - [ ] `/healthz` 探活接入编排（compose 已带 HEALTHCHECK；K8s 用 liveness/readiness 指向它）
 - [ ] `za-data` 卷有备份策略（审计是治理证据；会话含对话内容，按敏感数据对待）
 - [ ] 反向代理透传 SSE（`GET /v1/sessions/:id/events`）：禁用响应缓冲、read timeout 放宽（心跳默认 15s）
-- [ ] `ZA_CORS_ORIGIN` 按扩展来源收敛（默认 `*` 仅适合内网）
+- [ ] `ZA_CORS_ORIGIN` 按扩展来源收敛（默认 `*` 仅适合内网）：收敛值必须精确等于 `chrome-extension://<商店扩展 id>`，写错即插件全部请求被浏览器拦下
 - [ ] secret 轮换流程覆盖 `ZA_JWT_SECRET`（轮换即全部在途 token 失效，需与签发方协同）
 - [ ] 容器日志采集与审计卷采集分开配置（§1 原则 3）
+
+## 7. 扩展的商店权限声明（adr-027）
+
+装包由 `release/build-extension.sh` 产出，权限面即 `apps/extension/manifest.json` 的声明，与审核直接相关：
+
+| 声明 | 值 | 用途与审核口径 |
+|---|---|---|
+| `permissions` | `storage` / `activeTab` / `scripting` / `sidePanel` / `tabGroups` / `tabs` / `alarms` / `contextMenus` | `activeTab` + `scripting` 是按需注入的基础：用户点图标或用右键唤起时才把执行器放进当前页 |
+| `optional_host_permissions` | `<all_urls>` | **安装时不索取**任何站点访问权；用户在配置中心「全局设置 → 已授权常驻的站点」逐站授权，撤销即对称注销动态注册 |
+| `content_scripts` | 不声明 | 没有任何静态注入面——插件默认不进入任何页面 |
+
+**对服务端部署的连带要求**：删掉 `host_permissions` 后，插件发往服务端的请求不再享有扩展的跨域豁免，
+一律受 CORS 约束。`ZA_CORS_ORIGIN` 若从默认 `*` 收敛，其值必须**精确等于** `chrome-extension://<商店扩展 id>`；
+`access-control-expose-headers` 里的代执行公钥头（`x-zen-agent-exec-algorithm` / `x-zen-agent-exec-public-key`）
+同受此约束——收敛值不对时事件流握手取不到公钥，代执行整条链路即失效。
+
+审核问答要点：
+- **为什么要 `<all_urls>` 而不是固定站点清单**：产品是「任意站点上的 agent harness」，可授权的站点由用户决定；
+  故只能以可选权限逐站请求，无法在清单期穷举。
+- **什么时候真的注入**：不变量 IN——用户在本会话里对该页发起了动作，或该页 origin 已被用户显式授权；
+  两者都过用户级站点黑名单（黑名单优先）。其余页面上 `document` 无任何注入痕迹。
+- **注入的是什么**：恒为插件自带的 `dist/content.js`；站点包与用户配置都是纯数据，无从携带可执行代码。

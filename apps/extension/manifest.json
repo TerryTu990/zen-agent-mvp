@@ -33,22 +33,20 @@
   "permissions": [
     "storage",
     "activeTab",
+    "scripting",
     "sidePanel",
     "tabGroups",
     "tabs",
-    "alarms"
+    "alarms",
+    "contextMenus"
   ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
-  "content_scripts": [
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "dist/content.js"
-      ]
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+Z" },
+      "description": "打开 Zen Agent 面板"
     }
+  },
+  "optional_host_permissions": [
+    "<all_urls>"
   ]
 }

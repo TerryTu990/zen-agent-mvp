@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest';
-import { createSnapshotter } from '../src/page-snapshot.js';
-import { MAX_ELEMENTS } from '../src/tuning.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createSnapshotter, whenDomSettled } from '../src/page-snapshot.js';
+import { DOM_SETTLE_QUIET_MS, DOM_SETTLE_TIMEOUT_MS, MAX_ELEMENTS } from '../src/tuning.js';
 
 beforeEach(() => {
+  document.head.innerHTML = '';
   document.body.innerHTML = '';
   document.title = '令牌管理';
 });
@@ -71,7 +72,7 @@ describe('createSnapshotter：可交互元素采集与 ref 映射', () => {
     expect(elements[2]).toMatchObject({ disabled: true });
   });
 
-  it('重新 collect 后旧 ref 作废；脱离文档的元素 resolve 为 null', () => {
+  it('消失元素的旧 ref 不改绑到新元素：resolve 返回 null，新元素取新号', () => {
     document.body.innerHTML = '<button>甲</button>';
     const snapshotter = createSnapshotter();
     snapshotter.collect();
@@ -79,12 +80,15 @@ describe('createSnapshotter：可交互元素采集与 ref 映射', () => {
 
     const detached = document.querySelector('button')!;
     document.body.innerHTML = '<button>乙</button><button>丙</button>';
-    // 旧映射仍指向 detached 元素：已脱离文档 → null（局部重渲染后不可操作旧 ref）。
     expect(detached.isConnected).toBe(false);
     expect(snapshotter.resolve('za-1')).toBeNull();
 
-    snapshotter.collect();
-    expect(snapshotter.resolve('za-2')).toBe(document.querySelectorAll('button')[1]);
+    const { elements } = snapshotter.collect();
+    // seq 跨 collect 单调递增：新元素拿新号，za-1 永不指向别的控件。
+    expect(elements.map((e) => e.ref)).toEqual(['za-2', 'za-3']);
+    expect(snapshotter.resolve('za-1')).toBeNull();
+    expect(snapshotter.resolve('za-2')).toBe(document.querySelectorAll('button')[0]);
+    expect(snapshotter.resolve('za-3')).toBe(document.querySelectorAll('button')[1]);
   });
 
   it('自定义下拉纳入采集：combobox / option / listbox 后代 li；裸 li 不收', () => {
@@ -156,7 +160,7 @@ describe('createSnapshotter：同源 iframe 下钻（ADR-013 批次④ 方案 A�
 
     // 顶层格式不变（za-N，host-demo 回归零影响）；iframe 内元素带 f1: 前缀，全局配额续编号。
     expect(elements.map((e) => e.ref)).toEqual(['za-1', 'f1:za-2', 'f1:za-3']);
-    expect(elements.map((e) => e.label)).toEqual(['顶层写信', '正文编辑器', '子按钮']);
+    expect(elements.map((e) => e.label)).toEqual(['顶层写信', '[可编辑区域]', '子按钮']);
     expect(elements[1]?.role).toBe('contenteditable');
     expect(snapshotter.resolve('f1:za-2')).toBe(childDoc.querySelector('[contenteditable]'));
     expect(snapshotter.resolve('za-1')).toBe(document.querySelector('button'));
@@ -219,12 +223,12 @@ describe('createSnapshotter：模态层优先采集', () => {
     expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['确定', '主体']);
   });
 
-  it('隐藏模态层（内联 display:none）不触发优先采集', () => {
+  it('隐藏模态层（内联 display:none）内的按钮一律不采集，不与可见同名控件混淆', () => {
     document.body.innerHTML = `
       <button>主体</button>
       <div role="dialog" style="display:none"><button>藏层按钮</button></div>
     `;
-    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['主体', '藏层按钮']);
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['主体']);
   });
 
   it('无 role 子项的 listbox（Semi 类组件）：直接子项拿到 ref，浮层优先于配额', () => {
@@ -398,5 +402,381 @@ describe('createSnapshotter：页面提示文本 notices 采集', () => {
     const { notices } = createSnapshotter().collect();
     expect(notices).toEqual(['密码格式错误']);
     expect(JSON.stringify(notices)).not.toContain('s3cret');
+  });
+});
+
+/**
+ * jsdom 无排版：getClientRects 恒空、盒子恒 0，采集器据此整份退化为声明式 + 内联判定。
+ * 本组用桩搭出「有布局」的世界，验证计算样式/尺寸/视口分支的判定逻辑；
+ * 真实布局取值（祖先 display:none 的继承、真实 rect）仍须浏览器 E2E 证实。
+ */
+const LAYOUT_RECT = {
+  x: 0, y: 0, top: 0, left: 0, right: 300, bottom: 200, width: 300, height: 200,
+  toJSON: () => ({}),
+} as DOMRect;
+
+function rectAtTop(top: number): DOMRect {
+  return { ...LAYOUT_RECT, top, y: top, bottom: top + 20 } as DOMRect;
+}
+
+function withLayout(run: () => void): void {
+  const rects = Element.prototype.getClientRects;
+  const box = Element.prototype.getBoundingClientRect;
+  Element.prototype.getClientRects = function (this: Element) {
+    return [LAYOUT_RECT] as unknown as DOMRectList;
+  };
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    return LAYOUT_RECT;
+  };
+  try {
+    run();
+  } finally {
+    Element.prototype.getClientRects = rects;
+    Element.prototype.getBoundingClientRect = box;
+  }
+}
+
+describe('createSnapshotter：可见性判定（A-PAGE-01 / PC-PAGE-01）', () => {
+  it('aria-hidden 祖先内的控件同样不采集（读屏排除覆盖整条祖先链）', () => {
+    document.body.innerHTML = `
+      <div aria-hidden="true"><button>非活跃面板确定</button></div>
+      <button>确定</button>
+    `;
+    const { elements } = createSnapshotter().collect();
+    expect(elements.map((e) => e.label)).toEqual(['确定']);
+  });
+
+  it('内联 display:none 祖先内的控件不采集（折叠菜单/关闭后保留 DOM 的弹层）', () => {
+    document.body.innerHTML = `
+      <div style="display:none"><button>删除</button></div>
+      <div style="visibility:hidden"><button>删除</button></div>
+      <button>删除</button>
+    `;
+    const { elements } = createSnapshotter().collect();
+    expect(elements).toHaveLength(1);
+  });
+
+  it('有布局时按计算样式判定：class 隐藏（display:none / opacity:0）的控件不采集', () => {
+    document.head.innerHTML = '<style>.collapsed{display:none}.faded{opacity:0}</style>';
+    document.body.innerHTML = `
+      <button class="collapsed">折叠项</button>
+      <button class="faded">透明层按钮</button>
+      <button>可见按钮</button>
+    `;
+    withLayout(() => {
+      expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['可见按钮']);
+    });
+  });
+
+  it('有布局时无盒子（getClientRects 为空）的控件不采集', () => {
+    document.body.innerHTML = '<button>零尺寸</button><button>可见按钮</button>';
+    withLayout(() => {
+      const boxless = document.querySelectorAll('button')[0]!;
+      boxless.getClientRects = () => [] as unknown as DOMRectList;
+      expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['可见按钮']);
+    });
+  });
+
+  it('无布局环境（jsdom）退化为属性 + 内联判定，不把整页判成不可见', () => {
+    document.body.innerHTML = '<button>可见按钮</button>';
+    expect(document.body.getClientRects()).toHaveLength(0);
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['可见按钮']);
+  });
+});
+
+describe('createSnapshotter：配额如实标注与优先级（A-PAGE-02 / PC-PAGE-06）', () => {
+  it('未超配额时不带截断标注', () => {
+    document.body.innerHTML = '<button>甲</button>';
+    const snapshot = createSnapshotter().collect();
+    expect(snapshot).not.toHaveProperty('elementsTruncated');
+    expect(snapshot).not.toHaveProperty('elementsOmitted');
+  });
+
+  it('配额恰好命中：不标截断（无元素被丢弃）', () => {
+    document.body.innerHTML = Array.from(
+      { length: MAX_ELEMENTS },
+      (_, i) => `<button>主体${i}</button>`,
+    ).join('');
+    const snapshot = createSnapshotter().collect();
+    expect(snapshot.elements).toHaveLength(MAX_ELEMENTS);
+    expect(snapshot).not.toHaveProperty('elementsTruncated');
+  });
+
+  it('超配额后继续计数不采集：elementsTruncated + elementsOmitted 如实标注', () => {
+    document.body.innerHTML = Array.from(
+      { length: MAX_ELEMENTS + 7 },
+      (_, i) => `<button>主体${i}</button>`,
+    ).join('');
+    const snapshot = createSnapshotter().collect();
+    expect(snapshot.elements).toHaveLength(MAX_ELEMENTS);
+    expect(snapshot.elementsTruncated).toBe(true);
+    expect(snapshot.elementsOmitted).toBe(7);
+  });
+
+  it('跨帧省略计入同一计数（配额与标注都是全局口径）', () => {
+    document.body.innerHTML = Array.from(
+      { length: MAX_ELEMENTS },
+      (_, i) => `<button>主体${i}</button>`,
+    ).join('');
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    frame.contentDocument!.body.innerHTML = '<button>子甲</button><button>子乙</button>';
+    const snapshot = createSnapshotter().collect();
+    expect(snapshot.elements).toHaveLength(MAX_ELEMENTS);
+    expect(snapshot.elementsOmitted).toBe(2);
+  });
+
+  it('隐藏元素不计入省略数：省略数只表示「本可采集却因配额丢弃」', () => {
+    const filler = Array.from(
+      { length: MAX_ELEMENTS },
+      (_, i) => `<button>主体${i}</button>`,
+    ).join('');
+    document.body.innerHTML = `${filler}<div hidden><button>藏起来的</button></div>`;
+    const snapshot = createSnapshotter().collect();
+    expect(snapshot.elements).toHaveLength(MAX_ELEMENTS);
+    expect(snapshot).not.toHaveProperty('elementsTruncated');
+  });
+
+  it('静态单元格排在真控件之后：中等表格不再吃掉真控件的配额', () => {
+    document.body.innerHTML = `
+      <table><tbody><tr><td>ORDER-1</td><td>待发货</td></tr></tbody></table>
+      <button>发货</button>
+    `;
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual([
+      '发货', 'ORDER-1', '待发货',
+    ]);
+  });
+
+  it('有布局时视口内控件先分配配额，视口外控件排在其后', () => {
+    document.body.innerHTML = '<button>页尾按钮</button><button>视口内按钮</button>';
+    withLayout(() => {
+      const [below] = [...document.querySelectorAll('button')];
+      below!.getBoundingClientRect = () => rectAtTop(5000);
+      expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual([
+        '视口内按钮', '页尾按钮',
+      ]);
+    });
+  });
+});
+
+describe('createSnapshotter：可达名计算（A-PAGE-03 / PC-PAGE-03）', () => {
+  it('aria-labelledby 按 id 顺序拼接，优先于 aria-label', () => {
+    document.body.innerHTML = `
+      <span id="l1">收货</span><span id="l2">地址</span>
+      <input aria-labelledby="l1 l2" aria-label="被覆盖" />
+    `;
+    expect(createSnapshotter().collect().elements.at(-1)?.label).toBe('收货 地址');
+  });
+
+  it('label[for] 与包裹 label 都能给出控件名（图标钮/无文本控件不再无名）', () => {
+    document.body.innerHTML = `
+      <label for="phone">手机号</label><input id="phone" />
+      <label>邮箱<input id="mail" /></label>
+    `;
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['手机号', '邮箱']);
+  });
+
+  it('img alt 与 input[type=submit].value 进入可达名', () => {
+    document.body.innerHTML = `
+      <button><img alt="删除" /></button>
+      <input type="submit" value="提交订单" />
+      <input type="button" value="取消" />
+    `;
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual([
+      '删除', '提交订单', '取消',
+    ]);
+  });
+
+  it('图文混排容器取自身文本，不被内嵌图片 alt 顶掉', () => {
+    document.body.innerHTML = `
+      <table><tbody><tr><td><img alt="缩略图" />蓝牙耳机</td></tr></tbody></table>
+    `;
+    expect(createSnapshotter().collect().elements[0]?.label).toBe('蓝牙耳机');
+  });
+
+  it('select 取当前选中项而非全部 option 文本', () => {
+    document.body.innerHTML = `
+      <select><option>甲分组</option><option selected>乙分组</option></select>
+    `;
+    expect(createSnapshotter().collect().elements[0]?.label).toBe('乙分组');
+  });
+
+  it('placeholder 让位于关联 label；两者皆无才取 textContent', () => {
+    document.body.innerHTML = `
+      <label for="k">令牌名称</label><input id="k" placeholder="请输入" />
+      <button>纯文本按钮</button>
+    `;
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual([
+      '令牌名称', '纯文本按钮',
+    ]);
+  });
+
+  it('contenteditable 不把编辑中的正文当标签（A-SEC-05：草稿不进模型上下文）', () => {
+    document.body.innerHTML = `
+      <div contenteditable="true">尊敬的王总，附件是本季度的报价单与折扣说明</div>
+      <div contenteditable="true" aria-label="邮件正文">同上但有 aria-label</div>
+    `;
+    const { elements } = createSnapshotter().collect();
+    expect(elements.map((e) => e.label)).toEqual(['[可编辑区域]', '邮件正文']);
+    expect(JSON.stringify(elements)).not.toContain('报价单');
+  });
+});
+
+describe('createSnapshotter：ref 稳定性与快照世代（A-PAGE-04 / PC-PAGE-02）', () => {
+  it('仍连接且 role/label 未变的元素跨 collect 复用 ref', () => {
+    document.body.innerHTML = '<button>甲</button><button>乙</button>';
+    const snapshotter = createSnapshotter();
+    expect(snapshotter.collect().elements.map((e) => e.ref)).toEqual(['za-1', 'za-2']);
+
+    document.body.insertAdjacentHTML('afterbegin', '<button>新来的</button>');
+    const second = snapshotter.collect();
+    expect(second.elements.map((e) => [e.ref, e.label])).toEqual([
+      ['za-3', '新来的'],
+      ['za-1', '甲'],
+      ['za-2', '乙'],
+    ]);
+    expect(snapshotter.resolve('za-1')?.textContent).toBe('甲');
+  });
+
+  it('label 变化即换号（同一元素改了语义就不再是同一个可指目标）', () => {
+    document.body.innerHTML = '<button>展开</button>';
+    const snapshotter = createSnapshotter();
+    snapshotter.collect();
+    document.querySelector('button')!.textContent = '收起';
+    expect(snapshotter.collect().elements[0]?.ref).toBe('za-2');
+  });
+
+  it('snapshotEpoch 自 1 起随每次 collect 单调递增', () => {
+    document.body.innerHTML = '<button>甲</button>';
+    const snapshotter = createSnapshotter();
+    expect(snapshotter.collect().snapshotEpoch).toBe(1);
+    expect(snapshotter.collect().snapshotEpoch).toBe(2);
+  });
+});
+
+describe('createSnapshotter：shadow DOM 与帧资格（A-PAGE-09/12 / PC-PAGE-07）', () => {
+  it('open shadow root 内的控件可采集且 resolve 命中', () => {
+    document.body.innerHTML = '<button>轻 DOM 按钮</button><div id="host"></div>';
+    const shadow = document.querySelector('#host')!.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<button>影子按钮</button><div id="inner"></div>';
+    shadow.querySelector('#inner')!.attachShadow({ mode: 'open' }).innerHTML =
+      '<input aria-label="影子输入" />';
+
+    const snapshotter = createSnapshotter();
+    const { elements } = snapshotter.collect();
+    expect(elements.map((e) => e.label)).toEqual(['轻 DOM 按钮', '影子按钮', '影子输入']);
+    expect(snapshotter.resolve(elements[1]!.ref)).toBe(shadow.querySelector('button'));
+  });
+
+  it('closed shadow root 不可达时不抛错，轻 DOM 照常采集', () => {
+    document.body.innerHTML = '<div id="host"></div><button>轻 DOM 按钮</button>';
+    document.querySelector('#host')!.attachShadow({ mode: 'closed' }).innerHTML = '<button>不可达</button>';
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['轻 DOM 按钮']);
+  });
+
+  it('零尺寸帧（埋点帧）与隐藏帧不下钻，与正文抽取同口径', () => {
+    document.body.innerHTML = '<button>顶层</button>';
+    const beacon = document.createElement('iframe');
+    beacon.setAttribute('width', '0');
+    document.body.appendChild(beacon);
+    beacon.contentDocument!.body.innerHTML = '<button>埋点帧按钮</button>';
+    const hidden = document.createElement('iframe');
+    hidden.style.display = 'none';
+    document.body.appendChild(hidden);
+    hidden.contentDocument!.body.innerHTML = '<button>隐藏帧按钮</button>';
+
+    expect(createSnapshotter().collect().elements.map((e) => e.label)).toEqual(['顶层']);
+  });
+
+  it('同源帧内元素的 role/href 按所在文档解析（跨 realm 不退化）', () => {
+    document.body.innerHTML = '';
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    frame.contentDocument!.body.innerHTML =
+      '<input type="text" aria-label="帧内输入" /><a href="/inner">帧内链接</a>';
+    const { elements } = createSnapshotter().collect();
+    expect(elements[0]?.role).toBe('input:text');
+    expect(elements[1]?.href).toBe(new URL('/inner', document.location.href).href);
+  });
+
+  it('notices 按已下钻的同源帧合并采集（帧内校验提示不再漏采）', () => {
+    document.body.innerHTML = '<div role="alert">顶层提示</div>';
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    frame.contentDocument!.body.innerHTML = '<div role="alert">帧内校验失败</div>';
+    expect(createSnapshotter().collect().notices).toEqual(['顶层提示', '帧内校验失败']);
+  });
+
+  it('open shadow root 内的校验提示进 notices（采集面与元素快照同界）', () => {
+    document.body.innerHTML = '<div role="alert">轻 DOM 提示</div><div id="host"></div>';
+    const shadow = document.querySelector('#host')!.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<div role="alert">影子树校验失败</div>';
+    expect(createSnapshotter().collect().notices).toEqual(['轻 DOM 提示', '影子树校验失败']);
+  });
+
+  it('open shadow root 内的 pack 证据配方计入 evidence（影子树站点不再恒零命中）', () => {
+    document.body.innerHTML = '<div id="host"></div>';
+    const shadow = document.querySelector('#host')!.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<div class="msg"><span class="st">未读</span></div>';
+    const rule = {
+      id: 'message-receipts',
+      itemSelector: '.msg',
+      statusSelector: '.st',
+      statuses: ['未读', '已读'],
+    };
+    expect(createSnapshotter().collect([rule]).evidence).toEqual({
+      'message-receipts': { count: 1, latest: '未读' },
+    });
+  });
+
+  it('evidence 按已下钻的同源帧合并计数', () => {
+    document.body.innerHTML = '<div class="msg"><span class="st">已读</span></div>';
+    const frame = document.createElement('iframe');
+    document.body.appendChild(frame);
+    frame.contentDocument!.body.innerHTML = '<div class="msg"><span class="st">未读</span></div>';
+    const rule = {
+      id: 'message-receipts',
+      itemSelector: '.msg',
+      statusSelector: '.st',
+      statuses: ['未读', '已读'],
+    };
+    expect(createSnapshotter().collect([rule]).evidence).toEqual({
+      'message-receipts': { count: 2, latest: '未读' },
+    });
+  });
+});
+
+describe('whenDomSettled：DOM 静默窗（G5-PAGE-01）', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('静默达阈值后才放行采集', async () => {
+    vi.useFakeTimers();
+    const ran: string[] = [];
+    whenDomSettled(() => ran.push('collect'), document);
+    await vi.advanceTimersByTimeAsync(DOM_SETTLE_QUIET_MS - 50);
+    expect(ran).toEqual([]);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(ran).toEqual(['collect']);
+  });
+
+  it('每次 DOM 变更重置静默窗，总等待封顶后无论是否静定一律放行', async () => {
+    vi.useFakeTimers();
+    const ran: string[] = [];
+    whenDomSettled(() => ran.push('collect'), document);
+    const churn = Math.ceil(DOM_SETTLE_TIMEOUT_MS / (DOM_SETTLE_QUIET_MS - 100)) + 2;
+    for (let i = 0; i < churn; i += 1) {
+      document.body.appendChild(document.createElement('div'));
+      await vi.advanceTimersByTimeAsync(DOM_SETTLE_QUIET_MS - 100);
+    }
+    // 变更从未停过：静默窗永不达标，只可能由总上限收尾，且只放行一次。
+    expect(ran).toEqual(['collect']);
+  });
+
+  it('无 body / 无 MutationObserver 的环境立即放行（观察能力缺席不推迟采集）', () => {
+    const ran: string[] = [];
+    whenDomSettled(() => ran.push('collect'), null);
+    expect(ran).toEqual(['collect']);
   });
 });
