@@ -115,4 +115,4 @@
 1. **`test:e2e:sidepanel` 与 `test:e2e:m5` 已于 2026-09-05 溯源闭合**（见交付报告 §5）：两者都是 harness 没跟上有意的产品语义变更。教训：改产品语义的 commit 必须实跑 E2E 全家族（含 m5），门清单以 `package.json` 的 `test:e2e*` 全集为准。
 2. **N1-N5 全部交付**（2026-09-04 至 09-05，见裁决记录 §2）。N5 之后的产品可见变化：插件不再常驻注入任何页面，图标/右键/快捷动作只在当前文档生效；跨 origin 继续使用与 watch 自动化都要先在配置中心「已授权常驻的站点」授权该 origin（adr-027，R9 相应加了限定）。侧边栏尚无就地授权入口（锚点见交付报告 §5）。
 3. r2 的 12 条 partial 里挑「进 describeInjection」与「domContext 同步」两条收口（都是本轮改动的残余面）。
-4. 若要发布：先补 `apps/extension/manifest.json` 版本递增，再走 release skill；本轮**未发布**，生产仍是上次发布的版本。
+4. **已发布（2026-09-05）**：服务端 `zen-agent-server:5d6e88e` @ lingm2（release `5d6e88e-20260905T012009Z-43342`，快照 2.1.0，healthz/匿名激活冒烟通过）；插件 `release/artifacts/zen-agent-extension-0.11.0.zip`（本机 gitignore 产物，重打包即得）。回滚见 release skill。
