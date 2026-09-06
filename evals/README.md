@@ -12,7 +12,7 @@
   确定性快照。LLM 为确定性 mock（`scripts/mock-llm/server.mjs`），非真实模型。
 - **四个快照根依次独占同端口起 server**：`examples/host-demo/config`（跑本目录 `scenarios.json` 17 场景）、
   `examples/acceptance`、`assets`（生产快照）、`examples/site-packs`（已下线站点包）；每根再按
-  `packs/*/eval/scenarios.json` 自动发现逐 pack 跑。当前合计 99 组场景。
+  `packs/*/eval/scenarios.json` 自动发现逐 pack 跑。当前合计 103 组场景。
 - **维度覆盖**：`explain` / `assembly-swap` 与 `assembly` / `guide` / `tool` / `hitl` / `automation` 均有场景。
 - **宿主 API mock 有状态**：`orders` 状态表 + `calls` 调用流水，**每跑重置**；场景可用 `hostState` /
   `hostCalls` / `hostCallsAbsent` 断言代执行的真实副作用（批准后状态已变、拒绝后状态未变且接口未被调用）。
