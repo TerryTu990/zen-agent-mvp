@@ -315,6 +315,17 @@ function section(title: string): HTMLElement {
   return node;
 }
 
+/** 行式设置项：左侧标签与说明，右侧单个控件。 */
+function settingRow(label: HTMLElement, hint: string, control: HTMLElement): HTMLElement {
+  const row = el('div', 'za-cc-setting');
+  const copy = el('div', 'za-cc-setting-copy');
+  copy.append(label, el('p', 'za-cc-hint', hint));
+  const slot = el('div', 'za-cc-setting-control');
+  slot.append(control);
+  row.append(copy, slot);
+  return row;
+}
+
 function packLabel(pack: PackView | undefined, packId: string): string {
   return pack?.name ?? packId;
 }
@@ -537,7 +548,15 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
   root.replaceChildren();
 
   const nav = el('nav', 'za-cc-nav');
-  nav.append(el('div', 'za-cc-logo', 'Zen Agent'), el('div', 'za-cc-logo-sub', '配置中心'));
+  const brandMark = el('img', 'za-cc-brand-mark');
+  brandMark.src = 'icons/icon.svg';
+  brandMark.alt = '';
+  const brandCopy = el('div');
+  brandCopy.append(el('div', 'za-cc-logo', 'Zen Agent'), el('div', 'za-cc-logo-sub', '配置中心'));
+  const brand = el('div', 'za-cc-brand');
+  brand.append(brandMark, brandCopy);
+  const navList = el('div', 'za-cc-nav-list');
+  nav.append(brand, navList);
   const main = el('div', 'za-cc-main');
   const panels = new Map<string, HTMLElement>();
   const navItems = new Map<string, HTMLButtonElement>();
@@ -552,7 +571,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     item.type = 'button';
     item.dataset['zaTab'] = tab.id;
     item.addEventListener('click', () => activate(tab.id));
-    nav.append(item);
+    navList.append(item);
     navItems.set(tab.id, item);
 
     const panel = el('section', 'za-cc-panel');
@@ -581,9 +600,11 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     return panels.get(tab)!;
   }
 
-  function pageHead(title: string, actions: HTMLElement[] = []): HTMLElement {
+  function pageHead(title: string, subtitle: string, actions: HTMLElement[] = []): HTMLElement {
     const head = el('div', 'za-cc-page-head');
-    head.append(el('h1', 'za-cc-page-title', title));
+    const copy = el('div', 'za-cc-page-copy');
+    copy.append(el('h1', 'za-cc-page-title', title), el('p', 'za-cc-page-sub', subtitle));
+    head.append(copy);
     if (actions.length > 0) {
       const group = el('div', 'za-cc-head-actions');
       group.append(...actions);
@@ -601,7 +622,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
   function renderPacksPanel(): void {
     const panel = panelOf('packs');
     panel.replaceChildren(
-      pageHead('站点包', [
+      pageHead('站点包', '服务端已安装的能力来源；在这里决定它们在你的账号下是否启用。', [
         unavailable('从文件导入', 'P3.5 pack 打包分发'),
         unavailable('浏览社区包', 'P3.5 社区目录'),
       ]),
@@ -629,6 +650,10 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       el('span', 'za-cc-pack-name', packLabel(pack, pack.packId)),
       el('span', 'za-cc-pack-version', `v${pack.version}`),
       badge(`za-cc-badge-source za-cc-badge-${pack.source}`, SOURCE_LABEL[pack.source], `来源：${SOURCE_LABEL[pack.source]}`),
+    );
+
+    const meta = el('div', 'za-cc-pack-meta');
+    meta.append(
       el(
         'span',
         'za-cc-pack-origin',
@@ -638,7 +663,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       el('span', 'za-cc-pack-tools', `工具 ${pack.tools.length} 项`),
     );
     if (pack.locations !== undefined && pack.locations.length > 0) {
-      row.append(el('span', 'za-cc-pack-locations', `路径 ${pack.locations.join(' ')}`));
+      meta.append(el('span', 'za-cc-pack-locations', `路径 ${pack.locations.join(' ')}`));
     }
 
     const toggleLabel = el('label', 'za-cc-switch');
@@ -652,13 +677,10 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     toggleLabel.append(toggle, el('span', 'za-cc-switch-text', '启用'));
     row.append(toggleLabel);
 
-    const sub = el('div', 'za-cc-pack-sub');
-    sub.append(el('span', 'za-cc-pack-desc', pack.summary ?? '站点包未声明简介。'));
     const ops = el('div', 'za-cc-pack-ops');
     ops.append(unavailable('导出', 'P3.5 pack 导入导出'), unavailable('卸载', 'P3.5 pack 打包分发'));
-    sub.append(ops);
 
-    card.append(row, sub);
+    card.append(row, meta, el('p', 'za-cc-pack-desc', pack.summary ?? '站点包未声明简介。'), ops);
     return card;
   }
 
@@ -667,7 +689,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
   function renderOverlayPanel(): void {
     const panel = panelOf('overlay');
     panel.replaceChildren(
-      pageHead('个人定制'),
+      pageHead('个人定制', '按站点收紧权限、留下你的规则与事实、维护自己的快捷提问。'),
       notice('个人设置只能收紧站点包的权限，不能放宽；放宽需更换站点包。', 'warn'),
     );
     if (state.loadError !== null) {
@@ -857,7 +879,9 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       ];
       renderOverlayPanel();
     });
-    form.append(label, template, context, add, issue);
+    const fields = el('div', 'za-cc-qa-fields');
+    fields.append(label, context);
+    form.append(fields, template, add, issue);
     return form;
   }
 
@@ -931,20 +955,20 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       row.dataset['zaToolId'] = tool.toolId;
 
       const nameCell = el('td');
-      nameCell.append(
-        el('span', 'za-cc-tool-name', tool.toolId),
-        el('span', 'za-cc-tool-desc', tool.description),
-      );
+      const description = el('span', 'za-cc-tool-desc', tool.description);
+      description.title = tool.description;
+      nameCell.append(el('span', 'za-cc-tool-name', tool.toolId), description);
       const baseCell = el('td');
-      baseCell.append(
-        el('span', 'za-cc-tool-base', `${TIER_LABEL[tool.baseTier]}（${tool.baseTier}）`),
-      );
+      const baseTier = el('span', 'za-cc-tool-base', `${TIER_LABEL[tool.baseTier]}（${tool.baseTier}）`);
+      baseTier.dataset['zaTier'] = tool.baseTier;
+      baseCell.append(baseTier);
 
       const chosen =
         state.tiers.get(tierKey(pack.packId, tool.toolId)) ??
         (disabledTools.has(tool.toolId) ? 'forbidden' : tool.baseTier);
       const select = el('select', 'za-cc-tier');
       select.dataset['zaToolId'] = tool.toolId;
+      select.dataset['zaTier'] = chosen;
       select.setAttribute('aria-label', `${tool.toolId} 的生效风险档`);
       for (const tier of TIERS) {
         const option = el('option', undefined, `${TIER_LABEL[tier]}（${tier}）`);
@@ -958,6 +982,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       select.addEventListener('change', () => {
         const value = select.value as RiskTier;
         state.tiers.set(tierKey(pack.packId, tool.toolId), value);
+        select.dataset['zaTier'] = value;
         tightened.hidden = value === tool.baseTier;
       });
 
@@ -966,7 +991,9 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       row.append(nameCell, baseCell, tierCell);
       table.append(row);
     }
-    wrap.append(table);
+    const scroller = el('div', 'za-cc-matrix-scroll');
+    scroller.append(table);
+    wrap.append(scroller);
     return wrap;
   }
 
@@ -990,7 +1017,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       renderAutomationPanel();
     });
     panel.replaceChildren(
-      pageHead('自动化', [create]),
+      pageHead('自动化', '按周期替你查看已打开的工作页；无人值守的轮次只读不写。', [create]),
       notice('无人值守任务不允许自动执行不可撤销的写操作——平台底线，不可配置。', 'lock'),
       notice(
         '自动化需先授权站点：Zen 默认不进入任何页面，未授权的站点到点不跑，也不发提示（每行给出授权入口）。' +
@@ -1044,11 +1071,13 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     for (const watch of state.foreignWatches) {
       const row = el('div', 'za-cc-watch za-cc-watch-foreign');
       row.dataset['zaWatchId'] = watch.id;
-      row.append(
-        el('span', 'za-cc-automation-name', watch.id),
-        badge('za-cc-badge-kind', `模板 ${watch.templateId}`),
+      const main = el('div', 'za-cc-row-main');
+      main.append(el('span', 'za-cc-automation-name', watch.id), badge('za-cc-badge-kind', `模板 ${watch.templateId}`));
+      const notes = el('div', 'za-cc-row-notes');
+      notes.append(
         el('span', 'za-cc-hint', '该模板本插件版本尚不认识，保持原样不作改动；升级插件后可在此编辑。'),
       );
+      row.append(main, notes);
       group.append(row);
     }
     return group;
@@ -1059,7 +1088,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
    * 且不发任何提示——不就地给出授权入口，这一行等于承诺了一份永远不来的周期汇报。
    * origin 为 null（地址尚未填好/不可解析/pack 未声明站点围栏）时不给入口：无从判定要授权哪个站点。
    */
-  function appendGrantEntry(row: HTMLElement, origin: string | null): void {
+  function appendGrantEntry(notes: HTMLElement, origin: string | null): void {
     if (origin === null || originAuthorized(origin)) return;
     const grant = el('button', 'za-cc-btn za-cc-row-grant', '授权此站点');
     grant.type = 'button';
@@ -1070,7 +1099,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         refreshGrantSection();
       });
     });
-    row.append(
+    notes.append(
       badge('za-cc-badge-warn', '站点未授权', '自动化需先授权站点：未授权时到点不跑，也不发提示'),
       grant,
     );
@@ -1134,30 +1163,32 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       renderAutomationPanel();
     });
 
-    row.append(
+    const main = el('div', 'za-cc-row-main');
+    main.append(
       el('span', 'za-cc-automation-name', WATCH_TEMPLATE_LABEL[draft.templateId]),
       badge('za-cc-badge-kind', '用户自建'),
       badge('za-cc-badge-read', '只读', '平台强制只读工具面，无人值守回合不执行任何写操作'),
-      enabledLabel,
-      urlLabel,
-      minutesLabel,
-      focusLabel,
+    );
+    if (draft.pausedLocally === true) {
+      main.append(badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'));
+    }
+    main.append(enabledLabel, remove);
+
+    const fields = el('div', 'za-cc-row-fields');
+    fields.append(urlLabel, minutesLabel, focusLabel);
+
+    const notes = el('div', 'za-cc-row-notes');
+    notes.append(
       el(
         'span',
         'za-cc-hint',
         `周期 ${PLATFORM_MIN_WATCH_MINUTES}–${MAX_AUTO_SCAN_MINUTES} 分钟（下限=平台底线，只可调稀不可调密）`,
       ),
-      remove,
     );
-    if (draft.pausedLocally === true) {
-      row.append(
-        badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'),
-      );
-    }
-    appendGrantEntry(row, originOfUrl(draft.url));
+    appendGrantEntry(notes, originOfUrl(draft.url));
     // 启用态 + 名单内地址 = 到点静默不跑：不标注则这一行等于承诺了一份永远不来的周期汇报。
     if (siteDeniesUrl(state.siteDenylist, draft.url)) {
-      row.append(
+      notes.append(
         badge(
           'za-cc-badge-warn',
           '因站点名单暂不运行',
@@ -1165,6 +1196,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         ),
       );
     }
+    row.append(main, fields, notes);
     return row;
   }
 
@@ -1196,23 +1228,26 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     const minutesLabel = el('label', 'za-cc-field-inline');
     minutesLabel.append(el('span', undefined, '周期（分钟）'), minutes);
 
-    row.append(
-      el('span', 'za-cc-automation-name', automation.id),
-      badge('za-cc-badge-kind', '站点包预置'),
-      enabledLabel,
-      minutesLabel,
+    const main = el('div', 'za-cc-row-main');
+    main.append(el('span', 'za-cc-automation-name', automation.id), badge('za-cc-badge-kind', '站点包预置'));
+    if (draft.pausedLocally === true) {
+      main.append(badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'));
+    }
+    main.append(enabledLabel);
+
+    const fields = el('div', 'za-cc-row-fields');
+    fields.append(minutesLabel);
+
+    const notes = el('div', 'za-cc-row-notes');
+    notes.append(
       el(
         'span',
         'za-cc-hint',
         `周期 ${draft.minMinutes}–${MAX_AUTO_SCAN_MINUTES} 分钟（下限=站点包预设，只可调稀不可调密）`,
       ),
     );
-    if (draft.pausedLocally === true) {
-      row.append(
-        badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'),
-      );
-    }
-    appendGrantEntry(row, pack.origin !== undefined && isGrantedOriginEntry(pack.origin) ? pack.origin : null);
+    appendGrantEntry(notes, pack.origin !== undefined && isGrantedOriginEntry(pack.origin) ? pack.origin : null);
+    row.append(main, fields, notes);
     return row;
   }
 
@@ -1260,7 +1295,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
 
   function renderGlobalPanel(): void {
     const panel = panelOf('global');
-    panel.replaceChildren(pageHead('全局设置'));
+    panel.replaceChildren(pageHead('全局设置', '连接、身份，以及跨全部站点生效的偏好与站点名单。'));
 
     const connection = section('连接');
 
@@ -1275,7 +1310,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     connection.append(identityField(), baseUrlField);
 
     const execution = section('执行');
-    const executionField = el('div', 'za-cc-field-inline');
     const executionLabel = el('label', 'za-cc-label', '执行偏好');
     executionLabel.htmlFor = 'za-cc-execution-preference';
     executionPreferenceSelect = el('select', 'za-cc-execution-preference');
@@ -1286,14 +1320,15 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       node.selected = option.value === executionPreference;
       executionPreferenceSelect.append(node);
     }
-    executionField.append(executionLabel, executionPreferenceSelect);
     execution.append(
-      executionField,
-      el('p', 'za-cc-hint', '本机设置：Zen 代执行时优先走页面操作还是 API，只影响本浏览器发出的任务。'),
+      settingRow(
+        executionLabel,
+        '本机设置：Zen 代执行时优先走页面操作还是 API，只影响本浏览器发出的任务。',
+        executionPreferenceSelect,
+      ),
     );
 
     const preferences = section('偏好');
-    const verbosityField = el('div', 'za-cc-field-inline');
     const verbosityLabel = el('label', 'za-cc-label', '回答详略');
     verbosityLabel.htmlFor = 'za-cc-verbosity';
     const verbosity = el('select', 'za-cc-verbosity');
@@ -1314,11 +1349,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     verbosity.addEventListener('change', () => {
       state.verbosity = verbosity.value as Verbosity | '';
     });
-    verbosityField.append(verbosityLabel, verbosity);
-    preferences.append(
-      verbosityField,
-      el('p', 'za-cc-hint', '偏好写入「全部站点」作用域，对所有站点包生效。'),
-    );
+    preferences.append(settingRow(verbosityLabel, '偏好写入「全部站点」作用域，对所有站点包生效。', verbosity));
 
     const pending = section('尚未开放');
     for (const item of [
