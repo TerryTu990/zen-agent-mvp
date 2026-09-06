@@ -16,7 +16,8 @@
  *  ② 面板出现 open_url 的 HITL 确认卡，且卡出现时目标页尚未打开（确认先于执行）；
  *  ③ 批准后 background 直执行 navigate：空白页原地导航到目标——组内 tab 数不变，
  *    原空白 tab 的 url 变为目标且仍在组内（不新开页签留下空白页）；
- *  ④ agent 收到成功回喂：mock 收到含 {url} 的 observation，面板出现导航成功总结；
+ *  ④ agent 收到成功回喂：mock 收到的 observation 含 {url, attached:true} 与「页面已接入」指引
+ *     （落点页真实注入并上报接入后服务端才回喂 attached:true；未接入即 MOCK-NOT-ATTACHED 红），面板出现导航成功总结；
  *  ⑤ 落点后装配切到该站：injection 视图变为 generic-web/browse；面板常驻同组、可继续输入；
  *  ⑥ 审计链：tool-decision(open_url, hitl) → hitl-verdict(approve) → tool-execution(ok) 且授权先于执行。
  *
@@ -140,9 +141,9 @@ function startScriptedLlm(targetUrl, successReply) {
 
       let decision;
       if (obs !== null) {
-        if (obs.includes('"url"')) decision = { text: successReply };
+        if (obs.includes('"attached":true')) decision = { text: successReply };
         else if (obs.includes('user-rejected')) decision = { text: '已取消打开该页面。' };
-        else decision = { text: `MOCK-OPEN-OBS ${obs}` };
+        else decision = { text: `MOCK-NOT-ATTACHED ${obs}` };
       } else if (user.includes('打开') && toolNames.includes('open_url')) {
         decision = {
           toolCall: {
@@ -406,6 +407,10 @@ async function main() {
     assert(
       feedback.obs.includes('"url"') && feedback.obs.includes(targetUrl),
       `回喂 observation 缺导航结果：${feedback.obs}`,
+    );
+    assert(
+      feedback.obs.includes('"attached":true') && feedback.obs.includes('页面已接入'),
+      `回喂 observation 未标记落点页已接入：${feedback.obs}`,
     );
 
     console.log('[6/6] 落点后装配切站、面板常驻与审计链…');
