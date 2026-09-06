@@ -53,6 +53,8 @@ export interface ServerOptions {
   execInstructionTtlMs?: number;
   /** 等待客户端 snapshot-report 的上限毫秒；缺省 15000ms。测试可缩短以验证快照超时路径。 */
   snapshotTimeoutMs?: number;
+  /** 非定向导航成功后等落点页接入的上限毫秒；缺省 8000，0＝不等。 */
+  navAttachWaitMs?: number;
   /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW），默认 200000。 */
   compressContextWindow?: number;
   /** 历史压缩触发阈值比例（ZA_LLM_COMPRESS_THRESHOLD），默认 0.6。 */
@@ -191,6 +193,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     ...(options.snapshotTimeoutMs !== undefined
       ? { snapshotTimeoutMs: options.snapshotTimeoutMs }
       : {}),
+    ...(options.navAttachWaitMs !== undefined ? { navAttachWaitMs: options.navAttachWaitMs } : {}),
     compressContextWindow: options.compressContextWindow ?? 200_000,
     compressThreshold: options.compressThreshold ?? 0.6,
     corsOrigin: options.corsOrigin ?? '*',
