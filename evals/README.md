@@ -56,7 +56,7 @@ featureId（服务端应判定值，null=无命中仅基座）, question, expect
 
 pack 级 `packs/<packId>/eval/scenarios.json`：`{id, dimension, url（含 pack origin 的完整 URL）, question,
 snapshotElements / snapshotNotices / snapshotText / snapshotTextTruncated / snapshotSequence（回给
-`snapshot-request` 的确定性夹具）, execResultError（令代执行回错误结果）, execResultReads（dom 批次回传的 read 采集值，令工具返回体承载页面来源内容）, expect}`。
+`snapshot-request` 的确定性夹具；序列项可带 `snapshotUrl` 覆写上报的页面地址，模拟导航落点页的快照）, execResultError（令代执行回错误结果）, execResultReads（dom 批次回传的 read 采集值，令工具返回体承载页面来源内容）, expect}`。
 
 ### `expect` 字段
 

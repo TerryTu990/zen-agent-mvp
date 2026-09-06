@@ -4,7 +4,7 @@
     "featureIds": [
       "browse"
     ],
-    "description": "在当前页面上可见地代用户操作：点击、填写、选择、读取与滚动，用户全程可见每一步高亮。本站点无专属配置，只能操作当前页面已有元素——使用前必须先 page_snapshot，steps 中每个 ref 取自最近一次快照；需要回报的页面信息用 read 步骤（带 name 键）采集。同一任务只在首批请一次确认（per-task 授权），批准后同任务后续批次自动执行、用户可随时停止——因此 plan 必须在首批就把整个任务将执行的操作逐条写清，涉及发送消息、支付、删除等不可撤回动作时必须在 plan 与 summary 中显著声明并建议用户核对后再批准。task 在同一任务期间保持同一标题；任务范围变化（要做计划之外的事）MUST 换用新 task 标题重新请求授权。每批后重新 page_snapshot 复核。",
+    "description": "在当前页面上可见地代用户操作：点击、填写、选择、读取与滚动，用户全程可见每一步高亮。本站点无专属配置，只能操作当前页面已有元素——使用前必须先 page_snapshot，steps 中每个 ref 取自最近一次快照；需要回报的页面信息用 read 步骤（带 name 键）采集。同一任务只在首个动作请一次确认（per-task 授权，task/plan 与 open_url、site_navigate 共享：任务从导航开始时由那次导航带 plan 弹卡），批准后同任务的后续批次与导航自动执行、用户可随时停止——因此 plan 必须在任务首个动作就把整个任务将执行的操作逐条写清，涉及发送消息、支付、删除等不可撤回动作时必须在 plan 与 summary 中显著声明并建议用户核对后再批准。task 在同一任务期间保持同一标题（与导航工具的 task 一致）；任务范围变化（要做计划之外的事）MUST 换用新 task 标题重新请求授权。每批后重新 page_snapshot 复核。",
     "params": {
       "type": "object",
       "additionalProperties": false,
@@ -17,14 +17,14 @@
       "properties": {
         "task": {
           "type": "string",
-          "description": "任务标题，同一任务期间保持不变"
+          "description": "任务标题，同一任务期间保持不变，与 open_url / site_navigate 的 task 一致"
         },
         "plan": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "任务级执行计划：用人话逐条列出批准后本任务将执行的操作（含涉及的对象与不可撤回动作）。确认卡只在任务首次弹一次，此清单即用户授权的全部范围——MUST 覆盖整个任务，不得只写当前这一批。"
+          "description": "任务级执行计划：用人话逐条列出批准后本任务将执行的操作（含后续导航、涉及的对象与不可撤回动作）。确认卡只在任务首个动作弹一次（首个动作是导航时由该导航带 plan），此清单即用户授权的全部范围——MUST 覆盖整个任务，不得只写当前这一批。"
         },
         "steps": {
           "type": "array",

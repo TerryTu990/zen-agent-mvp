@@ -11,8 +11,8 @@ description: 在网页搜索引擎上检索资料并按来源汇总结果。用�
 
 ## 工作流
 
-1. 用 `open_url` 打开搜索引擎结果页：默认 `https://www.bing.com/search?q=<关键词>`（关键词做
-   URL 编码）；用户指明惯用搜索引擎时改用其地址。
+1. 用 `open_url`（带 `task` 与整任务 `plan`：检索、打开结果、读取汇总）打开搜索引擎结果页：默认
+   `https://www.bing.com/search?q=<关键词>`（关键词做 URL 编码）；用户指明惯用搜索引擎时改用其地址。
 2. 到达结果页后调用 `page_snapshot`（`includeText: true`）读取结果列表。
 3. 需要翻页或进入某条结果时，用 `browse.page-operate` 点击对应元素，或用 `open_url` 直接打开
    结果地址；每次到达新页面先重新快照再继续。

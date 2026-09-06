@@ -392,7 +392,8 @@ async function driveTurn(sessionId, token, scenario, bus) {
           type: 'snapshot-report',
           sessionId,
           requestId: frame.requestId,
-          url: scenario.url ?? `${HOST_BASE}/${scenario.page}`,
+          // 导航后的快照来自落点页：夹具可声明 snapshotUrl 覆写上报的页面地址（缺省仍是场景页）。
+          url: snapshotFixture.snapshotUrl ?? scenario.url ?? `${HOST_BASE}/${scenario.page}`,
           elements: snapshotFixture.snapshotElements ?? [{ ref: 'za-send', role: 'button', label: '发送' }],
           notices: snapshotFixture.snapshotNotices ?? [],
           // 正文只在场景显式声明时回传：默认不带 text，与客户端"未请求 includeText 即不采集正文"同真。

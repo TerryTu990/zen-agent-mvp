@@ -488,6 +488,68 @@ function toolCallCountSinceLastUser(body, name) {
   return count;
 }
 
+/** 本轮（最近一条 user 之后）assistant 发出的 tool_call 总数——按步推进的剧本据此取下一步。 */
+function toolCallsSinceLastUser(body) {
+  const messages = body?.messages ?? [];
+  let count = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role === 'user' && !isBoundaryMarkerMessage(message)) break;
+    if (message?.role === 'assistant' && Array.isArray(message.tool_calls)) count += message.tool_calls.length;
+  }
+  return count;
+}
+
+/**
+ * adr-028 任务级一次授权剧本（generic-web 评测）：按本轮已发出的 tool_call 数逐步推进——
+ *   「任务授权演练」：open_url(task + 整任务 plan) → 快照 → 同 task 页面操作 → 总结；
+ *   「一次性导航演练」：open_url(仅 task，无 plan) → 快照 → 同 task 页面操作 → 总结。
+ * 两条只差首步是否带 plan，用以分辨「带计划一卡授权整任务」与「无计划不登记授权」。
+ */
+const TASK_GRANT_TITLE = '打开文档页并读取目录';
+const TASK_GRANT_PLAN = ['打开用户给出的文档页', '在文档页点开目录', '读取目录内容并回报'];
+function driveTaskGrant(u, body) {
+  const planned = u.includes('任务授权演练');
+  if (!planned && !u.includes('一次性导航演练')) return null;
+  const target = u.match(/https?:\/\/[^\s，。」]+/)?.[0];
+  if (target === undefined) return null;
+  const obs = lastToolObs(body);
+  if (obs !== null && obs.includes('"error"')) return { text: `MOCK-TASK-GRANT-ERROR ${obs}` };
+  const step = toolCallsSinceLastUser(body);
+  if (step === 0) {
+    if (!hasTool(body, TOOL_OPEN_URL)) return { text: 'MOCK-OPEN-URL-MISSING' };
+    return {
+      toolCall: {
+        id: 'call_task_grant_open',
+        name: TOOL_OPEN_URL,
+        arguments: JSON.stringify({
+          url: target,
+          task: TASK_GRANT_TITLE,
+          ...(planned ? { plan: TASK_GRANT_PLAN } : {}),
+        }),
+      },
+    };
+  }
+  if (step === 1) return { toolCall: snapshotCall() };
+  if (step === 2) {
+    const elements = lastSnapshotElements(body);
+    const button = elements.find((e) => e?.role === 'button') ?? elements[0];
+    return {
+      toolCall: {
+        id: 'call_task_grant_operate',
+        name: TOOL_BROWSE,
+        arguments: JSON.stringify({
+          task: TASK_GRANT_TITLE,
+          plan: TASK_GRANT_PLAN,
+          steps: [{ action: 'click', ref: button?.ref ?? 'za-1' }],
+          summary: '在文档页点开目录',
+        }),
+      },
+    };
+  }
+  return { text: '演练完成：已打开文档页并读取目录。' };
+}
+
 /** 消息序列里最近一条含 elements 的快照观测的 elements 数组（供跨轮取 ref）。 */
 function lastSnapshotElements(body) {
   const msgs = body?.messages ?? [];
@@ -665,6 +727,9 @@ function decide(sys, u, body) {
   // M5 跨站任务组剧本（加法式）：命中即接管，不影响既有场景。
   const drill = driveDrill(u, body);
   if (drill !== null) return drill;
+  // adr-028 任务级一次授权剧本：哨兵语命中即接管。
+  const grantDrill = driveTaskGrant(u, body);
+  if (grantDrill !== null) return grantDrill;
   const obs = lastToolObs(body);
   const orchestration = driveOrchestration(u, obs, body);
   if (orchestration !== null) return orchestration;
