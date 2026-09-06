@@ -1,8 +1,8 @@
 /**
  * navigate 代执行的目标页决策（插件私有，纯逻辑无 chrome 依赖）。
- * 组内已有同源标签页时复用而非新开：同 URL 仅激活、同源异 URL 原地换 URL，
- * 避免同一站点的反复导航堆出新标签页；目标 url 无法解析时一律判 create，
- * 由调用方沿用既有的新建/失败语义。
+ * 组内可复用的标签页优先于新开，优先级：同 URL 仅激活 > 同源异 URL 原地换 URL >
+ * 空白页原地换 URL；空白页无内容可保留，复用它避免组里留下一个废弃空白页。
+ * 目标 url 无法解析时一律判 create，由调用方沿用既有的新建/失败语义。
  */
 
 import type { DownstreamFrame, ExecInstructionFrame } from './frames.js';
@@ -18,34 +18,54 @@ export interface NavigateCandidateTab {
   url?: string | undefined;
 }
 
+/** 浏览器新标签页/空文档的闭集；未列入的一律不算空白，宁可多开一页也不换掉有内容的页。 */
+const BLANK_PAGE_URLS = new Set([
+  'about:blank',
+  'chrome://newtab/',
+  'chrome://new-tab-page/',
+  'edge://newtab/',
+]);
+
+/** url 缺省或为空串按空白处理：清单声明 tabs 权限，取不到 url 只可能是尚未提交导航的空文档。 */
+export function isBlankPageUrl(url: string | undefined): boolean {
+  return url === undefined || url === '' || BLANK_PAGE_URLS.has(url);
+}
+
+function parseUrl(url: string | undefined): URL | null {
+  if (url === undefined) return null;
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
+}
+
 export function decideNavigateTarget(
   url: string,
   groupTabs: readonly NavigateCandidateTab[],
   initiatorTabId?: number,
 ): NavigateTarget {
-  let target: URL;
-  try {
-    target = new URL(url);
-  } catch {
-    return { kind: 'create' };
-  }
+  const target = parseUrl(url);
+  if (target === null) return { kind: 'create' };
   let sameOriginTabId: number | null = null;
+  let blankTabId: number | null = null;
   for (const tab of groupTabs) {
-    if (tab.id === undefined || tab.url === undefined) continue;
-    let candidate: URL;
-    try {
-      candidate = new URL(tab.url);
-    } catch {
-      continue;
-    }
-    if (candidate.origin !== target.origin) continue;
+    if (tab.id === undefined) continue;
+    const candidate = parseUrl(tab.url);
     // href 比较即比较规范化后的完整 URL：完全一致的页无需重载，激活即可。
-    if (candidate.href === target.href) return { kind: 'activate', tabId: tab.id };
+    if (candidate !== null && candidate.href === target.href) {
+      return { kind: 'activate', tabId: tab.id };
+    }
     // 发起页不作换 URL 候选：原地重载会销毁其文档，navigate-result/exec-result 无法送达。
     if (tab.id === initiatorTabId) continue;
-    if (sameOriginTabId === null) sameOriginTabId = tab.id;
+    if (candidate !== null && candidate.origin === target.origin) {
+      if (sameOriginTabId === null) sameOriginTabId = tab.id;
+      continue;
+    }
+    if (blankTabId === null && isBlankPageUrl(tab.url)) blankTabId = tab.id;
   }
-  return sameOriginTabId !== null ? { kind: 'update', tabId: sameOriginTabId } : { kind: 'create' };
+  const reusableTabId = sameOriginTabId ?? blankTabId;
+  return reusableTabId !== null ? { kind: 'update', tabId: reusableTabId } : { kind: 'create' };
 }
 
 export type BackgroundNavigateDecision =

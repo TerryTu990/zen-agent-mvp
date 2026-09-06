@@ -129,6 +129,20 @@ describe('performNavigate：chrome 调用序列', () => {
     ]);
   });
 
+  it('组内只有空白页：原地换 URL 并登记待激活，不新开页签', async () => {
+    const { executor, calls } = createHarness({
+      groupTabs: [{ id: 9, url: 'chrome://newtab/' }],
+    });
+    const outcome = await executor.performNavigate('https://example.com/a');
+    expect(outcome).toEqual({ ok: true, url: 'https://example.com/a' });
+    expect(calls).toEqual([
+      { fn: 'tabs.query', args: [{ groupId: 42 }] },
+      { fn: 'tabs.update', args: [9, { url: 'https://example.com/a', active: true }] },
+      { fn: 'noteExpectedActiveTab', args: [9] },
+      { fn: 'sendActivate', args: [9] },
+    ]);
+  });
+
   it('组内无同源页：create(inactive) → group → update(active)，激活晚于入组', async () => {
     const { executor, calls } = createHarness({ groupTabs: [], createdTabId: 11 });
     const outcome = await executor.performNavigate('https://example.com/a', 7);
