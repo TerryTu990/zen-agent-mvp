@@ -23,6 +23,7 @@ import { chromium } from 'playwright';
 import { ANON_TENANT, activate } from './anon-identity.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 import { startMockLlm } from '../mock-llm/server.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 /** 被加载的插件目录；ZA_E2E_EXTENSION_DIR 可指向已打包/已解包的发布产物，对同一案例复跑。 */
@@ -46,7 +47,7 @@ const JWT_ISS = 'zen-agent-anon';
  * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
  * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
  */
-const SERVER_PORT = 8787;
+const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 /** 插件自己生成的安装 id：会话建立后读回，触发器按它派生的 subject 登记，二者才是同一身份。 */
 let installId = '';
 
@@ -195,6 +196,7 @@ async function main() {
     console.log('[1/7] 构建 workspace（server + extension）…');
     await run('pnpm', ['-r', 'build']);
 
+    await assertPortsFree([{ port: SERVER_PORT, label: 'gateway' }]);
     console.log('[2/7] 启动被监测站点夹具、mock LLM 与真实 gateway…');
     const site = await startFixtureSite();
     cleanups.push(() => site.close());

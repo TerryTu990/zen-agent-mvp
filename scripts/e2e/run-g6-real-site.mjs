@@ -49,6 +49,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -81,7 +82,7 @@ const JWT_ISS = 'zen-agent-anon';
  * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
  * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
  */
-const SERVER_PORT = 8787;
+const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 /** 插件自己生成的安装 id（持有型凭证，只存本机 profile）：启动后读回，证据脱敏与审计断言都以它为准。 */
 let installId = '';
 
@@ -384,6 +385,7 @@ async function main() {
     console.log('[1/4] 构建 workspace…');
     await run('pnpm', ['-r', 'build']);
 
+    await assertPortsFree([{ port: SERVER_PORT, label: 'gateway' }]);
     console.log('[2/4] 启动真实 LLM 的 gateway…');
     const server = await startRealServer({
       auditPath,

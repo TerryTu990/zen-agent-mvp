@@ -15,6 +15,10 @@
  *
  * 断言另含：审计 jsonl 的 assembly/tool-decision/tool-execution 事件带 packId 且出现两个不同 packId（host-a / site-b）；
  * 持久化会话历史含站点边界标记（切到站点乙 origin）。只对站点甲做图标手势等价，站点乙靠 navigate 入组。
+ *
+ * 「换站后回合②再弹授权卡」判定的前提：S2 的跨站导航是 order-list.page-operate 批次里的 dom navigate 步
+ * （pack 工具），不经 open_url / site_navigate——任务授权随导航延续到落点作用域只挂在内建导航工具上；
+ * 且回合②的 task（站点乙填表）与回合①（跨站读单）不同。mock 剧本若改为经 open_url 跨站或复用同一 task，本判定须随之改。
  */
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -24,14 +28,18 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { startMockLlm } from '../mock-llm/server.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
+import { failureReason, writeCaseResult } from './evidence.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
 const HOST_A_DIR = join(REPO_ROOT, 'examples', 'host-demo');
 const FIXTURE_DIR = join(REPO_ROOT, 'scripts', 'e2e', 'fixtures', 'm5');
 const HOST_B_DIR = join(FIXTURE_DIR, 'hosts');
-const SNAPSHOT_ROOT = join(FIXTURE_DIR, 'config');
+const FIXTURE_SNAPSHOT = join(FIXTURE_DIR, 'config');
 const WORK_DIR = join(REPO_ROOT, '.za', 'e2e-m5');
+const SNAPSHOT_ROOT = join(WORK_DIR, 'config');
 const AUDIT_SINK = join(WORK_DIR, 'events.jsonl');
 const SESSION_DIR = join(WORK_DIR, 'sessions');
 
@@ -43,11 +51,11 @@ const JWT_ISS = 'zen-agent-anon';
  * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
  * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
  */
-const SERVER_PORT = 8787;
+const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_MOCK_PORT ?? 8798);
-// 站点端口固定：mock 剧本与 pack.json origin 均硬绑 4173/4174，不经 env 覆盖。
-const HOST_A_PORT = 4173;
-const HOST_B_PORT = 4174;
+// 夹具 pack.json/facts.md 以 4173/4174 书写：快照按实际端口物化到 WORK_DIR；mock 剧本的站点乙地址自行读同名 env。
+const HOST_A_PORT = Number(process.env.ZA_E2E_HOST_PORT ?? 4173);
+const HOST_B_PORT = HOST_A_PORT + 1;
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const HOST_A_ORIGIN = `http://127.0.0.1:${HOST_A_PORT}`;
 const HOST_B_ORIGIN = `http://127.0.0.1:${HOST_B_PORT}`;
@@ -260,7 +268,7 @@ async function runScenarios(context, packAPage, panelPage, sw) {
   const outsidePage = await context.newPage();
   await outsidePage.goto(`${HOST_B_ORIGIN}/site-b.html?outside=1`, { waitUntil: 'load' });
   await waitFor(
-    async () => (await panelPage.locator('[data-za-context]').getAttribute('data-state')) === 'outside',
+    async () => (await panelPage.locator('[data-za-shell]').getAttribute('data-state')) === 'outside',
     { label: '组外页面提示', timeoutMs: 5000 },
   );
   assert((await outsidePage.locator('#za-root').count()) === 0, '任务组外页面不应注入或获得 Zen UI');
@@ -284,7 +292,7 @@ async function runScenarios(context, packAPage, panelPage, sw) {
   await outsidePage.close();
   await siteBPage.bringToFront();
   await waitFor(
-    async () => (await panelPage.locator('[data-za-context]').getAttribute('data-state')) === 'ready',
+    async () => (await panelPage.locator('[data-za-shell]').getAttribute('data-state')) === 'ready',
     { label: '任务页重新成为权威执行页', timeoutMs: 5000 },
   );
   await new Promise((r) => setTimeout(r, 300));
@@ -364,10 +372,17 @@ async function main() {
   try {
     rmSync(WORK_DIR, { recursive: true, force: true });
     mkdirSync(SESSION_DIR, { recursive: true });
+    materializeSnapshot(FIXTURE_SNAPSHOT, SNAPSHOT_ROOT, hostPortReplacements([[4173, HOST_A_PORT], [4174, HOST_B_PORT]]));
 
     console.log('[1/5] 构建 extension + server…');
     await buildTargets();
 
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: MOCK_LLM_PORT, label: 'mock LLM' },
+      { port: HOST_A_PORT, label: 'host A' },
+      { port: HOST_B_PORT, label: 'host B' },
+    ]);
     console.log('[2/5] 起 mock LLM…');
     const mock = await startMockLlm({ port: MOCK_LLM_PORT });
     cleanups.push(() => mock.close());
@@ -383,7 +398,7 @@ async function main() {
     );
     await waitServerReady();
 
-    console.log('[4/5] 起两站静态服务（甲 4173 / 乙 4174）…');
+    console.log(`[4/5] 起两站静态服务（甲 ${HOST_A_PORT} / 乙 ${HOST_B_PORT}）…`);
     const hostA = await startStaticHost(HOST_A_DIR, HOST_A_PORT);
     cleanups.push(() => hostA.close());
     const hostB = await startStaticHost(HOST_B_DIR, HOST_B_PORT);
@@ -445,6 +460,7 @@ async function main() {
         .catch(() => {});
     }
   }
+  writeCaseResult('m5', failure ? 'failed' : 'passed', failure ? { reason: failureReason(failure) } : {});
   process.exit(failure ? 1 : 0);
 }
 

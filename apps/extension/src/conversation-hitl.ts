@@ -54,15 +54,28 @@ function summarizeParams(params: JsonObject): string {
 }
 
 /**
- * dom 任务授权卡上的 agent 自述部分：task/summary/plan 全部由模型撰写，是次要信息——
- * 用户据以裁决的「将发生什么」只看服务端反解的 frame.effects。
+ * 任务授权卡上的 agent 自述部分：task/summary/plan 全部由模型撰写，是次要信息——
+ * 用户据以裁决的「将发生什么」只看服务端反解的 frame.effects / frame.targetUrl。
  */
-function summarizeDomTask(params: JsonObject): { title: string; claim: string; plan: string[] } {
+function summarizeTask(params: JsonObject): { title: string; claim: string; plan: string[] } {
   const summary = typeof params['summary'] === 'string' ? params['summary'] : '';
   const plan = Array.isArray(params['plan'])
     ? params['plan'].filter((item): item is string => typeof item === 'string')
     : [];
   return { title: String(params['task']), claim: summary, plan };
+}
+
+/**
+ * 内建导航工具：只有带 task 且计划每项都是去空白后非空的字符串时才按任务授权卡呈现（批准即授权整任务）；
+ * 否则是一次性确认卡。判据与服务端的授权登记条件同构，卡面不得与登记结果背离。
+ */
+const NAVIGATION_TOOL_IDS = new Set(['open_url', 'site_navigate']);
+
+function isTaskGrantCard(frame: HitlRequestFrame): boolean {
+  if (typeof frame.params['task'] !== 'string') return false;
+  if (!NAVIGATION_TOOL_IDS.has(frame.toolId)) return true;
+  const plan = frame.params['plan'];
+  return Array.isArray(plan) && plan.length > 0 && plan.every((item) => typeof item === 'string' && item.trim() !== '');
 }
 
 /** pack 来源徽章措辞（与配置中心同表）。 */
@@ -101,6 +114,29 @@ const WHO_LABEL: Record<'user' | 'assistant', string> = {
   user: '你',
   assistant: 'Zen Agent',
 };
+
+const SITE_ACCESS_DESCRIPTOR = { origins: ['<all_urls>'] };
+
+const SITE_ACCESS_NOTE = '首次授权时浏览器会询问站点访问权限（仅用于本任务打开的页面），之后不再询问';
+
+/**
+ * 批准手势内补齐站点访问权限：chrome.permissions.request 只能在用户手势里调用，故 contains 必须在
+ * 点击处理里同步发起、中间不得 await 别的事。只补权限、不注入——注入仍只由 background 按会话动作触发。
+ * 用户拒绝或 API 异常都不改变裁决结果：返回的 promise 恒 resolve，调用方据此继续回传 approve。
+ */
+function ensureSiteAccess(): Promise<void> {
+  const permissions = (globalThis as { chrome?: { permissions?: typeof chrome.permissions } }).chrome
+    ?.permissions;
+  if (permissions === undefined) return Promise.resolve();
+  try {
+    return permissions
+      .contains(SITE_ACCESS_DESCRIPTOR)
+      .then((held) => (held ? undefined : permissions.request(SITE_ACCESS_DESCRIPTOR).then(() => undefined)))
+      .catch(() => undefined);
+  } catch {
+    return Promise.resolve();
+  }
+}
 
 export function createConversationUi(messages: HTMLElement): ConversationUi {
   // assistant 气泡内的 .mdlite 容器；累积原始文本每次 delta 后全量重渲染，保证 markdown 结构完整。
@@ -258,12 +294,18 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         card.setAttribute('data-za-hitl', '');
         card.className = 'za-hitl';
 
-        // 带 task 的是 dom 任务级授权：功能级呈现 + 说明"批准后本任务自动执行、可停止"。
-        const domTask = typeof frame.params['task'] === 'string' ? summarizeDomTask(frame.params) : null;
+        // 任务授权卡（dom 批次带 task；导航带 task + 计划）：功能级呈现 + 说明"批准后本任务自动执行、可停止"。
+        const domTask = isTaskGrantCard(frame) ? summarizeTask(frame.params) : null;
+        const navigationGrant = domTask !== null && NAVIGATION_TOOL_IDS.has(frame.toolId);
 
         const title = document.createElement('div');
         title.className = 'za-hitl-title';
-        title.textContent = domTask === null ? `需你确认：${frame.toolId}` : `需你授权：${domTask.title}`;
+        title.textContent =
+          domTask === null
+            ? `需你确认：${frame.toolId}`
+            : navigationGrant
+              ? `授权任务：${domTask.title}`
+              : `需你授权：${domTask.title}`;
 
         // 非 dom 调用的实参摘要仍直接列字段；dom 任务的模型自述降为 claim 块（次要信息）。
         const detail = domTask === null ? document.createElement('div') : null;
@@ -295,11 +337,12 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         }
 
         // 目标页/目标 URL 只信服务端组装字段，不从 params 做任何展示推断（U7/U8：客户端零判定）。
+        // 导航任务授权卡上这是任务的首步落点，措辞区别于一次性导航的目标地址。
         let targetUrlLine: HTMLElement | null = null;
         if (frame.targetUrl !== undefined) {
           targetUrlLine = document.createElement('div');
           targetUrlLine.className = 'za-hitl-target-url';
-          targetUrlLine.textContent = `目标地址：${frame.targetUrl}`;
+          targetUrlLine.textContent = `${navigationGrant ? '将先打开' : '目标地址'}：${frame.targetUrl}`;
         }
         let targetPageLine: HTMLElement | null = null;
         if (frame.targetPage !== undefined) {
@@ -357,6 +400,10 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         gov.className = 'za-hitl-gov za-hitl-detail';
         gov.textContent = governanceNoteOf(frame.ttlMs);
 
+        const siteAccess = document.createElement('div');
+        siteAccess.className = 'za-hitl-site-access za-hitl-detail';
+        siteAccess.textContent = SITE_ACCESS_NOTE;
+
         const actions = document.createElement('div');
         actions.className = 'za-hitl-actions';
         const approve = document.createElement('button');
@@ -387,7 +434,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
           reason.textContent = frame.reason;
           card.append(reason);
         }
-        card.append(gov, actions);
+        card.append(gov, siteAccess, actions);
         messages.append(card);
         messages.scrollTop = messages.scrollHeight;
         // 防误触放权（UI 规范 §8）：默认焦点落「拒绝」，回车不构成授权。
@@ -399,7 +446,12 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
           resolve(decision);
         };
         pendingHitl = { card, resolve: settle };
-        approve.addEventListener('click', () => settle('approve'));
+        // 权限询问期间卡仍在场（用户可能正对着浏览器气泡），按钮锁住防重复申请；拒绝路径不申请。
+        approve.addEventListener('click', () => {
+          approve.disabled = true;
+          reject.disabled = true;
+          void ensureSiteAccess().then(() => settle('approve'));
+        });
         reject.addEventListener('click', () => settle('reject'));
       });
     },

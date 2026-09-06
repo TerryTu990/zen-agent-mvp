@@ -28,6 +28,8 @@ const TOOL_XIANYU_ORDERS = 'xianyu-orders.page-operate';
 const TOOL_XIANYU_SEND = 'xianyu-fulfillment.send-test-message';
 const TOOL_YINXIANG_WRITE = 'yinxiang-note.write-note';
 const TOOL_OPEN_URL = 'open_url';
+// 落点未接入回喂指引里的可操作片段（服务端 NAV_NOT_ATTACHED_NOTE / silent 页快照拒绝同口径）：缺失即 MOCK 红。
+const NAV_NOT_ATTACHED_GUIDE = '点击 Zen 图标';
 
 // generic-web browse feature 独有文案：命中即走通用页面剧本（open_url / 搜索技能探针），站点 pack 的 sys 不含。
 const BROWSE_ASSIST_MARKER = '没有专属站点配置';
@@ -462,7 +464,7 @@ function summarizeObs(obs) {
 const TOOL_A_OPERATE = 'order-list.page-operate';
 const TOOL_B_OPERATE = 'site-b.page-operate';
 const TOOL_B_SUBMIT = 'site-b.confirm-submit';
-const SITE_B_URL = 'http://127.0.0.1:4174/site-b.html';
+const SITE_B_URL = `http://127.0.0.1:${Number(process.env.ZA_E2E_HOST_PORT ?? 4173) + 1}/site-b.html`;
 // 越界目标：不属任何已安装 pack 的 origin（4199 无 pack）→ toolgate 签发前 fence-violation 拒绝。
 const FENCE_URL = 'http://127.0.0.1:4199/blocked.html';
 
@@ -486,6 +488,68 @@ function toolCallCountSinceLastUser(body, name) {
     count += message.tool_calls.filter((tc) => normalizeToolName(tc?.function?.name) === name).length;
   }
   return count;
+}
+
+/** 本轮（最近一条 user 之后）assistant 发出的 tool_call 总数——按步推进的剧本据此取下一步。 */
+function toolCallsSinceLastUser(body) {
+  const messages = body?.messages ?? [];
+  let count = 0;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role === 'user' && !isBoundaryMarkerMessage(message)) break;
+    if (message?.role === 'assistant' && Array.isArray(message.tool_calls)) count += message.tool_calls.length;
+  }
+  return count;
+}
+
+/**
+ * adr-028 任务级一次授权剧本（generic-web 评测）：按本轮已发出的 tool_call 数逐步推进——
+ *   「任务授权演练」：open_url(task + 整任务 plan) → 快照 → 同 task 页面操作 → 总结；
+ *   「一次性导航演练」：open_url(仅 task，无 plan) → 快照 → 同 task 页面操作 → 总结。
+ * 两条只差首步是否带 plan，用以分辨「带计划一卡授权整任务」与「无计划不登记授权」。
+ */
+const TASK_GRANT_TITLE = '打开文档页并读取目录';
+const TASK_GRANT_PLAN = ['打开用户给出的文档页', '在文档页点开目录', '读取目录内容并回报'];
+function driveTaskGrant(u, body) {
+  const planned = u.includes('任务授权演练');
+  if (!planned && !u.includes('一次性导航演练')) return null;
+  const target = u.match(/https?:\/\/[^\s，。」]+/)?.[0];
+  if (target === undefined) return null;
+  const obs = lastToolObs(body);
+  if (obs !== null && obs.includes('"error"')) return { text: `MOCK-TASK-GRANT-ERROR ${obs}` };
+  const step = toolCallsSinceLastUser(body);
+  if (step === 0) {
+    if (!hasTool(body, TOOL_OPEN_URL)) return { text: 'MOCK-OPEN-URL-MISSING' };
+    return {
+      toolCall: {
+        id: 'call_task_grant_open',
+        name: TOOL_OPEN_URL,
+        arguments: JSON.stringify({
+          url: target,
+          task: TASK_GRANT_TITLE,
+          ...(planned ? { plan: TASK_GRANT_PLAN } : {}),
+        }),
+      },
+    };
+  }
+  if (step === 1) return { toolCall: snapshotCall() };
+  if (step === 2) {
+    const elements = lastSnapshotElements(body);
+    const button = elements.find((e) => e?.role === 'button') ?? elements[0];
+    return {
+      toolCall: {
+        id: 'call_task_grant_operate',
+        name: TOOL_BROWSE,
+        arguments: JSON.stringify({
+          task: TASK_GRANT_TITLE,
+          plan: TASK_GRANT_PLAN,
+          steps: [{ action: 'click', ref: button?.ref ?? 'za-1' }],
+          summary: '在文档页点开目录',
+        }),
+      },
+    };
+  }
+  return { text: '演练完成：已打开文档页并读取目录。' };
 }
 
 /** 消息序列里最近一条含 elements 的快照观测的 elements 数组（供跨轮取 ref）。 */
@@ -665,6 +729,9 @@ function decide(sys, u, body) {
   // M5 跨站任务组剧本（加法式）：命中即接管，不影响既有场景。
   const drill = driveDrill(u, body);
   if (drill !== null) return drill;
+  // adr-028 任务级一次授权剧本：哨兵语命中即接管。
+  const grantDrill = driveTaskGrant(u, body);
+  if (grantDrill !== null) return grantDrill;
   const obs = lastToolObs(body);
   const orchestration = driveOrchestration(u, obs, body);
   if (orchestration !== null) return orchestration;
@@ -696,8 +763,9 @@ function decide(sys, u, body) {
     return { text: `MOCK-TOOL-RESULT-OBS ${untrustedSysMark(sys)} ${obs}` };
   }
   // generic browse 剧本（generic-web feature 字面门控）：用户给出网址 → open_url 单步导航；
-  // 观测回喂轮产出总结文本。落点在 allowlist 外时服务端按落点重装配回落仅基座、sys 不再含
-  // marker，故仅首轮（发起 tool_call）看 marker 与工具可见性，观测回喂轮只认 open_url 调用证据。
+  // 观测回喂轮按落点接入语义分支：attached:true → 总结；attached:false → 故意再发同址 open_url 一次，
+  // 驱动服务端 already-open 止损（止损在服务端 fail-closed，不靠模型自觉）；被 deny 后回未接入指引。
+  // 落点在 allowlist 外时服务端按落点重装配回落仅基座、sys 不再含 marker，故仅首轮看 marker 与工具可见性。
   {
     const openTarget = u.match(/https?:\/\/[^\s，。」]+/);
     if (u.includes('打开') && openTarget) {
@@ -712,8 +780,24 @@ function decide(sys, u, body) {
           };
         }
       } else if (hasToolCall(body, TOOL_OPEN_URL)) {
-        if (obs.includes('"url"')) {
+        if (obs.includes('"attached":true')) {
           return { text: `已打开 ${openTarget[0]}：后续内容以到达后的页面快照为准。` };
+        }
+        if (obs.includes('"error":"already-open-not-attached"')) {
+          return obs.includes(NAV_NOT_ATTACHED_GUIDE)
+            ? { text: `${openTarget[0]} 已打开但尚未接入：请在该页${NAV_NOT_ATTACHED_GUIDE}授权本站后告诉我，我再继续。` }
+            : { text: `MOCK-NAV-GUIDANCE-MISSING ${obs}` };
+        }
+        if (obs.includes('"attached":false')) {
+          return obs.includes(NAV_NOT_ATTACHED_GUIDE) && obs.includes('不要再次打开同一地址')
+            ? {
+                toolCall: {
+                  id: 'call_open_url_again',
+                  name: TOOL_OPEN_URL,
+                  arguments: JSON.stringify({ url: openTarget[0] }),
+                },
+              }
+            : { text: `MOCK-NAV-GUIDANCE-MISSING ${obs}` };
         }
         return { text: '未执行跳转：打开该页面的请求未完成或已被取消。' };
       }

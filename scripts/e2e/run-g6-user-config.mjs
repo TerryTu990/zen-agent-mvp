@@ -25,12 +25,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { ANON_TENANT, activate } from './anon-identity.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
 const HOST_DEMO_DIR = join(REPO_ROOT, 'examples', 'host-demo');
-const SNAPSHOT_ROOT = join(HOST_DEMO_DIR, 'config');
 const WORK_DIR = join(REPO_ROOT, '.za', 'e2e-g6-user-config');
+// host-demo pack 的 site.origin 以 4173 书写：快照按实际 HOST_PORT 物化后再交 server 载入。
+const SNAPSHOT_ROOT = join(WORK_DIR, 'config');
 const PROFILE_DIR = join(WORK_DIR, 'profile');
 const AUDIT_SINK = join(WORK_DIR, 'events.jsonl');
 const SESSION_DIR = join(WORK_DIR, 'sessions');
@@ -59,7 +62,7 @@ const HOST_PORT = Number(process.env.ZA_E2E_G6_HOST_PORT ?? 4173);
  * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
  * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
  */
-const SERVER_PORT = 8787;
+const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_G6_MOCK_PORT ?? 8798);
 const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
 const ORDER_LIST_URL = `${HOST_BASE}/order-list.html`;
@@ -414,8 +417,14 @@ async function main() {
   };
 
   try {
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: MOCK_LLM_PORT, label: 'mock LLM' },
+      { port: HOST_PORT, label: 'host' },
+    ]);
     rmSync(WORK_DIR, { recursive: true, force: true });
     mkdirSync(WORK_DIR, { recursive: true });
+    materializeSnapshot(join(HOST_DEMO_DIR, 'config'), SNAPSHOT_ROOT, hostPortReplacements([[4173, HOST_PORT]]));
     mkdirSync(evidenceB, { recursive: true });
     mkdirSync(evidenceC, { recursive: true });
 

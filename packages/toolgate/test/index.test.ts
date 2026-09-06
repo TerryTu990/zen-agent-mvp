@@ -1395,7 +1395,7 @@ describe('toolgate ADR-013 — 内建 site_navigate 跨站导航（渐进披露�
   });
 });
 
-describe('toolgate — 内建 open_url 通用导航（generic 配套，每次必弹卡）', () => {
+describe('toolgate — 内建 open_url 通用导航（generic 配套，与 site_navigate 同律共享任务级授权）', () => {
   const openBase = { sessionId: 's', toolCallId: 'c', toolId: OPEN_URL_TOOL_ID, claims: validClaims };
   const targetUrl = 'https://search.example/results?q=zen';
 
@@ -1436,11 +1436,43 @@ describe('toolgate — 内建 open_url 通用导航（generic 配套，每次必
     expect(d).toEqual({ verdict: 'deny', reason: 'invalid-params' });
   });
 
-  it('已批 task 也不放行（every-call 语义：不消费任务级授权，仍 hitl）', async () => {
+  it('带 task 且同作用域任务已获批 → allow（导航是任务的一步，共享任务级授权）', async () => {
     const port = makeSitePort();
     await port.grantHitl({ sessionId: 's', task: '检索' });
     const d = await port.decide({ ...openBase, params: { url: targetUrl, task: '检索' } });
+    expect(d).toEqual({ verdict: 'allow' });
+  });
+
+  it('带 task 但未获批 / 作用域不同 → hitl（不挂靠别的作用域的授权）', async () => {
+    const port = makeSitePort();
+    expect((await port.decide({ ...openBase, params: { url: targetUrl, task: '检索' } })).verdict).toBe('hitl');
+    await port.grantHitl({ sessionId: 's', task: '检索', packId: 'generic-web', packOrigin: 'https://a.example' });
+    expect((await port.decide({ ...openBase, params: { url: targetUrl, task: '检索' } })).verdict).toBe('hitl');
+    expect(
+      (
+        await port.decide({
+          ...openBase,
+          packId: 'generic-web',
+          packOrigin: 'https://b.example',
+          params: { url: targetUrl, task: '检索' },
+        })
+      ).verdict,
+    ).toBe('hitl');
+  });
+
+  it('plan 过 schema：非空字符串数组合法；空数组 / 非字符串项 / 空字符串项 → deny invalid-params', async () => {
+    const port = makeSitePort();
+    const d = await port.decide({
+      ...openBase,
+      params: { url: targetUrl, task: '检索', plan: ['打开搜索页', '读取结果'] },
+    });
     expect(d.verdict).toBe('hitl');
+    for (const plan of [[], ['x', 1], 'not-array', [''], ['打开搜索页', '']]) {
+      expect(await port.decide({ ...openBase, params: { url: targetUrl, task: '检索', plan } })).toEqual({
+        verdict: 'deny',
+        reason: 'invalid-params',
+      });
+    }
   });
 
   it('签发：构造一次性签名单步 navigate dom 指令，签名可同 secret 复算', async () => {
@@ -1915,16 +1947,22 @@ describe('adr-024 D1 — 无人值守回合的服务端收口（unattended）', 
     expect(d).toEqual({ verdict: 'deny', reason: 'hitl-unattended' });
   });
 
-  it('unattended 回合的内建 open_url → deny hitl-unattended（every-call 无人可确认）', async () => {
-    const d = await makeSitePort().decide({
+  it('unattended 回合的内建 open_url → deny hitl-unattended，且已批 task 不被消费', async () => {
+    const port = makeSitePort();
+    await port.grantHitl({ sessionId: 's', task: '检索' });
+    const base = {
       sessionId: 's',
       toolCallId: 'c',
       toolId: OPEN_URL_TOOL_ID,
       claims: validClaims,
-      params: { url: 'https://www.example.com/search' },
-      unattended: true,
+      params: { url: 'https://www.example.com/search', task: '检索' },
+    };
+    expect(await port.decide({ ...base, unattended: true })).toEqual({
+      verdict: 'deny',
+      reason: 'hitl-unattended',
     });
-    expect(d).toEqual({ verdict: 'deny', reason: 'hitl-unattended' });
+    // 有人在场的同任务调用仍命中授权：无人值守的拒绝没有吞掉授权。
+    expect(await port.decide(base)).toEqual({ verdict: 'allow' });
   });
 
   it('签发处独立复述收口：unattended 的 hitl 档拒签（不依赖 decide 已拒的假设，U7）', async () => {

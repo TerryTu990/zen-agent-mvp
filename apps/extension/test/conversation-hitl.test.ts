@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HitlRequestFrame, ToolCardFrame } from '../src/frames.js';
 import { createConversationUi } from '../src/conversation-hitl.js';
 
@@ -384,5 +384,210 @@ describe('promptHitl R4 五要素与防误触（UI 规范 §5/§8；服务端给
     void ui.promptHitl(domFrame());
 
     expect(document.activeElement).toBe(messages.querySelector('[data-za-hitl-reject]'));
+  });
+});
+
+describe('promptHitl 导航任务授权卡（adr-028：带 task+plan 的导航一卡授权整任务）', () => {
+  const navFrame = (params: HitlRequestFrame['params'], toolId = 'open_url'): HitlRequestFrame =>
+    hitlRequest({
+      toolId,
+      params,
+      targetUrl: 'https://search.example/results?q=zen',
+      effects: [{ action: '导航', target: 'https://search.example/results?q=zen' }],
+    });
+
+  it('open_url 带 task + 非空 plan：标题「授权任务」、首步「将先打开」、计划清单、自动执行提示、按钮「授权执行」', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(
+      navFrame({
+        url: 'https://search.example/results?q=zen',
+        task: '检索 zen 并打开首条结果',
+        plan: ['打开搜索结果页', '点开首条结果', '读取正文并总结'],
+      }),
+    );
+
+    expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('授权任务：检索 zen 并打开首条结果');
+    expect(messages.querySelector('.za-hitl-target-url')?.textContent).toBe(
+      '将先打开：https://search.example/results?q=zen',
+    );
+    const plan = messages.querySelectorAll('.za-hitl-plan li');
+    expect([...plan].map((li) => li.textContent)).toEqual(['打开搜索结果页', '点开首条结果', '读取正文并总结']);
+    expect(messages.querySelector('.za-hitl-hint')?.textContent).toContain('本任务内的后续操作');
+    expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('授权执行');
+    expect(document.activeElement).toBe(messages.querySelector('[data-za-hitl-reject]'));
+  });
+
+  it('site_navigate 带 task + plan 同样按任务授权卡呈现', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(
+      navFrame({ url: 'https://search.example/results?q=zen', task: '跨站整理', plan: ['去站点乙填表'] }, 'site_navigate'),
+    );
+
+    expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('授权任务：跨站整理');
+    expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('授权执行');
+  });
+
+  it('导航无 plan（即便带 task）：一次性确认卡——「需你确认」、「目标地址」、无计划与提示、按钮「确认执行」', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(navFrame({ url: 'https://search.example/results?q=zen', task: '检索 zen' }));
+
+    expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('需你确认：open_url');
+    expect(messages.querySelector('.za-hitl-target-url')?.textContent).toBe(
+      '目标地址：https://search.example/results?q=zen',
+    );
+    expect(messages.querySelector('.za-hitl-plan')).toBeNull();
+    expect(messages.querySelector('.za-hitl-hint')).toBeNull();
+    expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('确认执行');
+    expect(document.activeElement).toBe(messages.querySelector('[data-za-hitl-reject]'));
+  });
+
+  it('导航 plan 含空白项：用户看不到计划内容，按一次性确认卡呈现（与服务端不登记同构）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(
+      navFrame({ url: 'https://search.example/results?q=zen', task: '检索 zen', plan: ['打开搜索结果页', '  '] }),
+    );
+
+    expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('需你确认：open_url');
+    expect(messages.querySelector('.za-hitl-plan')).toBeNull();
+    expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('确认执行');
+  });
+
+  it('dom 批次带 task 无 plan：仍是任务授权卡（导航之外的口径不变）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(hitlRequest({ toolId: 'browse.page-operate', params: { task: '填表', steps: [], summary: '' } }));
+
+    expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('需你授权：填表');
+    expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('授权执行');
+  });
+});
+
+/** 批准手势内的站点访问权限申请：只补权限不注入；裁决结果不因权限结局改变。 */
+describe('promptHitl 批准手势申请站点访问权限（adr-027 D2-A）', () => {
+  interface PermissionsStub {
+    contains: ReturnType<typeof vi.fn>;
+    request: ReturnType<typeof vi.fn>;
+  }
+
+  function stubPermissions(options: {
+    held: boolean;
+    request?: () => Promise<boolean>;
+    contains?: () => Promise<boolean>;
+  }): PermissionsStub {
+    const stub: PermissionsStub = {
+      contains: vi.fn(options.contains ?? (async () => options.held)),
+      request: vi.fn(options.request ?? (async () => true)),
+    };
+    (globalThis as unknown as { chrome: unknown }).chrome = { permissions: stub };
+    return stub;
+  }
+
+  afterEach(() => {
+    delete (globalThis as { chrome?: unknown }).chrome;
+  });
+
+  it('未持有 <all_urls>：contains 在点击处理内同步发起，request 恰一次，仍回传 approve', async () => {
+    const stub = stubPermissions({ held: false });
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+    expect(stub.contains).toHaveBeenCalledTimes(1);
+
+    await expect(decision).resolves.toBe('approve');
+    expect(stub.request).toHaveBeenCalledTimes(1);
+    expect(stub.request).toHaveBeenCalledWith({ origins: ['<all_urls>'] });
+    expect(stub.contains).toHaveBeenCalledWith({ origins: ['<all_urls>'] });
+  });
+
+  it('已持有：不 request', async () => {
+    const stub = stubPermissions({ held: true });
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+
+    await expect(decision).resolves.toBe('approve');
+    expect(stub.request).not.toHaveBeenCalled();
+  });
+
+  it('request 返回 false（用户拒绝浏览器询问）：仍回传 approve', async () => {
+    stubPermissions({ held: false, request: async () => false });
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+
+    await expect(decision).resolves.toBe('approve');
+  });
+
+  it('request / contains 抛错：仍回传 approve，卡片撤下', async () => {
+    stubPermissions({
+      held: false,
+      request: async () => {
+        throw new Error('not in user gesture');
+      },
+    });
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+    await expect(decision).resolves.toBe('approve');
+    expect(messages.querySelector('[data-za-hitl]')).toBeNull();
+
+    stubPermissions({
+      held: false,
+      contains: async () => {
+        throw new Error('permissions unavailable');
+      },
+    });
+    const second = ui.promptHitl(hitlRequest({ hitlId: 'h2' }));
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+    await expect(second).resolves.toBe('approve');
+  });
+
+  it('拒绝路径不申请权限', async () => {
+    const stub = stubPermissions({ held: false });
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-reject]')?.click();
+
+    await expect(decision).resolves.toBe('reject');
+    expect(stub.contains).not.toHaveBeenCalled();
+    expect(stub.request).not.toHaveBeenCalled();
+  });
+
+  it('无 chrome.permissions（非扩展宿主）：直接回传 approve', async () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+
+    await expect(decision).resolves.toBe('approve');
+  });
+
+  it('卡上有站点访问权限须知小字', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(hitlRequest());
+
+    expect(messages.querySelector('.za-hitl-site-access')?.textContent).toContain('站点访问权限');
   });
 });

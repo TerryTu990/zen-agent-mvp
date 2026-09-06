@@ -124,6 +124,8 @@ export interface GatewayDeps {
   hitlTimeoutMs?: number;
   /** 等客户端 snapshot-report 的上限毫秒；缺省 15000。 */
   snapshotTimeoutMs?: number;
+  /** 非定向导航成功后等落点页接入会话（组页面表中该 URL 的页转 active/background）的上限毫秒；缺省 8000，0＝不等。 */
+  navAttachWaitMs?: number;
   /** 历史压缩触发的上下文窗口 token 数（ZA_LLM_CONTEXT_WINDOW）。 */
   compressContextWindow: number;
   /** 历史压缩触发阈值比例（ZA_LLM_COMPRESS_THRESHOLD）：估算 token 达 窗口×阈值 即压缩。 */
@@ -377,7 +379,7 @@ const SITE_NAVIGATE_TOOL_DEF: DomToolDefinition = {
   id: SITE_NAVIGATE_TOOL_ID,
   featureIds: [],
   description:
-    '当用户任务需要在其他站点协作完成时，用它导航到系统提示"已安装站点索引"中列出的目标站点。url 必须取自该索引中列出的可达 URL；只能导航到索引内的站点。task 填本次导航所属的任务标题（与页面操作工具的 task 保持一致）：已获用户授权的任务内导航无需再次确认。导航成功后你的可用功能与工具立即切换为新站点配置，直接继续当前任务（先 page_snapshot 观察新页面）。',
+    '当用户任务需要在其他站点协作完成时，用它导航到系统提示"已安装站点索引"中列出的目标站点。url 必须取自该索引中列出的可达 URL；只能导航到索引内的站点。task 填本次导航所属的任务标题（与页面操作工具的 task 保持一致）。若本次导航是任务的首个动作，MUST 同时带 plan：用人话逐条列出整个任务将执行的操作（含后续导航、页面操作与不可撤回动作）——用户在这张卡上一次授权整个任务，批准后同一 task 的后续导航与页面操作自动执行、用户可随时停止；已获授权的任务内导航直接执行、不再确认。无 task/plan 的一次性导航每次都需用户确认。导航成功后你的可用功能与工具立即切换为新站点配置，直接继续当前任务（先 page_snapshot 观察新页面）。',
   params: SITE_NAVIGATE_PARAMS_SCHEMA,
   execution: 'client',
   riskTier: 'hitl',
@@ -398,14 +400,14 @@ const SITE_NAVIGATE_TOOL_SPEC: LlmToolSpec = {
 /**
  * built-in 通用页面导航工具（generic pack 配套）：不入 pack tools.json，仅当 generic pack 激活
  * （活跃页是 http/https）或静默页冷启动，且执行偏好允许 dom 时注入。经 toolgate 专路裁决
- * （协议闭集 http/https + 禁内嵌凭证，每次必弹卡不复用授权）与一次性签名下发，
+ * （协议闭集 http/https + 禁内嵌凭证；带 task 且任务已获授权即放行，否则确认）与一次性签名下发，
  * 构造 navigate dom 指令复用客户端跨窗口开页入组（U7）。
  */
 const OPEN_URL_TOOL_DEF: DomToolDefinition = {
   id: OPEN_URL_TOOL_ID,
   featureIds: [],
   description:
-    '在通用页面上打开任意 http/https 页面以继续当前任务（如去搜索引擎检索、打开用户给出的网址）。已安装站点索引内的站点优先用 site_navigate。url 填目标绝对地址；task 可选，填本次导航所属的任务标题；reason 可选，用一句话向用户说明为何要打开该页面。每次导航都会经用户确认后才执行；到达后先 page_snapshot 观察新页面再继续。',
+    '在通用页面上打开任意 http/https 页面以继续当前任务（如去搜索引擎检索、打开用户给出的网址）。已安装站点索引内的站点优先用 site_navigate。url 填目标绝对地址；reason 可选，用一句话向用户说明为何要打开该页面。task 填本次导航所属的任务标题（与页面操作工具的 task 保持一致）。若本次导航是任务的首个动作，MUST 同时带 plan：用人话逐条列出整个任务将执行的操作（含后续导航、页面操作与不可撤回动作）——用户在这张卡上一次授权整个任务，批准后同一 task 的后续导航与页面操作自动执行、用户可随时停止；已获授权的任务内导航直接执行、不再确认。无 task/plan 的一次性导航每次都需用户确认。到达后先 page_snapshot 观察新页面再继续。',
   params: OPEN_URL_PARAMS_SCHEMA,
   execution: 'client',
   riskTier: 'hitl',
@@ -783,6 +785,15 @@ export function hitlTargetUrl(tool: ToolDefinition, params: JsonObject): string 
   return truncateWithEllipsis(stripDisplayUnsafeChars(parsed.href), HITL_TARGET_URL_MAX);
 }
 
+/**
+ * 实参带可见的任务计划（每项都是去空白后非空的字符串）：导航卡据此升为任务授权卡、批准即登记任务级授权。
+ * 登记条件与卡的呈现条件 MUST 同构——用户没在卡上看到计划的批准不得登记整任务。
+ */
+function hasTaskPlan(params: JsonObject): boolean {
+  const plan = params['plan'];
+  return Array.isArray(plan) && plan.length > 0 && plan.every((item) => typeof item === 'string' && item.trim() !== '');
+}
+
 type HitlEffect = NonNullable<HitlRequestFrame['effects']>[number];
 
 /** 确认卡展示上限：目标描述与写入值摘要都可能来自不可信页面文本/模型实参，超限即截断标注。 */
@@ -877,6 +888,57 @@ const APPROVAL_STALE_ERROR = 'approval-stale';
 
 /** 人工确认久未裁决而由服务端合成收口的回喂/审计归因（adr-024 D1）。 */
 const HITL_TIMEOUT_ERROR = 'hitl-timeout';
+
+/**
+ * 同会话已导航过、且组内该地址的页仍未接入时再次非定向导航的拒绝归因（服务端 fail-closed、不弹卡）：
+ * 再开一次同一地址只会再产出一个接不进来的页，止损优先于让用户反复批准。
+ */
+const ALREADY_OPEN_NOT_ATTACHED_ERROR = 'already-open-not-attached';
+
+const DEFAULT_NAV_ATTACH_WAIT_MS = 8_000;
+
+const NAV_ATTACHED_NOTE = '页面已接入，可直接 page_snapshot。';
+
+/** 落点页未接入时的回喂指引：与 silent 页定向快照拒绝、already-open 止损同一口径。 */
+const NAV_NOT_ATTACHED_NOTE =
+  '页面已打开但尚未接入（本站可能未授予访问权限或仍在加载）：不要再次打开同一地址；最多重试一次 page_snapshot（定向该页句柄），仍不可用则告知用户在该页点击 Zen 图标以授权本站后再继续。';
+
+/**
+ * 导航落点与组页面表比对用的规范化键：去 fragment，保留 origin + path + query
+ * （fragment 不触发导航、不改变落点文档）；不可解析的地址只去 fragment 后按原串比对。
+ */
+function navigationUrlKey(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+  } catch {
+    const hash = url.indexOf('#');
+    return hash === -1 ? url : url.slice(0, hash);
+  }
+}
+
+function pageAttached(page: GroupPageEntry): boolean {
+  return page.status === 'active' || page.status === 'background';
+}
+
+/** 组页面表的 句柄 → 地址键 索引：导航前取样，导航后据此识别本次导航产出的页。 */
+function groupPagesIndex(session: SessionState): Map<string, string> {
+  return new Map(session.groupPages.map((page) => [page.handle, navigationUrlKey(page.url)]));
+}
+
+/**
+ * 落点页识别不依赖请求地址等值：落点可被重定向（协议/主机/跳转链）到与请求完全不同的地址，
+ * 故「导航前不在组内的句柄」或「导航前已在组内但换了地址的句柄」都视为本次导航的落点。
+ */
+function isLandingPage(page: GroupPageEntry, before: Map<string, string>): boolean {
+  const previousKey = before.get(page.handle);
+  return previousKey === undefined || previousKey !== navigationUrlKey(page.url);
+}
+
+/** 一次非定向导航的落点记录：句柄在等待窗内由组页面表识别；上报未及时到达则为空、止损只按地址键匹配。 */
+interface NavigationRecord {
+  landingHandles: string[];
+}
 
 /**
  * toolgate 治理性拒签文案的前缀闭集：这些是 toolgate 的常量口径（含其自造的 reason 词元），
@@ -998,6 +1060,12 @@ interface SessionRuntime {
   stoppedExecNonces: Set<string>;
   /** 快照挂起等待器：requestId → resolver；snapshot-report 到达时解析。 */
   pendingSnapshot: Map<string, (report: SnapshotReportFrame | null) => void>;
+  /** 组页面表变更通知：group-pages 帧落表后逐个唤醒，由等待方自行复查谓词。 */
+  groupPagesWaiters: Set<() => void>;
+  /** 本会话 agent 成功导航过的请求地址（navigationUrlKey）→ 落点记录：already-open 止损的判定依据。 */
+  navigations: Map<string, NavigationRecord>;
+  /** 定向快照对 silent 句柄的拒绝次数：首次指引最多重试一次，此后指引停止重试并如实告知用户；句柄接入或退役即清。 */
+  silentSnapshotRejections: Map<string, number>;
   /** 最近一次快照的判定上下文（ref 闭集 + 页路径）；dom 签发校验依据，无快照即 deny。 */
   domContext: DomGateContext | null;
   /** 定向快照的 per-handle 判定上下文（adr-023 D3）：定向 dom 签发基准；句柄退役即清除，禁与活跃页 domContext 互相回退。 */
@@ -1102,6 +1170,7 @@ function envPositiveInt(name: string): number | undefined {
 
 export function createGateway(deps: GatewayDeps): Gateway {
   const snapshotTimeoutMs = deps.snapshotTimeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS;
+  const navAttachWaitMs = deps.navAttachWaitMs ?? DEFAULT_NAV_ATTACH_WAIT_MS;
   const maxConsecutiveFailures =
     deps.maxConsecutiveFailures ??
     envPositiveInt('ZA_MAX_CONSECUTIVE_FAILURES') ??
@@ -1318,6 +1387,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
         pendingExec: new Map(),
         stoppedExecNonces: new Set(),
         pendingSnapshot: new Map(),
+        groupPagesWaiters: new Set(),
+        navigations: new Map(),
+        silentSnapshotRejections: new Map(),
         domContext: null,
         domContextByPage: new Map(),
         pendingConfigDrafts: new Map(),
@@ -1513,6 +1585,41 @@ export function createGateway(deps: GatewayDeps): Gateway {
   }
 
   /**
+   * 等导航落点页接入会话：组页面表里该地址（navigationUrlKey 同键）的页、或本次导航的落点页
+   * （isLandingPage，覆盖重定向到异址）转 active/background 即 true；到期仍无即 false。
+   * 不等（上限 0）时只看当前表。落点页接入与否只据客户端上报的状态表，服务端不推断注入是否成功。
+   */
+  function waitForPageAttached(session: SessionState, url: string, before: Map<string, string>): Promise<boolean> {
+    const key = navigationUrlKey(url);
+    const attachedNow = (): boolean =>
+      session.groupPages.some(
+        (page) => pageAttached(page) && (navigationUrlKey(page.url) === key || isLandingPage(page, before)),
+      );
+    if (attachedNow()) return Promise.resolve(true);
+    if (navAttachWaitMs <= 0) return Promise.resolve(false);
+    const runtime = runtimeOf(session.sessionId);
+    return new Promise((resolve) => {
+      const wake = (): void => {
+        if (!attachedNow()) return;
+        clearTimeout(timer);
+        runtime.groupPagesWaiters.delete(wake);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        runtime.groupPagesWaiters.delete(wake);
+        resolve(false);
+      }, navAttachWaitMs);
+      runtime.groupPagesWaiters.add(wake);
+    });
+  }
+
+  /**
+   * 代执行子流程的结果：观测之外附带「本次调用是否处于任务级授权之下」——授权命中放行，或带计划获批并登记。
+   * 纯数据标记，只供导航成功分支决定授权是否随任务延续到落点作用域；不进回喂、不进审计。
+   */
+  type ExecSubflowOutcome = Observation & { taskGranted?: true };
+
+  /**
    * 单个宿主 API 工具调用的代执行子流程：一切分级/HITL/结果判定都在 toolgate（U7 fail-closed），
    * 网关只按判定下发帧、挂起等待客户端回传、把规整后的 observation 交回 agent loop。
    * tool-card 摘要仅取 toolId（不含实参值，SEC-04）；deny/reject 时自造 ok:false observation。
@@ -1531,7 +1638,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     /** 本回合的自动化 run 归因（C5 automationRunId/automationId）；人工回合为 null。 */
     run: AutomationRunRef | null,
     cancelled: () => boolean,
-  ): Promise<Observation> {
+  ): Promise<ExecSubflowOutcome> {
     const { sessionId } = session;
     const { toolCallId, params } = call;
     if (cancelled()) {
@@ -1626,7 +1733,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
      * 重装配只用于收紧——取当前 L2 生效面并核对工具是否仍在装配出的工具面内（pack 被关停即不在）；
      * 判定本体（分级/围栏/dom 批次 ref 出自最近快照）在 toolgate，fail-closed。
      * 装配取不到当前生效面即视为批准不再成立，不回落本轮定格面放行。
-     * 内建导航不登记任务级授权、也不属任何 pack 工具面，故只复核参数与目标围栏。
+     * 内建导航不属任何 pack 工具面、无 L2 分级可收紧，故只复核参数与目标围栏。
      */
     const reconfirmApproval = async (): Promise<string | null> => {
       const builtinNavigation = tool.id === SITE_NAVIGATE_TOOL_ID || tool.id === OPEN_URL_TOOL_ID;
@@ -1699,6 +1806,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
       finish('failed');
       return { toolCallId, ok: false, content: null, error: decision.reason ?? 'denied' };
     }
+    // 内建导航恒为 hitl 档、无 auto 路径：decide 放行即任务级授权命中（toolgate 契约）。
+    const navigationTool = tool.id === SITE_NAVIGATE_TOOL_ID || tool.id === OPEN_URL_TOOL_ID;
+    let taskGranted = navigationTool && decision.verdict === 'allow' && typeof params['task'] === 'string';
     // 批准恢复期复核的结论（adr-024 D3）：非 null 即批准已不成立——不登记授权、不签发指令，
     // 按与签发拒绝同一形态收尾（回喂拒绝观测 + tool-execution 记 error），使 agent 如实转述（R6）。
     let approvalStale: string | null = null;
@@ -1817,23 +1927,27 @@ export function createGateway(deps: GatewayDeps): Gateway {
           },
         }, pack, run ?? undefined, auditPageRef());
       }
-      // 批准即任务级授权：登记 grant，同会话同 pack 同 origin 的同任务后续调用（跨工具，含 navigate）
+      // 批准即任务级授权：登记 grant，同会话同 pack 同 origin 的同任务后续调用（跨工具，含导航）
       // decide 直接放行。两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得
-      // 顺带解锁同名任务）；site_navigate / open_url（导航卡只呈现目标 URL，用户未见任务计划，不构成
-      // 任务级知情授权）。
+      // 顺带解锁同名任务）；不带 plan 的 site_navigate / open_url（导航卡只呈现目标 URL，用户未见任务计划，
+      // 不构成任务级知情授权）。带 task + plan 的导航卡已把整任务计划呈现给用户，批准即登记（adr-028）。
+      // 授权只锚定站点作用域：基座作用域（无 pack，如静默页冷启动）不属于任何站点，在此登记会让此后
+      // 任意基座作用域页面上的同名任务免卡放行，故不登记——导航的授权由落点作用域上的延续承接。
       if (
         approvalStale === null &&
         tool.hitlMode !== 'every-call' &&
-        tool.id !== SITE_NAVIGATE_TOOL_ID &&
-        tool.id !== OPEN_URL_TOOL_ID &&
-        typeof params['task'] === 'string'
+        typeof params['task'] === 'string' &&
+        (!navigationTool || hasTaskPlan(params))
       ) {
-        await deps.toolgate.grantHitl({
-          sessionId,
-          task: params['task'],
-          ...(scope.packId !== undefined ? { packId: scope.packId } : {}),
-          ...(scope.packOrigin !== undefined ? { packOrigin: scope.packOrigin } : {}),
-        });
+        if (scope.packId !== undefined) {
+          await deps.toolgate.grantHitl({
+            sessionId,
+            task: params['task'],
+            packId: scope.packId,
+            ...(scope.packOrigin !== undefined ? { packOrigin: scope.packOrigin } : {}),
+          });
+        }
+        taskGranted = navigationTool;
         if (cancelled()) return stopped();
       }
     }
@@ -1907,7 +2021,36 @@ export function createGateway(deps: GatewayDeps): Gateway {
     if (cancelled()) return stopped();
     finish(observation.ok ? 'succeeded' : 'failed');
     recordExecution(issueRejected ? 'issue-rejected' : execOutcome(observation));
-    return observation;
+    return taskGranted ? { ...observation, taskGranted: true } : observation;
+  }
+
+  /**
+   * 授权随任务导航延续（adr-028）：导航本身已在任务授权下放行或带计划获批，落点重装配后作用域
+   * (packId, packOrigin) 随站切换，同一 task 在新作用域再登记一次，使已批准任务内的后续操作不再弹卡。
+   * 只由服务端在导航成功分支驱动——延续的是用户批准过的那次导航；用户手动切页/换站不延续
+   * （adr-024 D4 防挂靠语义保留）。落点页是否接入与延续无关。不延续的情形：越界落地（fenceEscaped，
+   * 按仅基座装配）；落点无 pack（基座作用域不锚定站点，不登记）；回合已被停止（停止＝收回全部授权，
+   * 导航回执与重装配之间到达的停止不得被延续重新登记覆盖）。
+   */
+  async function continueTaskGrant(
+    session: SessionState,
+    claims: IdentityClaims,
+    landedPack: PackRef,
+    params: JsonObject,
+    outcome: ExecSubflowOutcome,
+    fenceEscaped: boolean,
+    cancelled: () => boolean,
+  ): Promise<void> {
+    const task = params['task'];
+    if (outcome.taskGranted !== true || typeof task !== 'string' || fenceEscaped) return;
+    const scope = await packScope(session, landedPack, claims);
+    if (scope.packId === undefined || cancelled()) return;
+    await deps.toolgate.grantHitl({
+      sessionId: session.sessionId,
+      task,
+      packId: scope.packId,
+      ...(scope.packOrigin !== undefined ? { packOrigin: scope.packOrigin } : {}),
+    });
   }
 
   async function runTurn(
@@ -2345,9 +2488,17 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   ...(targetOrigin !== '' ? { origin: targetOrigin } : {}),
                 };
                 if (entry.status === 'silent') {
+                  // 拒绝指引带状态：首次允许重试一次，再拒即明确停止重试——否则模型只会重复看到「重试一次」，
+                  // 直到失败预算收口，用户拿不到可操作的授权指引。
+                  const rejections = runtimeOf(sessionId).silentSnapshotRejections;
+                  const priorRejections = rejections.get(entry.handle) ?? 0;
+                  rejections.set(entry.handle, priorRejections + 1);
                   rejection = {
                     error: 'page-not-interactive',
-                    message: `目标页 ${pageParam} 不可交互（silent，无内容脚本通道），无法定向读取；需先激活该页——由用户切换到该页，或经导航打开其地址——再重试。`,
+                    message:
+                      priorRejections === 0
+                        ? `目标页 ${pageParam} 不可交互（silent，尚未接入会话），无法定向读取：最多重试一次定向快照（page_snapshot 传同一 targetPage）；仍不可用则告知用户在该页点击 Zen 图标以授权并激活本站后再继续；不要再次打开同一地址。`
+                        : `目标页 ${pageParam} 不可交互（silent，尚未接入会话），重试后仍未接入：不要再重试、不要再次打开同一地址；如实告知用户在该页点击 Zen 图标以授权并激活本站后再继续。`,
                   };
                 } else {
                   target = { handle: entry.handle, url: entry.url };
@@ -2756,6 +2907,52 @@ export function createGateway(deps: GatewayDeps): Gateway {
           // 内建导航（非终结，按名分派工具定义）：经 toolgate 专路裁决 hitl + 一次性签名 navigate 指令，
           // 结果 {url} 过 resultSchema 回收后回喂本回合。
           const navToolDef = call.name === OPEN_URL_TOOL_ID ? OPEN_URL_TOOL_DEF : SITE_NAVIGATE_TOOL_DEF;
+          const directedNav = typeof call.params['targetPage'] === 'string';
+          const navUrlParam = typeof call.params['url'] === 'string' ? call.params['url'] : null;
+          // already-open 止损（服务端 fail-closed、不弹卡）：本会话已导航过同一请求地址、上次落点页
+          // （按句柄记录，覆盖重定向异址；无记录则按地址键）仍在组内且未接入、又无任何已接入的同址/落点页时，
+          // 再次非定向导航一律拒绝——再开只会多一个接不进来的页。
+          // 定向导航不在此门内：对 silent 句柄定向 navigate 是清单声明的激活通路。
+          if (!directedNav && navUrlParam !== null) {
+            const navKey = navigationUrlKey(navUrlParam);
+            const priorNavigation = runtime.navigations.get(navKey);
+            const priorLandingPages =
+              priorNavigation === undefined
+                ? []
+                : session.groupPages.filter(
+                    (page) =>
+                      navigationUrlKey(page.url) === navKey || priorNavigation.landingHandles.includes(page.handle),
+                  );
+            if (priorLandingPages.some((page) => page.status === 'silent') && !priorLandingPages.some(pageAttached)) {
+              recordEvent(sessionId, claims, featureId, {
+                type: 'tool-decision',
+                data: {
+                  toolCallId: call.toolCallId,
+                  toolId: navToolDef.id,
+                  riskTier: navToolDef.riskTier,
+                  verdict: 'deny',
+                  reason: ALREADY_OPEN_NOT_ATTACHED_ERROR,
+                },
+              }, pack, run ?? undefined, activePageRef(session));
+              broadcast(sessionId, {
+                type: 'tool-card',
+                sessionId,
+                toolCallId: call.toolCallId,
+                toolId: navToolDef.id,
+                status: 'failed',
+                mode: navToolDef.execution,
+              });
+              automationFailed = true;
+              feed(
+                call,
+                `${JSON.stringify({ error: ALREADY_OPEN_NOT_ATTACHED_ERROR, url: navUrlParam, attached: false })}\n${NAV_NOT_ATTACHED_NOTE}`,
+                ALREADY_OPEN_NOT_ATTACHED_ERROR,
+              );
+              continue;
+            }
+          }
+          // 落点识别基准须在指令下发前取样：客户端可能在回执之前就上报新页入组。
+          const groupPagesBeforeNav = groupPagesIndex(session);
           const observation = await runExecSubflow(
             session,
             claims,
@@ -2777,9 +2974,21 @@ export function createGateway(deps: GatewayDeps): Gateway {
           // 系统注入整段覆写、边界标记入历史——LLM 下一轮就持有新站上下文，不必等用户再发言。
           // 定向导航（params.targetPage）不改变活跃页：不切 context、不重装配、不注边界标记（ADR-023 §5，
           // 装配仍按活跃页），观测照常回喂；目标页转 active 后由其 context-report 驱动切换。
-          if (observation.ok && typeof call.params['targetPage'] !== 'string') {
+          if (observation.ok && !directedNav) {
             const landedUrl = String((observation.content as JsonObject | null)?.['url'] ?? '');
             if (landedUrl !== '') {
+              // 回喂前等落点页接入：模型据 attached 分辨「已打开且可读」与「已打开但接不进来」，
+              // 后者的指引把它从反复开同一地址的循环里拉出来。等待窗内的停止仍走回合停止路径。
+              const attached = await waitForPageAttached(session, landedUrl, groupPagesBeforeNav);
+              runtime.navigations.set(navigationUrlKey(navUrlParam ?? landedUrl), {
+                landingHandles: session.groupPages
+                  .filter((page) => isLandingPage(page, groupPagesBeforeNav))
+                  .map((page) => page.handle),
+              });
+              navObsContent = `${JSON.stringify({
+                ...(observation.content as JsonObject),
+                attached,
+              })}\n${attached ? NAV_ATTACHED_NOTE : NAV_NOT_ATTACHED_NOTE}`;
               // 围栏落地重校验：site_navigate 的目标在决策与签发两处已判围栏，但 302 可把落点带出围栏。
               // 越界落地不按新落点装配（回落仅基座）并如实告知模型（R6）；open_url 本就无围栏、不适用。
               const fenceEscaped =
@@ -2789,6 +2998,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
               const previousGenericOrigin = pack.genericOrigin ?? null;
               ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, siteOrigin, userConfig, openUrlOk, appToolsOk } =
                 await assembleFor(landedUrl, fenceEscaped));
+              await continueTaskGrant(session, claims, pack, call.params, observation, fenceEscaped, cancelled);
               messages[0] = {
                 role: 'system',
                 content: withManifest(
@@ -3159,6 +3369,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
         for (const handle of [...runtime.domContextByPage.keys()]) {
           if (!liveHandles.has(handle)) runtime.domContextByPage.delete(handle);
         }
+        const attachedHandles = new Set(upstream.pages.filter(pageAttached).map((page) => page.handle));
+        for (const handle of [...runtime.silentSnapshotRejections.keys()]) {
+          if (!liveHandles.has(handle) || attachedHandles.has(handle)) runtime.silentSnapshotRejections.delete(handle);
+        }
+        for (const wake of [...runtime.groupPagesWaiters]) wake();
         sendNoContent(res);
         return;
       }

@@ -675,10 +675,12 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     },
 
     async decide(input: GateDecisionInput): Promise<GateDecision> {
-      // 内建跨站导航（ADR-013 渐进披露）：不在工具闭集内，专路裁决——参数不过即 deny；
-      // 目标 URL 须落在某已安装 pack 的 site 围栏内（跨站允许别 pack origin，但必须已安装），否则 fence-violation。
+      // 内建导航（site_navigate / open_url）同律：不在工具闭集内，专路裁决——参数不过即 deny；
+      // site_navigate 的目标须落在某已安装 pack 的 site 围栏内（跨站允许别 pack origin），否则 fence-violation；
+      // open_url 的目标须为无内嵌凭证的 http/https 绝对 URL，否则 unsafe-url。
       // 带 task 且该任务已获批 → 放行（导航是任务的一步，共享任务级授权）；无 task 或未获批仍 hitl。
-      if (input.toolId === SITE_NAVIGATE_TOOL_ID) {
+      // 导航恒为 hitl 档、无 auto 路径：此处的 allow 即「任务级授权命中」，网关据此驱动授权随导航延续。
+      if (input.toolId === SITE_NAVIGATE_TOOL_ID || input.toolId === OPEN_URL_TOOL_ID) {
         const navChecked = validateBuiltinNavigation(input);
         if ('reason' in navChecked) return deny(navChecked.reason);
         // 无人值守回合：导航同属需确认项，且不消费任务级授权（adr-024 D1）。
@@ -688,15 +690,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
           return { verdict: 'allow' };
         }
         return { verdict: 'hitl', ...hitlDisplay(navChecked.steps) };
-      }
-      // 内建通用导航（generic 配套）：专路裁决——参数不过即 deny；目标须为无内嵌凭证的 http/https
-      // 绝对 URL，否则 unsafe-url；每次必弹卡（every-call 语义），不消费/不复用任务级授权。
-      if (input.toolId === OPEN_URL_TOOL_ID) {
-        const openChecked = validateBuiltinNavigation(input);
-        if ('reason' in openChecked) return deny(openChecked.reason);
-        // 无人值守回合：every-call 的通用导航同样无人可确认（adr-024 D1）。
-        if (input.unattended === true) return deny(HITL_UNATTENDED_REASON);
-        return { verdict: 'hitl', ...hitlDisplay(openChecked.steps) };
       }
       // fail-closed 判定链：任一前置不过即 deny，reason 只述依据、不含实参值（U7 / SEC-04）。
       const checked = validateCall(input);
@@ -729,7 +722,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
     },
 
     async reconfirmApproval(input: GateDecisionInput): Promise<GateDecision> {
-      // 内建导航的批准只覆盖本次调用、不登记任务级授权，故复核只重跑参数与目标围栏。
+      // 内建导航不属任何 pack 工具面、无 L2 分级可收紧，复核只重跑参数与目标围栏。
       const checked =
         input.toolId === SITE_NAVIGATE_TOOL_ID || input.toolId === OPEN_URL_TOOL_ID
           ? validateBuiltinNavigation(input)

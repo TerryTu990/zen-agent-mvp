@@ -23,9 +23,11 @@
 只掐上行而不管下行等于「照做但不告诉你」，故两个方向都收。
 **唯一允许自命中页上行的例外**是 `{ok:false, error:'site-denied'}` 形态的拒绝回执（不含任何页面数据）——
 没有它，服务端只能把「已下发未回」当超时，用户会以为拉黑生效却看不出指令其实被本机拒了。
-面板「本页生效」块在**本机确实跳过了该页激活**（background 在跳过当刻登记的事实）时改显示客户端自述，
-且自述只陈述当下与此后、不断言过去；该页若在拉黑前已激活、服务端确实见过它，则照常显示服务端的
-`site-denied` 抬头——那是更权威的事实，不得被客户端的猜测顶掉。
+面板在**本机确实跳过了该页激活**（background 在跳过当刻登记的事实）时给出客户端自述（composer 须知，
+面板根 `data-state=denied`），且自述只陈述当下与此后、不断言过去。判据是那条跳过登记而非「当前 URL 命中名单」：
+该页若在拉黑前已激活、服务端确实见过它并已按 `site-denied` 回落仅基座，客户端不得用猜测把那条已成立的上下文顶掉。
+服务端 `site-denied` 装配结论目前在面板侧**无展示载体**（「本页生效」块 2026-09-07 撤除，
+见 `../plans/2026-08-04-product-form-definition.md` §4 透明性行），锚点同该行：配置中心 Atelier 重做落地时裁决是否回挂。
 拉黑前已上报的地址仍留在服务端会话上下文里，故下一轮 compose 仍按该 origin 判 `site-denied`。
 **尚未收进不变量的边界**：`site_navigate` 与站点索引仍不认名单（模型仍可能提到该站点、仍可导航过去，
 只是到了那里发不出帧也执行不了指令）。命中页的 content script 注入自 adr-027 起归入不变量 IN：
@@ -221,6 +223,7 @@
 | `ZA_JWT_ISS_ALLOWLIST` | `zen-agent-anon` | 外部签发方的 iss 白名单（逗号分隔）；匿名激活签发的 `zen-agent-anon` 由服务端在组装时无条件并入，覆盖或漏填此项都不会让服务端拒绝自己签发的令牌 |
 | `ZA_MAX_TURN_ROUNDS` | `12` | agent loop 单回合轮数上限（跨站任务建议 40） |
 | `ZA_MAX_CONSECUTIVE_FAILURES` | `3` | 同工具同因连续失败的止损上限：达此值即终结回合（`turn-complete.reason=consecutive-failures`），任一次成功清零；与 `ZA_MAX_TURN_ROUNDS` 并列，先到者生效。取值须为正整数，写错拒启 |
+| `ZA_NAV_ATTACH_WAIT_MS` | `8000` | 非定向 `open_url` / `site_navigate` 成功后、回喂前等待落点页接入会话（组页面表中该地址的页、或导航后新出现/换址的页转 active/background；落点识别不绑请求地址等值，覆盖重定向）的上限毫秒；回喂 observation 附 `attached: true|false` 与相应指引。`0` = 不等待、只看当前表。取值须为非负整数，写错拒启 |
 
 ### LLM 上游（openai 兼容；调用时惰性读取）
 

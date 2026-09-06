@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { unwrapObs } from '../mock-llm/server.mjs';
 import { prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = process.env.ZA_E2E_EXTENSION_DIR
@@ -57,7 +58,7 @@ const [JWT_SECRET, SIGNING_SECRET] = ['jwt', 'signing'].map(
 );
 const JWT_ISS = 'zen-agent-anon';
 /** gateway 必须起在插件开发构建的默认服务地址上（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）。 */
-const SERVER_PORT = 8787;
+const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 
 function assert(condition, message) {
@@ -435,6 +436,7 @@ async function main() {
       await run('pnpm', ['--filter', '@zen-agent/extension', 'run', 'build']);
     }
 
+    await assertPortsFree([{ port: SERVER_PORT, label: 'gateway' }]);
     console.log('[2/9] 起本地测试站、脚本化 mock LLM 与真实 gateway…');
     const site = await startTargetSite();
     cleanups.push(() => site.close());
@@ -535,7 +537,7 @@ async function main() {
     panel = await context.newPage();
     await panel.setViewportSize({ width: 420, height: 900 });
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-    await panel.locator(`[data-za-context][data-group-id="${groupId}"]`).waitFor({ timeout: 15_000 });
+    await panel.locator(`[data-za-shell][data-group-id="${groupId}"]`).waitFor({ timeout: 15_000 });
     await panel.locator('#za-input:not([disabled])').waitFor({ timeout: 15_000 });
     // 本 harness 全程轮询各页 DOM（含 60s ttl 等待窗），而系统内存压力下 Chrome 会自动
     // discard 非焦点 tab——target 被销毁，Playwright 视为页面已关闭、轮询即抛错。

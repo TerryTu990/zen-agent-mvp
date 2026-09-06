@@ -14,8 +14,10 @@
  * 判定：
  *  ① 首轮送达 LLM 的工具面含 open_url、不含 generic pack 工具（仅基座 + 冷启动注入门）；
  *  ② 面板出现 open_url 的 HITL 确认卡，且卡出现时目标页尚未打开（确认先于执行）；
- *  ③ 批准后 background 直执行 navigate：目标页新开且入本会话组；
- *  ④ agent 收到成功回喂：mock 收到含 {url} 的 observation，面板出现导航成功总结；
+ *  ③ 批准后 background 直执行 navigate：空白页原地导航到目标——组内 tab 数不变，
+ *    原空白 tab 的 url 变为目标且仍在组内（不新开页签留下空白页）；
+ *  ④ agent 收到成功回喂：mock 收到的 observation 含 {url, attached:true} 与「页面已接入」指引
+ *     （落点页真实注入并上报接入后服务端才回喂 attached:true；未接入即 MOCK-NOT-ATTACHED 红），面板出现导航成功总结；
  *  ⑤ 落点后装配切到该站：injection 视图变为 generic-web/browse；面板常驻同组、可继续输入；
  *  ⑥ 审计链：tool-decision(open_url, hitl) → hitl-verdict(approve) → tool-execution(ok) 且授权先于执行。
  *
@@ -31,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { activate } from './anon-identity.mjs';
 import { prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = process.env.ZA_E2E_EXTENSION_DIR
@@ -52,7 +55,7 @@ const JWT_ISS = 'zen-agent-anon';
  * gateway 必须起在插件开发构建的默认服务地址上（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）：
  * service worker 一启动就会做首次匿名激活，起在同一地址可让这次预取直接命中。
  */
-const SERVER_PORT = 8787;
+const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 
 function assert(condition, message) {
@@ -138,9 +141,9 @@ function startScriptedLlm(targetUrl, successReply) {
 
       let decision;
       if (obs !== null) {
-        if (obs.includes('"url"')) decision = { text: successReply };
+        if (obs.includes('"attached":true')) decision = { text: successReply };
         else if (obs.includes('user-rejected')) decision = { text: '已取消打开该页面。' };
-        else decision = { text: `MOCK-OPEN-OBS ${obs}` };
+        else decision = { text: `MOCK-NOT-ATTACHED ${obs}` };
       } else if (user.includes('打开') && toolNames.includes('open_url')) {
         decision = {
           toolCall: {
@@ -214,6 +217,8 @@ function spawnServer({ llmPort, auditPath, stateRoot }) {
     stdio: ['ignore', 'inherit', 'inherit'],
     env: {
       ...process.env,
+      // 落点接入等待取产品默认值：attached 断言依赖它，不随开发者 shell 的取值翻转。
+      ZA_NAV_ATTACH_WAIT_MS: undefined,
       ZA_JWT_SECRET: JWT_SECRET,
       ZA_SIGNING_SECRET: SIGNING_SECRET,
       ZA_JWT_ISS_ALLOWLIST: JWT_ISS,
@@ -263,6 +268,7 @@ async function main() {
       await run('pnpm', ['--filter', '@zen-agent/extension', 'run', 'build']);
     }
 
+    await assertPortsFree([{ port: SERVER_PORT, label: 'gateway' }]);
     console.log('[2/6] 起目标站夹具、脚本化 mock LLM 与真实 gateway…');
     const site = await startTargetSite();
     cleanups.push(() => site.close());
@@ -325,7 +331,7 @@ async function main() {
         ['za.zenGroup.g' + groupId]: true,
         ['za.panelGroup.w' + tab.windowId]: groupId,
       });
-      return { groupId, windowId: tab.windowId, tabUrl: tab.pendingUrl ?? tab.url ?? '' };
+      return { groupId, windowId: tab.windowId, tabId: tab.id, tabUrl: tab.pendingUrl ?? tab.url ?? '' };
     });
     assert(typeof group.groupId === 'number', '未能建立会话组');
     assert(!/^https?:/.test(group.tabUrl), `组内唯一成员应为静默页，实际 ${group.tabUrl}`);
@@ -333,7 +339,7 @@ async function main() {
     panel = await context.newPage();
     await panel.setViewportSize({ width: 420, height: 900 });
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-    await panel.locator(`[data-za-context][data-group-id="${group.groupId}"]`).waitFor({ timeout: 15_000 });
+    await panel.locator(`[data-za-shell][data-group-id="${group.groupId}"]`).waitFor({ timeout: 15_000 });
     await panel.locator('#za-input:not([disabled])').waitFor({ timeout: 15_000 });
 
     console.log('[5/6] 冷启动指令 → open_url HITL 卡 → 批准 → background 直执行 navigate…');
@@ -346,11 +352,15 @@ async function main() {
     const hitlText = await hitlCard.innerText();
     assert(hitlText.includes('打开用户指定的本地测试站'), `HITL 卡未呈现导航任务：${hitlText}`);
     // 确认先于执行：卡片出现时目标页必须尚未打开。
-    const tabsBeforeApprove = await sw.evaluate(
-      async (origin) => (await chrome.tabs.query({})).filter((t) => (t.url ?? '').startsWith(origin)).length,
-      site.origin,
+    const beforeApprove = await sw.evaluate(
+      async ({ origin, groupId }) => ({
+        targetTabs: (await chrome.tabs.query({})).filter((t) => (t.url ?? '').startsWith(origin)).length,
+        groupTabs: (await chrome.tabs.query({ groupId })).length,
+      }),
+      { origin: site.origin, groupId: group.groupId },
     );
-    assert(tabsBeforeApprove === 0, 'HITL 批准前目标页已被打开（确认未先于执行）');
+    assert(beforeApprove.targetTabs === 0, 'HITL 批准前目标页已被打开（确认未先于执行）');
+    assert(beforeApprove.groupTabs === 1, `批准前组内应只有那个空白页，实际 ${beforeApprove.groupTabs} 个`);
     const firstRequest = mock.requests[0];
     assert(firstRequest !== undefined, 'mock LLM 未收到首轮请求');
     assert(firstRequest.toolNames.includes('open_url'), `首轮工具面缺 open_url：${firstRequest.toolNames}`);
@@ -363,15 +373,25 @@ async function main() {
 
     await waitFor(
       async () => {
-        const tabs = await sw.evaluate(
-          async (origin) =>
-            (await chrome.tabs.query({})).map((t) => ({ url: t.url ?? '', groupId: t.groupId })).filter((t) => t.url.startsWith(origin)),
-          site.origin,
+        const state = await sw.evaluate(
+          async ({ groupId, tabId }) => {
+            const blank = await chrome.tabs.get(tabId).catch(() => null);
+            return {
+              groupTabs: (await chrome.tabs.query({ groupId })).length,
+              blankUrl: blank === null ? null : (blank.url ?? ''),
+              blankGroupId: blank === null ? null : blank.groupId,
+            };
+          },
+          { groupId: group.groupId, tabId: group.tabId },
         );
-        if (tabs.length === 0) return '目标页未打开';
-        return tabs[0].groupId === group.groupId ? true : `目标页 groupId=${tabs[0].groupId}`;
+        if (state.blankUrl === null) return '原空白 tab 已不存在（被换成了新页签）';
+        if (!state.blankUrl.startsWith(site.origin)) return `原空白 tab url=${state.blankUrl}`;
+        if (state.blankGroupId !== group.groupId) return `原 tab groupId=${state.blankGroupId}`;
+        return state.groupTabs === beforeApprove.groupTabs
+          ? true
+          : `组内 tab 数 ${beforeApprove.groupTabs}→${state.groupTabs}`;
       },
-      '目标页新开且入本会话组',
+      '空白页原地导航到目标：组内 tab 数不变，原空白 tab 的 url 变为目标且仍在组内',
       30_000,
     );
 
@@ -389,6 +409,10 @@ async function main() {
     assert(
       feedback.obs.includes('"url"') && feedback.obs.includes(targetUrl),
       `回喂 observation 缺导航结果：${feedback.obs}`,
+    );
+    assert(
+      feedback.obs.includes('"attached":true') && feedback.obs.includes('页面已接入'),
+      `回喂 observation 未标记落点页已接入：${feedback.obs}`,
     );
 
     console.log('[6/6] 落点后装配切站、面板常驻与审计链…');
@@ -416,7 +440,7 @@ async function main() {
       '落点后装配切到 generic-web/browse',
       30_000,
     );
-    await panel.locator(`[data-za-context][data-group-id="${group.groupId}"]`).waitFor({ timeout: 5_000 });
+    await panel.locator(`[data-za-shell][data-group-id="${group.groupId}"]`).waitFor({ timeout: 5_000 });
     await panel.locator('#za-input:not([disabled])').waitFor({ timeout: 15_000 });
     await panel.screenshot({ path: join(EVIDENCE_DIR, 'panel-final.png'), fullPage: true });
 

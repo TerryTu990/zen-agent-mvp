@@ -82,6 +82,14 @@ function positiveIntEnv(name: string): number | undefined {
 
 const maxConsecutiveFailures = positiveIntEnv('ZA_MAX_CONSECUTIVE_FAILURES');
 const hitlTimeoutMs = positiveIntEnv('ZA_HITL_TIMEOUT_MS');
+// 导航落点接入等待上限：0 合法（不等），故不走正整数校验。
+const navAttachWaitRaw = process.env['ZA_NAV_ATTACH_WAIT_MS'];
+const navAttachWaitMs =
+  navAttachWaitRaw === undefined || navAttachWaitRaw.trim() === '' ? undefined : Number(navAttachWaitRaw);
+if (navAttachWaitMs !== undefined && (!Number.isInteger(navAttachWaitMs) || navAttachWaitMs < 0)) {
+  console.error('ZA_NAV_ATTACH_WAIT_MS 不是非负整数，拒绝启动');
+  process.exit(1);
+}
 if (!process.env['ZA_LLM_BASE_URL']) {
   console.warn('ZA_LLM_BASE_URL 未设置：LLM 调用将以"服务暂时不可用"降级');
 }
@@ -99,6 +107,7 @@ startServer({
   maxTurnRounds,
   ...(maxConsecutiveFailures !== undefined ? { maxConsecutiveFailures } : {}),
   ...(hitlTimeoutMs !== undefined ? { hitlTimeoutMs } : {}),
+  ...(navAttachWaitMs !== undefined ? { navAttachWaitMs } : {}),
   compressContextWindow,
   compressThreshold,
   corsOrigin: process.env['ZA_CORS_ORIGIN'] ?? '*',

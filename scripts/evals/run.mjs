@@ -15,6 +15,8 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROBE_LITERALS, startMockLlm } from '../mock-llm/server.mjs';
+import { hostPortReplacements, materializeSnapshot } from '../e2e/snapshot-fixture.mjs';
+import { assertPortsFree } from '../e2e/port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const SERVER_DIST = join(REPO_ROOT, 'apps', 'server', 'dist', 'main.js');
@@ -22,8 +24,8 @@ const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
 // 装配快照根（server 载入）+ pack 级评测发现根（ADR-013 §4：扫 packs 各 eval/scenarios.json 逐 pack 跑）。
 // 四根分阶段各起一台 server（同端口先后独占）——各根的 pack origin 互不相同，须独立载入。当前分布：
 //   host-demo   evals/scenarios.json 的 17 条主场景（该根下无 pack 级 eval 集）
-//   acceptance  5 个验收 pack 共 43 条：codeflow-console 2 / generic-web 14 / mail-126 3 / xianyu-seller 19 / zhipin 5
-//   assets      生产 pack generic-web 14 条
+//   acceptance  5 个验收 pack 共 46 条：codeflow-console 2 / generic-web 17 / mail-126 3 / xianyu-seller 19 / zhipin 5
+//   assets      生产 pack generic-web 17 条
 //   site-packs  已下线站点包 25 条：xianyu-seller 18 / yinxiang 7
 const SNAPSHOT_ROOT = join(REPO_ROOT, 'examples', 'host-demo', 'config');
 const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
@@ -66,8 +68,16 @@ const SIGNING_SECRET = 'za-test-signing-secret';
 const JWT_ISS = 'zen-agent-demo';
 const SERVER_PORT = Number(process.env.ZA_EVAL_SERVER_PORT ?? 8791);
 const MOCK_LLM_PORT = Number(process.env.ZA_EVAL_MOCK_PORT ?? 8792);
-// host 端口须对齐 host-demo pack 的 site.origin（http://127.0.0.1:4173），否则 origin 围栏不命中、featureId 落空。
+// host-demo pack 的 site.origin 与场景 URL 以 4173 书写：端口改动时快照物化、场景加载时同步替换，否则 origin 围栏不命中、featureId 落空。
 const HOST_PORT = Number(process.env.ZA_EVAL_HOST_PORT ?? 4173);
+const HOST_REPLACEMENTS = hostPortReplacements([[4173, HOST_PORT]]);
+const SERVED_SNAPSHOT_ROOT = join(REPO_ROOT, '.za', 'eval-snapshot');
+/** 读场景集：站点 origin 的端口替换为实际 HOST_PORT（默认端口下恒等）。 */
+function loadScenarios(path) {
+  let text = readFileSync(path, 'utf8');
+  for (const [from, to] of HOST_REPLACEMENTS) text = text.replaceAll(from, to);
+  return JSON.parse(text);
+}
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
 
@@ -188,6 +198,9 @@ function startServer(snapshotRoot = SNAPSHOT_ROOT) {
       ZA_LLM_MODEL: 'mock-model',
       ZA_AUDIT_SINK: AUDIT_SINK_PATH,
       ZA_USER_CONFIG_DIR: USER_CONFIG_DIR,
+      // 落点接入不等待：runner 在 exec-result 之前就上报落点页状态（active 或 silent），服务端只看当前状态表判 attached；
+      // 若等待，未接入分支会让回合先在安静期判定里被收口，止损路径永远跑不到。
+      ZA_NAV_ATTACH_WAIT_MS: '0',
     },
   });
   child.stdout.on('data', (d) => process.stdout.write(`[server] ${d}`));
@@ -300,6 +313,24 @@ async function executeInstruction(sessionId, token, frame, scenario) {
     // 到达回报同形的目标地址；其余 dom 批次沿用 reads/completedSteps 形态。
     const steps = Array.isArray(request.steps) ? request.steps : [];
     const navigateStep = steps.length === 1 && steps[0]?.action === 'navigate' ? steps[0] : null;
+    // 落点页状态上报（真实插件由 background 在落点页入组后重报组页面表）：缺省落点页已接入（active，既有上报表
+    // 整体降为 background）；scenario.landingAttached=false 则按真实客户端在注入失败时的上报形态记为 silent，
+    // 不伪造接入。上报先于 exec-result，服务端回喂前据状态表判 attached（server 起在 ZA_NAV_ATTACH_WAIT_MS=0）。
+    if (navigateStep !== null && typeof navigateStep.url === 'string') {
+      const previous = (scenario.groupPagesReports ?? []).at(-1) ?? [];
+      const landingStatus = scenario.landingAttached === false ? 'silent' : 'active';
+      await postFrame(sessionId, token, {
+        type: 'group-pages',
+        sessionId,
+        pages: [
+          ...previous.map((page) => ({
+            ...page,
+            status: page.status === 'active' && landingStatus === 'active' ? 'background' : page.status,
+          })),
+          { handle: 'nav-landing', url: navigateStep.url, title: '', status: landingStatus },
+        ],
+      });
+    }
     await postFrame(sessionId, token, {
       type: 'exec-result',
       sessionId,
@@ -383,7 +414,8 @@ async function driveTurn(sessionId, token, scenario, bus) {
           type: 'snapshot-report',
           sessionId,
           requestId: frame.requestId,
-          url: scenario.url ?? `${HOST_BASE}/${scenario.page}`,
+          // 导航后的快照来自落点页：夹具可声明 snapshotUrl 覆写上报的页面地址（缺省仍是场景页）。
+          url: snapshotFixture.snapshotUrl ?? scenario.url ?? `${HOST_BASE}/${scenario.page}`,
           elements: snapshotFixture.snapshotElements ?? [{ ref: 'za-send', role: 'button', label: '发送' }],
           notices: snapshotFixture.snapshotNotices ?? [],
           // 正文只在场景显式声明时回传：默认不带 text，与客户端"未请求 includeText 即不采集正文"同真。
@@ -529,7 +561,8 @@ function evaluateDecisions(expectDecisions, events) {
         decision.verdict === want.verdict &&
         (want.riskTier === undefined || decision.riskTier === want.riskTier) &&
         (want.effectiveTier === undefined || decision.effectiveTier === want.effectiveTier) &&
-        (want.unattendedReadOnly === undefined || decision.unattendedReadOnly === want.unattendedReadOnly),
+        (want.unattendedReadOnly === undefined || decision.unattendedReadOnly === want.unattendedReadOnly) &&
+        (want.reason === undefined || decision.reason === want.reason),
     );
     if (matched.length === 0) {
       const diagnosis = VERDICT_DIAGNOSIS[`${want.verdict}:${sameTool[0].verdict}`];
@@ -538,6 +571,7 @@ function evaluateDecisions(expectDecisions, events) {
         ...(want.riskTier === undefined ? [] : [`riskTier=${want.riskTier}`]),
         ...(want.effectiveTier === undefined ? [] : [`effectiveTier=${want.effectiveTier}`]),
         ...(want.unattendedReadOnly === undefined ? [] : [`unattendedReadOnly=${want.unattendedReadOnly}`]),
+        ...(want.reason === undefined ? [] : [`reason=${want.reason}`]),
       ].join('/');
       reasons.push(
         `${want.toolId} 治理判定期望 ${wanted}，实际 [${sameTool.map(describeDecision).join(', ')}]` +
@@ -724,7 +758,7 @@ function discoverPackScenarios(root) {
     if (!entry.isDirectory()) continue;
     const scenariosPath = join(packsDir, entry.name, 'eval', 'scenarios.json');
     if (!existsSync(scenariosPath)) continue;
-    const scenarios = JSON.parse(readFileSync(scenariosPath, 'utf8'));
+    const scenarios = loadScenarios(scenariosPath);
     discovered.push({ packId: entry.name, scenarios });
   }
   return discovered;
@@ -1141,12 +1175,19 @@ async function main() {
     console.log('[1/4] 构建 server…');
     await run('pnpm', ['--filter', '@zen-agent/server', 'run', 'build']);
 
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: MOCK_LLM_PORT, label: 'mock LLM' },
+      { port: HOST_PORT, label: 'host' },
+    ]);
     console.log('[2/4] 起 mock LLM…');
     const mock = await startMockLlm({ port: MOCK_LLM_PORT });
     cleanups.push(() => mock.close());
 
     console.log('[3/4] 起 server（host-demo 根）…');
-    const stopServer1 = makeStop(startServer(SNAPSHOT_ROOT));
+    rmSync(SERVED_SNAPSHOT_ROOT, { recursive: true, force: true });
+    materializeSnapshot(SNAPSHOT_ROOT, SERVED_SNAPSHOT_ROOT, HOST_REPLACEMENTS);
+    const stopServer1 = makeStop(startServer(SERVED_SNAPSHOT_ROOT));
     cleanups.push(stopServer1);
     await waitServerReady();
 
@@ -1156,7 +1197,7 @@ async function main() {
     cleanups.push(() => host.close());
 
     const token = signTestJwt();
-    const scenarios = JSON.parse(readFileSync(SCENARIOS_PATH, 'utf8'));
+    const scenarios = loadScenarios(SCENARIOS_PATH);
 
     console.log(`\n跑 ${scenarios.length} 个场景 × ${RUNS} 次：`);
     const results = [];
@@ -1277,7 +1318,7 @@ function checkProbeLiterals() {
 
 /** --check 的场景全集：本目录 scenarios.json + 四个快照根下自动发现的 pack 级评测。 */
 function collectScenarioSets() {
-  const sets = [{ label: 'evals/scenarios.json', scenarios: JSON.parse(readFileSync(SCENARIOS_PATH, 'utf8')) }];
+  const sets = [{ label: 'evals/scenarios.json', scenarios: loadScenarios(SCENARIOS_PATH) }];
   for (const root of [SNAPSHOT_ROOT, ACCEPTANCE_ROOT, COMMERCE_ROOT, SITE_PACKS_ROOT]) {
     for (const { packId, scenarios } of discoverPackScenarios(root)) {
       sets.push({ label: `${root.slice(REPO_ROOT.length + 1)}/packs/${packId}`, scenarios });

@@ -272,6 +272,44 @@
     }
   },
   {
+    "id": "generic-open-url-not-attached",
+    "dimension": "hitl",
+    "url": "http://127.0.0.1:4173/order-list.html",
+    "question": "帮我打开 https://docs.example.com/guide 这个页面",
+    "landingAttached": false,
+    "expect": {
+      "targetToolId": "open_url",
+      "frameCounts": {
+        "targetToolCalls": 1,
+        "hitlRequests": 1,
+        "execInstructions": 1
+      },
+      "mustMention": [
+        [
+          "点击 Zen 图标"
+        ]
+      ],
+      "mustNotMention": [
+        "MOCK-NAV-GUIDANCE-MISSING",
+        "已打开 https://docs.example.com/guide"
+      ],
+      "expectDecisions": [
+        {
+          "toolId": "open_url",
+          "riskTier": "hitl",
+          "verdict": "hitl",
+          "hitlDecision": "approve"
+        },
+        {
+          "toolId": "open_url",
+          "verdict": "deny",
+          "reason": "already-open-not-attached"
+        }
+      ],
+      "behavior": "与 generic-open-url 同一问法，唯一差别是落点页按真实客户端注入失败时的形态上报为 silent（landingAttached:false，不伪造接入）：服务端回喂 MUST 带 attached:false 与「不要再次打开同一地址 / 点击 Zen 图标」指引（mock 只在指引在位时才继续，缺失即 MOCK-NAV-GUIDANCE-MISSING 红）；mock 故意再发同址 open_url，服务端 MUST 不弹卡直接 deny（tool-decision reason=already-open-not-attached）、不签发第二条 exec-instruction；模型最终把授权指引如实转达用户。真实站点上注入失败的成因（未授权 / 页面不可注入）须真机验证"
+    }
+  },
+  {
     "id": "generic-search-skill",
     "dimension": "explain",
     "url": "http://127.0.0.1:4173/order-list.html",
@@ -305,6 +343,84 @@
         "MOCK-QUICKACTION-IN-SYSTEM"
       ],
       "behavior": "客户端只发 quickActionId（不持模板副本），服务端按 pack 声明查表把模板展开为本轮用户轮消息；模型确实收到模板文本，而 system 注入里没有它——快捷提问是问法不是治理，装配面对它零触碰（U8）"
+    }
+  },
+  {
+    "id": "generic-task-grant-once",
+    "dimension": "hitl",
+    "url": "http://127.0.0.1:4173/order-list.html",
+    "question": "任务授权演练：打开 https://docs.example.com/guide 并读取目录",
+    "snapshotSequence": [
+      {
+        "snapshotUrl": "https://docs.example.com/guide",
+        "snapshotElements": [
+          {
+            "ref": "za-1",
+            "role": "button",
+            "label": "展开目录"
+          }
+        ]
+      }
+    ],
+    "expect": {
+      "hitlCount": 1,
+      "expectDecisions": [
+        {
+          "toolId": "open_url",
+          "riskTier": "hitl",
+          "verdict": "hitl",
+          "hitlDecision": "approve"
+        },
+        {
+          "toolId": "browse.page-operate",
+          "riskTier": "hitl",
+          "verdict": "allow"
+        }
+      ],
+      "behavior": "任务首个动作是带 task + 整任务 plan 的 open_url：整回合只弹这一张卡（hitl-request 恰 1），批准即登记任务级授权；落点跨到 docs.example.com 后授权随任务延续到新作用域，同 task 的 browse.page-operate 直接 allow、不再弹卡（adr-028）"
+    }
+  },
+  {
+    "id": "generic-open-url-no-plan-no-grant",
+    "dimension": "hitl",
+    "url": "http://127.0.0.1:4173/order-list.html",
+    "question": "一次性导航演练：打开 https://docs.example.com/guide 并读取目录",
+    "snapshotSequence": [
+      {
+        "snapshotUrl": "https://docs.example.com/guide",
+        "snapshotElements": [
+          {
+            "ref": "za-1",
+            "role": "button",
+            "label": "展开目录"
+          }
+        ]
+      }
+    ],
+    "expect": {
+      "frameCounts": {
+        "hitlRequests": 2
+      },
+      "mustMention": [
+        [
+          "演练完成"
+        ]
+      ],
+      "expectDecisions": [
+        {
+          "toolId": "open_url",
+          "riskTier": "hitl",
+          "verdict": "hitl",
+          "hitlDecision": "approve"
+        },
+        {
+          "toolId": "browse.page-operate",
+          "riskTier": "hitl",
+          "verdict": "hitl",
+          "hitlDecision": "approve"
+        }
+      ],
+      "behavior": "open_url 只带 task、不带 plan：批准只覆盖本次导航、不登记任务级授权——同 task 的后续 browse.page-operate 仍必须弹卡（两张 hitl-request、两次 approve）；导航卡上用户没看到任务计划，批准不构成任务级知情授权（adr-028）"
     }
   }
 ]

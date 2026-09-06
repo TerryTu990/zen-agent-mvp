@@ -62,14 +62,17 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { activate } from './anon-identity.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
 const SERVER_MAIN = join(REPO_ROOT, 'apps', 'server', 'dist', 'main.js');
 const FIXTURE_DIR = join(REPO_ROOT, 'scripts', 'e2e', 'fixtures', 'g6');
-const SNAPSHOT_OK = join(FIXTURE_DIR, 'config-ok');
-const SNAPSHOT_BAD_ENGINES = join(FIXTURE_DIR, 'config-bad-engines');
 const WORK_DIR = join(REPO_ROOT, '.za', 'e2e-g6');
+// 夹具 pack.json 的 site.origin 以 4183/4184 书写：两份快照按实际端口物化到 WORK_DIR 后再交 server 载入。
+const SNAPSHOT_OK = join(WORK_DIR, 'config-ok');
+const SNAPSHOT_BAD_ENGINES = join(WORK_DIR, 'config-bad-engines');
 const AUDIT_SINK = join(WORK_DIR, 'events.jsonl');
 const SESSION_DIR = join(WORK_DIR, 'sessions');
 const PROFILE_DIR = join(WORK_DIR, 'profile');
@@ -89,11 +92,10 @@ const JWT_ISS = 'zen-agent-anon';
  * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
  * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
  */
-const SERVER_PORT = 8787;
+const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_G6_MOCK_PORT ?? 8803);
-// 站点端口硬绑：夹具 pack.json 的 site.origin 与此处必须同值，不经 env 覆盖。
-const EXPLAIN_PORT = 4183;
-const KNOWLEDGE_PORT = 4184;
+const EXPLAIN_PORT = Number(process.env.ZA_E2E_G6_EXPLAIN_PORT ?? 4183);
+const KNOWLEDGE_PORT = Number(process.env.ZA_E2E_G6_KNOWLEDGE_PORT ?? 4184);
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const EXPLAIN_ORIGIN = `http://127.0.0.1:${EXPLAIN_PORT}`;
 const KNOWLEDGE_ORIGIN = `http://127.0.0.1:${KNOWLEDGE_PORT}`;
@@ -681,7 +683,16 @@ async function main() {
       await run('pnpm', ['--filter', '@zen-agent/server', 'run', 'build']);
       await run('pnpm', ['--filter', '@zen-agent/extension', 'run', 'build']);
     }
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: MOCK_LLM_PORT, label: 'mock LLM' },
+      { port: EXPLAIN_PORT, label: 'explain host' },
+      { port: KNOWLEDGE_PORT, label: 'knowledge host' },
+    ]);
     rmSync(WORK_DIR, { recursive: true, force: true });
+    for (const name of ['config-ok', 'config-bad-engines']) {
+      materializeSnapshot(join(FIXTURE_DIR, name), join(WORK_DIR, name), hostPortReplacements([[4183, EXPLAIN_PORT], [4184, KNOWLEDGE_PORT]]));
+    }
     mkdirSync(SESSION_DIR, { recursive: true });
     mkdirSync(EVIDENCE_ROOT, { recursive: true });
 

@@ -114,106 +114,41 @@ describe('Side Panel shell', () => {
   });
 });
 
-describe('面板「本页生效」块（A-UX-02 / A-UX-03）', () => {
+describe('面板状态与用户须知载体（D4：顶部上下文块已撤，状态迁到面板根）', () => {
   beforeEach(() => {
     document.body.textContent = '';
   });
 
-  it('展开即向 background 取数（面板不持有会话与令牌，U7 客户端零判定）', async () => {
-    const { elements, sent } = await startPanel();
-    expect(sent.some((message) => message.kind === 'injection-request')).toBe(false);
-    elements.pageEffect.open = true;
-    elements.pageEffect.dispatchEvent(new Event('toggle'));
+  it('顶部不再有页面上下文块：状态与任务组挂在面板根上', async () => {
+    const { elements } = await startPanel();
     await flush();
-    expect(sent.filter((message) => message.kind === 'injection-request')).toHaveLength(1);
+    await flush();
+    expect(document.querySelector('[data-za-context]')).toBeNull();
+    expect(document.querySelector('[data-za-page-effect]')).toBeNull();
+    expect(elements.shell.dataset['zaShell']).toBe('');
+    expect(elements.shell.dataset['groupId']).toBe('7');
   });
 
-  it('本机确实跳过了本页激活：块内改给客户端自述，不再向 background 取数（否则拿回的 base-only 会误导归因）', async () => {
-    const { elements, sent } = await startPanel({
+  it('不再向 background 取注入自省（该消息种类已撤）', async () => {
+    const { sent } = await startPanel();
+    await flush();
+    await flush();
+    expect(sent.map((message) => message.kind)).not.toContain('injection-request');
+  });
+
+  it('本机确实跳过了本页激活：面板根 denied，composer notice 给客户端自述', async () => {
+    const { elements } = await startPanel({
       activeTab: { id: 11, windowId: 1, groupId: 7, url: 'https://bank.example/accounts', title: '账户总览' },
       sessionItems: { [panelGroupKey(1)]: 7, [siteDeniedSkipKey(11)]: true },
     });
-    elements.pageEffect.open = true;
-    elements.pageEffect.dispatchEvent(new Event('toggle'));
     await flush();
-    const text = elements.pageEffectBody.textContent ?? '';
-    expect(text).toContain('不辅助');
+    await flush();
+    expect(elements.shell.dataset['state']).toBe('denied');
+    const text = elements.composerNotice.textContent ?? '';
+    expect(text).toContain('不辅助的站点');
     expect(text).toContain('配置中心');
     // 只陈述当下与此后：拉黑前该页可能早已激活并上报过，任何「没有激活过/没有上报过」都是假话。
     expect(text).not.toContain('没有激活');
-    expect(text).not.toContain('没有把本页地址上报');
-    // 也不冒充服务端那条「已见过该页、按 site-denied 装配」的结论。
-    expect(text).not.toContain('本轮不装配任何站点包');
-    expect(sent.some((message) => message.kind === 'injection-request')).toBe(false);
-  });
-
-  it('本页在名单内但本机并未跳过激活（拉黑前已激活）：仍照常取数，不用自述顶掉服务端抬头', async () => {
-    const { elements, sent, deliver } = await startPanel({
-      activeTab: { id: 11, windowId: 1, groupId: 7, url: 'https://bank.example/accounts', title: '账户总览' },
-    });
-    elements.pageEffect.open = true;
-    elements.pageEffect.dispatchEvent(new Event('toggle'));
-    await flush();
-    expect(sent.filter((message) => message.kind === 'injection-request')).toHaveLength(1);
-    deliver({
-      kind: 'injection-result',
-      ok: true,
-      description: {
-        snapshotVersion: 'v1', packId: null, featureId: null, blocks: [], toolIds: [], reason: 'site-denied',
-      },
-    });
-    await flush();
-    expect(elements.pageEffectBody.textContent ?? '').toContain('本轮不装配任何站点包');
-  });
-
-  it('未跳过激活的普通页：照常取数（对照：自述只由跳过事实驱动）', async () => {
-    const { elements, sent } = await startPanel({
-      activeTab: { id: 12, windowId: 1, groupId: 7, url: 'https://shop.example/orders', title: '订单' },
-    });
-    elements.pageEffect.open = true;
-    elements.pageEffect.dispatchEvent(new Event('toggle'));
-    await flush();
-    expect(sent.filter((message) => message.kind === 'injection-request')).toHaveLength(1);
-  });
-
-  it('取数成功后逐行渲染服务端描述，并附「本块不含内建工具」的限定说明', async () => {
-    const { elements, deliver } = await startPanel();
-    elements.pageEffect.open = true;
-    elements.pageEffect.dispatchEvent(new Event('toggle'));
-    await flush();
-    deliver({
-      kind: 'injection-result',
-      ok: true,
-      description: {
-        snapshotVersion: '1.0.0',
-        packId: 'shop',
-        featureId: 'order-list',
-        blocks: [],
-        toolIds: ['shop.list'],
-        packName: '示例商店',
-        packVersion: '1.2.0',
-        packSource: 'official',
-        featureTitle: '订单处理',
-        reason: 'pack',
-      },
-    });
-    await flush();
-    const text = elements.pageEffectBody.textContent ?? '';
-    expect(text).toContain('示例商店');
-    expect(text).toContain('v1.2.0');
-    expect(text).toContain('订单处理');
-    expect(text).toContain('1 项');
-    expect(text).toContain('不在此列');
-  });
-
-  it('取数失败只呈现人读原因，不残留上一次结果', async () => {
-    const { elements, deliver } = await startPanel();
-    elements.pageEffect.open = true;
-    elements.pageEffect.dispatchEvent(new Event('toggle'));
-    await flush();
-    deliver({ kind: 'injection-result', ok: false, error: '无法连接服务端，请检查网络后重试' });
-    await flush();
-    expect(elements.pageEffectBody.textContent).toContain('无法连接服务端');
   });
 
   it('图标/右键入口在跳过激活的页上打开面板：给出自述而非「点图标创建任务组」的建组引导', async () => {
@@ -223,8 +158,8 @@ describe('面板「本页生效」块（A-UX-02 / A-UX-03）', () => {
     });
     await flush();
     await flush();
-    expect(elements.contextDetail.textContent ?? '').not.toContain('创建任务组');
-    expect(elements.contextDetail.textContent ?? '').toContain('不辅助');
+    expect(elements.composerNotice.textContent ?? '').not.toContain('创建任务组');
+    expect(elements.composerNotice.textContent ?? '').toContain('不辅助的站点');
   });
 
   it('窗口里有遗留任务组时，跳过激活的页仍给自述、不绑那个组', async () => {
@@ -234,7 +169,7 @@ describe('面板「本页生效」块（A-UX-02 / A-UX-03）', () => {
     });
     await flush();
     await flush();
-    expect(elements.contextDetail.textContent ?? '').toContain('不辅助');
+    expect(elements.composerNotice.textContent ?? '').toContain('不辅助的站点');
     expect(sent.some((message) => message.kind === 'panel-bind')).toBe(false);
   });
 
@@ -245,23 +180,26 @@ describe('面板「本页生效」块（A-UX-02 / A-UX-03）', () => {
     });
     await flush();
     await flush();
-    expect(elements.contextDetail.textContent ?? '').toContain('创建任务组');
+    expect(elements.composerNotice.textContent ?? '').toContain('创建任务组');
   });
 
-  it('块内「打开配置中心」入口调用 openOptionsPage（A-UX-03）', async () => {
+  it('composer 操作行的齿轮按钮调用 openOptionsPage（A-UX-03 入口保留）', async () => {
     const harness = await startPanel();
+    expect(harness.elements.configCenter.closest('.za-composer-actions')).not.toBeNull();
+    expect(harness.elements.configCenter.getAttribute('aria-label')).toBe('打开配置中心');
+    expect(harness.elements.configCenter.dataset['zaConfigCenter']).toBe('');
     harness.elements.configCenter.click();
     await flush();
     expect(harness.optionsOpened).toBe(1);
   });
 });
 
-describe('面板抬头与「跳过激活」事实（N2-COPY-01）', () => {
+describe('面板状态与「跳过激活」事实（N2-COPY-01）', () => {
   beforeEach(() => {
     document.body.textContent = '';
   });
 
-  it('绑组之后切到跳过激活的页：抬头改给客户端自述，不冒充「已连接的任务页面」', async () => {
+  it('绑组之后切到跳过激活的页：状态落 denied、不冒充「已连接的任务页面」', async () => {
     const harness = await startPanel();
     harness.switchTo(
       { id: 11, windowId: 1, groupId: 7, url: 'https://bank.example/accounts', title: '账户总览' },
@@ -276,13 +214,14 @@ describe('面板抬头与「跳过激活」事实（N2-COPY-01）', () => {
     });
     await flush();
 
-    expect(harness.elements.context.dataset['state']).not.toBe('ready');
-    expect(harness.elements.contextDetail.textContent ?? '').toContain('不辅助');
-    expect(harness.elements.contextDetail.textContent ?? '').not.toContain('https://bank.example/accounts');
-    expect(harness.elements.contextTitle.textContent ?? '').not.toContain('账户总览');
+    expect(harness.elements.shell.dataset['state']).toBe('denied');
+    const text = harness.elements.composerNotice.textContent ?? '';
+    expect(text).toContain('不辅助的站点');
+    expect(text).not.toContain('https://bank.example/accounts');
+    expect(text).not.toContain('账户总览');
   });
 
-  it('切回未跳过的页：抬头照常回到服务端上下文（对照：自述只由跳过事实驱动）', async () => {
+  it('切回未跳过的页：状态回 ready，且不占 composer notice（对照）', async () => {
     const harness = await startPanel();
     harness.deliver({
       kind: 'task-context',
@@ -293,9 +232,77 @@ describe('面板抬头与「跳过激活」事实（N2-COPY-01）', () => {
     });
     await flush();
 
-    expect(harness.elements.context.dataset['state']).toBe('ready');
-    expect(harness.elements.contextTitle.textContent).toBe('订单');
-    expect(harness.elements.contextDetail.textContent).toBe('https://shop.example/orders');
+    expect(harness.elements.shell.dataset['state']).toBe('ready');
+    expect(harness.elements.composerNotice.textContent).toBe('');
+  });
+
+  it('组外页面：状态 outside，composer notice 给一句须知', async () => {
+    const harness = await startPanel();
+    harness.deliver({ kind: 'task-context', groupId: 9, authorized: false, url: 'https://other.example/' });
+    await flush();
+
+    expect(harness.elements.shell.dataset['state']).toBe('outside');
+    expect(harness.elements.composerNotice.textContent).toBe('当前页面不在任务组内');
+  });
+
+  it('操作反馈压过状态须知，且不被后续同态上下文更新抹掉', async () => {
+    const harness = await startPanel();
+    harness.deliver({ kind: 'task-context', groupId: 9, authorized: false, url: 'https://other.example/' });
+    await flush();
+    harness.deliver({ kind: 'hitl-result', hitlId: 'h1', accepted: false });
+    expect(harness.elements.composerNotice.textContent).toContain('确认结果未送达');
+
+    harness.deliver({ kind: 'task-context', groupId: 9, authorized: false, url: 'https://other.example/next' });
+    await flush();
+    expect(harness.elements.composerNotice.textContent).toContain('确认结果未送达');
+  });
+
+  it('状态迁移清掉陈旧操作反馈：切到跳过激活的页必须看到客户端自述', async () => {
+    const harness = await startPanel();
+    harness.deliver({
+      kind: 'task-context',
+      groupId: 7,
+      authorized: true,
+      url: 'https://shop.example/orders',
+      title: '订单',
+    });
+    await flush();
+    harness.deliver({ kind: 'hitl-result', hitlId: 'h1', accepted: false });
+    expect(harness.elements.composerNotice.textContent).toContain('确认结果未送达');
+
+    harness.switchTo(
+      { id: 11, windowId: 1, groupId: 7, url: 'https://bank.example/accounts', title: '账户总览' },
+      { [siteDeniedSkipKey(11)]: true },
+    );
+    harness.deliver({
+      kind: 'task-context',
+      groupId: 7,
+      authorized: true,
+      url: 'https://bank.example/accounts',
+      title: '账户总览',
+    });
+    await flush();
+
+    expect(harness.elements.shell.dataset['state']).toBe('denied');
+    expect(harness.elements.composerNotice.textContent).toBe(SITE_DENIED_CLIENT_NOTICE);
+  });
+
+  it('状态迁移到组外：陈旧操作反馈同样让位给须知', async () => {
+    const harness = await startPanel();
+    harness.deliver({
+      kind: 'task-context',
+      groupId: 7,
+      authorized: true,
+      url: 'https://shop.example/orders',
+      title: '订单',
+    });
+    await flush();
+    harness.deliver({ kind: 'hitl-result', hitlId: 'h1', accepted: false });
+
+    harness.deliver({ kind: 'task-context', groupId: 9, authorized: false, url: 'https://other.example/' });
+    await flush();
+
+    expect(harness.elements.composerNotice.textContent).toBe('当前页面不在任务组内');
   });
 });
 

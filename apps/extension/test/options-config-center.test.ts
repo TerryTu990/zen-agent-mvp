@@ -596,6 +596,14 @@ describe('自动化页 · 用户自建触发器（adr-021）', () => {
     expect(Object.hasOwn(lastPutOverlay(harness), 'watches')).toBe(false);
   });
 
+  it('删除触发器按危险态渲染，与其他不可撤销入口同形', async () => {
+    const harness = createHarness();
+    harness.stored.overlay!.watches = [{ ...WATCH }];
+    await mounted(harness);
+    const remove = watchRows(harness)[0]!.querySelector<HTMLButtonElement>('.za-cc-watch-remove')!;
+    expect(remove.classList.contains('za-cc-btn-danger')).toBe(true);
+  });
+
   it('模板闭集外的实例原样回传，不因面板不识别而静默删除', async () => {
     const harness = createHarness();
     const foreign = { ...WATCH, id: 'watch-future', templateId: 'page-diff-v2' };

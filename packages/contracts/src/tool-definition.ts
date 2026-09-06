@@ -98,6 +98,13 @@ export function isDomTool(tool: ToolDefinition): tool is DomToolDefinition {
  */
 export const SITE_NAVIGATE_TOOL_ID = 'site_navigate';
 
+/**
+ * 内建导航的任务级计划（与 dom 代操作工具的 plan 同义：整任务将执行的操作清单）。
+ * 与 task 同现时导航卡按任务授权卡呈现、批准即登记任务级授权；单独出现无治理意义。
+ * 空清单与空字符串项都不构成计划——用户看不到内容的清单不能成为授权登记依据；条目数不设上限。
+ */
+const TASK_PLAN_SCHEMA: JsonObject = { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } };
+
 export const SITE_NAVIGATE_PARAMS_SCHEMA: JsonObject = {
   type: 'object',
   additionalProperties: false,
@@ -106,6 +113,7 @@ export const SITE_NAVIGATE_PARAMS_SCHEMA: JsonObject = {
     url: { type: 'string' },
     reason: { type: 'string' },
     task: { type: 'string' },
+    plan: TASK_PLAN_SCHEMA,
     // 定向目标成员页句柄（adr-023 D3）：内建 navigate 可定向任意组内页（含 silent，导航即其激活通路）；
     // 约束与 C3 句柄同界（1..64，无 pattern——不透明，U5），解析/拒签在 toolgate 签发前完成。
     targetPage: { type: 'string', minLength: 1, maxLength: 64 },
@@ -120,8 +128,8 @@ export const SITE_NAVIGATE_RESULT_SCHEMA: JsonObject = {
 
 /**
  * 内建通用页面导航工具的结构契约（generic pack 配套）：不入 pack tools.json，由网关在 generic 激活时注入、
- * toolgate 专路裁决与签发（协议闭集 http/https + 禁内嵌凭证，次次确认不复用授权）。params 与 site_navigate
- * 同形；result 独立同形 schema（{url} 必填），按 toolId 独立选校验器，两工具契约可各自演进。
+ * toolgate 专路裁决与签发（协议闭集 http/https + 禁内嵌凭证；带 task 且任务已获授权即放行，否则确认）。
+ * params 与 site_navigate 同形；result 独立同形 schema（{url} 必填），按 toolId 独立选校验器，两工具契约可各自演进。
  */
 export const OPEN_URL_TOOL_ID = 'open_url';
 
@@ -133,6 +141,7 @@ export const OPEN_URL_PARAMS_SCHEMA: JsonObject = {
     url: { type: 'string' },
     reason: { type: 'string' },
     task: { type: 'string' },
+    plan: TASK_PLAN_SCHEMA,
     // 语义同 SITE_NAVIGATE_PARAMS_SCHEMA.targetPage（adr-023 D3 定向）。
     targetPage: { type: 'string', minLength: 1, maxLength: 64 },
   },
