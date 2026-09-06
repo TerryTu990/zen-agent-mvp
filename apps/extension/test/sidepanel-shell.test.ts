@@ -256,6 +256,54 @@ describe('面板状态与「跳过激活」事实（N2-COPY-01）', () => {
     await flush();
     expect(harness.elements.composerNotice.textContent).toContain('确认结果未送达');
   });
+
+  it('状态迁移清掉陈旧操作反馈：切到跳过激活的页必须看到客户端自述', async () => {
+    const harness = await startPanel();
+    harness.deliver({
+      kind: 'task-context',
+      groupId: 7,
+      authorized: true,
+      url: 'https://shop.example/orders',
+      title: '订单',
+    });
+    await flush();
+    harness.deliver({ kind: 'hitl-result', hitlId: 'h1', accepted: false });
+    expect(harness.elements.composerNotice.textContent).toContain('确认结果未送达');
+
+    harness.switchTo(
+      { id: 11, windowId: 1, groupId: 7, url: 'https://bank.example/accounts', title: '账户总览' },
+      { [siteDeniedSkipKey(11)]: true },
+    );
+    harness.deliver({
+      kind: 'task-context',
+      groupId: 7,
+      authorized: true,
+      url: 'https://bank.example/accounts',
+      title: '账户总览',
+    });
+    await flush();
+
+    expect(harness.elements.shell.dataset['state']).toBe('denied');
+    expect(harness.elements.composerNotice.textContent).toBe(SITE_DENIED_CLIENT_NOTICE);
+  });
+
+  it('状态迁移到组外：陈旧操作反馈同样让位给须知', async () => {
+    const harness = await startPanel();
+    harness.deliver({
+      kind: 'task-context',
+      groupId: 7,
+      authorized: true,
+      url: 'https://shop.example/orders',
+      title: '订单',
+    });
+    await flush();
+    harness.deliver({ kind: 'hitl-result', hitlId: 'h1', accepted: false });
+
+    harness.deliver({ kind: 'task-context', groupId: 9, authorized: false, url: 'https://other.example/' });
+    await flush();
+
+    expect(harness.elements.composerNotice.textContent).toBe('当前页面不在任务组内');
+  });
 });
 
 describe('客户端自述文案的承诺范围', () => {

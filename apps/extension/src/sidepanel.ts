@@ -216,6 +216,8 @@ export function startSidePanel(elements: SidePanelElements): void {
    * composer notice 是两类文字共用的唯一载体，故按槽位合成而非直接赋值：
    * 操作反馈（投递失败/附件提示/停止回执）压过页面状态须知，两槽皆空即整条空。
    * 直接赋值会让高频的上下文更新（同页 status 变化即触发）抹掉刚给出的操作反馈。
+   * 操作反馈的生命周期止于状态迁移（见 applyPanelState）：它描述的是上一页上一次操作，
+   * 留着会把 denied/outside 这两条唯一出口的须知无限期遮住。
    */
   let stateNotice = '';
   let actionNotice = '';
@@ -333,8 +335,14 @@ export function startSidePanel(elements: SidePanelElements): void {
     }
   };
 
+  /**
+   * 状态真发生迁移时清掉操作反馈槽：换页/换态之后那条反馈已不描述用户眼前的页面，
+   * 而 denied/outside 的须知没有第二个出口。同态重复更新（同页 status 变化）不清。
+   */
   const applyPanelState = (state: PanelState): void => {
+    const changed = elements.shell.dataset['state'] !== state;
     elements.shell.dataset['state'] = state;
+    if (changed) setActionNotice('');
     setStateNotice(PANEL_STATE_NOTICES[state]);
   };
 
