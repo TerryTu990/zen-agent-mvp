@@ -115,3 +115,41 @@ D. assets：ZA-FEAT-11 与 web-search SKILL 同口径（未接入不重复打开
   （product-form-definition §3/§4/§6、00-design-brief §9、03-configuration §1 已同步，R-2 标注被取代）；
   面板侧是否回挂装配可见载体挂锚点「配置中心 Atelier 重做（D5）落地时裁决」。此改口径尚待 Terry 追认。
 - 真实 LLM / 真实站点 E2E 仍 BLOCKED（凭证在 SEC-03 读禁区），本轮以脚本化 mock E2E 与评测为门；发布后需 Terry 复跑同一任务验收。
+
+## 7. 真机验收清单（Terry）
+
+脚本化 E2E 已覆盖的判定见 `test:e2e:coldstart` / `test:e2e:task-grant` / `test:e2e:nav-attach` 与评测
+`generic-open-url-not-attached`；下列各项只能在真实 Chrome + 真实 LLM + 真实站点上验证，发布后按 §1 同一任务复跑。
+
+### 7.1 同一百度任务逐项勾选
+
+任务原话（§1）：「帮我打开百度，然后查询 AI agent 的相关新闻，找到一条最值得我关注的页面，帮我打开，然后告诉我里面的核心内容」，
+从 `chrome://newtab/` 空白页点击 Zen 图标发起。
+
+- [ ] 整个任务恰一张授权卡（任务授权卡：标题「授权任务：…」、「将先打开：https://www.baidu.com/…」、计划清单、按钮「授权执行」）；
+      卡上的计划覆盖整任务（打开百度 → 搜索 → 打开结果页 → 读取并总结），而不只是「打开百度」一步。
+- [ ] 首次点击「授权执行」恰弹一次浏览器权限询问（「读取和更改所有网站上的数据」），允许后同一任务内不再询问；
+      此后新任务的批准也不再询问（`<all_urls>` 已持有）。
+- [ ] 百度页在原空白页原地打开：组内 tab 数不变、无空白页残留。
+- [ ] 搜索与打开结果页均无第二张卡；打开结果页后该页接入（面板对该页可读：agent 能直接 page_snapshot 并给出正文要点，
+      不出现「尚未接入 / 点击 Zen 图标」的转述）。
+- [ ] 全程没有对同一地址重复打开（组内同 URL 页面 ≤ 1；`.za/events.jsonl` 无 `already-open-not-attached`）。
+- [ ] 总结含结果页正文要点（不是标题复述，不是「无法读取」）。
+- [ ] 任务结束后点「停止」再发同一任务：重新弹授权卡（停止吊销授权）。
+
+### 7.2 只能真机验证的项
+
+- [ ] **permissions.request 的手势有效性**：在真实 Chrome 里，「授权执行」点击处理内的 `chrome.permissions.request`
+      被认作用户手势（弹出授权气泡而非静默失败）。E2E 只能桩化该调用（`stubPermissionRequest`），无法证明手势链路。
+      若气泡未弹：检查点击处理与 `contains` 之间是否插入了别的 await（`apps/extension/src/conversation-hitl.ts ensureSiteAccess`）。
+- [ ] **真实站点接入时长**：用户允许权限后，真实站点（含 302 跳转 / SPA 子路由）能在 `ZA_NAV_ATTACH_WAIT_MS`（默认 8000）内
+      接入（回喂 `attached:true`）。E2E 的落点是本地静态页，加载与注入近乎即时。若经常超时：记录站点与耗时，考虑调大默认值。
+- [ ] **模型遵从**：真实 LLM 在任务首个 `open_url` 上带 `task + 整任务 plan`（ZA-FEAT-03）；收到 `attached:false` 指引后
+      不再重复打开同一地址、最多重试一次定向快照、然后如实转达「点击 Zen 图标」（ZA-FEAT-11 / web-search SKILL）。
+      评测里的 mock 是确定性剧本，模型自由发挥只能真机看。
+- [ ] **用户拒绝权限询问**：在气泡上选「拒绝」，任务仍继续（批准回传不受影响），落点页保持 silent，agent 转达授权指引而不循环开页。
+
+### 7.3 挂锚点
+
+- 真实 LLM 门（`test:e2e:real`）与本轮路径（任务授权卡 / attached 回喂 / already-open 止损）的对齐：挂锚点
+  「Terry 提供凭证解除 BLOCKED 时」——届时把 §7.1 的百度任务按 `ZA-C-EVAL-02` ≥3 跑纳入该门。
