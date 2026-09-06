@@ -28,6 +28,8 @@ const TOOL_XIANYU_ORDERS = 'xianyu-orders.page-operate';
 const TOOL_XIANYU_SEND = 'xianyu-fulfillment.send-test-message';
 const TOOL_YINXIANG_WRITE = 'yinxiang-note.write-note';
 const TOOL_OPEN_URL = 'open_url';
+// 落点未接入回喂指引里的可操作片段（服务端 NAV_NOT_ATTACHED_NOTE / silent 页快照拒绝同口径）：缺失即 MOCK 红。
+const NAV_NOT_ATTACHED_GUIDE = '点击 Zen 图标';
 
 // generic-web browse feature 独有文案：命中即走通用页面剧本（open_url / 搜索技能探针），站点 pack 的 sys 不含。
 const BROWSE_ASSIST_MARKER = '没有专属站点配置';
@@ -761,8 +763,9 @@ function decide(sys, u, body) {
     return { text: `MOCK-TOOL-RESULT-OBS ${untrustedSysMark(sys)} ${obs}` };
   }
   // generic browse 剧本（generic-web feature 字面门控）：用户给出网址 → open_url 单步导航；
-  // 观测回喂轮产出总结文本。落点在 allowlist 外时服务端按落点重装配回落仅基座、sys 不再含
-  // marker，故仅首轮（发起 tool_call）看 marker 与工具可见性，观测回喂轮只认 open_url 调用证据。
+  // 观测回喂轮按落点接入语义分支：attached:true → 总结；attached:false → 故意再发同址 open_url 一次，
+  // 驱动服务端 already-open 止损（止损在服务端 fail-closed，不靠模型自觉）；被 deny 后回未接入指引。
+  // 落点在 allowlist 外时服务端按落点重装配回落仅基座、sys 不再含 marker，故仅首轮看 marker 与工具可见性。
   {
     const openTarget = u.match(/https?:\/\/[^\s，。」]+/);
     if (u.includes('打开') && openTarget) {
@@ -777,8 +780,24 @@ function decide(sys, u, body) {
           };
         }
       } else if (hasToolCall(body, TOOL_OPEN_URL)) {
-        if (obs.includes('"url"')) {
+        if (obs.includes('"attached":true')) {
           return { text: `已打开 ${openTarget[0]}：后续内容以到达后的页面快照为准。` };
+        }
+        if (obs.includes('"error":"already-open-not-attached"')) {
+          return obs.includes(NAV_NOT_ATTACHED_GUIDE)
+            ? { text: `${openTarget[0]} 已打开但尚未接入：请在该页${NAV_NOT_ATTACHED_GUIDE}授权本站后告诉我，我再继续。` }
+            : { text: `MOCK-NAV-GUIDANCE-MISSING ${obs}` };
+        }
+        if (obs.includes('"attached":false')) {
+          return obs.includes(NAV_NOT_ATTACHED_GUIDE) && obs.includes('不要再次打开同一地址')
+            ? {
+                toolCall: {
+                  id: 'call_open_url_again',
+                  name: TOOL_OPEN_URL,
+                  arguments: JSON.stringify({ url: openTarget[0] }),
+                },
+              }
+            : { text: `MOCK-NAV-GUIDANCE-MISSING ${obs}` };
         }
         return { text: '未执行跳转：打开该页面的请求未完成或已被取消。' };
       }

@@ -24,8 +24,8 @@ const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
 // 装配快照根（server 载入）+ pack 级评测发现根（ADR-013 §4：扫 packs 各 eval/scenarios.json 逐 pack 跑）。
 // 四根分阶段各起一台 server（同端口先后独占）——各根的 pack origin 互不相同，须独立载入。当前分布：
 //   host-demo   evals/scenarios.json 的 17 条主场景（该根下无 pack 级 eval 集）
-//   acceptance  5 个验收 pack 共 43 条：codeflow-console 2 / generic-web 14 / mail-126 3 / xianyu-seller 19 / zhipin 5
-//   assets      生产 pack generic-web 14 条
+//   acceptance  5 个验收 pack 共 44 条：codeflow-console 2 / generic-web 15 / mail-126 3 / xianyu-seller 19 / zhipin 5
+//   assets      生产 pack generic-web 15 条
 //   site-packs  已下线站点包 25 条：xianyu-seller 18 / yinxiang 7
 const SNAPSHOT_ROOT = join(REPO_ROOT, 'examples', 'host-demo', 'config');
 const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
@@ -198,6 +198,9 @@ function startServer(snapshotRoot = SNAPSHOT_ROOT) {
       ZA_LLM_MODEL: 'mock-model',
       ZA_AUDIT_SINK: AUDIT_SINK_PATH,
       ZA_USER_CONFIG_DIR: USER_CONFIG_DIR,
+      // 落点接入不等待：runner 在 exec-result 之前就上报落点页状态（active 或 silent），服务端只看当前状态表判 attached；
+      // 若等待，未接入分支会让回合先在安静期判定里被收口，止损路径永远跑不到。
+      ZA_NAV_ATTACH_WAIT_MS: '0',
     },
   });
   child.stdout.on('data', (d) => process.stdout.write(`[server] ${d}`));
@@ -310,6 +313,24 @@ async function executeInstruction(sessionId, token, frame, scenario) {
     // 到达回报同形的目标地址；其余 dom 批次沿用 reads/completedSteps 形态。
     const steps = Array.isArray(request.steps) ? request.steps : [];
     const navigateStep = steps.length === 1 && steps[0]?.action === 'navigate' ? steps[0] : null;
+    // 落点页状态上报（真实插件由 background 在落点页入组后重报组页面表）：缺省落点页已接入（active，既有上报表
+    // 整体降为 background）；scenario.landingAttached=false 则按真实客户端在注入失败时的上报形态记为 silent，
+    // 不伪造接入。上报先于 exec-result，服务端回喂前据状态表判 attached（server 起在 ZA_NAV_ATTACH_WAIT_MS=0）。
+    if (navigateStep !== null && typeof navigateStep.url === 'string') {
+      const previous = (scenario.groupPagesReports ?? []).at(-1) ?? [];
+      const landingStatus = scenario.landingAttached === false ? 'silent' : 'active';
+      await postFrame(sessionId, token, {
+        type: 'group-pages',
+        sessionId,
+        pages: [
+          ...previous.map((page) => ({
+            ...page,
+            status: page.status === 'active' && landingStatus === 'active' ? 'background' : page.status,
+          })),
+          { handle: 'nav-landing', url: navigateStep.url, title: '', status: landingStatus },
+        ],
+      });
+    }
     await postFrame(sessionId, token, {
       type: 'exec-result',
       sessionId,
@@ -324,20 +345,6 @@ async function executeInstruction(sessionId, token, frame, scenario) {
               completedSteps: steps.length === 0 ? 1 : steps.length,
             },
     });
-    // 导航落点接入上报（真实插件由 background 在落点页接入后重报组页面表）：服务端回喂前等这一帧判定
-    // attached；不报则每次导航都等满 ZA_NAV_ATTACH_WAIT_MS，回合在安静期判定里先被收口。
-    // 既有上报表整体降为 background，落点页作为 active 新成员。
-    if (navigateStep !== null && typeof navigateStep.url === 'string') {
-      const previous = (scenario.groupPagesReports ?? []).at(-1) ?? [];
-      await postFrame(sessionId, token, {
-        type: 'group-pages',
-        sessionId,
-        pages: [
-          ...previous.map((page) => ({ ...page, status: page.status === 'active' ? 'background' : page.status })),
-          { handle: 'nav-landing', url: navigateStep.url, title: '', status: 'active' },
-        ],
-      });
-    }
     return;
   }
   const absoluteUrl = request.url.startsWith('http') ? request.url : `${HOST_BASE}${request.url}`;
@@ -554,7 +561,8 @@ function evaluateDecisions(expectDecisions, events) {
         decision.verdict === want.verdict &&
         (want.riskTier === undefined || decision.riskTier === want.riskTier) &&
         (want.effectiveTier === undefined || decision.effectiveTier === want.effectiveTier) &&
-        (want.unattendedReadOnly === undefined || decision.unattendedReadOnly === want.unattendedReadOnly),
+        (want.unattendedReadOnly === undefined || decision.unattendedReadOnly === want.unattendedReadOnly) &&
+        (want.reason === undefined || decision.reason === want.reason),
     );
     if (matched.length === 0) {
       const diagnosis = VERDICT_DIAGNOSIS[`${want.verdict}:${sameTool[0].verdict}`];
@@ -563,6 +571,7 @@ function evaluateDecisions(expectDecisions, events) {
         ...(want.riskTier === undefined ? [] : [`riskTier=${want.riskTier}`]),
         ...(want.effectiveTier === undefined ? [] : [`effectiveTier=${want.effectiveTier}`]),
         ...(want.unattendedReadOnly === undefined ? [] : [`unattendedReadOnly=${want.unattendedReadOnly}`]),
+        ...(want.reason === undefined ? [] : [`reason=${want.reason}`]),
       ].join('/');
       reasons.push(
         `${want.toolId} 治理判定期望 ${wanted}，实际 [${sameTool.map(describeDecision).join(', ')}]` +
