@@ -583,6 +583,15 @@ describe('generic open_url 全链路（任意 http/https 开页，每次确认�
         ok: true,
         body: { url: OPEN_TARGET },
       });
+      // 落点页接入（客户端上报该地址的页转 active；fragment 不参与比对）→ 回喂 attached:true。
+      await postFrame(openUrlBase, token, sessionId, {
+        type: 'group-pages',
+        sessionId,
+        pages: [
+          { handle: 'p1', url: GENERIC_URL, title: '订单列表', status: 'background' },
+          { handle: 'p2', url: `${OPEN_TARGET}#top`, title: '外部文章', status: 'active' },
+        ],
+      });
       const joined = (): string =>
         sse.frames
           .filter((f) => f['type'] === 'text-delta')
@@ -590,6 +599,8 @@ describe('generic open_url 全链路（任意 http/https 开页，每次确认�
           .join('');
       await sse.waitFor(() => joined().includes('MOCK-OPEN-OBS'));
       expect(joined()).toContain(OPEN_TARGET);
+      expect(joined()).toContain('"attached":true');
+      expect(joined()).toContain('页面已接入');
       // 落点是 http/https：generic 无条件激活并按落点 origin 重绑围栏，不再附「未安装专属配置」。
       expect(joined()).not.toContain('落点站点未安装专属配置');
       const injection = await getInjection(openUrlBase, token, sessionId);
@@ -877,6 +888,8 @@ describe('site_navigate 落地后围栏重校验（PC-GOV-04：捕 302 逃逸）
       auditSinkPath: AUDIT_SINK,
       allowedProviders: ['openai-compatible'],
       heartbeatMs: 60_000,
+      // 本组只验围栏落地，不上报组页面：不等落点接入。
+      navAttachWaitMs: 0,
     });
     navBase = `http://127.0.0.1:${navServer.port}`;
   });

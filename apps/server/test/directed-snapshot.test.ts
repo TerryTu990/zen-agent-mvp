@@ -634,6 +634,28 @@ describe('定向拒绝路径（U7：下发前拒绝、不发帧、不回退活�
     expect(events[0]!['page']).toEqual({ handle: SILENT_HANDLE, origin: 'https://docs.example' });
   });
 
+  it('同句柄第二次 silent 拒绝：指引不再含「重试一次」，改为停止重试并如实告知用户授权', async () => {
+    const token = await signToken();
+    const { sessionId, sse } = await startGroupSession(token);
+    try {
+      await driveTurn(token, sessionId, `定向读取 ${SILENT_HANDLE}`);
+      await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length >= 1);
+      const firstText = joinedText(sse);
+      expect(firstText).toContain('重试一次');
+      await driveTurn(token, sessionId, `定向读取 ${SILENT_HANDLE}`);
+      await sse.waitFor(() => framesByType(sse.frames, 'turn-complete').length >= 2);
+      const secondText = joinedText(sse).slice(firstText.length);
+      expect(secondText).toContain('page-not-interactive');
+      expect(secondText).not.toContain('重试一次');
+      expect(secondText).toContain('不要再重试');
+      expect(secondText).toContain('点击 Zen 图标');
+    } finally {
+      sse.close();
+    }
+    expect(framesByType(sse.frames, 'snapshot-request')).toHaveLength(0);
+    expect(snapshotExecEvents(sessionId)).toHaveLength(2);
+  });
+
   it('句柄未命中拒绝：不 broadcast 帧，回喂指向清单最新句柄，审计 skipped 仅带 handle', async () => {
     const token = await signToken();
     const { sessionId, sse } = await startGroupSession(token);

@@ -288,7 +288,8 @@ function decisionsOf(sessionId: string): Array<{ toolId: string; verdict: string
 
 /**
  * 代插件之职驱动一回合到 turn-complete：hitl-request 一律批准，snapshot-request 按当前落点页回一份
- * 含一个可读元素的快照，exec-instruction 按批次形态回结果（单步 navigate 回 {url} 并记为新落点）。
+ * 含一个可读元素的快照，exec-instruction 按批次形态回结果（单步 navigate 回 {url} 并记为新落点，
+ * 随后上报落点页已接入）。
  */
 async function driveTurn(token: string, sessionId: string, sse: SseHandle, text: string): Promise<void> {
   await postFrame(token, sessionId, { type: 'user-message', sessionId, text });
@@ -331,6 +332,14 @@ async function driveTurn(token: string, sessionId: string, sse: SseHandle, text:
           ok: true,
           body: navigate !== null ? { url: navigate.url } : { reads: { value: 'x' }, completedSteps: steps.length },
         });
+        // 落点页接入上报（真实插件由 background 在落点页接入后重报组页面表）：不报则导航回喂要等满接入窗。
+        if (navigate !== null) {
+          await postFrame(token, sessionId, {
+            type: 'group-pages',
+            sessionId,
+            pages: [{ handle: 'nav-landing', url: landedUrl, title: '', status: 'active' }],
+          });
+        }
       }
     }
     if (framesByType(sse.frames, 'turn-complete').length > 0) return;

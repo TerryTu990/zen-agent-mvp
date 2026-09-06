@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HitlRequestFrame, ToolCardFrame } from '../src/frames.js';
 import { createConversationUi } from '../src/conversation-hitl.js';
 
@@ -455,5 +455,126 @@ describe('promptHitl 导航任务授权卡（adr-028：带 task+plan 的导航�
 
     expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('需你授权：填表');
     expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('授权执行');
+  });
+});
+
+/** 批准手势内的站点访问权限申请：只补权限不注入；裁决结果不因权限结局改变。 */
+describe('promptHitl 批准手势申请站点访问权限（adr-027 D2-A）', () => {
+  interface PermissionsStub {
+    contains: ReturnType<typeof vi.fn>;
+    request: ReturnType<typeof vi.fn>;
+  }
+
+  function stubPermissions(options: {
+    held: boolean;
+    request?: () => Promise<boolean>;
+    contains?: () => Promise<boolean>;
+  }): PermissionsStub {
+    const stub: PermissionsStub = {
+      contains: vi.fn(options.contains ?? (async () => options.held)),
+      request: vi.fn(options.request ?? (async () => true)),
+    };
+    (globalThis as unknown as { chrome: unknown }).chrome = { permissions: stub };
+    return stub;
+  }
+
+  afterEach(() => {
+    delete (globalThis as { chrome?: unknown }).chrome;
+  });
+
+  it('未持有 <all_urls>：contains 在点击处理内同步发起，request 恰一次，仍回传 approve', async () => {
+    const stub = stubPermissions({ held: false });
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+    expect(stub.contains).toHaveBeenCalledTimes(1);
+
+    await expect(decision).resolves.toBe('approve');
+    expect(stub.request).toHaveBeenCalledTimes(1);
+    expect(stub.request).toHaveBeenCalledWith({ origins: ['<all_urls>'] });
+    expect(stub.contains).toHaveBeenCalledWith({ origins: ['<all_urls>'] });
+  });
+
+  it('已持有：不 request', async () => {
+    const stub = stubPermissions({ held: true });
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+
+    await expect(decision).resolves.toBe('approve');
+    expect(stub.request).not.toHaveBeenCalled();
+  });
+
+  it('request 返回 false（用户拒绝浏览器询问）：仍回传 approve', async () => {
+    stubPermissions({ held: false, request: async () => false });
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+
+    await expect(decision).resolves.toBe('approve');
+  });
+
+  it('request / contains 抛错：仍回传 approve，卡片撤下', async () => {
+    stubPermissions({
+      held: false,
+      request: async () => {
+        throw new Error('not in user gesture');
+      },
+    });
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+    await expect(decision).resolves.toBe('approve');
+    expect(messages.querySelector('[data-za-hitl]')).toBeNull();
+
+    stubPermissions({
+      held: false,
+      contains: async () => {
+        throw new Error('permissions unavailable');
+      },
+    });
+    const second = ui.promptHitl(hitlRequest({ hitlId: 'h2' }));
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+    await expect(second).resolves.toBe('approve');
+  });
+
+  it('拒绝路径不申请权限', async () => {
+    const stub = stubPermissions({ held: false });
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-reject]')?.click();
+
+    await expect(decision).resolves.toBe('reject');
+    expect(stub.contains).not.toHaveBeenCalled();
+    expect(stub.request).not.toHaveBeenCalled();
+  });
+
+  it('无 chrome.permissions（非扩展宿主）：直接回传 approve', async () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-approve]')?.click();
+
+    await expect(decision).resolves.toBe('approve');
+  });
+
+  it('卡上有站点访问权限须知小字', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(hitlRequest());
+
+    expect(messages.querySelector('.za-hitl-site-access')?.textContent).toContain('站点访问权限');
   });
 });

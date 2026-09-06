@@ -73,18 +73,18 @@ describe('decideNavigateTarget：navigate 目标页复用决策', () => {
   });
 
   it('组内有空白页：原地换 URL，不再新开页签留下空白页', () => {
-    const blanks = ['about:blank', 'chrome://newtab/', 'chrome://new-tab-page/', 'edge://newtab/', ''];
+    const blanks = ['about:blank', 'chrome://newtab/', 'chrome://new-tab-page/', 'edge://newtab/'];
     for (const blank of blanks) {
       expect(decideNavigateTarget('https://example.com/a', [{ id: 7, url: blank }])).toEqual({
         kind: 'update',
         tabId: 7,
       });
     }
-    // url 取不到（尚未提交导航的空文档）同样按空白页复用。
-    expect(decideNavigateTarget('https://example.com/a', [{ id: 7 }])).toEqual({
-      kind: 'update',
-      tabId: 7,
-    });
+  });
+
+  it('url 取不到（首次导航尚未提交的 tab）不算空白页：不复用，走新建', () => {
+    expect(decideNavigateTarget('https://example.com/a', [{ id: 7 }])).toEqual({ kind: 'create' });
+    expect(decideNavigateTarget('https://example.com/a', [{ id: 7, url: '' }])).toEqual({ kind: 'create' });
   });
 
   it('多个空白页：取组内首个', () => {
@@ -155,26 +155,21 @@ describe('decideNavigateTarget：navigate 目标页复用决策', () => {
 });
 
 describe('isBlankPageUrl：空白页判定闭集', () => {
-  it('闭集成员与缺省/空串判空白', () => {
-    for (const url of [
-      'about:blank',
-      'chrome://newtab/',
-      'chrome://new-tab-page/',
-      'edge://newtab/',
-      '',
-      undefined,
-    ]) {
+  it('闭集成员判空白', () => {
+    for (const url of ['about:blank', 'chrome://newtab/', 'chrome://new-tab-page/', 'edge://newtab/']) {
       expect(isBlankPageUrl(url)).toBe(true);
     }
   });
 
-  it('闭集外一律不算空白（含闭集成员的变体）', () => {
+  it('闭集外一律不算空白（含闭集成员的变体、缺省与空串）', () => {
     for (const url of [
       'https://example.com/',
       'chrome://newtab',
       'chrome://settings/',
       'about:blank#x',
       'edge://newtab/x',
+      '',
+      undefined,
     ]) {
       expect(isBlankPageUrl(url)).toBe(false);
     }

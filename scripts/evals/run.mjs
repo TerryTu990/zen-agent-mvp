@@ -323,6 +323,20 @@ async function executeInstruction(sessionId, token, frame, scenario) {
               completedSteps: steps.length === 0 ? 1 : steps.length,
             },
     });
+    // 导航落点接入上报（真实插件由 background 在落点页接入后重报组页面表）：服务端回喂前等这一帧判定
+    // attached；不报则每次导航都等满 ZA_NAV_ATTACH_WAIT_MS，回合在安静期判定里先被收口。
+    // 既有上报表整体降为 background，落点页作为 active 新成员。
+    if (navigateStep !== null && typeof navigateStep.url === 'string') {
+      const previous = (scenario.groupPagesReports ?? []).at(-1) ?? [];
+      await postFrame(sessionId, token, {
+        type: 'group-pages',
+        sessionId,
+        pages: [
+          ...previous.map((page) => ({ ...page, status: page.status === 'active' ? 'background' : page.status })),
+          { handle: 'nav-landing', url: navigateStep.url, title: '', status: 'active' },
+        ],
+      });
+    }
     return;
   }
   const absoluteUrl = request.url.startsWith('http') ? request.url : `${HOST_BASE}${request.url}`;
