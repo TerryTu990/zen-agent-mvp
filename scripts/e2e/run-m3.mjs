@@ -27,6 +27,7 @@ import { chromium } from 'playwright';
 import { startMockLlm } from '../mock-llm/server.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -247,6 +248,11 @@ async function main() {
     console.log('[1/5] 构建 extension + server…');
     await buildTargets();
 
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: MOCK_LLM_PORT, label: 'mock LLM' },
+      { port: HOST_PORT, label: 'host' },
+    ]);
     console.log('[2/5] 起 mock LLM…');
     const mock = await startMockLlm({ port: MOCK_LLM_PORT });
     cleanups.push(() => mock.close());

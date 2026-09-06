@@ -49,6 +49,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -384,6 +385,7 @@ async function main() {
     console.log('[1/4] 构建 workspace…');
     await run('pnpm', ['-r', 'build']);
 
+    await assertPortsFree([{ port: SERVER_PORT, label: 'gateway' }]);
     console.log('[2/4] 启动真实 LLM 的 gateway…');
     const server = await startRealServer({
       auditPath,

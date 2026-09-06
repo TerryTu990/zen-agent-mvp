@@ -16,6 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROBE_LITERALS, startMockLlm } from '../mock-llm/server.mjs';
 import { hostPortReplacements, materializeSnapshot } from '../e2e/snapshot-fixture.mjs';
+import { assertPortsFree } from '../e2e/port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const SERVER_DIST = join(REPO_ROOT, 'apps', 'server', 'dist', 'main.js');
@@ -1165,6 +1166,11 @@ async function main() {
     console.log('[1/4] 构建 server…');
     await run('pnpm', ['--filter', '@zen-agent/server', 'run', 'build']);
 
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: MOCK_LLM_PORT, label: 'mock LLM' },
+      { port: HOST_PORT, label: 'host' },
+    ]);
     console.log('[2/4] 起 mock LLM…');
     const mock = await startMockLlm({ port: MOCK_LLM_PORT });
     cleanups.push(() => mock.close());

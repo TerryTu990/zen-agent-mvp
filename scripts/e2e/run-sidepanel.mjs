@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const EXTENSION_DIR = process.env.ZA_EXTENSION_E2E_DIR
@@ -68,6 +69,7 @@ async function main() {
     }
     // 夹具须先于 Chromium 起、且占用插件开发构建的默认服务地址：面板与 service worker 都按该地址取身份，
     // 夹具不在那里就一律拿不到令牌，401 后的重新激活路径无从观察。
+    await assertPortsFree([{ port: FIXTURE_PORT, label: 'fixture server' }]);
     authServer = createServer(async (req, res) => {
       const headers = {
         'content-type': 'application/json',

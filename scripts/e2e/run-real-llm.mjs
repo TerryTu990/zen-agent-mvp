@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const SERVER_DIST = join(REPO_ROOT, 'apps', 'server', 'dist', 'main.js');
@@ -492,6 +493,10 @@ async function main() {
     console.log('[1/3] 构建 server…');
     await run('pnpm', ['--filter', '@zen-agent/server', 'run', 'build']);
 
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: HOST_PORT, label: 'host' },
+    ]);
     console.log('[2/3] 起真实 LLM server + 宿主 API mock…');
     const serverProc = startServer();
     cleanups.push(

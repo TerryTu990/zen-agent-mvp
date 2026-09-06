@@ -26,6 +26,7 @@ import { chromium } from 'playwright';
 import { ANON_TENANT, activate } from './anon-identity.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -416,6 +417,11 @@ async function main() {
   };
 
   try {
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: MOCK_LLM_PORT, label: 'mock LLM' },
+      { port: HOST_PORT, label: 'host' },
+    ]);
     rmSync(WORK_DIR, { recursive: true, force: true });
     mkdirSync(WORK_DIR, { recursive: true });
     materializeSnapshot(join(HOST_DEMO_DIR, 'config'), SNAPSHOT_ROOT, hostPortReplacements([[4173, HOST_PORT]]));
