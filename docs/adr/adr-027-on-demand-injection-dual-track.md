@@ -102,6 +102,25 @@ pack 与 L2 都无从携带可执行代码。本 ADR MUST NOT 被读成「允许
 这类失败对用户不可观察，其后果（该页能力缺席）由服务端在 silent 页上的叙述兜住，
 客户端不为一件自己判不准的事造 UI 面。
 
+**补记（2026-09-07 试用复盘，计划 `docs/plans/2026-09-07-task-auth-and-ux-round.md` D2）**：
+上一段的代价在真实试用里放大成循环——agent 打开的新页因 origin 未授权而永远 silent，
+服务端的 silent 页拒绝文案又建议「经导航打开其地址」，模型据此反复 open_url、用户反复批准。
+两侧各补一手，注入模型（不变量 IN）不变：
+
+- *插件·批准手势内申请站点访问权限*：HITL 卡「批准」点击是用户手势，插件在此同步发起
+  `chrome.permissions.contains({origins:['<all_urls>']})`，未持有即 `chrome.permissions.request` 同一描述符；
+  无论用户允许与否都继续回传 approve，拒绝路径不申请。持有权限 ≠ 注入——content 仍只由 background
+  按会话内动作（导航开页、入组、加载完成补发激活）注入，IN 的 (a)/(b) 两半不变。卡上一行小字告知
+  首次授权会有浏览器询问。否决的备选：逐 origin 申请（任务内自动导航没有手势可用）；回到静态
+  `<all_urls>` 注入（破坏 IN）。代价：首次批准多一个「读取和更改所有网站上的数据」的一次性提示。
+- *服务端·接入回喂与 already-open 止损*：非定向 `open_url` / `site_navigate` 成功后、回喂前等落点页接入
+  （组页面表中该地址的页转 active/background，上限 `ZA_NAV_ATTACH_WAIT_MS`，默认 8000），observation 附
+  `attached: true|false`——false 时指引「不要再次打开同一地址；先重试一次定向快照；仍不可用则告知用户在该页
+  点击 Zen 图标授权本站」；silent 页定向快照的拒绝文案改为同一口径。同会话已导航过同一规范化地址
+  （去 fragment）、组内该地址的页仍 silent 且无已接入同址页时再次非定向导航 → 服务端 fail-closed deny
+  （`tool-decision` reason `already-open-not-attached`，不弹卡），回喂同一指引。定向 navigate 不在此门内——
+  对 silent 句柄定向导航是清单声明的激活通路。
+
 **撤销授权与拉黑不回收已注入页**：撤销授权只注销动态注册面，拉黑只让此后不再注入——
 两者都不把已在页内的 content 撤出去，该页需重载才彻底退出。其间上行闸门照挡：
 命中站点的页不激活会话、不上报页面上下文、不进任务组页面清单。
