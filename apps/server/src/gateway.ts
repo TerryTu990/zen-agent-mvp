@@ -758,15 +758,6 @@ const HITL_TARGET_URL_MAX = 200;
  * 呈现前按签发/围栏同一口径（WHATWG URL）解析归一，再消毒并按上限截断；不可解析或非 http/https 一律不呈现
  * ——这类取值签发必拒，不构成本次的执行目标。
  */
-/**
- * 实参带可见的任务计划（每项都是去空白后非空的字符串）：导航卡据此升为任务授权卡、批准即登记任务级授权。
- * 登记条件与卡的呈现条件 MUST 同构——用户没在卡上看到计划的批准不得登记整任务。
- */
-function hasTaskPlan(params: JsonObject): boolean {
-  const plan = params['plan'];
-  return Array.isArray(plan) && plan.length > 0 && plan.every((item) => typeof item === 'string' && item.trim() !== '');
-}
-
 export function hitlTargetUrl(tool: ToolDefinition, params: JsonObject): string | undefined {
   let raw: JsonValue | undefined;
   if (tool.id === OPEN_URL_TOOL_ID || tool.id === SITE_NAVIGATE_TOOL_ID) {
@@ -792,6 +783,15 @@ export function hitlTargetUrl(tool: ToolDefinition, params: JsonObject): string 
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
   return truncateWithEllipsis(stripDisplayUnsafeChars(parsed.href), HITL_TARGET_URL_MAX);
+}
+
+/**
+ * 实参带可见的任务计划（每项都是去空白后非空的字符串）：导航卡据此升为任务授权卡、批准即登记任务级授权。
+ * 登记条件与卡的呈现条件 MUST 同构——用户没在卡上看到计划的批准不得登记整任务。
+ */
+function hasTaskPlan(params: JsonObject): boolean {
+  const plan = params['plan'];
+  return Array.isArray(plan) && plan.length > 0 && plan.every((item) => typeof item === 'string' && item.trim() !== '');
 }
 
 type HitlEffect = NonNullable<HitlRequestFrame['effects']>[number];
@@ -1614,16 +1614,16 @@ export function createGateway(deps: GatewayDeps): Gateway {
   }
 
   /**
-   * 单个宿主 API 工具调用的代执行子流程：一切分级/HITL/结果判定都在 toolgate（U7 fail-closed），
-   * 网关只按判定下发帧、挂起等待客户端回传、把规整后的 observation 交回 agent loop。
-   * tool-card 摘要仅取 toolId（不含实参值，SEC-04）；deny/reject 时自造 ok:false observation。
-   */
-  /**
    * 代执行子流程的结果：观测之外附带「本次调用是否处于任务级授权之下」——授权命中放行，或带计划获批并登记。
    * 纯数据标记，只供导航成功分支决定授权是否随任务延续到落点作用域；不进回喂、不进审计。
    */
   type ExecSubflowOutcome = Observation & { taskGranted?: true };
 
+  /**
+   * 单个宿主 API 工具调用的代执行子流程：一切分级/HITL/结果判定都在 toolgate（U7 fail-closed），
+   * 网关只按判定下发帧、挂起等待客户端回传、把规整后的 observation 交回 agent loop。
+   * tool-card 摘要仅取 toolId（不含实参值，SEC-04）；deny/reject 时自造 ok:false observation。
+   */
   async function runExecSubflow(
     session: SessionState,
     claims: IdentityClaims,
@@ -1931,18 +1931,22 @@ export function createGateway(deps: GatewayDeps): Gateway {
       // decide 直接放行。两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得
       // 顺带解锁同名任务）；不带 plan 的 site_navigate / open_url（导航卡只呈现目标 URL，用户未见任务计划，
       // 不构成任务级知情授权）。带 task + plan 的导航卡已把整任务计划呈现给用户，批准即登记（adr-028）。
+      // 授权只锚定站点作用域：基座作用域（无 pack，如静默页冷启动）不属于任何站点，在此登记会让此后
+      // 任意基座作用域页面上的同名任务免卡放行，故不登记——导航的授权由落点作用域上的延续承接。
       if (
         approvalStale === null &&
         tool.hitlMode !== 'every-call' &&
         typeof params['task'] === 'string' &&
         (!navigationTool || hasTaskPlan(params))
       ) {
-        await deps.toolgate.grantHitl({
-          sessionId,
-          task: params['task'],
-          ...(scope.packId !== undefined ? { packId: scope.packId } : {}),
-          ...(scope.packOrigin !== undefined ? { packOrigin: scope.packOrigin } : {}),
-        });
+        if (scope.packId !== undefined) {
+          await deps.toolgate.grantHitl({
+            sessionId,
+            task: params['task'],
+            packId: scope.packId,
+            ...(scope.packOrigin !== undefined ? { packOrigin: scope.packOrigin } : {}),
+          });
+        }
         taskGranted = navigationTool;
         if (cancelled()) return stopped();
       }
@@ -2024,7 +2028,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
    * 授权随任务导航延续（adr-028）：导航本身已在任务授权下放行或带计划获批，落点重装配后作用域
    * (packId, packOrigin) 随站切换，同一 task 在新作用域再登记一次，使已批准任务内的后续操作不再弹卡。
    * 只由服务端在导航成功分支驱动——延续的是用户批准过的那次导航；用户手动切页/换站不延续
-   * （adr-024 D4 防挂靠语义保留）。越界落地（fenceEscaped）按仅基座装配，不延续。
+   * （adr-024 D4 防挂靠语义保留）。落点页是否接入与延续无关。不延续的情形：越界落地（fenceEscaped，
+   * 按仅基座装配）；落点无 pack（基座作用域不锚定站点，不登记）；回合已被停止（停止＝收回全部授权，
+   * 导航回执与重装配之间到达的停止不得被延续重新登记覆盖）。
    */
   async function continueTaskGrant(
     session: SessionState,
@@ -2033,14 +2039,16 @@ export function createGateway(deps: GatewayDeps): Gateway {
     params: JsonObject,
     outcome: ExecSubflowOutcome,
     fenceEscaped: boolean,
+    cancelled: () => boolean,
   ): Promise<void> {
     const task = params['task'];
     if (outcome.taskGranted !== true || typeof task !== 'string' || fenceEscaped) return;
     const scope = await packScope(session, landedPack, claims);
+    if (scope.packId === undefined || cancelled()) return;
     await deps.toolgate.grantHitl({
       sessionId: session.sessionId,
       task,
-      ...(scope.packId !== undefined ? { packId: scope.packId } : {}),
+      packId: scope.packId,
       ...(scope.packOrigin !== undefined ? { packOrigin: scope.packOrigin } : {}),
     });
   }
@@ -2990,7 +2998,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
               const previousGenericOrigin = pack.genericOrigin ?? null;
               ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, siteOrigin, userConfig, openUrlOk, appToolsOk } =
                 await assembleFor(landedUrl, fenceEscaped));
-              await continueTaskGrant(session, claims, pack, call.params, observation, fenceEscaped);
+              await continueTaskGrant(session, claims, pack, call.params, observation, fenceEscaped, cancelled);
               messages[0] = {
                 role: 'system',
                 content: withManifest(

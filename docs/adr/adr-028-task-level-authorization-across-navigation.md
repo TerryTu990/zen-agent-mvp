@@ -39,6 +39,9 @@ deny（不消费授权，adr-024 D1）→ 带 `task` 且同作用域授权命中
 不带 `plan`（或 `plan` 含空白项）的导航批准只覆盖本次、不登记——卡上没有可见计划，不构成任务级知情授权。
 `every-call` 工具照旧不登记。登记谓词（服务端 `hasTaskPlan`）与卡的呈现谓词（插件 `isTaskGrantCard`）MUST 同构：
 服务端登记了整任务而用户看到的却是一次性确认卡，是本决策明令禁止的背离。
+授权只锚定站点作用域：批准发生在基座作用域（无 pack，典型即静默页冷启动）时不登记本地授权，只置延续标记——
+基座作用域不属于任何站点，在此登记会让此后任意基座作用域页面（用户自己新开的空白页）上的同名任务在 TTL 内免卡放行；
+冷启动导航的授权由 D4 在落点站点作用域承接。
 
 ### D4 授权随任务导航延续（gateway）
 
@@ -49,6 +52,10 @@ deny（不消费授权，adr-024 D1）→ 带 `task` 且同作用域授权命中
 - 用户手动切页 / 换站不延续：adr-024 D4 的防挂靠语义原样保留——模型无法靠沿用标题在用户自己打开的站上复用授权；
 - 越界落地（`site_navigate` 被 302 带出已安装围栏，按仅基座装配）不延续；
 - 定向导航（`targetPage`）不改变活跃页、不重装配，故不延续；
+- 落点无 pack（基座作用域）不登记，理由同 D3；
+- 回合已停止不延续：停止＝收回本会话全部授权（adr-024 D2）；停止若在导航回执之后、落点重装配之前到达，延续 MUST
+  在登记前复查停止标记，否则吊销会被延续重新登记覆盖；
+- 落点页是否接入（adr-027 的 `attached` 回喂）与延续无关：延续的依据是用户批准过的那次导航，接入只影响可读性；
 - 延续的实现是独立函数 `continueTaskGrant`，导航成功分支只保留一次调用；`runExecSubflow` 以纯数据标记
   `taskGranted` 把「本次处于任务授权之下」暴露给调用方，不进回喂、不进审计。
 
@@ -87,8 +94,9 @@ adr-024「跨站任务会多出一张确认卡」这一代价，在任务首个�
 
 ## 5. 验收
 
-- 单测：toolgate（open_url 带 task 已授权 → allow；未授权/异作用域 → hitl；unattended → deny 且不消费授权；plan 校验）；
-  server `task-grant.test.ts`（一卡授权整任务、跨站后 B 作用域放行；无 plan 不登记）；extension 卡两种形态。
+- 单测：toolgate（open_url 带 task 已授权 → allow；未授权/异作用域 → hitl；unattended → deny 且不消费授权；plan 校验含空项拒）；
+  server `task-grant.test.ts`（一卡授权整任务、跨站后 B 作用域放行；无 plan / plan 含空白项不登记；基座作用域不残留授权；
+  停止落在导航回执与重装配之间时延续不登记）；extension 卡两种形态（含 plan 含空白项按一次性卡）。
 - 评测：`generic-task-grant-once`（hitlCount 1 + 落点跨域后 page-operate allow）、`generic-open-url-no-plan-no-grant`
   （两张卡、两次 approve）；`pnpm eval` 全量 ≥3 跑全绿 + `--check`。
 - E2E：`pnpm test:e2e:task-grant`——空白页冷启动 → 一张任务授权卡 → A 站搜索 → 开 B → B 快照取到哨兵 → 总结；

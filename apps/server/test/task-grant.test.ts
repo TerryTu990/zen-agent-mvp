@@ -33,6 +33,8 @@ const PLAN = ['打开 A 站搜索页', '填入关键词并搜索', '打开结果
 const BROWSE_TOOL = 'browse.page-operate';
 const SNAPSHOT_TOOL = 'page_snapshot';
 const DONE_TEXT = 'MOCK-TASK-GRANT-DONE';
+/** 落点接入等待窗：不上报接入的回合只等这么久（停止竞态用例需要一个可命中的窗口）。 */
+const NAV_ATTACH_WAIT_MS = 400;
 
 type ToolCall = { id: string; name: string; arguments: string };
 type MockDecision = { text: string } | { toolCall: ToolCall };
@@ -94,10 +96,18 @@ const BLANK_PLAN_SCRIPT: ToolCall[] = [
   browseStep('searchBox'),
 ];
 
+/** 剧本 D（再次导航）：同任务、同计划再开 A——用于验证基座作用域上不残留授权。 */
+const REPLAN_SCRIPT: ToolCall[] = [call('open_url', { url: SITE_A_URL, task: TASK, plan: PLAN })];
+
+/** 剧本 E（停止后续接）：快照后在当前页做同任务的页面操作——用于验证停止后延续不再登记。 */
+const AFTER_STOP_SCRIPT: ToolCall[] = [call(SNAPSHOT_TOOL, {}), browseStep('searchBox')];
+
 /** 用户哨兵语 → 剧本；长哨兵在前，避免「带计划」误吞其余变体。 */
 const SCRIPTS: Array<[string, ToolCall[]]> = [
   ['不带计划', UNPLANNED_SCRIPT],
   ['空白计划', BLANK_PLAN_SCRIPT],
+  ['再次带计划', REPLAN_SCRIPT],
+  ['停止后续接', AFTER_STOP_SCRIPT],
   ['带计划', PLANNED_SCRIPT],
 ];
 
@@ -199,6 +209,7 @@ beforeAll(async () => {
     auditSinkPath: AUDIT_SINK,
     allowedProviders: ['openai-compatible'],
     heartbeatMs: 60_000,
+    navAttachWaitMs: NAV_ATTACH_WAIT_MS,
   });
   baseUrl = `http://127.0.0.1:${server.port}`;
 });
@@ -233,7 +244,7 @@ async function postFrame(token: string, sessionId: string, frame: Record<string,
     headers: authHeaders(token, { 'content-type': 'application/json' }),
     body: JSON.stringify(frame),
   });
-  expect([202, 204]).toContain(res.status);
+  if (res.status !== 202 && res.status !== 204) throw new Error(`帧 ${String(frame['type'])} 被拒 ${res.status}：${await res.text()}`);
 }
 
 interface SseHandle {
@@ -304,19 +315,54 @@ function decisionsOf(sessionId: string): Array<{ toolId: string; verdict: string
     });
 }
 
+interface DriveOptions {
+  /** 首次 navigate 回执且工具卡已记 succeeded 后立即 POST /stop（此时服务端正等落点接入）；停止不上报落点接入。 */
+  stopAfterNavigate?: string;
+  /** 回合开始时的活跃页地址（快照回报所用）；缺省为空白冷启动，首次 navigate 后改为落点。 */
+  pageUrl?: string;
+}
+
 /**
  * 代插件之职驱动一回合到 turn-complete：hitl-request 一律批准，snapshot-request 按当前落点页回一份
  * 含一个可读元素的快照，exec-instruction 按批次形态回结果（单步 navigate 回 {url} 并记为新落点，
  * 随后上报落点页已接入）。
  */
-async function driveTurn(token: string, sessionId: string, sse: SseHandle, text: string): Promise<void> {
-  await postFrame(token, sessionId, { type: 'user-message', sessionId, text });
+async function driveTurn(
+  token: string,
+  sessionId: string,
+  sse: SseHandle,
+  text: string,
+  options: DriveOptions = {},
+): Promise<void> {
+  const messageId = options.stopAfterNavigate;
+  await postFrame(token, sessionId, {
+    type: 'user-message',
+    sessionId,
+    text,
+    ...(messageId !== undefined ? { messageId } : {}),
+  });
   const handled = new Set<string>();
-  let landedUrl = '';
+  let landedUrl = options.pageUrl ?? '';
+  let stopped = false;
   const deadline = Date.now() + 15_000;
   for (;;) {
     for (const frame of sse.frames) {
       const type = String(frame['type']);
+      if (
+        type === 'tool-card' &&
+        frame['status'] === 'succeeded' &&
+        frame['toolId'] === 'open_url' &&
+        messageId !== undefined &&
+        !stopped
+      ) {
+        stopped = true;
+        const res = await fetch(`${baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/stop`, {
+          method: 'POST',
+          headers: authHeaders(token, { 'content-type': 'application/json' }),
+          body: JSON.stringify({ messageId }),
+        });
+        expect(res.status).toBe(202);
+      }
       if (type === 'hitl-request' && !handled.has(String(frame['hitlId']))) {
         handled.add(String(frame['hitlId']));
         await postFrame(token, sessionId, {
@@ -351,7 +397,7 @@ async function driveTurn(token: string, sessionId: string, sse: SseHandle, text:
           body: navigate !== null ? { url: navigate.url } : { reads: { value: 'x' }, completedSteps: steps.length },
         });
         // 落点页接入上报（真实插件由 background 在落点页接入后重报组页面表）：不报则导航回喂要等满接入窗。
-        if (navigate !== null) {
+        if (navigate !== null && messageId === undefined) {
           await postFrame(token, sessionId, {
             type: 'group-pages',
             sessionId,
@@ -425,6 +471,64 @@ describe('adr-028 任务级一次授权：首个动作带 task+plan 的 open_url
         { toolId: 'open_url', verdict: 'hitl' },
         { toolId: BROWSE_TOOL, verdict: 'hitl' },
       ]);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('基座作用域不登记：冷启动批准的授权只落在落点站点作用域，回到空白页后同任务再导航仍弹卡', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await driveTurn(token, sessionId, sse, '带计划：在 A 站搜索并打开结果 B，告诉我核心内容');
+      expect(joinedText(sse)).toContain(DONE_TEXT);
+      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(1);
+
+      // 用户手动回到空白页（基座作用域）：若冷启动批准时在基座作用域登记过 (null, null, task)，
+      // 此处同任务导航会免卡放行——授权只该锚定站点作用域。
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: 'chrome://newtab/' });
+      await postFrame(token, sessionId, {
+        type: 'group-pages',
+        sessionId,
+        pages: [{ handle: 'blank-again', url: 'chrome://newtab/', title: '', status: 'active' }],
+      });
+      sse.frames.length = 0;
+      await driveTurn(token, sessionId, sse, '再次带计划：重新去 A 站搜索');
+      expect(joinedText(sse)).toContain(DONE_TEXT);
+
+      expect(framesByType(sse.frames, 'hitl-request').map((frame) => frame['toolId'])).toEqual(['open_url']);
+      expect(decisionsOf(sessionId).at(-1)).toEqual({ toolId: 'open_url', verdict: 'hitl' });
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('停止在导航回执之后、落点重装配之前到达：延续不再登记，下一回合同任务的页面操作仍弹卡', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await driveTurn(token, sessionId, sse, '带计划：在 A 站搜索并打开结果 B，告诉我核心内容', {
+        stopAfterNavigate: 'message-stop-race',
+      });
+      // 导航本身已成功执行（延续分支确实被走到），回合因停止收口。
+      const executions = auditEventsFor(sessionId).filter((event) => event['type'] === 'tool-execution');
+      expect(executions.map((event) => (event['data'] as Record<string, unknown>)['outcome'])).toEqual(['ok']);
+      expect(joinedText(sse)).toContain('已停止');
+
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: SITE_A_URL });
+      await postFrame(token, sessionId, {
+        type: 'group-pages',
+        sessionId,
+        pages: [{ handle: 'nav-landing', url: SITE_A_URL, title: '', status: 'active' }],
+      });
+      sse.frames.length = 0;
+      await driveTurn(token, sessionId, sse, '停止后续接：继续在 A 站操作', { pageUrl: SITE_A_URL });
+      expect(joinedText(sse)).toContain(DONE_TEXT);
+
+      expect(framesByType(sse.frames, 'hitl-request').map((frame) => frame['toolId'])).toEqual([BROWSE_TOOL]);
+      expect(decisionsOf(sessionId).at(-1)).toEqual({ toolId: BROWSE_TOOL, verdict: 'hitl' });
     } finally {
       sse.close();
     }
