@@ -54,15 +54,25 @@ function summarizeParams(params: JsonObject): string {
 }
 
 /**
- * dom 任务授权卡上的 agent 自述部分：task/summary/plan 全部由模型撰写，是次要信息——
- * 用户据以裁决的「将发生什么」只看服务端反解的 frame.effects。
+ * 任务授权卡上的 agent 自述部分：task/summary/plan 全部由模型撰写，是次要信息——
+ * 用户据以裁决的「将发生什么」只看服务端反解的 frame.effects / frame.targetUrl。
  */
-function summarizeDomTask(params: JsonObject): { title: string; claim: string; plan: string[] } {
+function summarizeTask(params: JsonObject): { title: string; claim: string; plan: string[] } {
   const summary = typeof params['summary'] === 'string' ? params['summary'] : '';
   const plan = Array.isArray(params['plan'])
     ? params['plan'].filter((item): item is string => typeof item === 'string')
     : [];
   return { title: String(params['task']), claim: summary, plan };
+}
+
+/** 内建导航工具：只有带 task 且计划非空时才按任务授权卡呈现（批准即授权整任务）；否则是一次性确认卡。 */
+const NAVIGATION_TOOL_IDS = new Set(['open_url', 'site_navigate']);
+
+function isTaskGrantCard(frame: HitlRequestFrame): boolean {
+  if (typeof frame.params['task'] !== 'string') return false;
+  if (!NAVIGATION_TOOL_IDS.has(frame.toolId)) return true;
+  const plan = frame.params['plan'];
+  return Array.isArray(plan) && plan.some((item) => typeof item === 'string' && item !== '');
 }
 
 /** pack 来源徽章措辞（与配置中心同表）。 */
@@ -258,12 +268,18 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         card.setAttribute('data-za-hitl', '');
         card.className = 'za-hitl';
 
-        // 带 task 的是 dom 任务级授权：功能级呈现 + 说明"批准后本任务自动执行、可停止"。
-        const domTask = typeof frame.params['task'] === 'string' ? summarizeDomTask(frame.params) : null;
+        // 任务授权卡（dom 批次带 task；导航带 task + 计划）：功能级呈现 + 说明"批准后本任务自动执行、可停止"。
+        const domTask = isTaskGrantCard(frame) ? summarizeTask(frame.params) : null;
+        const navigationGrant = domTask !== null && NAVIGATION_TOOL_IDS.has(frame.toolId);
 
         const title = document.createElement('div');
         title.className = 'za-hitl-title';
-        title.textContent = domTask === null ? `需你确认：${frame.toolId}` : `需你授权：${domTask.title}`;
+        title.textContent =
+          domTask === null
+            ? `需你确认：${frame.toolId}`
+            : navigationGrant
+              ? `授权任务：${domTask.title}`
+              : `需你授权：${domTask.title}`;
 
         // 非 dom 调用的实参摘要仍直接列字段；dom 任务的模型自述降为 claim 块（次要信息）。
         const detail = domTask === null ? document.createElement('div') : null;
@@ -295,11 +311,12 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         }
 
         // 目标页/目标 URL 只信服务端组装字段，不从 params 做任何展示推断（U7/U8：客户端零判定）。
+        // 导航任务授权卡上这是任务的首步落点，措辞区别于一次性导航的目标地址。
         let targetUrlLine: HTMLElement | null = null;
         if (frame.targetUrl !== undefined) {
           targetUrlLine = document.createElement('div');
           targetUrlLine.className = 'za-hitl-target-url';
-          targetUrlLine.textContent = `目标地址：${frame.targetUrl}`;
+          targetUrlLine.textContent = `${navigationGrant ? '将先打开' : '目标地址'}：${frame.targetUrl}`;
         }
         let targetPageLine: HTMLElement | null = null;
         if (frame.targetPage !== undefined) {

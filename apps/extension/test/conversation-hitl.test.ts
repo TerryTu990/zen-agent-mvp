@@ -386,3 +386,74 @@ describe('promptHitl R4 五要素与防误触（UI 规范 §5/§8；服务端给
     expect(document.activeElement).toBe(messages.querySelector('[data-za-hitl-reject]'));
   });
 });
+
+describe('promptHitl 导航任务授权卡（adr-028：带 task+plan 的导航一卡授权整任务）', () => {
+  const navFrame = (params: HitlRequestFrame['params'], toolId = 'open_url'): HitlRequestFrame =>
+    hitlRequest({
+      toolId,
+      params,
+      targetUrl: 'https://search.example/results?q=zen',
+      effects: [{ action: '导航', target: 'https://search.example/results?q=zen' }],
+    });
+
+  it('open_url 带 task + 非空 plan：标题「授权任务」、首步「将先打开」、计划清单、自动执行提示、按钮「授权执行」', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(
+      navFrame({
+        url: 'https://search.example/results?q=zen',
+        task: '检索 zen 并打开首条结果',
+        plan: ['打开搜索结果页', '点开首条结果', '读取正文并总结'],
+      }),
+    );
+
+    expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('授权任务：检索 zen 并打开首条结果');
+    expect(messages.querySelector('.za-hitl-target-url')?.textContent).toBe(
+      '将先打开：https://search.example/results?q=zen',
+    );
+    const plan = messages.querySelectorAll('.za-hitl-plan li');
+    expect([...plan].map((li) => li.textContent)).toEqual(['打开搜索结果页', '点开首条结果', '读取正文并总结']);
+    expect(messages.querySelector('.za-hitl-hint')?.textContent).toContain('本任务内的后续操作');
+    expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('授权执行');
+    expect(document.activeElement).toBe(messages.querySelector('[data-za-hitl-reject]'));
+  });
+
+  it('site_navigate 带 task + plan 同样按任务授权卡呈现', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(
+      navFrame({ url: 'https://search.example/results?q=zen', task: '跨站整理', plan: ['去站点乙填表'] }, 'site_navigate'),
+    );
+
+    expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('授权任务：跨站整理');
+    expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('授权执行');
+  });
+
+  it('导航无 plan（即便带 task）：一次性确认卡——「需你确认」、「目标地址」、无计划与提示、按钮「确认执行」', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(navFrame({ url: 'https://search.example/results?q=zen', task: '检索 zen' }));
+
+    expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('需你确认：open_url');
+    expect(messages.querySelector('.za-hitl-target-url')?.textContent).toBe(
+      '目标地址：https://search.example/results?q=zen',
+    );
+    expect(messages.querySelector('.za-hitl-plan')).toBeNull();
+    expect(messages.querySelector('.za-hitl-hint')).toBeNull();
+    expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('确认执行');
+    expect(document.activeElement).toBe(messages.querySelector('[data-za-hitl-reject]'));
+  });
+
+  it('dom 批次带 task 无 plan：仍是任务授权卡（导航之外的口径不变）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(hitlRequest({ toolId: 'browse.page-operate', params: { task: '填表', steps: [], summary: '' } }));
+
+    expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('需你授权：填表');
+    expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('授权执行');
+  });
+});
