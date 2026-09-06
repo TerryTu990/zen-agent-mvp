@@ -102,6 +102,29 @@ const WHO_LABEL: Record<'user' | 'assistant', string> = {
   assistant: 'Zen Agent',
 };
 
+const SITE_ACCESS_DESCRIPTOR = { origins: ['<all_urls>'] };
+
+const SITE_ACCESS_NOTE = '首次授权时浏览器会询问站点访问权限（仅用于本任务打开的页面），之后不再询问';
+
+/**
+ * 批准手势内补齐站点访问权限：chrome.permissions.request 只能在用户手势里调用，故 contains 必须在
+ * 点击处理里同步发起、中间不得 await 别的事。只补权限、不注入——注入仍只由 background 按会话动作触发。
+ * 用户拒绝或 API 异常都不改变裁决结果：返回的 promise 恒 resolve，调用方据此继续回传 approve。
+ */
+function ensureSiteAccess(): Promise<void> {
+  const permissions = (globalThis as { chrome?: { permissions?: typeof chrome.permissions } }).chrome
+    ?.permissions;
+  if (permissions === undefined) return Promise.resolve();
+  try {
+    return permissions
+      .contains(SITE_ACCESS_DESCRIPTOR)
+      .then((held) => (held ? undefined : permissions.request(SITE_ACCESS_DESCRIPTOR).then(() => undefined)))
+      .catch(() => undefined);
+  } catch {
+    return Promise.resolve();
+  }
+}
+
 export function createConversationUi(messages: HTMLElement): ConversationUi {
   // assistant 气泡内的 .mdlite 容器；累积原始文本每次 delta 后全量重渲染，保证 markdown 结构完整。
   let assistantBody: HTMLElement | null = null;
@@ -357,6 +380,10 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
         gov.className = 'za-hitl-gov za-hitl-detail';
         gov.textContent = governanceNoteOf(frame.ttlMs);
 
+        const siteAccess = document.createElement('div');
+        siteAccess.className = 'za-hitl-site-access za-hitl-detail';
+        siteAccess.textContent = SITE_ACCESS_NOTE;
+
         const actions = document.createElement('div');
         actions.className = 'za-hitl-actions';
         const approve = document.createElement('button');
@@ -387,7 +414,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
           reason.textContent = frame.reason;
           card.append(reason);
         }
-        card.append(gov, actions);
+        card.append(gov, siteAccess, actions);
         messages.append(card);
         messages.scrollTop = messages.scrollHeight;
         // 防误触放权（UI 规范 §8）：默认焦点落「拒绝」，回车不构成授权。
@@ -399,7 +426,12 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
           resolve(decision);
         };
         pendingHitl = { card, resolve: settle };
-        approve.addEventListener('click', () => settle('approve'));
+        // 权限询问期间卡仍在场（用户可能正对着浏览器气泡），按钮锁住防重复申请；拒绝路径不申请。
+        approve.addEventListener('click', () => {
+          approve.disabled = true;
+          reject.disabled = true;
+          void ensureSiteAccess().then(() => settle('approve'));
+        });
         reject.addEventListener('click', () => settle('reject'));
       });
     },
