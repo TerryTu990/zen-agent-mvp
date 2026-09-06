@@ -15,6 +15,10 @@
  *
  * 断言另含：审计 jsonl 的 assembly/tool-decision/tool-execution 事件带 packId 且出现两个不同 packId（host-a / site-b）；
  * 持久化会话历史含站点边界标记（切到站点乙 origin）。只对站点甲做图标手势等价，站点乙靠 navigate 入组。
+ *
+ * 「换站后回合②再弹授权卡」判定的前提：S2 的跨站导航是 order-list.page-operate 批次里的 dom navigate 步
+ * （pack 工具），不经 open_url / site_navigate——任务授权随导航延续到落点作用域只挂在内建导航工具上；
+ * 且回合②的 task（站点乙填表）与回合①（跨站读单）不同。mock 剧本若改为经 open_url 跨站或复用同一 task，本判定须随之改。
  */
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -25,6 +29,8 @@ import { chromium } from 'playwright';
 import { startMockLlm } from '../mock-llm/server.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
+import { failureReason, writeCaseResult } from './evidence.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -371,6 +377,12 @@ async function main() {
     console.log('[1/5] 构建 extension + server…');
     await buildTargets();
 
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: MOCK_LLM_PORT, label: 'mock LLM' },
+      { port: HOST_A_PORT, label: 'host A' },
+      { port: HOST_B_PORT, label: 'host B' },
+    ]);
     console.log('[2/5] 起 mock LLM…');
     const mock = await startMockLlm({ port: MOCK_LLM_PORT });
     cleanups.push(() => mock.close());
@@ -448,6 +460,7 @@ async function main() {
         .catch(() => {});
     }
   }
+  writeCaseResult('m5', failure ? 'failed' : 'passed', failure ? { reason: failureReason(failure) } : {});
   process.exit(failure ? 1 : 0);
 }
 

@@ -12,7 +12,7 @@
   确定性快照。LLM 为确定性 mock（`scripts/mock-llm/server.mjs`），非真实模型。
 - **四个快照根依次独占同端口起 server**：`examples/host-demo/config`（跑本目录 `scenarios.json` 17 场景）、
   `examples/acceptance`、`assets`（生产快照）、`examples/site-packs`（已下线站点包）；每根再按
-  `packs/*/eval/scenarios.json` 自动发现逐 pack 跑。当前合计 103 组场景。
+  `packs/*/eval/scenarios.json` 自动发现逐 pack 跑。当前合计 105 组场景。
 - **维度覆盖**：`explain` / `assembly-swap` 与 `assembly` / `guide` / `tool` / `hitl` / `automation` 均有场景。
 - **宿主 API mock 有状态**：`orders` 状态表 + `calls` 调用流水，**每跑重置**；场景可用 `hostState` /
   `hostCalls` / `hostCallsAbsent` 断言代执行的真实副作用（批准后状态已变、拒绝后状态未变且接口未被调用）。
@@ -56,7 +56,7 @@ featureId（服务端应判定值，null=无命中仅基座）, question, expect
 
 pack 级 `packs/<packId>/eval/scenarios.json`：`{id, dimension, url（含 pack origin 的完整 URL）, question,
 snapshotElements / snapshotNotices / snapshotText / snapshotTextTruncated / snapshotSequence（回给
-`snapshot-request` 的确定性夹具；序列项可带 `snapshotUrl` 覆写上报的页面地址，模拟导航落点页的快照）, execResultError（令代执行回错误结果）, execResultReads（dom 批次回传的 read 采集值，令工具返回体承载页面来源内容）, expect}`。
+`snapshot-request` 的确定性夹具；序列项可带 `snapshotUrl` 覆写上报的页面地址，模拟导航落点页的快照）, execResultError（令代执行回错误结果）, execResultReads（dom 批次回传的 read 采集值，令工具返回体承载页面来源内容）, landingAttached（缺省 true：导航落点页按已接入上报；false 则按注入失败的真实形态上报为 silent，服务端回喂 attached:false、同址再导航被止损 deny）, expect}`。
 
 ### `expect` 字段
 
@@ -73,8 +73,9 @@ snapshotElements / snapshotNotices / snapshotText / snapshotTextTruncated / snap
 **治理与环境态判据**
 
 - `hitlVerdict`：`"approve" | "reject"`（缺省 approve）——runner 扮演客户端对 `hitl-request` 的裁决。
-- `expectDecisions`：`[{toolId, riskTier?, effectiveTier?, verdict, hitlDecision?, unattendedReadOnly?}]`，
-  比对本跑审计区间内的 `tool-decision`（及配对 `hitl-verdict`）；`verdict ∈ allow|hitl|deny`。
+- `expectDecisions`：`[{toolId, riskTier?, effectiveTier?, verdict, hitlDecision?, unattendedReadOnly?, reason?}]`，
+  比对本跑审计区间内的 `tool-decision`（及配对 `hitl-verdict`）；`verdict ∈ allow|hitl|deny`；`reason` 比对拒绝归因
+  （如 `already-open-not-attached`）。
 - `hostState`：`{"orders.ORD-1001.status": "cancelled"}` 点分路径断言宿主 mock 的跑后状态。
 - `hostCalls` / `hostCallsAbsent`：`[{method, path}]`，无序包含 / 不得出现语义。
 

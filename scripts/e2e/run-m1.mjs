@@ -27,6 +27,8 @@ import { chromium } from 'playwright';
 import { activate } from './anon-identity.mjs';
 import { activateTab, assertNoZenInjection, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
+import { failureReason, writeCaseResult } from './evidence.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 import { startMockLlm } from '../mock-llm/server.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -282,6 +284,12 @@ async function main() {
     console.log('[1/5] 构建 extension…');
     await buildExtension();
 
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: MOCK_LLM_PORT, label: 'mock LLM' },
+      { port: HOST_PORT, label: 'host' },
+      { port: STRANGER_PORT, label: 'stranger host' },
+    ]);
     console.log('[2/5] 起 mock LLM…');
     const mock = await startMockLlm({ port: MOCK_LLM_PORT });
     cleanups.push(() => mock.close());
@@ -378,6 +386,7 @@ async function main() {
         .catch(() => {});
     }
   }
+  writeCaseResult('m1', failure ? 'failed' : 'passed', failure ? { reason: failureReason(failure) } : {});
   process.exit(failure ? 1 : 0);
 }
 

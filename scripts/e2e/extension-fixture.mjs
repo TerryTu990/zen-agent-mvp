@@ -15,16 +15,26 @@
  *    「用户已授权站点访问」这一前置。**被测的仍是注入时机**：产品清单不含任何 content_scripts，
  *    有没有 content 脚本完全由 background 的注入决定，与权限是否已授予无关。
  *    未被本夹具覆盖的残余面：activeTab 手势授权路径本身（无手势即拿不到，自动化内无从触发）。
+ *
+ *    scoped 形态（hostPermissions 给定）只把指定 origin 写成 host_permissions、保留
+ *    optional_host_permissions:["<all_urls>"]：此时 chrome.permissions.contains(<all_urls>) 为 false，
+ *    未授权 origin 上 background 的 executeScript 会真实失败——「未接入」分支由此可达。
+ *    该形态下批准手势会真的调用 chrome.permissions.request，须配合 stubPermissionRequest 让它立即
+ *    返回、而不是挂在无人可点的授权气泡上。
  */
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const ALL_URLS = '<all_urls>';
+
 /**
- * 复制插件目录并提升 host 权限；返回可直接传给 --load-extension 的路径。
+ * 复制插件目录并改写 host 权限；返回可直接传给 --load-extension 的路径。
+ * 缺省把 optional_host_permissions 整体提为 host_permissions（全站已授权）；
+ * 传 hostPermissions 即 scoped 形态：只授权给定 origin 模式，<all_urls> 留在 optional 侧。
  * 目录留在系统临时区，进程退出即由调用方清理（cleanups）。
  */
-export function prepareExtensionDir(sourceDir) {
+export function prepareExtensionDir(sourceDir, { hostPermissions } = {}) {
   const target = mkdtempSync(join(tmpdir(), 'za-e2e-ext-'));
   cpSync(sourceDir, target, {
     recursive: true,
@@ -36,10 +46,43 @@ export function prepareExtensionDir(sourceDir) {
     throw new Error('产品清单不应再声明 content_scripts：按需注入模型已删除静态注入面');
   }
   const optional = manifest.optional_host_permissions ?? [];
-  delete manifest.optional_host_permissions;
-  manifest.host_permissions = optional;
+  if (hostPermissions === undefined) {
+    delete manifest.optional_host_permissions;
+    manifest.host_permissions = optional;
+  } else {
+    if (hostPermissions.includes(ALL_URLS)) {
+      throw new Error('scoped 夹具的 hostPermissions 不得含 <all_urls>：那等价于缺省的全站授权形态');
+    }
+    manifest.host_permissions = [...hostPermissions];
+    manifest.optional_host_permissions = optional.includes(ALL_URLS) ? optional : [...optional, ALL_URLS];
+  }
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   return target;
+}
+
+/**
+ * 把面板页里的 chrome.permissions.request 换成立即 resolve(false) 的桩，并把每次实参记入
+ * window.__zaPermissionRequests；须在 page.goto(sidepanel.html) 之前调用。
+ * 只桩 request：contains 仍走真实 API，「持有与否」的判定不被替代。
+ */
+export async function stubPermissionRequest(page) {
+  await page.addInitScript(() => {
+    window.__zaPermissionRequests = [];
+    const permissions = globalThis.chrome?.permissions;
+    if (permissions === undefined) return;
+    Object.defineProperty(permissions, 'request', {
+      configurable: true,
+      writable: true,
+      value: (descriptor) => {
+        window.__zaPermissionRequests.push(descriptor);
+        return Promise.resolve(false);
+      },
+    });
+  });
+}
+
+export function readPermissionRequests(page) {
+  return page.evaluate(() => window.__zaPermissionRequests ?? []);
 }
 
 export function removeExtensionDir(dir) {

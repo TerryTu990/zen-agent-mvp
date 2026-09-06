@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { unwrapObs } from '../mock-llm/server.mjs';
 import { prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = process.env.ZA_E2E_EXTENSION_DIR
@@ -435,6 +436,7 @@ async function main() {
       await run('pnpm', ['--filter', '@zen-agent/extension', 'run', 'build']);
     }
 
+    await assertPortsFree([{ port: SERVER_PORT, label: 'gateway' }]);
     console.log('[2/9] 起本地测试站、脚本化 mock LLM 与真实 gateway…');
     const site = await startTargetSite();
     cleanups.push(() => site.close());

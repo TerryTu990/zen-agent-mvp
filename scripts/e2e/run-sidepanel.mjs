@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { failureReason, writeCaseResult } from './evidence.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const EXTENSION_DIR = process.env.ZA_EXTENSION_E2E_DIR
@@ -68,6 +70,7 @@ async function main() {
     }
     // 夹具须先于 Chromium 起、且占用插件开发构建的默认服务地址：面板与 service worker 都按该地址取身份，
     // 夹具不在那里就一律拿不到令牌，401 后的重新激活路径无从观察。
+    await assertPortsFree([{ port: FIXTURE_PORT, label: 'fixture server' }]);
     authServer = createServer(async (req, res) => {
       const headers = {
         'content-type': 'application/json',
@@ -434,8 +437,10 @@ async function main() {
     const disclaimerTop = await disclaimer.evaluate((element) => element.getBoundingClientRect().top);
     assert(disclaimerTop >= surfaceBottom, '免责提示未排在输入框下方');
     await panel.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
+    writeCaseResult('sidepanel', 'passed');
     console.log('Phase 1A Side Panel E2E 全部场景通过 ✅');
   } catch (error) {
+    writeCaseResult('sidepanel', 'failed', { reason: failureReason(error) });
     console.error(`Phase 1A Side Panel E2E 失败：${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   } finally {

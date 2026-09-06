@@ -63,6 +63,7 @@ import { chromium } from 'playwright';
 import { activate } from './anon-identity.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
+import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -683,6 +684,12 @@ async function main() {
       await run('pnpm', ['--filter', '@zen-agent/server', 'run', 'build']);
       await run('pnpm', ['--filter', '@zen-agent/extension', 'run', 'build']);
     }
+    await assertPortsFree([
+      { port: SERVER_PORT, label: 'gateway' },
+      { port: MOCK_LLM_PORT, label: 'mock LLM' },
+      { port: EXPLAIN_PORT, label: 'explain host' },
+      { port: KNOWLEDGE_PORT, label: 'knowledge host' },
+    ]);
     rmSync(WORK_DIR, { recursive: true, force: true });
     for (const name of ['config-ok', 'config-bad-engines']) {
       materializeSnapshot(join(FIXTURE_DIR, name), join(WORK_DIR, name), hostPortReplacements([[4183, EXPLAIN_PORT], [4184, KNOWLEDGE_PORT]]));
