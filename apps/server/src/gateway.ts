@@ -758,10 +758,13 @@ const HITL_TARGET_URL_MAX = 200;
  * 呈现前按签发/围栏同一口径（WHATWG URL）解析归一，再消毒并按上限截断；不可解析或非 http/https 一律不呈现
  * ——这类取值签发必拒，不构成本次的执行目标。
  */
-/** 实参带非空字符串计划：导航卡据此升为任务授权卡、批准即登记任务级授权（契约 TASK_PLAN_SCHEMA 同口径）。 */
+/**
+ * 实参带可见的任务计划（每项都是去空白后非空的字符串）：导航卡据此升为任务授权卡、批准即登记任务级授权。
+ * 登记条件与卡的呈现条件 MUST 同构——用户没在卡上看到计划的批准不得登记整任务。
+ */
 function hasTaskPlan(params: JsonObject): boolean {
   const plan = params['plan'];
-  return Array.isArray(plan) && plan.length > 0 && plan.every((item) => typeof item === 'string');
+  return Array.isArray(plan) && plan.length > 0 && plan.every((item) => typeof item === 'string' && item.trim() !== '');
 }
 
 export function hitlTargetUrl(tool: ToolDefinition, params: JsonObject): string | undefined {

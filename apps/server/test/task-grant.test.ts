@@ -37,12 +37,16 @@ const DONE_TEXT = 'MOCK-TASK-GRANT-DONE';
 type ToolCall = { id: string; name: string; arguments: string };
 type MockDecision = { text: string } | { toolCall: ToolCall };
 
-/** 已发出的 tool_call 数（跨观测轮累计），据此推进剧本：第 n 次调用固定为剧本第 n 步。 */
-function toolCallsSoFar(messages: Array<Record<string, unknown>>): number {
-  return messages.reduce((count, message) => {
+/** 本回合（最近一条真实用户消息之后）已发出的 tool_call 数，据此推进剧本：第 n 次调用固定为剧本第 n 步。 */
+function toolCallsThisTurn(messages: Array<Record<string, unknown>>): number {
+  let count = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message['role'] === 'user' && !String(message['content'] ?? '').startsWith('【站点边界】')) break;
     const calls = message['tool_calls'];
-    return message['role'] === 'assistant' && Array.isArray(calls) ? count + calls.length : count;
-  }, 0);
+    if (message['role'] === 'assistant' && Array.isArray(calls)) count += calls.length;
+  }
+  return count;
 }
 
 function lastObservation(messages: Array<Record<string, unknown>>): string | null {
@@ -83,12 +87,26 @@ const UNPLANNED_SCRIPT: ToolCall[] = [
   browseStep('searchBox'),
 ];
 
+/** 剧本 C（plan 含空白项）：过契约校验但用户看不到计划内容——与无 plan 同律。 */
+const BLANK_PLAN_SCRIPT: ToolCall[] = [
+  call('open_url', { url: SITE_A_URL, task: TASK, plan: ['打开 A 站搜索页', '  '] }),
+  call(SNAPSHOT_TOOL, {}),
+  browseStep('searchBox'),
+];
+
+/** 用户哨兵语 → 剧本；长哨兵在前，避免「带计划」误吞其余变体。 */
+const SCRIPTS: Array<[string, ToolCall[]]> = [
+  ['不带计划', UNPLANNED_SCRIPT],
+  ['空白计划', BLANK_PLAN_SCRIPT],
+  ['带计划', PLANNED_SCRIPT],
+];
+
 function decide(u: string, messages: Array<Record<string, unknown>>): MockDecision {
-  const script = u.includes('不带计划') ? UNPLANNED_SCRIPT : u.includes('带计划') ? PLANNED_SCRIPT : null;
-  if (script === null) return { text: 'MOCK-TASK-GRANT-DEFAULT' };
+  const script = SCRIPTS.find(([sentinel]) => u.includes(sentinel))?.[1];
+  if (script === undefined) return { text: 'MOCK-TASK-GRANT-DEFAULT' };
   const obs = lastObservation(messages);
   if (obs !== null && obs.includes('"error"')) return { text: `MOCK-TASK-GRANT-ERROR ${obs}` };
-  const next = script[toolCallsSoFar(messages)];
+  const next = script[toolCallsThisTurn(messages)];
   return next === undefined ? { text: DONE_TEXT } : { toolCall: next };
 }
 
@@ -403,6 +421,24 @@ describe('adr-028 任务级一次授权：首个动作带 task+plan 的 open_url
 
       const hitl = framesByType(sse.frames, 'hitl-request');
       expect(hitl.map((frame) => frame['toolId'])).toEqual(['open_url', BROWSE_TOOL]);
+      expect(decisionsOf(sessionId)).toEqual([
+        { toolId: 'open_url', verdict: 'hitl' },
+        { toolId: BROWSE_TOOL, verdict: 'hitl' },
+      ]);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('plan 含空白项的 open_url：卡上无可见计划，批准不登记——同任务的后续页面操作仍弹卡', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await driveTurn(token, sessionId, sse, '空白计划：在 A 站打开搜索页后操作');
+      expect(joinedText(sse)).toContain(DONE_TEXT);
+
+      expect(framesByType(sse.frames, 'hitl-request').map((frame) => frame['toolId'])).toEqual(['open_url', BROWSE_TOOL]);
       expect(decisionsOf(sessionId)).toEqual([
         { toolId: 'open_url', verdict: 'hitl' },
         { toolId: BROWSE_TOOL, verdict: 'hitl' },

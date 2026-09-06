@@ -30,7 +30,7 @@
 - `hitlMode`（可选，仅 riskTier=hitl 有意义）：`per-task`（缺省）——同会话同任务首批确认后跨工具自动放行；`every-call`——对外不可撤回动作（发信/删除等）次次挂起单独确认、不复用授权。
 - `resultSchema`：结果契约；回传 body 校验不过即 `invalid-result`、不回喂 agent。
 
-**平台内建工具（不入 tools.json）**：`guide_highlight`（UI 引导）、`page_snapshot`（dom 观察半程；`includeText` 分支取页面正文，无独立正文工具）、`pack_doc`（站点文档按需读）、`site_navigate`（跨站导航，结构契约在 `tool-definition.ts` 的 `SITE_NAVIGATE_*`）、`open_url`（通用开页，`OPEN_URL_*`；注入门＝调用准入门：generic pack 已激活，或静默页冷启动——静默页无 http(s) origin，generic 不激活，故单开这一个通用开页入口）——由网关按装配条件注入（渐进披露），治理各有专路（snapshot/pack_doc 只读不经 toolgate；navigate 类专路裁决）。`page_snapshot` 与两个 navigate 内建工具同样接受可选 `targetPage`（定向到组内其他页，adr-023）。两个 navigate 内建工具另接受可选 `task` 与 `plan: string[]`（非空，语义同 dom 代操作的整任务计划）：带 task + plan 的导航卡是任务授权卡，批准即登记任务级授权；带 task 且任务已获授权的导航直接放行；授权随导航落点延续到新 `(packId, packOrigin)` 作用域（adr-028）。
+**平台内建工具（不入 tools.json）**：`guide_highlight`（UI 引导）、`page_snapshot`（dom 观察半程；`includeText` 分支取页面正文，无独立正文工具）、`pack_doc`（站点文档按需读）、`site_navigate`（跨站导航，结构契约在 `tool-definition.ts` 的 `SITE_NAVIGATE_*`）、`open_url`（通用开页，`OPEN_URL_*`；注入门＝调用准入门：generic pack 已激活，或静默页冷启动——静默页无 http(s) origin，generic 不激活，故单开这一个通用开页入口）——由网关按装配条件注入（渐进披露），治理各有专路（snapshot/pack_doc 只读不经 toolgate；navigate 类专路裁决）。`page_snapshot` 与两个 navigate 内建工具同样接受可选 `targetPage`（定向到组内其他页，adr-023）。两个 navigate 内建工具另接受可选 `task` 与 `plan: string[]`（清单与每项都非空，语义同 dom 代操作的整任务计划）：带 task + 可见 plan（每项去空白后非空）的导航卡是任务授权卡，批准即登记任务级授权；带 task 且任务已获授权的导航直接放行；授权随导航落点延续到新 `(packId, packOrigin)` 作用域（adr-028）。
 
 **升级不变量关联**：U3（execution 闭集；双通道已实现，通道仍是配置维度）、U7（riskTier/dom 校验/围栏判定服务端 fail-closed；结果回传经 schema 校验才回喂）、U1。
 

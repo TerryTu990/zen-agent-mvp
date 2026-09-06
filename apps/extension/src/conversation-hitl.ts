@@ -65,14 +65,17 @@ function summarizeTask(params: JsonObject): { title: string; claim: string; plan
   return { title: String(params['task']), claim: summary, plan };
 }
 
-/** 内建导航工具：只有带 task 且计划非空时才按任务授权卡呈现（批准即授权整任务）；否则是一次性确认卡。 */
+/**
+ * 内建导航工具：只有带 task 且计划每项都是去空白后非空的字符串时才按任务授权卡呈现（批准即授权整任务）；
+ * 否则是一次性确认卡。判据与服务端的授权登记条件同构，卡面不得与登记结果背离。
+ */
 const NAVIGATION_TOOL_IDS = new Set(['open_url', 'site_navigate']);
 
 function isTaskGrantCard(frame: HitlRequestFrame): boolean {
   if (typeof frame.params['task'] !== 'string') return false;
   if (!NAVIGATION_TOOL_IDS.has(frame.toolId)) return true;
   const plan = frame.params['plan'];
-  return Array.isArray(plan) && plan.some((item) => typeof item === 'string' && item !== '');
+  return Array.isArray(plan) && plan.length > 0 && plan.every((item) => typeof item === 'string' && item.trim() !== '');
 }
 
 /** pack 来源徽章措辞（与配置中心同表）。 */

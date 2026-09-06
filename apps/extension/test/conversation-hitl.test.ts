@@ -447,6 +447,19 @@ describe('promptHitl 导航任务授权卡（adr-028：带 task+plan 的导航�
     expect(document.activeElement).toBe(messages.querySelector('[data-za-hitl-reject]'));
   });
 
+  it('导航 plan 含空白项：用户看不到计划内容，按一次性确认卡呈现（与服务端不登记同构）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    void ui.promptHitl(
+      navFrame({ url: 'https://search.example/results?q=zen', task: '检索 zen', plan: ['打开搜索结果页', '  '] }),
+    );
+
+    expect(messages.querySelector('.za-hitl-title')?.textContent).toBe('需你确认：open_url');
+    expect(messages.querySelector('.za-hitl-plan')).toBeNull();
+    expect(messages.querySelector('[data-za-hitl-approve]')?.textContent).toBe('确认执行');
+  });
+
   it('dom 批次带 task 无 plan：仍是任务授权卡（导航之外的口径不变）', () => {
     const messages = messagesEl();
     const ui = createConversationUi(messages);

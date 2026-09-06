@@ -1460,14 +1460,14 @@ describe('toolgate — 内建 open_url 通用导航（generic 配套，与 site_
     ).toBe('hitl');
   });
 
-  it('plan 过 schema：非空字符串数组合法；空数组 / 非字符串项 → deny invalid-params', async () => {
+  it('plan 过 schema：非空字符串数组合法；空数组 / 非字符串项 / 空字符串项 → deny invalid-params', async () => {
     const port = makeSitePort();
     const d = await port.decide({
       ...openBase,
       params: { url: targetUrl, task: '检索', plan: ['打开搜索页', '读取结果'] },
     });
     expect(d.verdict).toBe('hitl');
-    for (const plan of [[], ['x', 1], 'not-array']) {
+    for (const plan of [[], ['x', 1], 'not-array', [''], ['打开搜索页', '']]) {
       expect(await port.decide({ ...openBase, params: { url: targetUrl, task: '检索', plan } })).toEqual({
         verdict: 'deny',
         reason: 'invalid-params',

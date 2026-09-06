@@ -101,9 +101,9 @@ export const SITE_NAVIGATE_TOOL_ID = 'site_navigate';
 /**
  * 内建导航的任务级计划（与 dom 代操作工具的 plan 同义：整任务将执行的操作清单）。
  * 与 task 同现时导航卡按任务授权卡呈现、批准即登记任务级授权；单独出现无治理意义。
- * 口径与 browse.page-operate.plan 一致（items string、不设上限），空清单不构成计划。
+ * 空清单与空字符串项都不构成计划——用户看不到内容的清单不能成为授权登记依据；条目数不设上限。
  */
-const TASK_PLAN_SCHEMA: JsonObject = { type: 'array', minItems: 1, items: { type: 'string' } };
+const TASK_PLAN_SCHEMA: JsonObject = { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } };
 
 export const SITE_NAVIGATE_PARAMS_SCHEMA: JsonObject = {
   type: 'object',

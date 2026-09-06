@@ -23,9 +23,9 @@ Terry 裁决：**一个任务只授权一次**。用户批准的是任务，不�
 
 ### D1 计划上导航工具（contracts）
 
-`OPEN_URL_PARAMS_SCHEMA` 与 `SITE_NAVIGATE_PARAMS_SCHEMA` 增可选 `plan: string[]`（`minItems: 1`、items string，
-口径与 `browse.page-operate.plan` 一致、不设上限）；`task` 仍可选。`plan` 单独出现无治理意义，与 `task` 同现才构成
-「用户在卡上看到了整任务计划」这一登记依据。
+`OPEN_URL_PARAMS_SCHEMA` 与 `SITE_NAVIGATE_PARAMS_SCHEMA` 增可选 `plan: string[]`（`minItems: 1`、items string 且
+`minLength: 1`，条目数不设上限）；`task` 仍可选。`plan` 单独出现无治理意义，与 `task` 同现才构成
+「用户在卡上看到了整任务计划」这一登记依据；空字符串项在契约层即拒（invalid-params），用户看不到内容的清单不是计划。
 
 ### D2 两个导航工具同律（toolgate）
 
@@ -35,8 +35,10 @@ deny（不消费授权，adr-024 D1）→ 带 `task` 且同作用域授权命中
 
 ### D3 带计划的导航批准即登记（gateway）
 
-导航调用带 `task` 且 `plan` 为非空字符串数组时，用户批准即 `grantHitl`（作用域 = 当前 `(packId, packOrigin)`）。
-不带 `plan` 的导航批准只覆盖本次、不登记——卡上只有目标地址，不构成任务级知情授权。`every-call` 工具照旧不登记。
+导航调用带 `task` 且 `plan` 每项都是去空白后非空的字符串时，用户批准即 `grantHitl`（作用域 = 当前 `(packId, packOrigin)`）。
+不带 `plan`（或 `plan` 含空白项）的导航批准只覆盖本次、不登记——卡上没有可见计划，不构成任务级知情授权。
+`every-call` 工具照旧不登记。登记谓词（服务端 `hasTaskPlan`）与卡的呈现谓词（插件 `isTaskGrantCard`）MUST 同构：
+服务端登记了整任务而用户看到的却是一次性确认卡，是本决策明令禁止的背离。
 
 ### D4 授权随任务导航延续（gateway）
 
@@ -52,7 +54,7 @@ deny（不消费授权，adr-024 D1）→ 带 `task` 且同作用域授权命中
 
 ### D5 任务授权卡（extension）
 
-导航工具带 `task` + 非空 `plan` 的 HITL 卡按任务授权卡呈现：标题「授权任务：<task>」、一行「将先打开：<targetUrl>」
+导航工具带 `task` + 可见 `plan`（每项去空白后非空）的 HITL 卡按任务授权卡呈现：标题「授权任务：<task>」、一行「将先打开：<targetUrl>」
 （仍取服务端组装字段）、计划有序清单、既有提示「授权后本任务内的后续操作……自动执行；执行中可随时点停止」、
 按钮「授权执行」；默认焦点仍落「拒绝」。无 `plan` 的导航卡维持一次性确认卡（「需你确认」/「目标地址」/「确认执行」）。
 客户端只按帧字段呈现，零治理判定（U7/U8）。
