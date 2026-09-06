@@ -1155,7 +1155,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     const focusLabel = el('label', 'za-cc-field-inline');
     focusLabel.append(el('span', undefined, '关注点'), focus);
 
-    const remove = el('button', 'za-cc-btn za-cc-watch-remove', '删除');
+    const remove = el('button', 'za-cc-btn za-cc-btn-danger za-cc-watch-remove', '删除');
     remove.type = 'button';
     remove.dataset['zaWatchId'] = draft.id;
     remove.addEventListener('click', () => {
