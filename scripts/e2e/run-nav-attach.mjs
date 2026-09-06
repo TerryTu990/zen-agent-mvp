@@ -266,6 +266,8 @@ function spawnServer({ llmPort, auditPath, stateRoot }) {
     stdio: ['ignore', 'inherit', 'inherit'],
     env: {
       ...process.env,
+      // 落点接入等待取产品默认值：attached 断言依赖它，不随开发者 shell 的取值翻转。
+      ZA_NAV_ATTACH_WAIT_MS: undefined,
       ZA_JWT_SECRET: JWT_SECRET,
       ZA_SIGNING_SECRET: SIGNING_SECRET,
       ZA_JWT_ISS_ALLOWLIST: JWT_ISS,

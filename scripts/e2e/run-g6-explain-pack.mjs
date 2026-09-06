@@ -94,7 +94,6 @@ const JWT_ISS = 'zen-agent-anon';
  */
 const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_G6_MOCK_PORT ?? 8803);
-// 站点端口硬绑：夹具 pack.json 的 site.origin 与此处必须同值，不经 env 覆盖。
 const EXPLAIN_PORT = Number(process.env.ZA_E2E_G6_EXPLAIN_PORT ?? 4183);
 const KNOWLEDGE_PORT = Number(process.env.ZA_E2E_G6_KNOWLEDGE_PORT ?? 4184);
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;

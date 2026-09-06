@@ -58,6 +58,8 @@ pack 级 `packs/<packId>/eval/scenarios.json`：`{id, dimension, url（含 pack 
 snapshotElements / snapshotNotices / snapshotText / snapshotTextTruncated / snapshotSequence（回给
 `snapshot-request` 的确定性夹具；序列项可带 `snapshotUrl` 覆写上报的页面地址，模拟导航落点页的快照）, execResultError（令代执行回错误结果）, execResultReads（dom 批次回传的 read 采集值，令工具返回体承载页面来源内容）, landingAttached（缺省 true：导航落点页按已接入上报；false 则按注入失败的真实形态上报为 silent，服务端回喂 attached:false、同址再导航被止损 deny）, expect}`。
 
+评测 runner 起服务端时置 `ZA_NAV_ATTACH_WAIT_MS=0`，且落点页状态在 exec-result 之前上报：服务端「等待落点接入 / 唤醒」路径不经评测覆盖，由以产品默认值起服的浏览器 E2E（`test:e2e:coldstart` / `test:e2e:nav-attach` / `test:e2e:task-grant`）兜住；评测全绿不证明该路径无回归。
+
 ### `expect` 字段
 
 **文本判据**
