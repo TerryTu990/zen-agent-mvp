@@ -26,9 +26,12 @@ const BLANK_PAGE_URLS = new Set([
   'edge://newtab/',
 ]);
 
-/** url 缺省或为空串按空白处理：清单声明 tabs 权限，取不到 url 只可能是尚未提交导航的空文档。 */
+/**
+ * url 缺省或为空串不算空白：那是首次导航尚未提交的 tab（真实目标在 pendingUrl），
+ * 把它当空白页原地换掉会静默丢弃上一次已回喂成功的导航。
+ */
 export function isBlankPageUrl(url: string | undefined): boolean {
-  return url === undefined || url === '' || BLANK_PAGE_URLS.has(url);
+  return url !== undefined && BLANK_PAGE_URLS.has(url);
 }
 
 function parseUrl(url: string | undefined): URL | null {
