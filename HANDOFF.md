@@ -66,7 +66,7 @@ adr-028（任务级一次授权）、adr-027 §4 补记（批准手势申请站�
 | T-E | 配置中心「特别丑」 | 按 `DESIGN.md` 重做（左侧固定导航 + 768px 阅读列 + 分区卡片 + 行式设置项 + 粘性保存栏），功能与测试语义不变 |
 | E2E 改造 | 旧 E2E 全绿却没拦住上述三问题 | 夹具 scoped 授权形态 + 桩化权限询问；`nav-attach` 六条断言；coldstart/task-grant 断言收紧为 `attached:true`；端口守卫；家族 runner；评测 `landingAttached:false` 分支 |
 
-每项都走了「实施 → 审核 → 修复 → 审核」（审核最多两次），fable 5.1 总控；版本：快照 2.2.0、插件 0.12.0（**尚未发布**，见 §7）。
+每项都走了「实施 → 审核 → 修复 → 审核」（审核最多两次），fable 5.1 总控；版本：快照 2.2.0、插件 0.12.0（已发布，见 §7）。
 
 ## 五、必须内化的约束（违反即返工）
 
@@ -95,6 +95,6 @@ adr-028（任务级一次授权）、adr-027 §4 补记（批准手势申请站�
 
 ## 七、下一步建议
 
-1. **发布**：按 `/release` skill——`release/build-server-image.sh` → `release/deploy-server.sh --snapshot assets`（快照 2.2.0）→ `release/build-extension.sh`（插件 0.12.0）；发布后在 HANDOFF 本节登记 tag 与冒烟结果。
+1. **已发布（2026-09-07）**：服务端 `zen-agent-server:dc04179` @ lingm2（release `dc04179-20260906T233819Z-59982`，快照 2.2.0 与本仓 `assets/` 逐文件一致，healthz/匿名激活冒烟通过，容器 healthy）；插件 `release/artifacts/zen-agent-extension-0.12.0.zip`（本机 gitignore 产物，已解压到同名目录供 Chrome 加载，生产地址已烤入）。回滚见 release skill。
 2. **真机验收**：Terry 在 0.12.0 上按计划文档 §7.1 复跑「帮我打开百度，查询 AI agent 新闻，打开最值得关注的一条并总结」；任何一项不符按 §7.2 定位是手势/接入时长/模型行为哪一类。
 3. 上一轮遗留：r2 partial 两条（§6）；真实 LLM 门对齐（§6）。
