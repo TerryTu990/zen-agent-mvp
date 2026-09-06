@@ -2,7 +2,8 @@
  * 浏览器 E2E 家族串行 runner：一次 pnpm -r build → 逐脚本串行执行 → 汇总退出码/耗时/git rev。
  * 识别 ZA_E2E_SKIP_BUILD 的脚本以 1 起（复用本次构建产物），其余脚本仍各自构建。
  * 任一脚本非零即家族非零，但不中断——后续脚本照跑，一次拿到全家族结果。
- * 结果落 .za/e2e/family-<rev>.json；各脚本自己的证据仍在 .za/e2e/e2e-evidence/<case>/。
+ * 结果落 .za/e2e/family-<rev>.json（工作区有未提交改动时为 family-<rev>-dirty.json 并记 dirty:true）；
+ * 各脚本自己的证据仍在 .za/e2e/e2e-evidence/<case>/。
  *
  * 运行：node scripts/e2e/run-family.mjs [--only=a,b] [--skip=c]（名称见 FAMILY）。
  * 端口隔离：各脚本读各自的 ZA_E2E_* 端口 env，家族 runner 原样透传。
@@ -11,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gitCommit } from './evidence.mjs';
+import { gitCommit, gitDirty } from './evidence.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const OUT_DIR = join(REPO_ROOT, '.za', 'e2e');
@@ -63,16 +64,21 @@ async function main() {
     (entry) => (only.length === 0 || only.includes(entry.name)) && !skip.includes(entry.name),
   );
   const commit = gitCommit();
+  const dirty = gitDirty();
   const startedAt = new Date();
-  const report = { commit, startedAt: startedAt.toISOString(), build: null, cases: [], passed: false };
+  const report = { commit, dirty, startedAt: startedAt.toISOString(), build: null, cases: [], passed: false };
   mkdirSync(OUT_DIR, { recursive: true });
-  const reportPath = join(OUT_DIR, `family-${commit}.json`);
+  const reportPath = join(OUT_DIR, `family-${commit}${dirty ? '-dirty' : ''}.json`);
   const flush = () => writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
 
-  console.log(`E2E 家族（commit ${commit}）：${selected.map((entry) => entry.name).join(' → ')}`);
-  console.log('[0] 夹具自检…');
+  console.log(`E2E 家族（commit ${commit}${dirty ? '，工作区 dirty' : ''}）：${selected.map((entry) => entry.name).join(' → ')}`);
+  console.log('[0] 夹具与端口守卫自检…');
   const selfCheckStart = Date.now();
-  const selfCheck = await runProcess('node', ['--test', join(REPO_ROOT, 'scripts', 'e2e', 'extension-fixture.test.mjs')], process.env);
+  const selfCheck = await runProcess(
+    'node',
+    ['--test', join(REPO_ROOT, 'scripts', 'e2e', 'extension-fixture.test.mjs'), join(REPO_ROOT, 'scripts', 'e2e', 'port-guard.test.mjs')],
+    process.env,
+  );
   report.fixtureSelfCheck = { exitCode: selfCheck, durationMs: Date.now() - selfCheckStart };
   console.log('[1] pnpm -r build…');
   const buildStart = Date.now();
@@ -82,7 +88,7 @@ async function main() {
   if (buildCode !== 0 || selfCheck !== 0) {
     report.finishedAt = new Date().toISOString();
     flush();
-    console.error(buildCode !== 0 ? `构建失败（退出码 ${buildCode}），家族终止。` : `夹具自检失败（退出码 ${selfCheck}），家族终止。`);
+    console.error(buildCode !== 0 ? `构建失败（退出码 ${buildCode}），家族终止。` : `自检失败（退出码 ${selfCheck}），家族终止。`);
     process.exit(1);
   }
 

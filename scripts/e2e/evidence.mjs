@@ -18,6 +18,15 @@ export function gitCommit() {
   }
 }
 
+/** 工作区含未提交改动（含未跟踪文件）即 true；git 不可用时按 dirty 处理，宁可多标不可漏标。 */
+export function gitDirty() {
+  try {
+    return execFileSync('git', ['status', '--porcelain'], { cwd: REPO_ROOT, encoding: 'utf8' }).trim() !== '';
+  } catch {
+    return true;
+  }
+}
+
 /** status ∈ passed | failed；failed 时由调用方在 extra 里带 reason。返回该用例的证据目录。 */
 export function writeCaseResult(caseName, status, extra = {}) {
   const dir = join(EVIDENCE_ROOT, caseName);
