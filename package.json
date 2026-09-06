@@ -20,6 +20,7 @@
     "test:e2e:explain-pack": "node scripts/e2e/run-g6-explain-pack.mjs",
     "test:e2e:user-config": "node scripts/e2e/run-g6-user-config.mjs",
     "test:e2e:automation": "node scripts/e2e/run-g6-automation.mjs",
+    "test:e2e:task-grant": "node scripts/e2e/run-task-grant.mjs",
     "test:e2e:real": "node --env-file=../tmp/zen-agent-demo/.env scripts/e2e/run-real-llm.mjs",
     "test:e2e:real-site": "node --env-file=../tmp/zen-agent-demo/.env scripts/e2e/run-g6-real-site.mjs",
     "lint:deps": "node scripts/lint-deps.mjs",
