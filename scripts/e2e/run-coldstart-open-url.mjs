@@ -14,7 +14,8 @@
  * 判定：
  *  ① 首轮送达 LLM 的工具面含 open_url、不含 generic pack 工具（仅基座 + 冷启动注入门）；
  *  ② 面板出现 open_url 的 HITL 确认卡，且卡出现时目标页尚未打开（确认先于执行）；
- *  ③ 批准后 background 直执行 navigate：目标页新开且入本会话组；
+ *  ③ 批准后 background 直执行 navigate：空白页原地导航到目标——组内 tab 数不变，
+ *    原空白 tab 的 url 变为目标且仍在组内（不新开页签留下空白页）；
  *  ④ agent 收到成功回喂：mock 收到含 {url} 的 observation，面板出现导航成功总结；
  *  ⑤ 落点后装配切到该站：injection 视图变为 generic-web/browse；面板常驻同组、可继续输入；
  *  ⑥ 审计链：tool-decision(open_url, hitl) → hitl-verdict(approve) → tool-execution(ok) 且授权先于执行。
@@ -325,7 +326,7 @@ async function main() {
         ['za.zenGroup.g' + groupId]: true,
         ['za.panelGroup.w' + tab.windowId]: groupId,
       });
-      return { groupId, windowId: tab.windowId, tabUrl: tab.pendingUrl ?? tab.url ?? '' };
+      return { groupId, windowId: tab.windowId, tabId: tab.id, tabUrl: tab.pendingUrl ?? tab.url ?? '' };
     });
     assert(typeof group.groupId === 'number', '未能建立会话组');
     assert(!/^https?:/.test(group.tabUrl), `组内唯一成员应为静默页，实际 ${group.tabUrl}`);
@@ -346,11 +347,15 @@ async function main() {
     const hitlText = await hitlCard.innerText();
     assert(hitlText.includes('打开用户指定的本地测试站'), `HITL 卡未呈现导航任务：${hitlText}`);
     // 确认先于执行：卡片出现时目标页必须尚未打开。
-    const tabsBeforeApprove = await sw.evaluate(
-      async (origin) => (await chrome.tabs.query({})).filter((t) => (t.url ?? '').startsWith(origin)).length,
-      site.origin,
+    const beforeApprove = await sw.evaluate(
+      async ({ origin, groupId }) => ({
+        targetTabs: (await chrome.tabs.query({})).filter((t) => (t.url ?? '').startsWith(origin)).length,
+        groupTabs: (await chrome.tabs.query({ groupId })).length,
+      }),
+      { origin: site.origin, groupId: group.groupId },
     );
-    assert(tabsBeforeApprove === 0, 'HITL 批准前目标页已被打开（确认未先于执行）');
+    assert(beforeApprove.targetTabs === 0, 'HITL 批准前目标页已被打开（确认未先于执行）');
+    assert(beforeApprove.groupTabs === 1, `批准前组内应只有那个空白页，实际 ${beforeApprove.groupTabs} 个`);
     const firstRequest = mock.requests[0];
     assert(firstRequest !== undefined, 'mock LLM 未收到首轮请求');
     assert(firstRequest.toolNames.includes('open_url'), `首轮工具面缺 open_url：${firstRequest.toolNames}`);
@@ -363,15 +368,25 @@ async function main() {
 
     await waitFor(
       async () => {
-        const tabs = await sw.evaluate(
-          async (origin) =>
-            (await chrome.tabs.query({})).map((t) => ({ url: t.url ?? '', groupId: t.groupId })).filter((t) => t.url.startsWith(origin)),
-          site.origin,
+        const state = await sw.evaluate(
+          async ({ groupId, tabId }) => {
+            const blank = await chrome.tabs.get(tabId).catch(() => null);
+            return {
+              groupTabs: (await chrome.tabs.query({ groupId })).length,
+              blankUrl: blank === null ? null : (blank.url ?? ''),
+              blankGroupId: blank === null ? null : blank.groupId,
+            };
+          },
+          { groupId: group.groupId, tabId: group.tabId },
         );
-        if (tabs.length === 0) return '目标页未打开';
-        return tabs[0].groupId === group.groupId ? true : `目标页 groupId=${tabs[0].groupId}`;
+        if (state.blankUrl === null) return '原空白 tab 已不存在（被换成了新页签）';
+        if (!state.blankUrl.startsWith(site.origin)) return `原空白 tab url=${state.blankUrl}`;
+        if (state.blankGroupId !== group.groupId) return `原 tab groupId=${state.blankGroupId}`;
+        return state.groupTabs === beforeApprove.groupTabs
+          ? true
+          : `组内 tab 数 ${beforeApprove.groupTabs}→${state.groupTabs}`;
       },
-      '目标页新开且入本会话组',
+      '空白页原地导航到目标：组内 tab 数不变，原空白 tab 的 url 变为目标且仍在组内',
       30_000,
     );
 
