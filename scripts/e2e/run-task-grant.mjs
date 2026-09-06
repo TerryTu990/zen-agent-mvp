@@ -14,7 +14,9 @@
  *  ② 批准后空白页原地导航到 A（组内 tab 数不变）；
  *  ③ 整回合面板只出现过一张 HITL 卡；面板最终出现含 B 哨兵的总结；
  *  ④ 审计：hitl-verdict 恰 1 条（approve）；其后 tool-decision 一律 allow；tool-execution 一律 ok；
- *     B 站作用域下的页面操作 allow 且事件落点页 origin = B（授权随任务导航延续到了新作用域）。
+ *     B 站作用域下的页面操作 allow 且事件落点页 origin = B（授权随任务导航延续到了新作用域）；
+ *  ⑤ 两次非定向导航（A / B）的回喂 observation 均含 attached:true——落点页真实注入并上报接入后服务端才这样回喂，
+ *     未接入即 mock 回 MOCK-NOT-ATTACHED 红；harness 侧 waitAttached 只是快照时序保险，不替代该判定。
  *
  * 运行：node scripts/e2e/run-task-grant.mjs（ZA_E2E_SKIP_BUILD=1 复用既有构建产物）
  */
@@ -194,6 +196,8 @@ function startScriptedLlm({ waitAttached }) {
         decision = { text: 'MOCK-DEFAULT' };
       } else if (obs !== null && obs.includes('"error"')) {
         decision = { text: `MOCK-ERROR ${obs}` };
+      } else if ((step === 1 || step === 4) && !obs.includes('"attached":true')) {
+        decision = { text: `MOCK-NOT-ATTACHED ${obs}` };
       } else if (step === 0) {
         decision = toolNames.includes('open_url')
           ? toolCall('call_open_a', 'open_url', { url: SITE_A_URL, task: TASK, plan: PLAN, reason: '先打开 A 站搜索页' })
@@ -499,7 +503,7 @@ async function main() {
       return tabs.map((t) => t.url ?? '');
     }, group.groupId);
     assert(tabsAfter.some((url) => url.startsWith(SITE_A_ORIGIN)), `组内缺 A 站页：${tabsAfter}`);
-    assert(tabsAfter.some((url) => url === SITE_B_URL), `组内缺 B 站页（同任务导航未开出 B）：${tabsAfter}`);
+    assert(tabsAfter.some((url) => url.startsWith(SITE_B_ORIGIN)), `组内缺 B 站页（同任务导航未开出 B）：${tabsAfter}`);
     const searched = await (async () => {
       const page = context.pages().find((p) => p.url() === SITE_A_URL);
       return page === undefined ? null : page.evaluate(() => document.body.dataset.searched ?? null);
