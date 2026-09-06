@@ -111,4 +111,7 @@ D. assets：ZA-FEAT-11 与 web-search SKILL 同口径（未接入不重复打开
 
 - D2-A 的 `<all_urls>` 一次性申请改变了 adr-027 的权限体验口径（注入模型未变）；可回退为逐站申请但会回到「任务内自动导航无法接入」。
 - D3 扩大了单次批准的覆盖面；缓解见 D3-8，随 adr-028 登记。
+- D4 撤掉的「本页生效」块曾是 R-2 裁决指定的 R4 终态载体。本轮把 R4 可追溯性与北极星验收改挂配置中心
+  （product-form-definition §3/§4/§6、00-design-brief §9、03-configuration §1 已同步，R-2 标注被取代）；
+  面板侧是否回挂装配可见载体挂锚点「配置中心 Atelier 重做（D5）落地时裁决」。此改口径尚待 Terry 追认。
 - 真实 LLM / 真实站点 E2E 仍 BLOCKED（凭证在 SEC-03 读禁区），本轮以脚本化 mock E2E 与评测为门；发布后需 Terry 复跑同一任务验收。
