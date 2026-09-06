@@ -377,7 +377,7 @@ const SITE_NAVIGATE_TOOL_DEF: DomToolDefinition = {
   id: SITE_NAVIGATE_TOOL_ID,
   featureIds: [],
   description:
-    '当用户任务需要在其他站点协作完成时，用它导航到系统提示"已安装站点索引"中列出的目标站点。url 必须取自该索引中列出的可达 URL；只能导航到索引内的站点。task 填本次导航所属的任务标题（与页面操作工具的 task 保持一致）：已获用户授权的任务内导航无需再次确认。导航成功后你的可用功能与工具立即切换为新站点配置，直接继续当前任务（先 page_snapshot 观察新页面）。',
+    '当用户任务需要在其他站点协作完成时，用它导航到系统提示"已安装站点索引"中列出的目标站点。url 必须取自该索引中列出的可达 URL；只能导航到索引内的站点。task 填本次导航所属的任务标题（与页面操作工具的 task 保持一致）。若本次导航是任务的首个动作，MUST 同时带 plan：用人话逐条列出整个任务将执行的操作（含后续导航、页面操作与不可撤回动作）——用户在这张卡上一次授权整个任务，批准后同一 task 的后续导航与页面操作自动执行、用户可随时停止；已获授权的任务内导航直接执行、不再确认。无 task/plan 的一次性导航每次都需用户确认。导航成功后你的可用功能与工具立即切换为新站点配置，直接继续当前任务（先 page_snapshot 观察新页面）。',
   params: SITE_NAVIGATE_PARAMS_SCHEMA,
   execution: 'client',
   riskTier: 'hitl',
@@ -398,14 +398,14 @@ const SITE_NAVIGATE_TOOL_SPEC: LlmToolSpec = {
 /**
  * built-in 通用页面导航工具（generic pack 配套）：不入 pack tools.json，仅当 generic pack 激活
  * （活跃页是 http/https）或静默页冷启动，且执行偏好允许 dom 时注入。经 toolgate 专路裁决
- * （协议闭集 http/https + 禁内嵌凭证，每次必弹卡不复用授权）与一次性签名下发，
+ * （协议闭集 http/https + 禁内嵌凭证；带 task 且任务已获授权即放行，否则确认）与一次性签名下发，
  * 构造 navigate dom 指令复用客户端跨窗口开页入组（U7）。
  */
 const OPEN_URL_TOOL_DEF: DomToolDefinition = {
   id: OPEN_URL_TOOL_ID,
   featureIds: [],
   description:
-    '在通用页面上打开任意 http/https 页面以继续当前任务（如去搜索引擎检索、打开用户给出的网址）。已安装站点索引内的站点优先用 site_navigate。url 填目标绝对地址；task 可选，填本次导航所属的任务标题；reason 可选，用一句话向用户说明为何要打开该页面。每次导航都会经用户确认后才执行；到达后先 page_snapshot 观察新页面再继续。',
+    '在通用页面上打开任意 http/https 页面以继续当前任务（如去搜索引擎检索、打开用户给出的网址）。已安装站点索引内的站点优先用 site_navigate。url 填目标绝对地址；reason 可选，用一句话向用户说明为何要打开该页面。task 填本次导航所属的任务标题（与页面操作工具的 task 保持一致）。若本次导航是任务的首个动作，MUST 同时带 plan：用人话逐条列出整个任务将执行的操作（含后续导航、页面操作与不可撤回动作）——用户在这张卡上一次授权整个任务，批准后同一 task 的后续导航与页面操作自动执行、用户可随时停止；已获授权的任务内导航直接执行、不再确认。无 task/plan 的一次性导航每次都需用户确认。到达后先 page_snapshot 观察新页面再继续。',
   params: OPEN_URL_PARAMS_SCHEMA,
   execution: 'client',
   riskTier: 'hitl',
@@ -756,6 +756,12 @@ const HITL_TARGET_URL_MAX = 200;
  * 呈现前按签发/围栏同一口径（WHATWG URL）解析归一，再消毒并按上限截断；不可解析或非 http/https 一律不呈现
  * ——这类取值签发必拒，不构成本次的执行目标。
  */
+/** 实参带非空字符串计划：导航卡据此升为任务授权卡、批准即登记任务级授权（契约 TASK_PLAN_SCHEMA 同口径）。 */
+function hasTaskPlan(params: JsonObject): boolean {
+  const plan = params['plan'];
+  return Array.isArray(plan) && plan.length > 0 && plan.every((item) => typeof item === 'string');
+}
+
 export function hitlTargetUrl(tool: ToolDefinition, params: JsonObject): string | undefined {
   let raw: JsonValue | undefined;
   if (tool.id === OPEN_URL_TOOL_ID || tool.id === SITE_NAVIGATE_TOOL_ID) {
@@ -1517,6 +1523,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
    * 网关只按判定下发帧、挂起等待客户端回传、把规整后的 observation 交回 agent loop。
    * tool-card 摘要仅取 toolId（不含实参值，SEC-04）；deny/reject 时自造 ok:false observation。
    */
+  /**
+   * 代执行子流程的结果：观测之外附带「本次调用是否处于任务级授权之下」——授权命中放行，或带计划获批并登记。
+   * 纯数据标记，只供导航成功分支决定授权是否随任务延续到落点作用域；不进回喂、不进审计。
+   */
+  type ExecSubflowOutcome = Observation & { taskGranted?: true };
+
   async function runExecSubflow(
     session: SessionState,
     claims: IdentityClaims,
@@ -1531,7 +1543,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     /** 本回合的自动化 run 归因（C5 automationRunId/automationId）；人工回合为 null。 */
     run: AutomationRunRef | null,
     cancelled: () => boolean,
-  ): Promise<Observation> {
+  ): Promise<ExecSubflowOutcome> {
     const { sessionId } = session;
     const { toolCallId, params } = call;
     if (cancelled()) {
@@ -1626,7 +1638,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
      * 重装配只用于收紧——取当前 L2 生效面并核对工具是否仍在装配出的工具面内（pack 被关停即不在）；
      * 判定本体（分级/围栏/dom 批次 ref 出自最近快照）在 toolgate，fail-closed。
      * 装配取不到当前生效面即视为批准不再成立，不回落本轮定格面放行。
-     * 内建导航不登记任务级授权、也不属任何 pack 工具面，故只复核参数与目标围栏。
+     * 内建导航不属任何 pack 工具面、无 L2 分级可收紧，故只复核参数与目标围栏。
      */
     const reconfirmApproval = async (): Promise<string | null> => {
       const builtinNavigation = tool.id === SITE_NAVIGATE_TOOL_ID || tool.id === OPEN_URL_TOOL_ID;
@@ -1699,6 +1711,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
       finish('failed');
       return { toolCallId, ok: false, content: null, error: decision.reason ?? 'denied' };
     }
+    // 内建导航恒为 hitl 档、无 auto 路径：decide 放行即任务级授权命中（toolgate 契约）。
+    const navigationTool = tool.id === SITE_NAVIGATE_TOOL_ID || tool.id === OPEN_URL_TOOL_ID;
+    let taskGranted = navigationTool && decision.verdict === 'allow' && typeof params['task'] === 'string';
     // 批准恢复期复核的结论（adr-024 D3）：非 null 即批准已不成立——不登记授权、不签发指令，
     // 按与签发拒绝同一形态收尾（回喂拒绝观测 + tool-execution 记 error），使 agent 如实转述（R6）。
     let approvalStale: string | null = null;
@@ -1817,16 +1832,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
           },
         }, pack, run ?? undefined, auditPageRef());
       }
-      // 批准即任务级授权：登记 grant，同会话同 pack 同 origin 的同任务后续调用（跨工具，含 navigate）
+      // 批准即任务级授权：登记 grant，同会话同 pack 同 origin 的同任务后续调用（跨工具，含导航）
       // decide 直接放行。两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得
-      // 顺带解锁同名任务）；site_navigate / open_url（导航卡只呈现目标 URL，用户未见任务计划，不构成
-      // 任务级知情授权）。
+      // 顺带解锁同名任务）；不带 plan 的 site_navigate / open_url（导航卡只呈现目标 URL，用户未见任务计划，
+      // 不构成任务级知情授权）。带 task + plan 的导航卡已把整任务计划呈现给用户，批准即登记（adr-028）。
       if (
         approvalStale === null &&
         tool.hitlMode !== 'every-call' &&
-        tool.id !== SITE_NAVIGATE_TOOL_ID &&
-        tool.id !== OPEN_URL_TOOL_ID &&
-        typeof params['task'] === 'string'
+        typeof params['task'] === 'string' &&
+        (!navigationTool || hasTaskPlan(params))
       ) {
         await deps.toolgate.grantHitl({
           sessionId,
@@ -1834,6 +1848,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ...(scope.packId !== undefined ? { packId: scope.packId } : {}),
           ...(scope.packOrigin !== undefined ? { packOrigin: scope.packOrigin } : {}),
         });
+        taskGranted = navigationTool;
         if (cancelled()) return stopped();
       }
     }
@@ -1907,7 +1922,32 @@ export function createGateway(deps: GatewayDeps): Gateway {
     if (cancelled()) return stopped();
     finish(observation.ok ? 'succeeded' : 'failed');
     recordExecution(issueRejected ? 'issue-rejected' : execOutcome(observation));
-    return observation;
+    return taskGranted ? { ...observation, taskGranted: true } : observation;
+  }
+
+  /**
+   * 授权随任务导航延续（adr-028）：导航本身已在任务授权下放行或带计划获批，落点重装配后作用域
+   * (packId, packOrigin) 随站切换，同一 task 在新作用域再登记一次，使已批准任务内的后续操作不再弹卡。
+   * 只由服务端在导航成功分支驱动——延续的是用户批准过的那次导航；用户手动切页/换站不延续
+   * （adr-024 D4 防挂靠语义保留）。越界落地（fenceEscaped）按仅基座装配，不延续。
+   */
+  async function continueTaskGrant(
+    session: SessionState,
+    claims: IdentityClaims,
+    landedPack: PackRef,
+    params: JsonObject,
+    outcome: ExecSubflowOutcome,
+    fenceEscaped: boolean,
+  ): Promise<void> {
+    const task = params['task'];
+    if (outcome.taskGranted !== true || typeof task !== 'string' || fenceEscaped) return;
+    const scope = await packScope(session, landedPack, claims);
+    await deps.toolgate.grantHitl({
+      sessionId: session.sessionId,
+      task,
+      ...(scope.packId !== undefined ? { packId: scope.packId } : {}),
+      ...(scope.packOrigin !== undefined ? { packOrigin: scope.packOrigin } : {}),
+    });
   }
 
   async function runTurn(
@@ -2789,6 +2829,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
               const previousGenericOrigin = pack.genericOrigin ?? null;
               ({ pack, featureId, composed, hostToolsById, tools, evidenceRules, siteOrigin, userConfig, openUrlOk, appToolsOk } =
                 await assembleFor(landedUrl, fenceEscaped));
+              await continueTaskGrant(session, claims, pack, call.params, observation, fenceEscaped);
               messages[0] = {
                 role: 'system',
                 content: withManifest(
