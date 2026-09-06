@@ -11,7 +11,6 @@ import type { ExecutionPreference } from './frames.js';
 import {
   SIDE_PANEL_PORT_NAME,
   type BackgroundToSidePanelMessage,
-  type InjectionDescriptionView,
   type MessageDeliveryFailure,
   type SidePanelUiEvent,
   type SidePanelToBackgroundMessage,
@@ -43,52 +42,8 @@ interface LocalEcho {
 }
 type TaskContextMessage = Extract<BackgroundToSidePanelMessage, { kind: 'task-context' }>;
 
-export interface ContextHeaderView {
-  state: 'waiting' | 'ready' | 'outside' | 'denied';
-  title: string;
-  detail: string;
-}
-
-/** 面板头部三态视图：message 为 null 表示已绑组但尚未收到上下文（waiting）。 */
-export function contextHeaderView(message: TaskContextMessage | null, groupId: number): ContextHeaderView {
-  if (message === null) {
-    return { state: 'waiting', title: '正在连接任务页面', detail: `任务组 ${groupId}` };
-  }
-  if (!message.authorized) {
-    return {
-      state: 'outside',
-      title: '当前页面不在任务组内',
-      detail: message.url ?? `任务组 ${message.groupId}`,
-    };
-  }
-  return {
-    state: 'ready',
-    title: message.title ?? '任务页面已连接',
-    detail: message.url ?? `任务组 ${message.groupId}`,
-  };
-}
-
-const PACK_SOURCE_LABELS: Record<'official' | 'community' | 'local', string> = {
-  official: '官方',
-  community: '社区',
-  local: '自建',
-};
-
-/**
- * 本块的数据源只有服务端注入自省端点，而该端点尚不含网关追加的 L0 文本与平台内建工具面；
- * 措辞据实限定到「站点包注入面」，不得让用户以为看到的是模型收到的全部内容（R6）。
- */
-const PAGE_EFFECT_NOTE =
-  '以上只是本页站点包的注入面（数据源：服务端注入自省）；平台内建工具与网关按页追加的说明不在此列。';
-
-const PAGE_EFFECT_HEADLINES: Record<'pack' | 'generic' | 'base-only' | 'site-denied', string> = {
-  pack: '本页命中站点包，已按该包装配规则、知识与工具面。',
-  generic: '本页没有专属站点包，已用通用兜底包辅助；站点专属知识与代操作工具不可用。',
-  'base-only': '本页没有可用站点包，本轮只注入平台基座。',
-  'site-denied':
-    '你把本站加进了「不辅助的站点」名单，本轮不装配任何站点包、只注入平台基座；' +
-    '要恢复请在配置中心「全局设置」里移除该条目。',
-};
+/** 面板根 `data-state`：任务组连接状态与本页可辅助性的四态。 */
+type PanelState = 'waiting' | 'ready' | 'outside' | 'denied';
 
 /**
  * 客户端自述：只陈述**当下与此后**，不断言过去——「拉黑前该页早已激活并上报过」是最常见的流程，
@@ -97,8 +52,7 @@ const PAGE_EFFECT_HEADLINES: Record<'pack' | 'generic' | 'base-only' | 'site-den
  * 闸门拦不住的三件事必须一并写明——用户主动发送的内容以 origin=null 上行（右键选区入口即经此
  * 把本页正文送进输入框），组级 open_url 仍可能把本页导航到别处，两侧读不到名单的那一轮
  * 一律 fail-open（不确定不拦，见 site-denylist 模块头）；说成「不做任何操作」即是假话。
- * 与 PAGE_EFFECT_HEADLINES['site-denied'] 分工不同、措辞不得混用：那条是服务端确实见过该页
- * 并按 site-denied 装配的结论（U7 治理终判仍在服务端），本条不推断任何服务端结论。
+ * 本条只陈述本机闸门的事实，不推断服务端本轮如何装配（U7 治理终判仍在服务端）。
  */
 export const SITE_DENIED_CLIENT_NOTICE =
   '本站在你的「不辅助的站点」名单内：读到这份名单的每一轮，Zen 不再自动向服务端发送本页信息，' +
@@ -106,80 +60,16 @@ export const SITE_DENIED_CLIENT_NOTICE =
   '本页也仍可能被导航到别的地址；配置读取失败的那一轮不做拦截，本页照常装配站点包、页面信息照常上行。' +
   '要恢复请在配置中心「全局设置」里移除该条目。';
 
-/**
- * 本机跳过了本页激活时的抬头：与「本页生效」块内的自述同一条事实、同一段措辞。
- * 服务端上下文照常送达（该页拉黑前可能早已入组），但把它按「已连接的任务页面」
- * 连标题带完整 URL 加绿点地摆出来，与同一面板里的自述直接冲突。
- */
-export const SITE_DENIED_HEADER_VIEW: ContextHeaderView = {
-  state: 'denied',
-  title: '本站不辅助',
-  detail: SITE_DENIED_CLIENT_NOTICE,
+/** 四态里只有两态对用户有须知；ready/waiting 不占 composer notice。 */
+const PANEL_STATE_NOTICES: Record<PanelState, string> = {
+  waiting: '',
+  ready: '',
+  outside: '当前页面不在任务组内',
+  denied: SITE_DENIED_CLIENT_NOTICE,
 };
 
-export interface PageEffectRow {
-  label: string;
-  value: string;
-}
-
-export interface PageEffectView {
-  /** 服务端未标注 reason（旧版本）时为空串：装配原因一律不由客户端推断（U7）。 */
-  headline: string;
-  rows: PageEffectRow[];
-  note: string;
-}
-
-function packRowValue(description: InjectionDescriptionView): string {
-  if (description.packId === null) return '无（本页未命中站点包）';
-  const parts = [description.packName ?? description.packId];
-  if (description.packVersion !== undefined) parts.push(`v${description.packVersion}`);
-  if (description.packSource !== undefined) parts.push(PACK_SOURCE_LABELS[description.packSource]);
-  return parts.join(' · ');
-}
-
-function toolsRowValue(description: InjectionDescriptionView): string {
-  const total = description.toolIds.length;
-  const tightened = (description.tools ?? []).filter((tool) => tool.effectiveTier !== tool.baseTier);
-  if (tightened.length === 0) return `${total} 项`;
-  const scopes = [...new Set(tightened.map((tool) => tool.tightenedBy ?? '未标注来源'))]
-    .map((scope) => (scope === 'storage-failure' ? '个人配置读取失败' : scope))
-    .join('、');
-  return `${total} 项，其中 ${tightened.length} 项被你收紧（来源：${scopes}）`;
-}
-
-function headlineOf(description: InjectionDescriptionView): string {
-  if (description.reason === undefined) return '';
-  if (description.reason !== 'pack-disabled') return PAGE_EFFECT_HEADLINES[description.reason];
-  const disabled = description.disabledPackId;
-  return disabled === undefined
-    ? '站点包已被你关停，本轮只注入平台基座。'
-    : `站点包「${disabled}」已被你关停，本轮只注入平台基座。`;
-}
-
-/** 服务端注入自省 → 面板「本页生效」块的行数据：只投影服务端已给的字段，缺省即如实说明缺省。 */
-export function pageEffectView(description: InjectionDescriptionView): PageEffectView {
-  return {
-    headline: headlineOf(description),
-    rows: [
-      { label: '站点包', value: packRowValue(description) },
-      {
-        label: '功能',
-        value: description.featureTitle ?? description.featureId ?? '无（本页未命中具体功能）',
-      },
-      { label: '站点包工具', value: toolsRowValue(description) },
-      {
-        label: '我的配置',
-        value:
-          description.userConfigRevision === undefined
-            ? '本轮未参与（无个人配置，或读取降级）'
-            : `revision ${description.userConfigRevision.slice(0, 12)}`,
-      },
-    ],
-    note: PAGE_EFFECT_NOTE,
-  };
-}
-
 export interface SidePanelElements {
+  shell: HTMLElement;
   messages: HTMLElement;
   quickActions: HTMLElement;
   input: HTMLTextAreaElement;
@@ -188,29 +78,12 @@ export interface SidePanelElements {
   fileInput: HTMLInputElement;
   attachments: HTMLElement;
   composerNotice: HTMLElement;
-  context: HTMLElement;
-  contextTitle: HTMLElement;
-  contextDetail: HTMLElement;
-  pageEffect: HTMLDetailsElement;
-  pageEffectBody: HTMLElement;
   configCenter: HTMLButtonElement;
 }
 
 export function mountSidePanel(root: HTMLElement): SidePanelElements {
   root.innerHTML = `
-    <section class="za-shell" aria-label="Zen Agent 控制台">
-      <section class="za-context" data-za-context data-state="waiting" aria-live="polite">
-        <span class="za-context-dot" aria-hidden="true"></span>
-        <div class="za-context-copy">
-          <div class="za-context-title">等待连接任务页面</div>
-          <div class="za-context-detail">打开要辅助的站点后点击 Zen Agent 图标</div>
-          <details class="za-page-effect" data-za-page-effect>
-            <summary class="za-page-effect-summary">本页生效</summary>
-            <div class="za-page-effect-body" data-za-page-effect-body></div>
-            <button class="za-page-effect-config" data-za-config-center type="button">打开配置中心</button>
-          </details>
-        </div>
-      </section>
+    <section class="za-shell" data-za-shell data-state="waiting" aria-label="Zen Agent 控制台">
       <section data-za-messages aria-live="polite">
         <div class="za-empty"><strong>把操作交给 Zen</strong><span>对话会留在这里；页面只负责观察与执行。</span></div>
       </section>
@@ -222,6 +95,12 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
           <div class="za-composer-actions">
             <button class="za-icon-button za-upload" data-za-upload type="button" aria-label="上传知识文档" title="上传 Markdown 或纯文本知识文档" disabled>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            </button>
+            <button class="za-icon-button" data-za-config-center type="button" aria-label="打开配置中心" title="打开配置中心">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="3.2" />
+                <path d="M19.1 14.4a1.6 1.6 0 0 0 .32 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-.97 1.47V21a2 2 0 0 1-4 0v-.11a1.6 1.6 0 0 0-1.05-1.46 1.6 1.6 0 0 0-1.77.32l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.47-.97H3a2 2 0 0 1 0-4h.11a1.6 1.6 0 0 0 1.46-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.32h.08a1.6 1.6 0 0 0 .97-1.47V3a2 2 0 0 1 4 0v.11a1.6 1.6 0 0 0 .97 1.47 1.6 1.6 0 0 0 1.77-.32l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.32 1.77v.08a1.6 1.6 0 0 0 1.47.97H21a2 2 0 0 1 0 4h-.11a1.6 1.6 0 0 0-1.47.97z" />
+              </svg>
             </button>
             <span class="za-composer-hint">Enter 发送 · Shift Enter 换行</span>
             <button class="za-action-button" data-za-action type="button" aria-label="发送消息" disabled>
@@ -236,6 +115,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
         <p class="za-composer-disclaimer">AI 也可能会犯错，请仔细检查回答</p>
       </footer>
     </section>`;
+  const shell = root.querySelector<HTMLElement>('[data-za-shell]');
   const messages = root.querySelector<HTMLElement>('[data-za-messages]');
   const quickActions = root.querySelector<HTMLElement>('[data-za-quick-actions]');
   const input = root.querySelector<HTMLTextAreaElement>('#za-input');
@@ -244,13 +124,9 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
   const fileInput = root.querySelector<HTMLInputElement>('[data-za-file-input]');
   const attachments = root.querySelector<HTMLElement>('[data-za-attachments]');
   const composerNotice = root.querySelector<HTMLElement>('[data-za-composer-notice]');
-  const context = root.querySelector<HTMLElement>('[data-za-context]');
-  const contextTitle = root.querySelector<HTMLElement>('.za-context-title');
-  const contextDetail = root.querySelector<HTMLElement>('.za-context-detail');
-  const pageEffect = root.querySelector<HTMLDetailsElement>('[data-za-page-effect]');
-  const pageEffectBody = root.querySelector<HTMLElement>('[data-za-page-effect-body]');
   const configCenter = root.querySelector<HTMLButtonElement>('[data-za-config-center]');
   if (
+    shell === null ||
     messages === null ||
     quickActions === null ||
     input === null ||
@@ -259,16 +135,12 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
     fileInput === null ||
     attachments === null ||
     composerNotice === null ||
-    context === null ||
-    contextTitle === null ||
-    contextDetail === null ||
-    pageEffect === null ||
-    pageEffectBody === null ||
     configCenter === null
   ) {
     throw new Error('Side Panel 初始化失败');
   }
   return {
+    shell,
     messages,
     quickActions,
     input,
@@ -277,11 +149,6 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
     fileInput,
     attachments,
     composerNotice,
-    context,
-    contextTitle,
-    contextDetail,
-    pageEffect,
-    pageEffectBody,
     configCenter,
   };
 }
@@ -345,6 +212,25 @@ export function startSidePanel(elements: SidePanelElements): void {
     });
   };
 
+  /**
+   * composer notice 是两类文字共用的唯一载体，故按槽位合成而非直接赋值：
+   * 操作反馈（投递失败/附件提示/停止回执）压过页面状态须知，两槽皆空即整条空。
+   * 直接赋值会让高频的上下文更新（同页 status 变化即触发）抹掉刚给出的操作反馈。
+   */
+  let stateNotice = '';
+  let actionNotice = '';
+  const renderNotice = (): void => {
+    elements.composerNotice.textContent = actionNotice !== '' ? actionNotice : stateNotice;
+  };
+  const setActionNotice = (text: string): void => {
+    actionNotice = text;
+    renderNotice();
+  };
+  const setStateNotice = (text: string): void => {
+    stateNotice = text;
+    renderNotice();
+  };
+
   const updateComposer = (): void => {
     const busy = isBusy();
     elements.input.disabled = !ready || submitting;
@@ -397,7 +283,7 @@ export function startSidePanel(elements: SidePanelElements): void {
         pendingMessageId = null;
         deliveryAwaiting = false;
         selectedFiles.splice(index, 1);
-        if (selectedFiles.length === 0) elements.composerNotice.textContent = '';
+        if (selectedFiles.length === 0) setActionNotice('');
         renderAttachments();
         updateComposer();
       });
@@ -447,49 +333,16 @@ export function startSidePanel(elements: SidePanelElements): void {
     }
   };
 
-  const applyContextHeader = (view: ContextHeaderView): void => {
-    elements.context.dataset['state'] = view.state;
-    elements.contextTitle.textContent = view.title;
-    elements.contextDetail.textContent = view.detail;
-  };
-
-  const setPageEffectMessage = (text: string): void => {
-    elements.pageEffectBody.textContent = '';
-    const hint = document.createElement('p');
-    hint.className = 'za-page-effect-hint';
-    hint.textContent = text;
-    elements.pageEffectBody.append(hint);
-  };
-
-  const renderPageEffect = (description: InjectionDescriptionView): void => {
-    const view = pageEffectView(description);
-    elements.pageEffectBody.textContent = '';
-    if (view.headline !== '') {
-      const headline = document.createElement('p');
-      headline.className = 'za-page-effect-headline';
-      headline.textContent = view.headline;
-      elements.pageEffectBody.append(headline);
-    }
-    const rows = document.createElement('dl');
-    rows.className = 'za-page-effect-rows';
-    for (const row of view.rows) {
-      const label = document.createElement('dt');
-      label.textContent = row.label;
-      const value = document.createElement('dd');
-      value.textContent = row.value;
-      rows.append(label, value);
-    }
-    const note = document.createElement('p');
-    note.className = 'za-page-effect-note';
-    note.textContent = view.note;
-    elements.pageEffectBody.append(rows, note);
+  const applyPanelState = (state: PanelState): void => {
+    elements.shell.dataset['state'] = state;
+    setStateNotice(PANEL_STATE_NOTICES[state]);
   };
 
   /**
    * 本机是否**确实跳过了**当前活动页的激活（background 在跳过当刻登记的事实）。
    * 判据不用「当前 URL 命中名单」：拉黑前已激活的页，本轮服务端确实见过它并已按 site-denied
-   * 回落仅基座，那条抬头是服务端说的真话，不得被客户端的猜测顶掉。
-   * 读不到窗口/标签页/登记一律按未跳过，让服务端描述照常呈现。
+   * 回落仅基座，那条已成立的上下文不得被客户端的猜测顶掉。
+   * 读不到窗口/标签页/登记一律按未跳过，让服务端上下文照常呈现。
    */
   const activationSkippedHere = async (): Promise<boolean> => {
     if (windowId === null) return false;
@@ -500,19 +353,6 @@ export function startSidePanel(elements: SidePanelElements): void {
       .get(key)
       .catch(() => ({}) as Record<string, unknown>);
     return items[key] === true;
-  };
-
-  const requestPageEffect = (): void => {
-    setPageEffectMessage('正在读取本页生效的装配…');
-    void activationSkippedHere().then((skipped) => {
-      if (skipped) {
-        setPageEffectMessage(SITE_DENIED_CLIENT_NOTICE);
-        return;
-      }
-      if (!send({ kind: 'injection-request' })) {
-        setPageEffectMessage('面板尚未连接，稍后重新展开此块即可重试。');
-      }
-    });
   };
 
   /**
@@ -538,7 +378,7 @@ export function startSidePanel(elements: SidePanelElements): void {
   };
 
   /**
-   * 取数与「本页生效」块同源同判据：本机确实跳过了这一页的激活时连请求都不发——
+   * 取数与面板状态同判据：本机确实跳过了这一页的激活时连请求都不发——
    * 命中站点黑名单的页不该因为一排 chips 就在服务端建出会话（右键项由 background 一并撤掉）。
    */
   const requestQuickActions = (): void => {
@@ -551,15 +391,13 @@ export function startSidePanel(elements: SidePanelElements): void {
     });
   };
 
-  // 抬头判定要读一次「跳过激活」的登记，故是异步的；只有最后一条上下文的判定结果作数。
+  // 状态判定要读一次「跳过激活」的登记，故是异步的；只有最后一条上下文的判定结果作数。
   let contextSeq = 0;
   const updateContext = (message: TaskContextMessage): void => {
     const seq = (contextSeq += 1);
     void activationSkippedHere().then((skipped) => {
       if (seq !== contextSeq) return;
-      applyContextHeader(skipped ? SITE_DENIED_HEADER_VIEW : contextHeaderView(message, message.groupId));
-      // 换页即换装配面：仅在块展开时重取，收起状态不产生建会话副作用。
-      if (elements.pageEffect.open) requestPageEffect();
+      applyPanelState(skipped ? 'denied' : message.authorized ? 'ready' : 'outside');
       // chips 换页必重取：换站即换 pack，上一页的问法留在这里点下去只会被服务端按未知 id 回退。
       requestQuickActions();
     });
@@ -663,7 +501,7 @@ export function startSidePanel(elements: SidePanelElements): void {
           deliveryAwaiting = false;
           revertLocalEcho();
           ui.hideThinking();
-          elements.composerNotice.textContent = '连接仍未恢复，草稿已保留，请稍后重试';
+          setActionNotice('连接仍未恢复，草稿已保留，请稍后重试');
         }
       }
       updateComposer();
@@ -679,9 +517,9 @@ export function startSidePanel(elements: SidePanelElements): void {
       turnInProgress = false;
       revertLocalEcho();
       ui.hideThinking();
-      elements.composerNotice.textContent = pendingMessage === null
+      setActionNotice(pendingMessage === null
         ? deliveryFailureMessage(message.failure, undefined)
-        : `${deliveryFailureMessage(message.failure, undefined)}；草稿仍保留`;
+        : `${deliveryFailureMessage(message.failure, undefined)}；草稿仍保留`);
       updateComposer();
     } else if (message.kind === 'message-result') {
       if (message.messageId !== pendingMessageId) return;
@@ -705,13 +543,13 @@ export function startSidePanel(elements: SidePanelElements): void {
           pendingMessage = null;
           pendingMessageId = null;
         }
-        elements.composerNotice.textContent = `${deliveryFailureMessage(message.failure, message.httpStatus)}；草稿仍保留`;
+        setActionNotice(`${deliveryFailureMessage(message.failure, message.httpStatus)}；草稿仍保留`);
       }
       updateComposer();
     } else if (message.kind === 'stop-result') {
       if (!message.accepted) {
         stopRequested = false;
-        elements.composerNotice.textContent = '本机页面操作已停止；服务端未接受停止请求，可重试';
+        setActionNotice('本机页面操作已停止；服务端未接受停止请求，可重试');
         updateComposer();
       } else {
         if (message.messageId !== undefined && !renderedMessageIds.has(message.messageId)) {
@@ -733,14 +571,11 @@ export function startSidePanel(elements: SidePanelElements): void {
         renderAttachments();
         ui.hideThinking();
         ui.cancelHitl();
-        elements.composerNotice.textContent = '当前任务已停止';
+        setActionNotice('当前任务已停止');
         updateComposer();
       }
     } else if (message.kind === 'hitl-result') {
-      if (!message.accepted) elements.composerNotice.textContent = '确认结果未送达，确认卡已恢复，请重试';
-    } else if (message.kind === 'injection-result') {
-      if (message.ok) renderPageEffect(message.description);
-      else setPageEffectMessage(message.error);
+      if (!message.accepted) setActionNotice('确认结果未送达，确认卡已恢复，请重试');
     } else if (message.kind === 'compose-quote') {
       insertSelectionQuote(message.text);
     } else {
@@ -814,8 +649,8 @@ export function startSidePanel(elements: SidePanelElements): void {
     port = null;
     previous?.disconnect();
     boundGroupId = groupId;
-    elements.context.dataset['groupId'] = String(groupId);
-    applyContextHeader(contextHeaderView(null, groupId));
+    elements.shell.dataset['groupId'] = String(groupId);
+    applyPanelState('waiting');
     elements.messages.textContent = '';
     ui = createConversationUi(elements.messages);
     ready = false;
@@ -837,7 +672,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     const messageId = crypto.randomUUID();
     pendingMessageId = messageId;
     submitting = true;
-    elements.composerNotice.textContent = '';
+    setActionNotice('');
     clearEmpty();
     ui.showThinking();
     scrollMessagesToLatest();
@@ -860,7 +695,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       pendingMessage = null;
       revertLocalEcho();
       ui.hideThinking();
-      elements.composerNotice.textContent = '连接已中断，请稍后重试';
+      setActionNotice('连接已中断，请稍后重试');
     }
     updateComposer();
   };
@@ -872,7 +707,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       submitting = true;
       pendingMessageId = pendingMessage.messageId;
       deliveryAwaiting = true;
-      elements.composerNotice.textContent = '';
+      setActionNotice('');
       showLocalEcho(pendingMessage.messageId, pendingMessage.displayText ?? pendingMessage.text);
       ui.showThinking();
       scrollMessagesToLatest();
@@ -882,7 +717,7 @@ export function startSidePanel(elements: SidePanelElements): void {
         pendingMessageId = null;
         revertLocalEcho();
         ui.hideThinking();
-        elements.composerNotice.textContent = '连接已中断，草稿仍保留；重连后请重新发送';
+        setActionNotice('连接已中断，草稿仍保留；重连后请重新发送');
       }
       updateComposer();
       return;
@@ -892,7 +727,7 @@ export function startSidePanel(elements: SidePanelElements): void {
     preparingMessageId = messageId;
     pendingMessageId = messageId;
     submitting = true;
-    elements.composerNotice.textContent = '';
+    setActionNotice('');
     clearEmpty();
     ui.showThinking();
     scrollMessagesToLatest();
@@ -908,7 +743,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       submitting = false;
       ui.hideThinking();
       updateComposer();
-      elements.composerNotice.textContent = error instanceof Error ? error.message : '附件读取失败';
+      setActionNotice(error instanceof Error ? error.message : '附件读取失败');
       return;
     }
     if (preparingMessageId !== messageId) return;
@@ -933,7 +768,7 @@ export function startSidePanel(elements: SidePanelElements): void {
       pendingMessage = null;
       revertLocalEcho();
       ui.hideThinking();
-      elements.composerNotice.textContent = '连接已中断，草稿仍保留；重连后请重新发送';
+      setActionNotice('连接已中断，草稿仍保留；重连后请重新发送');
       updateComposer();
       return;
     }
@@ -953,12 +788,9 @@ export function startSidePanel(elements: SidePanelElements): void {
     if (isBusy()) return;
     void submit();
   });
-  elements.pageEffect.addEventListener('toggle', () => {
-    if (elements.pageEffect.open) requestPageEffect();
-  });
   elements.configCenter.addEventListener('click', () => {
     void Promise.resolve(chrome.runtime.openOptionsPage()).catch(() => {
-      setPageEffectMessage('无法打开配置中心，请在浏览器的扩展管理页打开 Zen Agent 的选项。');
+      setActionNotice('无法打开配置中心，请在浏览器的扩展管理页打开 Zen Agent 的选项。');
     });
   });
   elements.upload.addEventListener('click', () => elements.fileInput.click());
@@ -969,11 +801,11 @@ export function startSidePanel(elements: SidePanelElements): void {
     const additions = [...(elements.fileInput.files ?? [])];
     elements.fileInput.value = '';
     if (selectedFiles.length + additions.length > MAX_ATTACHMENT_COUNT) {
-      elements.composerNotice.textContent = `每次最多上传 ${MAX_ATTACHMENT_COUNT} 个文件`;
+      setActionNotice(`每次最多上传 ${MAX_ATTACHMENT_COUNT} 个文件`);
       return;
     }
     selectedFiles.push(...additions);
-    elements.composerNotice.textContent = '知识文档内容会发送给智能体；请勿上传密钥、令牌或凭证';
+    setActionNotice('知识文档内容会发送给智能体；请勿上传密钥、令牌或凭证');
     renderAttachments();
     updateComposer();
   });
@@ -1015,15 +847,14 @@ export function startSidePanel(elements: SidePanelElements): void {
     // 图标/右键入口在命中站点上仍会把面板打开（open 必须在手势内同步发出，中间不得 await），
     // 此时再给一遍建组引导等于要求用户重做他刚做过的动作；这里陈述本机为什么没有激活。
     if (await activationSkippedHere()) {
-      applyContextHeader(SITE_DENIED_HEADER_VIEW);
+      applyPanelState('denied');
       return;
     }
     const stored = (await chrome.storage.session.get(key))[key];
     const fallback = tab.groupId ?? TAB_GROUP_ID_NONE;
     const initialGroupId = typeof stored === 'number' ? stored : fallback;
     if (initialGroupId === TAB_GROUP_ID_NONE) {
-      elements.contextTitle.textContent = '没有可恢复的 Zen 任务';
-      elements.contextDetail.textContent = '在目标页面点击 Zen 图标创建任务组';
+      setStateNotice('没有可恢复的 Zen 任务：在目标页面点击 Zen 图标创建任务组');
       return;
     }
     bindGroup(initialGroupId);

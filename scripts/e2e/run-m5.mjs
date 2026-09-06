@@ -260,7 +260,7 @@ async function runScenarios(context, packAPage, panelPage, sw) {
   const outsidePage = await context.newPage();
   await outsidePage.goto(`${HOST_B_ORIGIN}/site-b.html?outside=1`, { waitUntil: 'load' });
   await waitFor(
-    async () => (await panelPage.locator('[data-za-context]').getAttribute('data-state')) === 'outside',
+    async () => (await panelPage.locator('[data-za-shell]').getAttribute('data-state')) === 'outside',
     { label: '组外页面提示', timeoutMs: 5000 },
   );
   assert((await outsidePage.locator('#za-root').count()) === 0, '任务组外页面不应注入或获得 Zen UI');
@@ -284,7 +284,7 @@ async function runScenarios(context, packAPage, panelPage, sw) {
   await outsidePage.close();
   await siteBPage.bringToFront();
   await waitFor(
-    async () => (await panelPage.locator('[data-za-context]').getAttribute('data-state')) === 'ready',
+    async () => (await panelPage.locator('[data-za-shell]').getAttribute('data-state')) === 'ready',
     { label: '任务页重新成为权威执行页', timeoutMs: 5000 },
   );
   await new Promise((r) => setTimeout(r, 300));

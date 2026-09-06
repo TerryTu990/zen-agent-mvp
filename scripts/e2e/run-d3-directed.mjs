@@ -535,7 +535,7 @@ async function main() {
     panel = await context.newPage();
     await panel.setViewportSize({ width: 420, height: 900 });
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-    await panel.locator(`[data-za-context][data-group-id="${groupId}"]`).waitFor({ timeout: 15_000 });
+    await panel.locator(`[data-za-shell][data-group-id="${groupId}"]`).waitFor({ timeout: 15_000 });
     await panel.locator('#za-input:not([disabled])').waitFor({ timeout: 15_000 });
     // 本 harness 全程轮询各页 DOM（含 60s ttl 等待窗），而系统内存压力下 Chrome 会自动
     // discard 非焦点 tab——target 被销毁，Playwright 视为页面已关闭、轮询即抛错。

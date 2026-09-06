@@ -36,7 +36,6 @@ import {
   type BackgroundToSidePanelMessage,
   type BackgroundToContentMessage,
   type ContentToBackgroundMessage,
-  type InjectionDescriptionView,
   type SidePanelToBackgroundMessage,
   type SidePanelUiEvent,
   type ContentRuntimeMessage,
@@ -1230,30 +1229,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   }
 
   /**
-   * 「本页生效」块取数：转发本组会话的 GET /v1/sessions/:id/injection，不新增鉴权面；
-   * 无会话时按需建立会话（首次展开会产生建会话副作用）。失败一律回人读原因
-   * （不含令牌与响应体细节，SEC-04），且不影响会话与投递管线。
-   */
-  async function describeInjection(): Promise<Extract<BackgroundToSidePanelMessage, { kind: 'injection-result' }>> {
-    const session = await ensureSession();
-    if (session === null) return { kind: 'injection-result', ok: false, error: '会话暂不可用，请稍后重试' };
-    try {
-      const response = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/injection`, {
-        headers: { authorization: `Bearer ${session.token}` },
-        signal: abort.signal,
-      });
-      if (!response.ok) {
-        return { kind: 'injection-result', ok: false, error: `服务端未返回本页装配描述（HTTP ${response.status}）` };
-      }
-      return { kind: 'injection-result', ok: true, description: await response.json() as InjectionDescriptionView };
-    } catch {
-      return { kind: 'injection-result', ok: false, error: '无法连接服务端，请检查网络后重试' };
-    }
-  }
-
-  /**
-   * 本轮取数的作用域：会话已在的组按注入自省给出的 packId/featureId（与「本页生效」块同一口径，
-   * 不另立一套激活判定）；尚无会话时按 generic 兜底包呈现首屏——为一排 chips 建会话会在服务端
+   * 本轮取数的作用域：会话已在的组按注入自省给出的 packId/featureId（不另立一套激活判定）；
+   * 尚无会话时按 generic 兜底包呈现首屏——为一排 chips 建会话会在服务端
    * 落一条 session-start，那是用户没做任何事就产生的可观察行为。自省读不出即回 null（弃本轮取数）。
    */
   async function quickActionScope(
@@ -1368,11 +1345,6 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           ...(message.url !== undefined ? { url: message.url } : {}),
           ...(message.title !== undefined ? { title: message.title } : {}),
         });
-        return;
-      }
-      if (message.kind === 'injection-request') {
-        // 只读取数，不入投递管线：透明信息不排在会话消息之后，也不阻塞会话消息。
-        void describeInjection().then((result) => postPanel(port, result));
         return;
       }
       if (message.kind === 'quick-actions-request') {

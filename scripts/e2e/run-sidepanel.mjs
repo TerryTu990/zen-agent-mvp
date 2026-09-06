@@ -234,16 +234,16 @@ async function main() {
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
     await panel.locator('section[aria-label="Zen Agent 控制台"]').waitFor();
     assert((await panel.locator('.za-topbar').count()) === 0, 'Side Panel 不应重复渲染 Chrome 原生标题');
-    await panel.getByText('没有可恢复的 Zen 任务', { exact: true }).waitFor();
+    await panel.getByText('没有可恢复的 Zen 任务：在目标页面点击 Zen 图标创建任务组', { exact: true }).waitFor();
     assert(await panel.getByRole('button', { name: '发送消息' }).isDisabled(), '无任务组时发送入口必须禁用');
     const windowId = await panel.evaluate(async () => (await chrome.windows.getCurrent()).id);
     assert(typeof windowId === 'number', '无法识别 Side Panel 所在窗口');
     const panelKey = `za.panelGroup.w${windowId}`;
     await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 321 }), { key: panelKey });
-    await panel.locator('[data-za-context][data-group-id="321"]').waitFor();
+    await panel.locator('[data-za-shell][data-group-id="321"]').waitFor();
     assert(!(await panel.getByRole('button', { name: '上传知识文档' }).isDisabled()), '迟到任务组未自动绑定');
     await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 322 }), { key: panelKey });
-    await panel.locator('[data-za-context][data-group-id="322"]').waitFor();
+    await panel.locator('[data-za-shell][data-group-id="322"]').waitFor();
     await panel.evaluate(() => chrome.storage.local.set({ 'za.executionPreference': 'dom-only' }));
     await panel.getByLabel('给 Zen 发送消息').fill('中文输入中');
     await panel.getByLabel('给 Zen 发送消息').dispatchEvent('keydown', { key: 'Enter', isComposing: true });
@@ -333,7 +333,7 @@ async function main() {
     await panel.getByLabel('给 Zen 发送消息').fill('验证附件读取期间切换任务组');
     await panel.getByRole('button', { name: '发送消息' }).click();
     await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 323 }), { key: panelKey });
-    await panel.locator('[data-za-context][data-group-id="323"]').waitFor();
+    await panel.locator('[data-za-shell][data-group-id="323"]').waitFor();
     await panel.waitForTimeout(400);
     assert(frameRequests.length === framesBeforeGroupSwitch, '附件读取期间切换分组导致跨任务误投');
     await panel.getByRole('button', { name: '移除附件 group-switch.md' }).click();

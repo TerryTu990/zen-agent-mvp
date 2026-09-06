@@ -333,7 +333,7 @@ async function main() {
     panel = await context.newPage();
     await panel.setViewportSize({ width: 420, height: 900 });
     await panel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-    await panel.locator(`[data-za-context][data-group-id="${group.groupId}"]`).waitFor({ timeout: 15_000 });
+    await panel.locator(`[data-za-shell][data-group-id="${group.groupId}"]`).waitFor({ timeout: 15_000 });
     await panel.locator('#za-input:not([disabled])').waitFor({ timeout: 15_000 });
 
     console.log('[5/6] 冷启动指令 → open_url HITL 卡 → 批准 → background 直执行 navigate…');
@@ -416,7 +416,7 @@ async function main() {
       '落点后装配切到 generic-web/browse',
       30_000,
     );
-    await panel.locator(`[data-za-context][data-group-id="${group.groupId}"]`).waitFor({ timeout: 5_000 });
+    await panel.locator(`[data-za-shell][data-group-id="${group.groupId}"]`).waitFor({ timeout: 5_000 });
     await panel.locator('#za-input:not([disabled])').waitFor({ timeout: 15_000 });
     await panel.screenshot({ path: join(EVIDENCE_DIR, 'panel-final.png'), fullPage: true });
 

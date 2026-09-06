@@ -11,59 +11,6 @@ import type {
   SnapshotReportFrame,
 } from './frames.js';
 
-/**
- * 注入自省投影（GET /v1/sessions/:id/injection 的响应形状）：类型 SSOT = packages/contracts
- * 的 InjectionDescription 族；本包零 @zen-agent 依赖，按 U5 契约手抄镜像——改契约须同步改此处。
- * 可选字段显式带 `| undefined`，配合 exactOptionalPropertyTypes 允许调用方表达「服务端未给」。
- */
-export type InjectionOrigin = 'L0' | 'L1' | 'L2';
-export type InjectionRiskTier = 'auto' | 'hitl' | 'forbidden';
-export type InjectionPackSource = 'official' | 'community' | 'local';
-
-export interface InjectionBlockView {
-  kind:
-    | 'system-prompt'
-    | 'sites-index'
-    | 'feature-rules'
-    | 'facts'
-    | 'user-preferences'
-    | 'pack-config'
-    | 'user-rules'
-    | 'user-facts'
-    | 'skill'
-    | 'docs-index';
-  id?: string | undefined;
-  bytes: number;
-  origin?: InjectionOrigin | undefined;
-}
-
-export interface InjectionToolView {
-  toolId: string;
-  baseTier: InjectionRiskTier;
-  effectiveTier: InjectionRiskTier;
-  origin: 'L0' | 'L1';
-  /** 收紧来源作用域键（packId），或哨兵值 'storage-failure'（L2 读失败的治理降级）。 */
-  tightenedBy?: string | undefined;
-}
-
-export interface InjectionDescriptionView {
-  snapshotVersion: string;
-  packId: string | null;
-  featureId: string | null;
-  blocks: InjectionBlockView[];
-  toolIds: string[];
-  tools?: InjectionToolView[] | undefined;
-  packVersion?: string | undefined;
-  packName?: string | undefined;
-  packSource?: InjectionPackSource | undefined;
-  featureTitle?: string | undefined;
-  userConfigRevision?: string | undefined;
-  /** 用户关停 pack 的轮次：packId 已回落 null，据此呈现「已关停」而非「无站点包」。 */
-  disabledPackId?: string | undefined;
-  /** 服务端判定的本轮装配原因闭集；客户端只呈现不推断（U7）。 */
-  reason?: 'pack' | 'generic' | 'base-only' | 'pack-disabled' | 'site-denied' | undefined;
-}
-
 export type SidePanelUiEvent =
   | {
       kind: 'frame';
@@ -128,8 +75,6 @@ export type SidePanelToBackgroundMessage =
   | { kind: 'hitl-decision'; hitlId: string; decision: HitlDecisionValue }
   // L2 草稿裁决（U8）：面板只回传 draftId+decision，change 不经客户端往返。
   | { kind: 'config-decision'; draftId: string; decision: 'accept' | 'reject' }
-  // 「本页生效」块取数：面板不持有会话与令牌，由 background 转发 GET /v1/sessions/:id/injection。
-  | { kind: 'injection-request' }
   // 快捷提问 chips 取数：面板不持有会话与令牌，由 background 合并 /v1/packs 与 /v1/user-config 后回投影。
   // siteDenied = 本机确实跳过了这一页的激活（面板持有该事实）：background 据此连会话都不建。
   | { kind: 'quick-actions-request'; siteDenied: boolean }
@@ -149,9 +94,6 @@ export type BackgroundToSidePanelMessage =
       httpStatus?: number;
     }
   | { kind: 'hitl-result'; hitlId: string; accepted: boolean }
-  // 取数成功即带服务端原样描述；失败只带人读原因（不含令牌与栈细节，SEC-04）。
-  | { kind: 'injection-result'; ok: true; description: InjectionDescriptionView }
-  | { kind: 'injection-result'; ok: false; error: string }
   // 右键「用 Zen 讲解选中内容」：选区原文送面板输入框，由用户补充意图后自行发送。
   | { kind: 'compose-quote'; text: string }
   // 本页可呈现的快捷提问清单（合并 L1/L2 后的投影，不含模板）；空数组 = 本页没有可呈现的条目。
