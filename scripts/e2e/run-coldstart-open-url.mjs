@@ -53,7 +53,7 @@ const JWT_ISS = 'zen-agent-anon';
  * gateway 必须起在插件开发构建的默认服务地址上（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）：
  * service worker 一启动就会做首次匿名激活，起在同一地址可让这次预取直接命中。
  */
-const SERVER_PORT = 8787;
+const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 
 function assert(condition, message) {

@@ -462,7 +462,7 @@ function summarizeObs(obs) {
 const TOOL_A_OPERATE = 'order-list.page-operate';
 const TOOL_B_OPERATE = 'site-b.page-operate';
 const TOOL_B_SUBMIT = 'site-b.confirm-submit';
-const SITE_B_URL = 'http://127.0.0.1:4174/site-b.html';
+const SITE_B_URL = `http://127.0.0.1:${Number(process.env.ZA_E2E_HOST_PORT ?? 4173) + 1}/site-b.html`;
 // 越界目标：不属任何已安装 pack 的 origin（4199 无 pack）→ toolgate 签发前 fence-violation 拒绝。
 const FENCE_URL = 'http://127.0.0.1:4199/blocked.html';
 

@@ -57,7 +57,7 @@ const [JWT_SECRET, SIGNING_SECRET] = ['jwt', 'signing'].map(
 );
 const JWT_ISS = 'zen-agent-anon';
 /** gateway 必须起在插件开发构建的默认服务地址上（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）。 */
-const SERVER_PORT = 8787;
+const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 
 function assert(condition, message) {

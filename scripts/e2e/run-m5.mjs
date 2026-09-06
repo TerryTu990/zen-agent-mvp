@@ -24,14 +24,16 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { startMockLlm } from '../mock-llm/server.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
 const HOST_A_DIR = join(REPO_ROOT, 'examples', 'host-demo');
 const FIXTURE_DIR = join(REPO_ROOT, 'scripts', 'e2e', 'fixtures', 'm5');
 const HOST_B_DIR = join(FIXTURE_DIR, 'hosts');
-const SNAPSHOT_ROOT = join(FIXTURE_DIR, 'config');
+const FIXTURE_SNAPSHOT = join(FIXTURE_DIR, 'config');
 const WORK_DIR = join(REPO_ROOT, '.za', 'e2e-m5');
+const SNAPSHOT_ROOT = join(WORK_DIR, 'config');
 const AUDIT_SINK = join(WORK_DIR, 'events.jsonl');
 const SESSION_DIR = join(WORK_DIR, 'sessions');
 
@@ -43,11 +45,11 @@ const JWT_ISS = 'zen-agent-anon';
  * service worker 一启动就会做首次匿名激活，此时脚本还来不及下发 za.serverBaseUrl；起在同一地址，
  * 这次预取即直接命中，省掉一轮必然失败的激活（失败退避按服务端地址分账，不会连累别的地址）。
  */
-const SERVER_PORT = 8787;
+const SERVER_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 const MOCK_LLM_PORT = Number(process.env.ZA_E2E_MOCK_PORT ?? 8798);
-// 站点端口固定：mock 剧本与 pack.json origin 均硬绑 4173/4174，不经 env 覆盖。
-const HOST_A_PORT = 4173;
-const HOST_B_PORT = 4174;
+// 夹具 pack.json/facts.md 以 4173/4174 书写：快照按实际端口物化到 WORK_DIR；mock 剧本的站点乙地址自行读同名 env。
+const HOST_A_PORT = Number(process.env.ZA_E2E_HOST_PORT ?? 4173);
+const HOST_B_PORT = HOST_A_PORT + 1;
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const HOST_A_ORIGIN = `http://127.0.0.1:${HOST_A_PORT}`;
 const HOST_B_ORIGIN = `http://127.0.0.1:${HOST_B_PORT}`;
@@ -364,6 +366,7 @@ async function main() {
   try {
     rmSync(WORK_DIR, { recursive: true, force: true });
     mkdirSync(SESSION_DIR, { recursive: true });
+    materializeSnapshot(FIXTURE_SNAPSHOT, SNAPSHOT_ROOT, hostPortReplacements([[4173, HOST_A_PORT], [4174, HOST_B_PORT]]));
 
     console.log('[1/5] 构建 extension + server…');
     await buildTargets();
@@ -383,7 +386,7 @@ async function main() {
     );
     await waitServerReady();
 
-    console.log('[4/5] 起两站静态服务（甲 4173 / 乙 4174）…');
+    console.log(`[4/5] 起两站静态服务（甲 ${HOST_A_PORT} / 乙 ${HOST_B_PORT}）…`);
     const hostA = await startStaticHost(HOST_A_DIR, HOST_A_PORT);
     cleanups.push(() => hostA.close());
     const hostB = await startStaticHost(HOST_B_DIR, HOST_B_PORT);

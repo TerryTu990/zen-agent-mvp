@@ -15,6 +15,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROBE_LITERALS, startMockLlm } from '../mock-llm/server.mjs';
+import { hostPortReplacements, materializeSnapshot } from '../e2e/snapshot-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const SERVER_DIST = join(REPO_ROOT, 'apps', 'server', 'dist', 'main.js');
@@ -66,8 +67,16 @@ const SIGNING_SECRET = 'za-test-signing-secret';
 const JWT_ISS = 'zen-agent-demo';
 const SERVER_PORT = Number(process.env.ZA_EVAL_SERVER_PORT ?? 8791);
 const MOCK_LLM_PORT = Number(process.env.ZA_EVAL_MOCK_PORT ?? 8792);
-// host 端口须对齐 host-demo pack 的 site.origin（http://127.0.0.1:4173），否则 origin 围栏不命中、featureId 落空。
+// host-demo pack 的 site.origin 与场景 URL 以 4173 书写：端口改动时快照物化、场景加载时同步替换，否则 origin 围栏不命中、featureId 落空。
 const HOST_PORT = Number(process.env.ZA_EVAL_HOST_PORT ?? 4173);
+const HOST_REPLACEMENTS = hostPortReplacements([[4173, HOST_PORT]]);
+const SERVED_SNAPSHOT_ROOT = join(REPO_ROOT, '.za', 'eval-snapshot');
+/** 读场景集：站点 origin 的端口替换为实际 HOST_PORT（默认端口下恒等）。 */
+function loadScenarios(path) {
+  let text = readFileSync(path, 'utf8');
+  for (const [from, to] of HOST_REPLACEMENTS) text = text.replaceAll(from, to);
+  return JSON.parse(text);
+}
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
 
@@ -724,7 +733,7 @@ function discoverPackScenarios(root) {
     if (!entry.isDirectory()) continue;
     const scenariosPath = join(packsDir, entry.name, 'eval', 'scenarios.json');
     if (!existsSync(scenariosPath)) continue;
-    const scenarios = JSON.parse(readFileSync(scenariosPath, 'utf8'));
+    const scenarios = loadScenarios(scenariosPath);
     discovered.push({ packId: entry.name, scenarios });
   }
   return discovered;
@@ -1146,7 +1155,9 @@ async function main() {
     cleanups.push(() => mock.close());
 
     console.log('[3/4] 起 server（host-demo 根）…');
-    const stopServer1 = makeStop(startServer(SNAPSHOT_ROOT));
+    rmSync(SERVED_SNAPSHOT_ROOT, { recursive: true, force: true });
+    materializeSnapshot(SNAPSHOT_ROOT, SERVED_SNAPSHOT_ROOT, HOST_REPLACEMENTS);
+    const stopServer1 = makeStop(startServer(SERVED_SNAPSHOT_ROOT));
     cleanups.push(stopServer1);
     await waitServerReady();
 
@@ -1156,7 +1167,7 @@ async function main() {
     cleanups.push(() => host.close());
 
     const token = signTestJwt();
-    const scenarios = JSON.parse(readFileSync(SCENARIOS_PATH, 'utf8'));
+    const scenarios = loadScenarios(SCENARIOS_PATH);
 
     console.log(`\n跑 ${scenarios.length} 个场景 × ${RUNS} 次：`);
     const results = [];
@@ -1277,7 +1288,7 @@ function checkProbeLiterals() {
 
 /** --check 的场景全集：本目录 scenarios.json + 四个快照根下自动发现的 pack 级评测。 */
 function collectScenarioSets() {
-  const sets = [{ label: 'evals/scenarios.json', scenarios: JSON.parse(readFileSync(SCENARIOS_PATH, 'utf8')) }];
+  const sets = [{ label: 'evals/scenarios.json', scenarios: loadScenarios(SCENARIOS_PATH) }];
   for (const root of [SNAPSHOT_ROOT, ACCEPTANCE_ROOT, COMMERCE_ROOT, SITE_PACKS_ROOT]) {
     for (const { packId, scenarios } of discoverPackScenarios(root)) {
       sets.push({ label: `${root.slice(REPO_ROOT.length + 1)}/packs/${packId}`, scenarios });

@@ -19,13 +19,14 @@
  *   无"已为你定位"成功文案 + 出现如实文本降级气泡，而非假装高亮。
  */
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { startMockLlm } from '../mock-llm/server.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
 const EXTENSION_DIR = join(REPO_ROOT, 'apps', 'extension');
@@ -41,6 +42,8 @@ const MOCK_LLM_PORT = Number(process.env.ZA_E2E_MOCK_PORT ?? 8788);
 const HOST_PORT = Number(process.env.ZA_E2E_HOST_PORT ?? 4173);
 const SERVER_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 const HOST_BASE = `http://127.0.0.1:${HOST_PORT}`;
+// host-demo pack 的 site.origin 以 4173 书写：快照按实际 HOST_PORT 物化后再交 server 载入。
+const SNAPSHOT_ROOT = join(REPO_ROOT, '.za', 'e2e-snapshot-m2');
 const ORDER_LIST_URL = `${HOST_BASE}/order-list.html`;
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css' };
@@ -90,7 +93,7 @@ function startServer() {
       ZA_JWT_SECRET: JWT_SECRET,
       ZA_SIGNING_SECRET: 'za-test-signing-secret',
       ZA_JWT_ISS_ALLOWLIST: JWT_ISS,
-      ZA_SNAPSHOT_ROOT: join(REPO_ROOT, 'examples', 'host-demo', 'config'),
+      ZA_SNAPSHOT_ROOT: SNAPSHOT_ROOT,
       ZA_SYSTEM_PROMPT_PATH: join(REPO_ROOT, 'assets', 'system-prompt.md'),
       ZA_PORT: String(SERVER_PORT),
       ZA_LLM_BASE_URL: `http://127.0.0.1:${MOCK_LLM_PORT}/v1`,
@@ -198,6 +201,8 @@ async function main() {
     cleanups.push(() => mock.close());
 
     console.log('[3/5] 起 server…');
+    rmSync(SNAPSHOT_ROOT, { recursive: true, force: true });
+    materializeSnapshot(join(REPO_ROOT, 'examples', 'host-demo', 'config'), SNAPSHOT_ROOT, hostPortReplacements([[4173, HOST_PORT]]));
     const serverProc = startServer();
     cleanups.push(
       () =>

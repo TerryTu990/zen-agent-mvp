@@ -21,7 +21,7 @@ function run(command, args, options = {}) {
 }
 
 /** 与插件开发构建的默认服务地址同端口（apps/extension/src/background.ts DEFAULT_SERVER_BASE_URL）。 */
-const FIXTURE_PORT = 8787;
+const FIXTURE_PORT = Number(process.env.ZA_E2E_SERVER_PORT ?? 8787);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
