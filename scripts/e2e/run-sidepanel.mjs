@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
+import { failureReason, writeCaseResult } from './evidence.mjs';
 import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -436,8 +437,10 @@ async function main() {
     const disclaimerTop = await disclaimer.evaluate((element) => element.getBoundingClientRect().top);
     assert(disclaimerTop >= surfaceBottom, '免责提示未排在输入框下方');
     await panel.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
+    writeCaseResult('sidepanel', 'passed');
     console.log('Phase 1A Side Panel E2E 全部场景通过 ✅');
   } catch (error) {
+    writeCaseResult('sidepanel', 'failed', { reason: failureReason(error) });
     console.error(`Phase 1A Side Panel E2E 失败：${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   } finally {

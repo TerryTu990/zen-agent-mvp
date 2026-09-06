@@ -27,6 +27,7 @@ import { chromium } from 'playwright';
 import { startMockLlm } from '../mock-llm/server.mjs';
 import { activateTab, prepareExtensionDir, removeExtensionDir } from './extension-fixture.mjs';
 import { hostPortReplacements, materializeSnapshot } from './snapshot-fixture.mjs';
+import { failureReason, writeCaseResult } from './evidence.mjs';
 import { assertPortsFree } from './port-guard.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '../../..');
@@ -329,6 +330,7 @@ async function main() {
         .catch(() => {});
     }
   }
+  writeCaseResult('m3', failure ? 'failed' : 'passed', failure ? { reason: failureReason(failure) } : {});
   process.exit(failure ? 1 : 0);
 }
 
