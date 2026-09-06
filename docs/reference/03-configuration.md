@@ -223,7 +223,7 @@
 | `ZA_JWT_ISS_ALLOWLIST` | `zen-agent-anon` | 外部签发方的 iss 白名单（逗号分隔）；匿名激活签发的 `zen-agent-anon` 由服务端在组装时无条件并入，覆盖或漏填此项都不会让服务端拒绝自己签发的令牌 |
 | `ZA_MAX_TURN_ROUNDS` | `12` | agent loop 单回合轮数上限（跨站任务建议 40） |
 | `ZA_MAX_CONSECUTIVE_FAILURES` | `3` | 同工具同因连续失败的止损上限：达此值即终结回合（`turn-complete.reason=consecutive-failures`），任一次成功清零；与 `ZA_MAX_TURN_ROUNDS` 并列，先到者生效。取值须为正整数，写错拒启 |
-| `ZA_NAV_ATTACH_WAIT_MS` | `8000` | 非定向 `open_url` / `site_navigate` 成功后、回喂前等待落点页接入会话（组页面表中该地址的页转 active/background）的上限毫秒；回喂 observation 附 `attached: true|false` 与相应指引。`0` = 不等待、只看当前表。取值须为非负整数，写错拒启 |
+| `ZA_NAV_ATTACH_WAIT_MS` | `8000` | 非定向 `open_url` / `site_navigate` 成功后、回喂前等待落点页接入会话（组页面表中该地址的页、或导航后新出现/换址的页转 active/background；落点识别不绑请求地址等值，覆盖重定向）的上限毫秒；回喂 observation 附 `attached: true|false` 与相应指引。`0` = 不等待、只看当前表。取值须为非负整数，写错拒启 |
 
 ### LLM 上游（openai 兼容；调用时惰性读取）
 

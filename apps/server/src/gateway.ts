@@ -892,7 +892,7 @@ const NAV_ATTACHED_NOTE = '页面已接入，可直接 page_snapshot。';
 
 /** 落点页未接入时的回喂指引：与 silent 页定向快照拒绝、already-open 止损同一口径。 */
 const NAV_NOT_ATTACHED_NOTE =
-  '页面已打开但尚未接入（本站可能未授予访问权限或仍在加载）：不要再次打开同一地址；先重试一次 page_snapshot（定向该页句柄），仍不可用则告知用户在该页点击 Zen 图标以授权本站后再继续。';
+  '页面已打开但尚未接入（本站可能未授予访问权限或仍在加载）：不要再次打开同一地址；最多重试一次 page_snapshot（定向该页句柄），仍不可用则告知用户在该页点击 Zen 图标以授权本站后再继续。';
 
 /**
  * 导航落点与组页面表比对用的规范化键：去 fragment，保留 origin + path + query
@@ -910,6 +910,25 @@ function navigationUrlKey(url: string): string {
 
 function pageAttached(page: GroupPageEntry): boolean {
   return page.status === 'active' || page.status === 'background';
+}
+
+/** 组页面表的 句柄 → 地址键 索引：导航前取样，导航后据此识别本次导航产出的页。 */
+function groupPagesIndex(session: SessionState): Map<string, string> {
+  return new Map(session.groupPages.map((page) => [page.handle, navigationUrlKey(page.url)]));
+}
+
+/**
+ * 落点页识别不依赖请求地址等值：落点可被重定向（协议/主机/跳转链）到与请求完全不同的地址，
+ * 故「导航前不在组内的句柄」或「导航前已在组内但换了地址的句柄」都视为本次导航的落点。
+ */
+function isLandingPage(page: GroupPageEntry, before: Map<string, string>): boolean {
+  const previousKey = before.get(page.handle);
+  return previousKey === undefined || previousKey !== navigationUrlKey(page.url);
+}
+
+/** 一次非定向导航的落点记录：句柄在等待窗内由组页面表识别；上报未及时到达则为空、止损只按地址键匹配。 */
+interface NavigationRecord {
+  landingHandles: string[];
 }
 
 /**
@@ -1034,8 +1053,10 @@ interface SessionRuntime {
   pendingSnapshot: Map<string, (report: SnapshotReportFrame | null) => void>;
   /** 组页面表变更通知：group-pages 帧落表后逐个唤醒，由等待方自行复查谓词。 */
   groupPagesWaiters: Set<() => void>;
-  /** 本会话 agent 已成功导航过的地址（navigationUrlKey）：already-open 止损的判定依据之一。 */
-  navigatedUrlKeys: Set<string>;
+  /** 本会话 agent 成功导航过的请求地址（navigationUrlKey）→ 落点记录：already-open 止损的判定依据。 */
+  navigations: Map<string, NavigationRecord>;
+  /** 定向快照对 silent 句柄的拒绝次数：首次指引最多重试一次，此后指引停止重试并如实告知用户；句柄接入或退役即清。 */
+  silentSnapshotRejections: Map<string, number>;
   /** 最近一次快照的判定上下文（ref 闭集 + 页路径）；dom 签发校验依据，无快照即 deny。 */
   domContext: DomGateContext | null;
   /** 定向快照的 per-handle 判定上下文（adr-023 D3）：定向 dom 签发基准；句柄退役即清除，禁与活跃页 domContext 互相回退。 */
@@ -1358,7 +1379,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
         stoppedExecNonces: new Set(),
         pendingSnapshot: new Map(),
         groupPagesWaiters: new Set(),
-        navigatedUrlKeys: new Set(),
+        navigations: new Map(),
+        silentSnapshotRejections: new Map(),
         domContext: null,
         domContextByPage: new Map(),
         pendingConfigDrafts: new Map(),
@@ -1554,14 +1576,16 @@ export function createGateway(deps: GatewayDeps): Gateway {
   }
 
   /**
-   * 等导航落点页接入会话：组页面表里该地址（navigationUrlKey 同键）的页转 active/background 即 true；
-   * 到期仍无即 false。不等（上限 0）时只看当前表。落点页接入与否只据客户端上报的状态表，
-   * 服务端不推断注入是否成功。
+   * 等导航落点页接入会话：组页面表里该地址（navigationUrlKey 同键）的页、或本次导航的落点页
+   * （isLandingPage，覆盖重定向到异址）转 active/background 即 true；到期仍无即 false。
+   * 不等（上限 0）时只看当前表。落点页接入与否只据客户端上报的状态表，服务端不推断注入是否成功。
    */
-  function waitForPageAttached(session: SessionState, url: string): Promise<boolean> {
+  function waitForPageAttached(session: SessionState, url: string, before: Map<string, string>): Promise<boolean> {
     const key = navigationUrlKey(url);
     const attachedNow = (): boolean =>
-      session.groupPages.some((page) => pageAttached(page) && navigationUrlKey(page.url) === key);
+      session.groupPages.some(
+        (page) => pageAttached(page) && (navigationUrlKey(page.url) === key || isLandingPage(page, before)),
+      );
     if (attachedNow()) return Promise.resolve(true);
     if (navAttachWaitMs <= 0) return Promise.resolve(false);
     const runtime = runtimeOf(session.sessionId);
@@ -2413,9 +2437,17 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   ...(targetOrigin !== '' ? { origin: targetOrigin } : {}),
                 };
                 if (entry.status === 'silent') {
+                  // 拒绝指引带状态：首次允许重试一次，再拒即明确停止重试——否则模型只会重复看到「重试一次」，
+                  // 直到失败预算收口，用户拿不到可操作的授权指引。
+                  const rejections = runtimeOf(sessionId).silentSnapshotRejections;
+                  const priorRejections = rejections.get(entry.handle) ?? 0;
+                  rejections.set(entry.handle, priorRejections + 1);
                   rejection = {
                     error: 'page-not-interactive',
-                    message: `目标页 ${pageParam} 不可交互（silent，尚未接入会话），无法定向读取：先重试一次定向快照（page_snapshot 传同一 targetPage）；仍不可用则告知用户在该页点击 Zen 图标以授权并激活本站后再继续；不要再次打开同一地址。`,
+                    message:
+                      priorRejections === 0
+                        ? `目标页 ${pageParam} 不可交互（silent，尚未接入会话），无法定向读取：最多重试一次定向快照（page_snapshot 传同一 targetPage）；仍不可用则告知用户在该页点击 Zen 图标以授权并激活本站后再继续；不要再次打开同一地址。`
+                        : `目标页 ${pageParam} 不可交互（silent，尚未接入会话），重试后仍未接入：不要再重试、不要再次打开同一地址；如实告知用户在该页点击 Zen 图标以授权并激活本站后再继续。`,
                   };
                 } else {
                   target = { handle: entry.handle, url: entry.url };
@@ -2826,17 +2858,21 @@ export function createGateway(deps: GatewayDeps): Gateway {
           const navToolDef = call.name === OPEN_URL_TOOL_ID ? OPEN_URL_TOOL_DEF : SITE_NAVIGATE_TOOL_DEF;
           const directedNav = typeof call.params['targetPage'] === 'string';
           const navUrlParam = typeof call.params['url'] === 'string' ? call.params['url'] : null;
-          // already-open 止损（服务端 fail-closed、不弹卡）：本会话已导航过同一地址、组内该地址的页仍未接入
-          // 且没有任何已接入的同地址页时，再次非定向导航一律拒绝——再开只会多一个接不进来的页。
+          // already-open 止损（服务端 fail-closed、不弹卡）：本会话已导航过同一请求地址、上次落点页
+          // （按句柄记录，覆盖重定向异址；无记录则按地址键）仍在组内且未接入、又无任何已接入的同址/落点页时，
+          // 再次非定向导航一律拒绝——再开只会多一个接不进来的页。
           // 定向导航不在此门内：对 silent 句柄定向 navigate 是清单声明的激活通路。
           if (!directedNav && navUrlParam !== null) {
             const navKey = navigationUrlKey(navUrlParam);
-            const sameUrlPages = session.groupPages.filter((page) => navigationUrlKey(page.url) === navKey);
-            if (
-              runtime.navigatedUrlKeys.has(navKey) &&
-              sameUrlPages.some((page) => page.status === 'silent') &&
-              !sameUrlPages.some(pageAttached)
-            ) {
+            const priorNavigation = runtime.navigations.get(navKey);
+            const priorLandingPages =
+              priorNavigation === undefined
+                ? []
+                : session.groupPages.filter(
+                    (page) =>
+                      navigationUrlKey(page.url) === navKey || priorNavigation.landingHandles.includes(page.handle),
+                  );
+            if (priorLandingPages.some((page) => page.status === 'silent') && !priorLandingPages.some(pageAttached)) {
               recordEvent(sessionId, claims, featureId, {
                 type: 'tool-decision',
                 data: {
@@ -2864,6 +2900,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
               continue;
             }
           }
+          // 落点识别基准须在指令下发前取样：客户端可能在回执之前就上报新页入组。
+          const groupPagesBeforeNav = groupPagesIndex(session);
           const observation = await runExecSubflow(
             session,
             claims,
@@ -2888,10 +2926,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
           if (observation.ok && !directedNav) {
             const landedUrl = String((observation.content as JsonObject | null)?.['url'] ?? '');
             if (landedUrl !== '') {
-              runtime.navigatedUrlKeys.add(navigationUrlKey(landedUrl));
               // 回喂前等落点页接入：模型据 attached 分辨「已打开且可读」与「已打开但接不进来」，
               // 后者的指引把它从反复开同一地址的循环里拉出来。等待窗内的停止仍走回合停止路径。
-              const attached = await waitForPageAttached(session, landedUrl);
+              const attached = await waitForPageAttached(session, landedUrl, groupPagesBeforeNav);
+              runtime.navigations.set(navigationUrlKey(navUrlParam ?? landedUrl), {
+                landingHandles: session.groupPages
+                  .filter((page) => isLandingPage(page, groupPagesBeforeNav))
+                  .map((page) => page.handle),
+              });
               navObsContent = `${JSON.stringify({
                 ...(observation.content as JsonObject),
                 attached,
@@ -3274,6 +3316,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
         const runtime = runtimeOf(session.sessionId);
         for (const handle of [...runtime.domContextByPage.keys()]) {
           if (!liveHandles.has(handle)) runtime.domContextByPage.delete(handle);
+        }
+        const attachedHandles = new Set(upstream.pages.filter(pageAttached).map((page) => page.handle));
+        for (const handle of [...runtime.silentSnapshotRejections.keys()]) {
+          if (!liveHandles.has(handle) || attachedHandles.has(handle)) runtime.silentSnapshotRejections.delete(handle);
         }
         for (const wake of [...runtime.groupPagesWaiters]) wake();
         sendNoContent(res);

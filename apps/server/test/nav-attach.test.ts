@@ -24,6 +24,8 @@ const key = new TextEncoder().encode(JWT_SECRET);
 
 const GENERIC_URL = 'http://127.0.0.1:4173/order-list.html';
 const OPEN_TARGET = 'https://news.example/article?id=7';
+/** 请求地址经 30x 重定向后的真实落点（异主机、异路径）：组页面表里只会出现这个地址。 */
+const REDIRECT_LANDING = 'https://www.news.example/articles/7/';
 /** 等落点接入的上限：足够短让「未接入」路径不拖慢用例，足够长让上报能在窗内落表。 */
 const ATTACH_WAIT_MS = 400;
 
@@ -329,6 +331,54 @@ describe('非定向 open_url 成功后的落点接入回喂', () => {
       sse.close();
     }
   });
+
+  it('落点被重定向到异址：新出现的已接入页即视为落点 → attached:true，不因地址不等而误报未接入', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: GENERIC_URL });
+      await postFrame(token, sessionId, {
+        type: 'group-pages',
+        sessionId,
+        pages: [{ handle: 'p1', url: GENERIC_URL, title: '订单列表', status: 'active' }],
+      });
+      const hitl = await driveOpenUrlTurn(token, sessionId, sse, '打开那条新闻', {
+        reportPagesAfterExec: [
+          { handle: 'p1', url: GENERIC_URL, title: '订单列表', status: 'background' },
+          { handle: 'p2', url: REDIRECT_LANDING, title: '新闻', status: 'active' },
+        ],
+      });
+      expect(hitl).not.toBeNull();
+      const attached = lastObservationText(sse);
+      expect(attached).toContain('"attached":true');
+      expect(attached).toContain('页面已接入');
+      expect(attached).not.toContain('点击 Zen 图标');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('发起页原地换址（空白页复用）且接入 → 同句柄换址的页视为落点，attached:true', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: 'chrome://newtab/' });
+      await postFrame(token, sessionId, {
+        type: 'group-pages',
+        sessionId,
+        pages: [{ handle: 'p1', url: 'chrome://newtab/', title: '', status: 'silent' }],
+      });
+      const hitl = await driveOpenUrlTurn(token, sessionId, sse, '打开那条新闻', {
+        reportPagesAfterExec: [{ handle: 'p1', url: REDIRECT_LANDING, title: '新闻', status: 'active' }],
+      });
+      expect(hitl).not.toBeNull();
+      expect(lastObservationText(sse)).toContain('"attached":true');
+    } finally {
+      sse.close();
+    }
+  });
 });
 
 describe('already-open 止损（同地址的页仍未接入时再次 open_url → 服务端 deny、不弹卡）', () => {
@@ -389,6 +439,60 @@ describe('already-open 止损（同地址的页仍未接入时再次 open_url �
       const third = await driveOpenUrlTurn(token, sessionId, sse, '第三次打开那条新闻');
       expect(third).not.toBeNull();
       expect(third?.['toolId']).toBe('open_url');
+      expect(lastObservationText(sse)).toContain('"attached":true');
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('落点被重定向到异址且仍 silent：按落点句柄止损——同请求地址再导航被拒；该落点页接入后恢复放行', async () => {
+    const token = await signToken();
+    const sessionId = await createSession(token);
+    const sse = await openSse(token, sessionId);
+    try {
+      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: GENERIC_URL });
+      await postFrame(token, sessionId, {
+        type: 'group-pages',
+        sessionId,
+        pages: [{ handle: 'p1', url: GENERIC_URL, title: '订单列表', status: 'active' }],
+      });
+      const first = await driveOpenUrlTurn(token, sessionId, sse, '打开那条新闻', {
+        reportPagesAfterExec: [
+          { handle: 'p1', url: GENERIC_URL, title: '订单列表', status: 'active' },
+          { handle: 'p2', url: REDIRECT_LANDING, title: '', status: 'silent' },
+        ],
+      });
+      expect(first).not.toBeNull();
+      expect(lastObservationText(sse)).toContain('"attached":false');
+
+      const hitlCountBefore = framesByType(sse.frames, 'hitl-request').length;
+      const second = await driveOpenUrlTurn(token, sessionId, sse, '再打开一次那条新闻');
+      expect(second).toBeNull();
+      expect(framesByType(sse.frames, 'hitl-request').length).toBe(hitlCountBefore);
+      expect(lastObservationText(sse)).toContain('already-open-not-attached');
+      const denyEvents = auditEventsFor(sessionId).filter(
+        (event) =>
+          event['type'] === 'tool-decision' &&
+          (event['data'] as Record<string, unknown>)['reason'] === 'already-open-not-attached',
+      );
+      expect(denyEvents).toHaveLength(1);
+
+      await postFrame(token, sessionId, {
+        type: 'group-pages',
+        sessionId,
+        pages: [
+          { handle: 'p1', url: GENERIC_URL, title: '订单列表', status: 'background' },
+          { handle: 'p2', url: REDIRECT_LANDING, title: '新闻', status: 'active' },
+        ],
+      });
+      const third = await driveOpenUrlTurn(token, sessionId, sse, '第三次打开那条新闻', {
+        reportPagesAfterExec: [
+          { handle: 'p1', url: GENERIC_URL, title: '订单列表', status: 'background' },
+          { handle: 'p2', url: REDIRECT_LANDING, title: '新闻', status: 'background' },
+          { handle: 'p3', url: REDIRECT_LANDING, title: '新闻', status: 'active' },
+        ],
+      });
+      expect(third).not.toBeNull();
       expect(lastObservationText(sse)).toContain('"attached":true');
     } finally {
       sse.close();

@@ -114,12 +114,15 @@ pack 与 L2 都无从携带可执行代码。本 ADR MUST NOT 被读成「允许
   首次授权会有浏览器询问。否决的备选：逐 origin 申请（任务内自动导航没有手势可用）；回到静态
   `<all_urls>` 注入（破坏 IN）。代价：首次批准多一个「读取和更改所有网站上的数据」的一次性提示。
 - *服务端·接入回喂与 already-open 止损*：非定向 `open_url` / `site_navigate` 成功后、回喂前等落点页接入
-  （组页面表中该地址的页转 active/background，上限 `ZA_NAV_ATTACH_WAIT_MS`，默认 8000），observation 附
-  `attached: true|false`——false 时指引「不要再次打开同一地址；先重试一次定向快照；仍不可用则告知用户在该页
-  点击 Zen 图标授权本站」；silent 页定向快照的拒绝文案改为同一口径。同会话已导航过同一规范化地址
-  （去 fragment）、组内该地址的页仍 silent 且无已接入同址页时再次非定向导航 → 服务端 fail-closed deny
-  （`tool-decision` reason `already-open-not-attached`，不弹卡），回喂同一指引。定向 navigate 不在此门内——
-  对 silent 句柄定向导航是清单声明的激活通路。
+  （上限 `ZA_NAV_ATTACH_WAIT_MS`，默认 8000），observation 附 `attached: true|false`——false 时指引
+  「不要再次打开同一地址；最多重试一次定向快照；仍不可用则告知用户在该页点击 Zen 图标授权本站」；
+  silent 页定向快照的拒绝文案改为同一口径，且按句柄计次：首次允许重试一次，再拒即明确「不要再重试、如实告知用户」。
+  落点识别不绑请求地址等值——落点常被重定向到异址（http→https、www、搜索引擎跳转链），故以导航前取样的组页面表
+  为基准：等待窗内「新出现的句柄」或「同句柄换址的页」转 active/background 即 attached，与请求地址同键的页亦计。
+  止损按同一基准：同会话已导航过同一请求地址（去 fragment）、上次记录的落点句柄（或同址页）仍在组内且 silent、
+  又无任何已接入的落点/同址页时再次非定向导航 → 服务端 fail-closed deny（`tool-decision` reason
+  `already-open-not-attached`，不弹卡），回喂同一指引。定向 navigate 不在此门内——对 silent 句柄定向导航是
+  清单声明的激活通路。残余面：落点页上报迟于等待窗时落点句柄为空，止损退化为按地址键匹配。
 
 **撤销授权与拉黑不回收已注入页**：撤销授权只注销动态注册面，拉黑只让此后不再注入——
 两者都不把已在页内的 content 撤出去，该页需重载才彻底退出。其间上行闸门照挡：
