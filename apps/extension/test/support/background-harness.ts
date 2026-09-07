@@ -81,6 +81,8 @@ export interface Harness {
   emitTabUpdated(tabId: number, changeInfo: Record<string, unknown>, tab: FakeTab): void;
   /** 探针专用：模拟新标签页被创建（代执行开页 / target=_blank）。 */
   emitTabCreated(tab: FakeTab): void;
+  /** 探针专用：模拟用户/浏览器把某个标签页切为活跃（面板可见性的权威重判点）。 */
+  emitTabActivated(tabId: number): void;
   /** 探针专用：模拟用户在扩展设置里追加了站点访问权限。 */
   emitPermissionsAdded(origins: string[]): void;
   /** 探针专用：模拟 chrome.storage.local.set 引发的 onChanged 广播。 */
@@ -219,11 +221,12 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     storageChanged: Array<(changes: unknown, areaName: string) => void>;
     tabRemoved: Array<(tabId: number, info: unknown) => void>;
     tabCreated: Array<(tab: FakeTab) => void>;
+    tabActivated: Array<(activeInfo: { tabId: number; windowId: number }) => void>;
     permissionsAdded: Array<(descriptor: { origins?: string[] }) => void>;
     contextMenuClick: Array<(info: unknown, tab: FakeTab) => void>;
   } = {
-    message: [], iconClick: [], tabUpdated: [], connect: [],
-    storageChanged: [], tabRemoved: [], tabCreated: [], permissionsAdded: [], contextMenuClick: [],
+    message: [], iconClick: [], tabUpdated: [], connect: [], storageChanged: [],
+    tabRemoved: [], tabCreated: [], tabActivated: [], permissionsAdded: [], contextMenuClick: [],
   };
   const menus: ContextMenuItem[] = [];
 
@@ -374,7 +377,10 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
         addListener: (cb: (tabId: number, changeInfo: unknown, tab: FakeTab) => void): void =>
           void listeners.tabUpdated.push(cb),
       },
-      onActivated: { addListener: (): void => {} },
+      onActivated: {
+        addListener: (cb: (activeInfo: { tabId: number; windowId: number }) => void): void =>
+          void listeners.tabActivated.push(cb),
+      },
       onCreated: {
         addListener: (cb: (tab: FakeTab) => void): void => void listeners.tabCreated.push(cb),
       },
@@ -466,6 +472,10 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     emitTabCreated(tab) {
       tabs.set(tab.id, { ...tab });
       for (const cb of listeners.tabCreated) cb(tabs.get(tab.id)!);
+    },
+    emitTabActivated(tabId) {
+      const windowId = tabs.get(tabId)?.windowId ?? 1;
+      for (const cb of listeners.tabActivated) cb({ tabId, windowId });
     },
     emitPermissionsAdded(origins) {
       for (const origin of origins) if (!grantedOrigins.includes(origin)) grantedOrigins.push(origin);

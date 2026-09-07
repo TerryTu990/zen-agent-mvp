@@ -41,18 +41,31 @@ function lastPageStatus(panel: { received: unknown[] }): PanelPageEntry[] | unde
 afterEach(disposeHarnesses);
 
 describe('组内新开页的面板启用（chrome.tabs.onCreated）', () => {
-  it('由组内页面打开的新页：创建当刻即启用面板，不等入组事件到达', async () => {
-    const h = await loadBackground({ tabs: [shopTab], storageSession: zenGroup });
-    h.emitTabCreated({ id: 33, url: '', groupId: -1, windowId: WINDOW_ID, openerTabId: shopTab.id });
-    await settle();
-    expect(panelSettingsFor(h, 33)).toEqual([{ tabId: 33, path: 'sidepanel.html', enabled: true }]);
-  });
-
-  it('新页已带组号（入组先于事件到达）：同样启用', async () => {
+  it('新页已带组号（Chrome 对组内页面开的新页同步继承组号）：创建当刻即启用', async () => {
     const h = await loadBackground({ tabs: [shopTab], storageSession: zenGroup });
     h.emitTabCreated({ id: 34, url: '', groupId: GROUP_ID, windowId: WINDOW_ID });
     await settle();
     expect(panelSettingsFor(h, 34)).toEqual([{ tabId: 34, path: 'sidepanel.html', enabled: true }]);
+  });
+
+  it('尚未入组的新页：创建当刻不动面板（既不提前开，也不关掉正在打开的面板）', async () => {
+    const h = await loadBackground({ tabs: [shopTab], storageSession: zenGroup });
+    h.emitTabCreated({ id: 33, url: '', groupId: -1, windowId: WINDOW_ID, openerTabId: shopTab.id });
+    await settle();
+    expect(panelSettingsFor(h, 33)).toEqual([]);
+  });
+
+  /**
+   * opener 在组内不等于新页在组内：组内页面开出、Chrome 却没把它并入本组的新页，
+   * 终局必须是禁用。按 opener 提前放行会让面板挂在一个永不入组的组外页上——
+   * 既不消失也不生效，且它落在激活重判之后，把那次显式禁用盖掉。
+   */
+  it('组内页面开出、却没有入组的新页：切过去之后面板终局为禁用', async () => {
+    const h = await loadBackground({ tabs: [shopTab], storageSession: zenGroup });
+    h.emitTabCreated({ id: 44, url: 'https://news.example/', groupId: -1, windowId: WINDOW_ID, openerTabId: shopTab.id });
+    h.emitTabActivated(44);
+    await settle();
+    expect(panelSettingsFor(h, 44)).toEqual([{ tabId: 44, enabled: false }]);
   });
 
   it('与任务组无关的新页：一个字都不改（面板只在任务组内出现）', async () => {

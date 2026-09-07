@@ -524,6 +524,8 @@ export function startSidePanel(elements: SidePanelElements): void {
       ui.hideThinking();
       ui.appendTextDelta(event.frame);
     } else if (event.frame.type === 'turn-complete') {
+      // 回合封口的唯一判据：本回合真的结束了。流中途的停顿不封口，否则一段完整回答会被切成两个气泡。
+      ui.completeTurn();
       if (event.frame.messageId !== undefined) completedMessageIds.add(event.frame.messageId);
       if (event.frame.idle) {
         turnInProgress = false;

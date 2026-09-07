@@ -21,6 +21,9 @@
 }
 
 * { box-sizing: border-box; }
+/* 本表里的容器多为 display:flex，作者样式压过 UA 的 [hidden]{display:none}：
+   隐藏的信号区照样按 flex 排版、留下 padding 死区。故就地把 hidden 收成彻底不占位。 */
+[hidden] { display: none !important; }
 html, body, #za-sidepanel { min-width: 280px; height: 100%; min-height: 0; margin: 0; overflow: hidden; }
 button, textarea, select { font: inherit; }
 button { cursor: pointer; }
@@ -169,8 +172,6 @@ button { cursor: pointer; }
 .za-toolgroup-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .za-toolgroup-caret { flex: 0 0 auto; transition: transform .16s ease; }
 .za-toolgroup-toggle[aria-expanded="true"] .za-toolgroup-caret { transform: rotate(90deg); }
-/* .za-toolgroup-body 自带 display:flex，会盖过 [hidden] 的 UA 规则，故显式收起。 */
-.za-toolgroup-body[hidden] { display: none; }
 .za-toolcard-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .za-toolcard-detail { color: var(--ink-soft); font-size: 10px; line-height: 1.45; word-break: break-word; }
 .za-toolcard:has(.za-toolcard-detail) { align-items: flex-start; }

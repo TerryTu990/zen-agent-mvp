@@ -35,9 +35,14 @@ export interface ConversationUi {
   appendUserMessage(text: string): UserMessageHandle;
   /**
    * 回合首个 delta 开新 assistant 气泡并增量追加（气泡内累积重渲染，markdown 结构不被切碎）。
-   * 工具卡、确认卡、用户发言与流结束都封口当前气泡，下一个 delta 另起一个回合气泡。
+   * 气泡在遇到回合边界前一直开着：流中途停顿多久都续写同一个。
    */
   appendTextDelta(frame: TextDeltaFrame): void;
+  /**
+   * 封口当前回合气泡（turn-complete 帧驱动），此后的 delta 另起一个回合气泡。
+   * 工具卡、确认卡、状态行与用户发言同样封口——它们各自也是回合边界。
+   */
+  completeTurn(): void;
   /** 呈现可定位、不含 token/密钥值的错误或状态说明（SEC-04）。 */
   showStatus(message: string): void;
   showThinking(): void;
@@ -58,6 +63,9 @@ const STATUS_LABEL: Record<ToolStatus, string> = {
 
 /** 折叠摘要里各状态的出现次序：进行中在前（当下正发生什么），未成功殿后但恒不省略。 */
 const SUMMARY_ORDER: ToolStatus[] = ['running', 'succeeded', 'failed'];
+
+/** delta 静默多久撤下闪烁光标。纯观感阈值，不参与回合边界判定。 */
+const STREAM_CURSOR_IDLE_MS = 700;
 
 /**
  * 工具卡上的失败原因：服务端已脱敏的展示字段，仅 failed 状态下发。
@@ -163,12 +171,14 @@ function ensureSiteAccess(): Promise<void> {
 }
 
 export function createConversationUi(messages: HTMLElement): ConversationUi {
-  // assistant 气泡内的 .mdlite 容器；累积原始文本每次 delta 后全量重渲染，保证 markdown 结构完整。
+  // 当前未封口的 assistant 气泡与其 .mdlite 容器；累积原始文本每次 delta 后全量重渲染，
+  // 保证 markdown 结构完整（跨 delta 未闭合的 ** 或代码围栏不会被切成两半各渲一截）。
+  let assistantBub: HTMLElement | null = null;
   let assistantBody: HTMLElement | null = null;
   let assistantRaw = '';
-  // 当前流式中的 assistant 气泡（挂 .streaming 显闪烁光标）；无 done 帧，以去抖判定流结束。
-  let streamingBub: HTMLElement | null = null;
-  let settleTimer: ReturnType<typeof setTimeout> | null = null;
+  // 闪烁光标的撤下时机：无 done 帧，以「最后一个 delta 后短暂静默」判定当下没在出字。
+  // 它只管光标，不管封口——模型流中途的停顿不是回合结束。
+  let cursorTimer: ReturnType<typeof setTimeout> | null = null;
   // 本次用户发言以来已开的 assistant 气泡数；≥2 即为同一轮任务内的后续回合，需署名标号与分隔。
   let assistantTurn = 0;
   // 同一 toolCallId 的状态迁移就地更新同一张卡片（连同它所属的组摘要），避免 running→succeeded 产生两张卡。
@@ -182,16 +192,22 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
     messages.scrollTop = messages.scrollHeight;
   };
 
-  const clearStreaming = (): void => {
-    if (settleTimer !== null) {
-      clearTimeout(settleTimer);
-      settleTimer = null;
+  const hideStreamCursor = (): void => {
+    if (cursorTimer !== null) {
+      clearTimeout(cursorTimer);
+      cursorTimer = null;
     }
-    if (streamingBub !== null) {
-      streamingBub.classList.remove('streaming');
-      streamingBub = null;
-    }
-    // 流结束即封口本回合气泡：后续 delta 另起一个，回合边界不被叙述连成一坨。
+    assistantBub?.classList.remove('streaming');
+  };
+
+  /**
+   * 封口当前回合气泡：后续 delta 另起一个，回合边界不被叙述连成一坨。
+   * 只由真实的回合边界触发（turn-complete 帧、工具卡、确认卡、状态行、用户发言），
+   * 静默时长不构成边界——按静默封口会把一段完整回答切成两半。
+   */
+  const closeAssistantTurn = (): void => {
+    hideStreamCursor();
+    assistantBub = null;
     assistantBody = null;
     assistantRaw = '';
   };
@@ -284,7 +300,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
 
   return {
     appendUserMessage(text) {
-      clearStreaming();
+      closeAssistantTurn();
       closeToolBatch();
       assistantTurn = 0;
       const bubble = appendMessage('user');
@@ -303,24 +319,26 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
       if (assistantBody === null) {
         closeToolBatch();
         assistantTurn += 1;
-        const bubble = appendMessage('assistant', assistantTurn);
-        bubble.classList.add('streaming');
-        streamingBub = bubble;
+        assistantBub = appendMessage('assistant', assistantTurn);
         assistantBody = document.createElement('div');
         assistantBody.className = 'za-md mdlite';
-        bubble.append(assistantBody);
+        assistantBub.append(assistantBody);
         assistantRaw = '';
       }
+      assistantBub?.classList.add('streaming');
       assistantRaw += frame.delta;
       assistantBody.textContent = '';
       assistantBody.append(renderMarkdown(assistantRaw));
       scrollToEnd();
-      // 去抖：最后一个 delta 后短暂静默即视为流结束，撤下光标（无 done 帧兜底）。
-      if (settleTimer !== null) clearTimeout(settleTimer);
-      settleTimer = setTimeout(clearStreaming, 700);
+      // 去抖：静默一小段即认为当下没在出字，撤下光标；气泡仍开着，续来的 delta 接着写同一个。
+      if (cursorTimer !== null) clearTimeout(cursorTimer);
+      cursorTimer = setTimeout(hideStreamCursor, STREAM_CURSOR_IDLE_MS);
+    },
+    completeTurn() {
+      closeAssistantTurn();
     },
     showStatus(message) {
-      clearStreaming();
+      closeAssistantTurn();
       closeToolBatch();
       thinking?.remove();
       thinking = null;
@@ -347,7 +365,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
       thinking = null;
     },
     renderToolCard(frame) {
-      clearStreaming();
+      closeAssistantTurn();
       thinking?.remove();
       thinking = null;
       let entry = toolCards.get(frame.toolCallId) ?? null;
@@ -384,7 +402,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
       scrollToEnd();
     },
     promptHitl(frame) {
-      clearStreaming();
+      closeAssistantTurn();
       closeToolBatch();
       thinking?.remove();
       thinking = null;
