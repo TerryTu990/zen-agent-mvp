@@ -42,16 +42,6 @@
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*$"
     },
-    "automationRunId": {
-      "$comment": "本事件所属自动回合（C3 user-message.automationRunId）：无人值守 run 的审计归因键；人工回合省略。",
-      "type": "string",
-      "pattern": "^[A-Za-z0-9_-]{8,128}$"
-    },
-    "automationId": {
-      "$comment": "发起该自动回合的自动化标识：pack 声明的 automation id（adr-019）或用户自建 watch id（adr-021）；人工回合省略。",
-      "type": "string",
-      "pattern": "^[a-z][a-z0-9-]{0,63}$"
-    },
     "page": {
       "$comment": "事件落点页标注（adr-023，additive 扩展——旧消费方可忽略）：handle=会话作用域不透明页面句柄（消费方 MUST NOT 解析内部结构，U5：Chrome tabId 等形态标识禁入）；origin=该页 origin，URL 不可解析时省略。D1 于 tool-decision/hitl-verdict/tool-execution 以活跃页填充；定向落地（D2/D3）后为目标页。",
       "type": "object",
@@ -220,10 +210,6 @@
           "$comment": "L2 收紧后的本轮生效分级（riskTier 字段为静态定义值）；缺省=无 L2 收紧、生效值即静态值。",
           "type": "string",
           "enum": ["auto", "hitl", "forbidden"]
-        },
-        "unattendedReadOnly": {
-          "$comment": "本轮由只读自动化模板发起、工具面被平台强制收窄为只读（adr-021，R7 无人值守底线）的判定归因：越界工具请求以 verdict=deny 落此标注，是「无人值守不执行写操作」的机械可检证据；缺省=非只读强制轮。",
-          "const": true
         }
       }
     },
@@ -270,7 +256,7 @@
       }
     },
     "toolExecutionData": {
-      "$comment": "执行结局事件：outcome 闭集——ok 成功回喂 / error 宿主 API 报错 / timeout 指令 ttl 过期或结果未归 / invalid-result 结果未过 resultSchema 校验被拒回喂（U7）/ skipped 本轮未执行且非故障（如自动回合上报的不是被监测页）/ issue-rejected 判定放行但签发被拒、未下发指令、零副作用（故无 nonce）/ dispatched-unknown 指令已下发、结果因用户中断未归、副作用未知。skipped MUST NOT 与 ok 合并统计——运行历史据此区分「看过、没变」与「本轮没看成」；issue-rejected MUST NOT 与 error 合并统计——事故回放据此区分「没执行」与「执行失败」，dispatched-unknown 是「停止时副作用可能已发生」的机械可检证据。不记请求与响应体本身。",
+      "$comment": "执行结局事件：outcome 闭集——ok 成功回喂 / error 宿主 API 报错 / timeout 指令 ttl 过期或结果未归 / invalid-result 结果未过 resultSchema 校验被拒回喂（U7）/ skipped 本轮未执行且非故障（如定向快照的目标页与请求不符被拒）/ issue-rejected 判定放行但签发被拒、未下发指令、零副作用（故无 nonce）/ dispatched-unknown 指令已下发、结果因用户中断未归、副作用未知。skipped MUST NOT 与 ok 合并统计——事故回放据此区分「执行了、无事发生」与「本轮压根没执行」；issue-rejected MUST NOT 与 error 合并统计——事故回放据此区分「没执行」与「执行失败」，dispatched-unknown 是「停止时副作用可能已发生」的机械可检证据。不记请求与响应体本身。",
       "type": "object",
       "additionalProperties": false,
       "required": ["toolCallId", "toolId", "execution", "outcome"],

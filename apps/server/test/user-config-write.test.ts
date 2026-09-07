@@ -1,7 +1,7 @@
 /**
  * G3（P2.5-c）写入通道端点测试：PUT/GET /v1/user-config 与 config-decision 拒收闭集。
  * subject 一律取自 JWT claims（tenant + hostUserId）；body.subject 与 claims 推导值不一致即 400。
- * 校验链 = validateUserOverlay（含 configSchemas）+ validateOverlayAgainstL1（基线自 assembly 全量工具/自动化）。
+ * 校验链 = validateUserOverlay（含 configSchemas）+ validateOverlayAgainstL1（基线自 assembly 全量工具面）。
  */
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync } from 'node:fs';
@@ -182,6 +182,21 @@ describe('PUT /v1/user-config（面板结构化编辑，R3）', () => {
     const hostUserId = 'ucw-schema-bad';
     const token = await signToken(hostUserId);
     const res = await putOverlay(token, overlayFor(hostUserId, { enabled: true }));
+    expect(res.status).toBe(400);
+    const state = await getOverlay(token);
+    expect(state.overlay).toBeNull();
+  });
+
+  it('已退役键（watches）→ 400：读路径的存量剥离不构成写入口', async () => {
+    const hostUserId = 'ucw-retired-key';
+    const token = await signToken(hostUserId);
+    const body = {
+      ...overlayFor(hostUserId, { rules: [ruleEntry('r-1', '仍在的规则。')] }),
+      watches: [
+        { id: 'watch-1', templateId: 'page-watch', url: 'https://example.com/a', minutes: 15, enabled: true },
+      ],
+    };
+    const res = await putOverlay(token, body);
     expect(res.status).toBe(400);
     const state = await getOverlay(token);
     expect(state.overlay).toBeNull();

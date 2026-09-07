@@ -2,18 +2,17 @@
 
 > 人读层参考文档。事实权威：契约细节见 `02-contracts.md` 与各 `.schema.json`、`ports.ts`；配置面见 `03-configuration.md`；部署见 `04-deployment.md`；本文负责解释结构、边界、流程与权衡。
 > 决策"为什么"见 `../adr/`（adr-001..023），分期计划见 `../roadmap.md`。
-> 本文已吸收 adr-010..016 演进（server/dom 通道、会话组、站点包与跨站任务组、上下文治理、L2 用户配置层、side panel）、adr-019..021（pack 声明式周期自动化、pack 契约 v2 与 registry 布局、用户自建触发器）、adr-022（匿名激活）、adr-023（任务组多 tab 工作区：组级视野与定向操作）与 adr-027（按需注入双轨模型，不变量 IN），含 P2.5 契约层（C7 user-overlay + `config-draft`/`config-decision` 帧 + `UserConfigStore` 端口 + `user-config-write` 审计事件）。
+> 本文已吸收 adr-010..016 演进（server/dom 通道、会话组、站点包与跨站任务组、上下文治理、L2 用户配置层、side panel）、adr-020（pack 契约 v2 与 registry 布局）、adr-022（匿名激活）、adr-023（任务组多 tab 工作区：组级视野与定向操作）与 adr-027（按需注入双轨模型，不变量 IN），含 P2.5 契约层（C7 user-overlay + `config-draft`/`config-decision` 帧 + `UserConfigStore` 端口 + `user-config-write` 审计事件）。
 
 ## 1. 目标与范围
 
 ### 1.1 目标
 
-在任意站点上叠加一个**可被用户塑形的浏览器 agent harness**（"浏览器 agent 的 Claude Code / AI 时代的 Tampermonkey"）：按用户所在站点/功能（`packId`/`featureId`）动态装配规则、知识、工具面与自动化，提供四档能力（信任阶梯）——
+在任意站点上叠加一个**可被用户塑形的浏览器 agent harness**（"浏览器 agent 的 Claude Code / AI 时代的 Tampermonkey"）：按用户所在站点/功能（`packId`/`featureId`）动态装配规则、知识与工具面，提供三档能力（信任阶梯）——
 
 1. **功能讲解**（看）：这个页面 / 字段 / 流程是什么、怎么用；
 2. **UI 引导**（指）：高亮 / 滚动到目标元素（"该点这里"）；
-3. **受控代执行**（做）：分级判定 + HITL 确认 + 一次性签名指令 + 全链路审计，替用户完成操作；
-4. **自动化**（托管）：pack 声明的周期任务（adr-018/019）与用户自建周期触发器（平台内建模板闭集 + 参数层 `watches`，自动回合只读强制，adr-021），需确认项收口到人。
+3. **受控代执行**（做）：分级判定 + HITL 确认 + 一次性签名指令 + 全链路审计，替用户完成操作。
 
 宗旨基准（一切复杂度的自证问题，**两问皆答不上不引入**）：**如何让 agent 更准确地辅助用户使用当前站点，或让用户在治理边界内更自由地塑形这种辅助**。塑形自由不得以松动治理边界（§2.2 边界铁律 / §5 不变量）为代价。
 
@@ -144,7 +143,7 @@
 
 ## 4. 关键流程
 
-以下时序覆盖讲解、装配换出、受控代执行与任务组协作的主干路径（自动化档的调度与只读强制见 adr-019/021）。全程 ⑦ audit 旁路记录，下文不再重复标注。
+以下时序覆盖讲解、装配换出、受控代执行与任务组协作的主干路径。全程 ⑦ audit 旁路记录，下文不再重复标注。
 
 ### 4.1 讲解问答（最短闭环）
 
@@ -253,7 +252,7 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
 ```
 不变量 IN：content 脚本只出现在两类页面上——
   (a) 用户在本会话里对其发起了动作的页（图标 / 右键 / 快捷动作 / 服务端下发的定向帧）
-  (b) 用户为 watch 自动化显式授权过 origin 的页
+  (b) 用户显式授权过 origin 的页
 其余任何页面上 document 无 zen 注入痕迹。注入面 = 授权集 − 站点黑名单。
 
 轨一 会话内按需注入
@@ -261,11 +260,11 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
     → 站点黑名单闸门 → chrome.scripting.executeScript(dist/content.js) → 既有 port 通道
   注入与激活同出一口（sendActivate），组内导航补发 / 拖入已映射组 / navigate 开页由此继承
   定向帧到达时目标页未注入：注入 → 等端口接入 → 投递重新排回落页闸门（停止/黑名单在副作用那一刻判）
-轨二 watch 自动化的显式 origin 授权
+轨二 显式 origin 授权的常驻注册
   配置中心「授权此站点」→ chrome.permissions.request({origins}) → L2 grantedOrigins
   注册面 = L2 投影 ∩ 本机 chrome.permissions − 站点黑名单
   配置中心显示的授权态同取交集（chrome.permissions.contains 逐条对账）：
-    本机缺失即标「浏览器已撤销访问」+「重新授权」，自动化页「站点未授权」同口径
+    本机缺失即标「浏览器已撤销访问」+「重新授权」
     → chrome.scripting.registerContentScripts（确定性 id，注册前按 id 注销即幂等）
   撤销授权 / 落进黑名单 → unregisterContentScripts（对称注销）
 ```
@@ -276,7 +275,7 @@ agent ─page_snapshot(targetPage=p3) / dom 工具(targetPage=p2) / navigate(tar
 `grantedOrigins` 是准入维度而非治理维度：授权只决定 agent 在该站点是否存在，不改任何工具的
 riskTier / 工具面成员 / HITL 判定，故与 L2「只收紧」正交（schema 上与 `restrictions` 物理分离）。
 注入与注册的载荷恒为插件自带的 `dist/content.js`——pack 与 L2 都无从携带可执行代码（R2）。
-接受的代价：watch 自动化在未授权 origin 上不再零配置可用（R9 限定），跨导航的会话连续性依赖 origin 授权
+接受的代价：未授权 origin 上 agent 不再常驻（R9 限定），跨导航的会话连续性依赖 origin 授权
 （`activeTab` 在导航到新文档后被浏览器收回）。
 
 ## 5. 升级路径（U1-U8 逐条展开）

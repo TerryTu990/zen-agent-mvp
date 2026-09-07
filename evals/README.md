@@ -1,8 +1,7 @@
 # evals — 功能配置评测集（ZA-EVAL 落地载体）
 
 评测对象是**功能配置质量**（system-prompt 基座 / pack.json / feature.md / facts.md / tools.json / skills），
-不是代码单测。六维度闭集（权威 `ZA-C-EVAL-01`）：讲解正确 / 装配换出 / 引导命中 / 工具触发 / HITL 触发 /
-自动化触发；「拒答边界」随 2026-09-03 基座通用化退出闭集。
+不是代码单测。五维度闭集（权威 `ZA-C-EVAL-01`）：讲解正确 / 装配换出 / 引导命中 / 工具触发 / HITL 触发。
 
 ## 当前状态
 
@@ -10,10 +9,10 @@
   自己扮演客户端：发上行帧、读 SSE 下行帧，收到 `exec-instruction` 代插件之职调宿主 API 回 `exec-result`，
   收到 `hitl-request` 按场景 `expect.hitlVerdict` 回 `hitl-decision`，收到 `snapshot-request` 回场景声明的
   确定性快照。LLM 为确定性 mock（`scripts/mock-llm/server.mjs`），非真实模型。
-- **四个快照根依次独占同端口起 server**：`examples/host-demo/config`（跑本目录 `scenarios.json` 17 场景）、
+- **四个快照根依次独占同端口起 server**：`examples/host-demo/config`（跑本目录 `scenarios.json` 16 场景）、
   `examples/acceptance`、`assets`（生产快照）、`examples/site-packs`（已下线站点包）；每根再按
-  `packs/*/eval/scenarios.json` 自动发现逐 pack 跑。当前合计 105 组场景。
-- **维度覆盖**：`explain` / `assembly-swap` 与 `assembly` / `guide` / `tool` / `hitl` / `automation` 均有场景。
+  `packs/*/eval/scenarios.json` 自动发现逐 pack 跑。当前合计 104 组场景。
+- **维度覆盖**：`explain` / `assembly-swap` 与 `assembly` / `guide` / `tool` / `hitl` 均有场景。
 - **宿主 API mock 有状态**：`orders` 状态表 + `calls` 调用流水，**每跑重置**；场景可用 `hostState` /
   `hostCalls` / `hostCallsAbsent` 断言代执行的真实副作用（批准后状态已变、拒绝后状态未变且接口未被调用）。
 - **治理判定判据**：每跑开跑前记 `.za/eval-events.jsonl` 字节偏移，跑完只读该区间新增事件，按 `toolId`
@@ -50,8 +49,6 @@
 本目录 `scenarios.json`（host-demo 根）：`{id, dimension, page（相对 host-demo 的页面路径）,
 featureId（服务端应判定值，null=无命中仅基座）, question, expect}`；`dimension: assembly-swap` 另有
 `flow`（页面跳转序列），判据是服务端 featureId 判定与 describeInjection 注入块随之切换；
-`dimension: automation` 另有 `watch`（`{id, focus}`，runner 写成 L2 用户自建 page-watch 触发器后以
-`automationId` 发起无人值守回合，跑完清空 overlay）与 `snapshotSequence`（首份建基线、其后各份制造变化）；
 `groupPagesReports` 声明 `user-message` 之前按序上报的任务组页面清单（adr-023）。
 
 pack 级 `packs/<packId>/eval/scenarios.json`：`{id, dimension, url（含 pack origin 的完整 URL）, question,
@@ -75,7 +72,7 @@ snapshotElements / snapshotNotices / snapshotText / snapshotTextTruncated / snap
 **治理与环境态判据**
 
 - `hitlVerdict`：`"approve" | "reject"`（缺省 approve）——runner 扮演客户端对 `hitl-request` 的裁决。
-- `expectDecisions`：`[{toolId, riskTier?, effectiveTier?, verdict, hitlDecision?, unattendedReadOnly?, reason?}]`，
+- `expectDecisions`：`[{toolId, riskTier?, effectiveTier?, verdict, hitlDecision?, reason?}]`，
   比对本跑审计区间内的 `tool-decision`（及配对 `hitl-verdict`）；`verdict ∈ allow|hitl|deny`；`reason` 比对拒绝归因
   （如 `already-open-not-attached`）。
 - `hostState`：`{"orders.ORD-1001.status": "cancelled"}` 点分路径断言宿主 mock 的跑后状态。

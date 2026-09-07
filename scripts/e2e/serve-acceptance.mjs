@@ -2,7 +2,7 @@
  * 真机验收的服务端启动器：把 server 指向 acceptance 双站点 pack registry（codeflow-console × mail-126）+ 真实 LLM，常驻前台。
  * 快照根为仓内 examples/acceptance（registry 形态，两 pack 各带 site 围栏）；跨站任务回合数较多，故设 ZA_MAX_TURN_ROUNDS=40。
  * demo .env 的 ZF_LLM_* 经 --env-file 注入并映射为 ZA_LLM_*（密钥不入上下文，SEC-02）。
- * 身份无需配置：插件装上即匿名自动登录（adr-022）；边车只下发服务端地址与验收自动化开关。
+ * 身份无需配置：插件装上即匿名自动登录（adr-022）；边车只下发服务端地址。
  *
  * 启动：node --env-file=../tmp/zen-agent-demo/.env scripts/e2e/serve-acceptance.mjs
  */

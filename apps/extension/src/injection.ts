@@ -2,7 +2,7 @@
  * 按需注入面的派生（adr-027 双轨模型，插件私有，纯逻辑无 chrome 依赖）。
  *
  * 不变量 IN：content 脚本只出现在两类页面上——(a) 用户在本会话里对其发起了动作的页
- * （图标 / 右键 / 快捷动作 / 服务端下发的定向帧），(b) 用户为 watch 自动化显式授权过 origin 的页；
+ * （图标 / 右键 / 快捷动作 / 服务端下发的定向帧），(b) 用户显式授权过 origin 的页；
  * 其余任何页面上 document 无 zen 注入痕迹。注入面 = 授权集 − 站点黑名单。
  *
  * (a) 是会话内一次性注入（background 逐次 executeScript，本模块只提供脚本文件名）；
@@ -61,7 +61,7 @@ export function originMatchPattern(origin: string): string {
  * 浏览器已授予的某条匹配模式是否覆盖该 origin。
  * 逐 origin 授权得到的是精确模式，但用户在 chrome://extensions 把站点访问改成「在所有网站上」时，
  * 浏览器给回的是 `<all_urls>` 或裸通配主机这类模式，逐条授权会被它吸收——
- * 只按精确模式比对会在「用户明明全授权了」时把注册面判成空，自动化随之静默停摆。
+ * 只按精确模式比对会在「用户明明全授权了」时把注册面判成空，常驻注入随之静默失效。
  */
 export function grantedPatternCoversOrigin(pattern: string, origin: string): boolean {
   if (pattern === '<all_urls>') return true;

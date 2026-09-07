@@ -171,7 +171,7 @@
     .za-cc-badge-official { border-color: var(--ink); background: var(--ink); color: var(--surface); }
     .za-cc-badge-local { border-style: dashed; }
     .za-cc-badge-origin { border-color: var(--line); background: var(--paper); }
-    .za-cc-badge-tight, .za-cc-badge-paused { border-color: var(--hitl-line); background: var(--hitl-bg); color: var(--hitl); }
+    .za-cc-badge-tight { border-color: var(--hitl-line); background: var(--hitl-bg); color: var(--hitl); }
     .za-cc-badge-warn { border-color: var(--off-line); background: var(--off-bg); color: var(--off); }
 
     /* ---- 站点包页 ---- */
@@ -191,7 +191,7 @@
 
     /* ---- 行式设置项：左=标签与说明，右=控件 ---- */
 
-    .za-cc-rule, .za-cc-fact, .za-cc-quick-action, .za-cc-automation, .za-cc-watch,
+    .za-cc-rule, .za-cc-fact, .za-cc-quick-action,
     .za-cc-site-deny-entry, .za-cc-site-grant-entry {
       display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap;
       padding: 12px 0; border-top: 1px solid var(--line);
@@ -199,10 +199,8 @@
     .za-cc-section > .za-cc-hint + .za-cc-rule,
     .za-cc-section > .za-cc-hint + .za-cc-fact,
     .za-cc-section > .za-cc-hint + .za-cc-quick-action,
-    .za-cc-section > .za-cc-hint + .za-cc-watch,
     .za-cc-section > .za-cc-section-title + .za-cc-rule,
-    .za-cc-section > .za-cc-section-title + .za-cc-fact,
-    .za-cc-section > .za-cc-section-title + .za-cc-automation { border-top: 0; padding-top: 4px; }
+    .za-cc-section > .za-cc-section-title + .za-cc-fact { border-top: 0; padding-top: 4px; }
 
     .za-cc-rule-text, .za-cc-fact-text { flex: 1 1 240px; font-size: 13px; }
     .za-cc-rule-scope, .za-cc-fact-scope { color: var(--ink-2); font-size: 12px; }
@@ -255,20 +253,6 @@
     .za-cc-tier[data-za-tier="hitl"] { color: var(--hitl); }
     .za-cc-tier[data-za-tier="forbidden"] { color: var(--off); }
     .za-cc-matrix td:last-child .za-cc-badge { margin-left: 8px; }
-
-    /* ---- 自动化行 ---- */
-
-    .za-cc-automation, .za-cc-watch { flex-direction: column; align-items: stretch; gap: 10px; }
-    .za-cc-row-main { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
-    .za-cc-row-main .za-cc-switch { margin-left: auto; }
-    .za-cc-automation-name { font-size: 13px; font-weight: 600; }
-    .za-cc-row-fields { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; }
-    .za-cc-row-fields .za-cc-field-inline { flex: 1 1 auto; gap: 8px; color: var(--ink-2); font-size: 12px; }
-    .za-cc-watch-url { min-width: 220px; flex: 1 1 220px; }
-    .za-cc-watch-focus { min-width: 160px; flex: 1 1 160px; }
-    .za-cc-row-notes { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
-    .za-cc-row-notes .za-cc-hint { flex: 1 1 220px; }
-    .za-cc-watch-foreign .za-cc-row-main { color: var(--ink-2); }
 
     /* ---- 全局设置页 ---- */
 

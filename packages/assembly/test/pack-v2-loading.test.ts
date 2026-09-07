@@ -98,7 +98,7 @@ describe('pack v2 载入：engines.contract 兼容判定（fail-closed）', () =
   });
 
   it('contract 范围满足 → 照常载入（边界）', async () => {
-    const tmp = v2Snapshot({ engines: { contract: '^1.0.0' } });
+    const tmp = v2Snapshot({ engines: { contract: '^2.0.0' } });
     await expect(portOf(tmp).resolveFeature({ url: 'http://p.example/x' })).resolves.toMatchObject({
       packId: 'p',
       featureId: 'f',

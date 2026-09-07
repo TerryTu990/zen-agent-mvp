@@ -1,5 +1,5 @@
 /**
- * 功能配置评测 runner：协议层直驱场景集六维度（讲解正确/装配换出/引导命中/工具触发/HITL 触发/自动化触发），
+ * 功能配置评测 runner：协议层直驱场景集五维度（讲解正确/装配换出/引导命中/工具触发/HITL 触发），
  * 不经浏览器/插件——runner 自己扮演客户端：fetch 发上行帧、读 SSE 下行帧，
  * 收到 exec-instruction 即代插件之职 fetch 宿主 API 回 exec-result，收到 hitl-request 按场景 expect.hitlVerdict 回裁决。
  * 判据分三层：回答文本（mustMention/mustNotMention/judges）、服务端治理判定（expectDecisions 读本跑审计区间）、
@@ -8,7 +8,7 @@
  * 环境编排复用 scripts/e2e/run-m3.mjs 的形态（mock LLM + node dist/main.js + 宿主 API mock）。
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
@@ -23,7 +23,7 @@ const SERVER_DIST = join(REPO_ROOT, 'apps', 'server', 'dist', 'main.js');
 const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
 // 装配快照根（server 载入）+ pack 级评测发现根（ADR-013 §4：扫 packs 各 eval/scenarios.json 逐 pack 跑）。
 // 四根分阶段各起一台 server（同端口先后独占）——各根的 pack origin 互不相同，须独立载入。当前分布：
-//   host-demo   evals/scenarios.json 的 17 条主场景（该根下无 pack 级 eval 集）
+//   host-demo   evals/scenarios.json 的 16 条主场景（该根下无 pack 级 eval 集）
 //   acceptance  5 个验收 pack 共 46 条：codeflow-console 2 / generic-web 17 / mail-126 3 / xianyu-seller 19 / zhipin 5
 //   assets      生产 pack generic-web 17 条
 //   site-packs  已下线站点包 25 条：xianyu-seller 18 / yinxiang 7
@@ -33,7 +33,7 @@ const COMMERCE_ROOT = join(REPO_ROOT, 'assets');
 const SITE_PACKS_ROOT = join(REPO_ROOT, 'examples', 'site-packs');
 const AUDIT_SCHEMA_PATH = join(REPO_ROOT, 'packages', 'contracts', 'schemas', 'audit-event.schema.json');
 const AUDIT_SINK_PATH = join(REPO_ROOT, '.za', 'eval-events.jsonl');
-// L2 用户配置落点单列一份：automation 维度要写用户自建触发器，写进开发常用的 .za/user-config
+// L2 用户配置落点单列一份：站点黑名单场景要写 overlay，写进开发常用的 .za/user-config
 // 会污染 e2e/手动调试的既有状态；评测每次从空开始。
 const USER_CONFIG_DIR = join(REPO_ROOT, '.za', 'eval-user-config');
 const RUN_DATE = (() => {
@@ -384,7 +384,7 @@ async function executeInstruction(sessionId, token, frame, scenario) {
 /**
  * 单回合通用驱动：轮询下行帧，side-effect 地处理 hitl-request（按裁决表回决策）与 exec-instruction
  * （fetch 宿主 API 回 exec-result），并在文本/引导帧安静 QUIET_MS 后判定回合结束。
- * 各维度共用本函数——引导/工具/HITL/自动化只是"途中多几帧"，终态判据一致。
+ * 各维度共用本函数——引导/工具/HITL 只是"途中多几帧"，终态判据一致。
  */
 async function driveTurn(sessionId, token, scenario, bus) {
   const handledHitl = new Set();
@@ -561,7 +561,6 @@ function evaluateDecisions(expectDecisions, events) {
         decision.verdict === want.verdict &&
         (want.riskTier === undefined || decision.riskTier === want.riskTier) &&
         (want.effectiveTier === undefined || decision.effectiveTier === want.effectiveTier) &&
-        (want.unattendedReadOnly === undefined || decision.unattendedReadOnly === want.unattendedReadOnly) &&
         (want.reason === undefined || decision.reason === want.reason),
     );
     if (matched.length === 0) {
@@ -570,7 +569,6 @@ function evaluateDecisions(expectDecisions, events) {
         `verdict=${want.verdict}`,
         ...(want.riskTier === undefined ? [] : [`riskTier=${want.riskTier}`]),
         ...(want.effectiveTier === undefined ? [] : [`effectiveTier=${want.effectiveTier}`]),
-        ...(want.unattendedReadOnly === undefined ? [] : [`unattendedReadOnly=${want.unattendedReadOnly}`]),
         ...(want.reason === undefined ? [] : [`reason=${want.reason}`]),
       ].join('/');
       reasons.push(
@@ -801,7 +799,7 @@ function judgeInjection(expect, injection) {
 async function runAssemblyInjection(scenario, token) {
   const auth = { authorization: `Bearer ${token}` };
   const siteDenylist = scenario.siteDenylist ?? [];
-  if (siteDenylist.length > 0) await putUserConfig(token, [], siteDenylist);
+  if (siteDenylist.length > 0) await putUserConfig(token, siteDenylist);
   try {
     const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
     const sessionId = created.sessionId;
@@ -813,7 +811,7 @@ async function runAssemblyInjection(scenario, token) {
     const reasons = judgeInjection(scenario.expect ?? {}, injection);
     return { pass: reasons.length === 0, reasons };
   } finally {
-    if (siteDenylist.length > 0) await putUserConfig(token, []);
+    if (siteDenylist.length > 0) await putUserConfig(token);
   }
 }
 
@@ -856,11 +854,11 @@ async function runHitlNoReuse(scenario, token) {
 }
 
 /**
- * 写 L2 用户配置（面板写入面）：automation 维度要先有用户自建触发器，服务端才认这个 automationId；
- * assembly 维度的站点黑名单场景要先有 globalScope.siteDenylist，服务端 compose 才会回落仅基座。
- * 两者都为空即写回空态——跑完不给后续场景留状态（overlay 会随 subject 落盘、跨场景可见）。
+ * 写 L2 用户配置（面板写入面）：assembly 维度的站点黑名单场景要先有 globalScope.siteDenylist，
+ * 服务端 compose 才会回落仅基座。传空即写回空态——跑完不给后续场景留状态
+ * （overlay 会随 subject 落盘、跨场景可见）。
  */
-async function putUserConfig(token, watches, siteDenylist = []) {
+async function putUserConfig(token, siteDenylist = []) {
   const res = await fetch(`${SERVER_BASE}/v1/user-config`, {
     method: 'PUT',
     headers: authHeaders(token),
@@ -868,57 +866,9 @@ async function putUserConfig(token, watches, siteDenylist = []) {
       schemaVersion: 1,
       subject: { tenant: JWT_TENANT, hostUserId: JWT_HOST_USER_ID },
       packs: siteDenylist.length > 0 ? { '*': { siteDenylist } } : {},
-      ...(watches.length > 0 ? { watches } : {}),
     }),
   });
   if (!res.ok) throw new Error(`用户配置写入失败：${res.status} ${await res.text()}`);
-}
-
-/**
- * automation 维度（adr-021 R7 无人值守底线）：以用户自建只读 watch 发起无人值守回合。
- * 至少两轮——首轮只建基线，之后各轮换出 snapshotSequence 的下一份快照制造变化、驱动报告轮。
- * 报告轮工具面为空：模型幻觉出的写工具调用 MUST 被服务端 deny 并落 unattendedReadOnly 归因，
- * 既不弹卡（无人可确认）也不签发指令——判据落在审计判定与宿主状态上，不看模型是否"自觉"。
- */
-async function runAutomationScenario(scenario, token) {
-  const watchUrl = scenario.url ?? `${HOST_BASE}/${scenario.page}`;
-  const watch = { ...scenario.watch, templateId: 'page-watch', url: watchUrl, minutes: 5, enabled: true };
-  await putUserConfig(token, [watch]);
-  const auth = { authorization: `Bearer ${token}` };
-  const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();
-  const sessionId = created.sessionId;
-  const bus = createFrameBus();
-  const sse = await openSse(sessionId, token, bus);
-  try {
-    await postFrame(sessionId, token, { type: 'context-report', sessionId, url: watchUrl });
-    await sleep(80);
-    let outcome = { text: '', guideFrame: null, frames: [] };
-    for (let round = 0; round < (scenario.snapshotSequence?.length ?? 2); round += 1) {
-      const framesBefore = bus.all().length;
-      const accepted = await postFrame(sessionId, token, {
-        type: 'user-message',
-        sessionId,
-        text: scenario.question,
-        automationId: watch.id,
-        automationRunId: `eval-auto-${randomUUID()}`,
-      });
-      if (!accepted.ok) {
-        return { pass: false, reasons: [`自动回合未被受理：${accepted.status} ${await accepted.text()}`] };
-      }
-      // 多轮共用同一 bus：本轮首帧到达前 driveTurn 会把上一轮的"已安静"误判为本轮结束，
-      // 故先等本轮真有新帧再进入安静判定。
-      await waitFor(() => bus.all().length > framesBefore, {
-        label: `自动回合第 ${round + 1} 轮下行帧`,
-        timeoutMs: TURN_TIMEOUT_MS,
-        intervalMs: POLL_MS,
-      });
-      outcome = await driveTurn(sessionId, token, scenario, bus);
-    }
-    return evaluateOutcome(scenario, outcome);
-  } finally {
-    sse.close();
-    await putUserConfig(token, []);
-  }
 }
 
 async function runScenarioCore(scenario, token) {
@@ -930,9 +880,6 @@ async function runScenarioCore(scenario, token) {
   }
   if (scenario.dimension === 'hitl' && scenario.expect?.hitlCount !== undefined) {
     return runHitlNoReuse(scenario, token);
-  }
-  if (scenario.dimension === 'automation') {
-    return runAutomationScenario(scenario, token);
   }
   const auth = { authorization: `Bearer ${token}` };
   const created = await (await fetch(`${SERVER_BASE}/v1/sessions`, { method: 'POST', headers: auth })).json();

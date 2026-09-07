@@ -18,7 +18,6 @@ import {
   zenGroupKey,
   panelHistoryKeyForGroup,
   execNonceKeyForGroup,
-  autoScanRunKeyForGroup,
   pageHandlesKeyForGroup,
   TAB_GROUP_ID_NONE,
 } from './activation.js';
@@ -47,29 +46,6 @@ import { reducePanelHistory, removeSettledConfigDraft, removeSettledHitl } from 
 import { verifyExecInstruction } from './exec-verification.js';
 import { normalizeTrustedServerBaseUrl } from './server-url.js';
 import { runToolbarSidePanelAction } from './side-panel-action.js';
-import {
-  isAutoScanWorkPage,
-  isAutoScanCompletion,
-  decideAutoScanRecovery,
-  autoScanDispatch,
-  type AutoScanRecoveryStatus,
-  type AutoScanRun,
-  type AutomationDescriptor,
-  normalizeAutoScanMinutes,
-  parseAutoScanRun,
-  parseAutomationDescriptors,
-  mergeAutomationDescriptors,
-  watchesFromUserConfig,
-  shouldPauseAutoScan,
-  autoScanUpstreamFrame,
-  decideAutoScanDelivery,
-  autoScanAlarmFor,
-  automationIdOfAlarm,
-  autoScanEnabledKeyFor,
-  autoScanMinutesKeyFor,
-  AUTOMATION_DESCRIPTORS_KEY,
-  WATCH_DESCRIPTOR_PACK_ID,
-} from './auto-scan.js';
 import {
   genericPackIdFromPacks,
   mergeQuickActions,
@@ -223,21 +199,13 @@ type UpstreamPanelMessage = Extract<
   { kind: 'user-message' | 'hitl-decision' | 'config-decision' }
 >;
 
-interface AutoScanMessage {
-  kind: 'auto-scan';
-  text: string;
-  executionPreference: AutomationDescriptor['automation']['executionPreference'];
-  automationRunId: string;
-  automationId: string;
-}
-
 // group-pages 由 background 直接组帧（它持有 tabs API 与句柄映射），无 content↔background Port 消息对应。
 interface GroupPagesMessage {
   kind: 'group-pages';
   pages: GroupPageEntry[];
 }
 
-type BridgeUpstreamMessage = UpstreamContentMessage | UpstreamPanelMessage | AutoScanMessage | GroupPagesMessage;
+type BridgeUpstreamMessage = UpstreamContentMessage | UpstreamPanelMessage | GroupPagesMessage;
 
 /**
  * 上行帧所属的页面（不变量 SD 的判据）。
@@ -264,7 +232,6 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   let panelHistory: SidePanelUiEvent[] = [];
   const historyKey = panelHistoryKeyForGroup(groupId);
   const nonceKey = execNonceKeyForGroup(groupId);
-  const autoScanRunKey = autoScanRunKeyForGroup(groupId);
   const seenExecNonces = new Set<string>();
   const echoedMessageIds = new Set<string>();
   let nonceHistory: Array<{ nonce: string; expiresAt: number }> = [];
@@ -305,12 +272,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   let configurationDirty = false;
   // navigate 新开页的 tabId：其端口接入时标为活跃页，使后续 exec/HITL 路由随导航跟到新站点页。
   let expectedActiveTabId: number | null = null;
-  let autoScanRun: AutoScanRun | null = null;
   let suppressedTurnId: string | null = null;
   let lastSessionFailure: Omit<MessageDeliveryResult, 'accepted'> = { failure: 'session-unavailable' };
-  const autoScanRunReady = chrome.storage.session.get(autoScanRunKey).then((items) => {
-    autoScanRun = parseAutoScanRun(items[autoScanRunKey]);
-  });
   const pageHandlesKey = pageHandlesKeyForGroup(groupId);
   let pageHandles = createPageHandleTable();
   const pageHandlesReady = chrome.storage.session.get(pageHandlesKey).then((items) => {
@@ -444,39 +407,6 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         anonymousTurns = 0;
       }
       void applyPendingConfiguration();
-    }
-    if (isAutoScanCompletion(autoScanRun, frame)) {
-      const failed = frame.type === 'tool-card' && frame.status === 'failed';
-      const finishedId = autoScanRun!.automationId;
-      autoScanRun = null;
-      void chrome.storage.session.remove(autoScanRunKey);
-      if (failed) {
-        void chrome.storage.local.set({ [autoScanEnabledKeyFor(finishedId)]: false });
-        // 失败轮若已带摘要，说明变化已被确证：先把事实透出再报暂停，不因下游失败丢掉已知结论（R6）。
-        const detected = frame.type === 'tool-card' ? (frame.summary ?? '') : '';
-        postStatus(
-          detected === ''
-            ? `自动化「${finishedId}」回合异常结束，已暂停；核对后可在配置中心「自动化」页重新启用。`
-            : `自动化「${finishedId}」检出变化但报告生成失败：${detected}；已暂停，核对后可在配置中心「自动化」页重新启用。`,
-        );
-      } else if (frame.type === 'tool-card' && (frame.summary ?? '') !== '') {
-        // 带摘要的完成帧是自动回合面向用户的报告（R6）：照常进面板与历史；
-        // 无摘要的完成帧只是单飞锁信号（如「无变化」轮次），不打扰面板。
-        emitUi({ kind: 'frame', frame });
-      }
-      return;
-    }
-    if (shouldPauseAutoScan(autoScanRun, frame)) {
-      void chrome.storage.local.set({ [autoScanEnabledKeyFor(autoScanRun!.automationId)]: false });
-      postStatus(
-        `自动化「${autoScanRun!.automationId}」已因异常暂停；核对页面与策略后可在配置中心「自动化」页重新启用。`,
-      );
-      if (frame.type === 'hitl-request') {
-        // 自动回合本不应进入人工确认；安全拒绝可让服务端回合收尾并发出明确完成帧，避免单飞锁悬挂。
-        pipeline = pipeline.then(async () => {
-          await forward({ kind: 'hitl-decision', hitlId: frame.hitlId, decision: 'reject' }, null);
-        });
-      }
     }
     if (route === 'panel') {
       if (
@@ -870,8 +800,6 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           ...(message.quickActionId !== undefined ? { quickActionId: message.quickActionId } : {}),
           ...(message.selectionText !== undefined ? { selectionText: message.selectionText } : {}),
         };
-      case 'auto-scan':
-        return autoScanUpstreamFrame(message, sessionId);
       case 'hitl-decision':
         return { type: 'hitl-decision', sessionId, hitlId: message.hitlId, decision: message.decision };
       case 'config-decision':
@@ -917,11 +845,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     const session = await ensureSession();
     if (session === null) return { accepted: false, ...lastSessionFailure };
     const frame: UpstreamFrame = toUpstreamFrame(message, session.sessionId);
-    const turnId = message.kind === 'auto-scan'
-      ? message.automationRunId
-      : message.kind === 'user-message'
-        ? message.messageId
-        : null;
+    const turnId = message.kind === 'user-message' ? message.messageId : null;
     if (turnId !== null) inflightTurnIds.add(turnId);
     deliveryRequests += 1;
     try {
@@ -962,8 +886,8 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       const messageState = payload.messageState === 'pending' || payload.messageState === 'complete'
         ? payload.messageState
         : undefined;
-      if (message.kind === 'user-message' || message.kind === 'auto-scan') {
-        const turnId = message.kind === 'auto-scan' ? message.automationRunId : message.messageId;
+      if (message.kind === 'user-message') {
+        const turnId = message.messageId;
         if (messageState === 'complete') {
           postFrame('panel', {
             type: 'turn-complete',
@@ -1454,17 +1378,16 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
         return;
       }
       if (message.kind === 'stop-operation') {
-        const messageId = message.messageId ?? autoScanRun?.runId ?? undefined;
+        const messageId = message.messageId;
         // 置位同步先于一切等待：此刻还在落页串行链上的帧不得再送到页面执行。
         operationStopped = true;
-        void disableAllAutomations();
         // 广播到全部成员端口，不只活跃页：定向批次按帧上句柄反查 tabId 投递，
         // 落点与谁是活跃页无关，只通知活跃页等于放任其余页把剩余步骤跑完。
         for (const member of contentMembers.members()) {
           postContent(member, { kind: 'stop-operation' });
         }
         if (messageId === undefined) {
-          postStatus('已停止当前页面操作并关闭周期自动化。');
+          postStatus('已停止当前页面操作。');
           postToPanels({ kind: 'stop-result', accepted: true });
           return;
         }
@@ -1531,113 +1454,10 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     port.onDisconnect.addListener(() => detachPanel(port));
   }
 
-  async function recoverAutoScanRun(run: AutoScanRun): Promise<'busy' | 'settled' | 'paused'> {
-    const session = await ensureSession();
-    let status: AutoScanRecoveryStatus = 'unavailable';
-    if (session !== null) {
-      try {
-        const response = await fetch(
-          `${session.baseUrl}/v1/sessions/${session.sessionId}/automation-runs/${encodeURIComponent(run.runId)}`,
-          { headers: { authorization: `Bearer ${session.token}` } },
-        );
-        if (response.status === 404) status = 'missing';
-        else if (response.ok) {
-          const body = await response.json() as { status?: unknown };
-          if (body.status === 'running' || body.status === 'succeeded' || body.status === 'failed') {
-            status = body.status;
-          }
-        }
-      } catch {
-        status = 'unavailable';
-      }
-    }
-    const decision = decideAutoScanRecovery(status);
-    if (decision === 'keep-busy') return 'busy';
-    if (autoScanRun?.runId === run.runId) {
-      autoScanRun = null;
-      await chrome.storage.session.remove(autoScanRunKey);
-    }
-    if (decision === 'release-and-pause') {
-      await chrome.storage.local.set({ [autoScanEnabledKeyFor(run.automationId)]: false });
-      postStatus(`自动化「${run.automationId}」上次回合状态异常，已暂停。`);
-      return 'paused';
-    }
-    return 'settled';
-  }
-
-  /** 单飞锁释放：未产生完成帧的轮次必须就地释放，否则悬挂到下周期被恢复判定当成异常。 */
-  async function releaseAutoScanRun(run: AutoScanRun): Promise<void> {
-    if (autoScanRun?.runId !== run.runId) return;
-    autoScanRun = null;
-    await chrome.storage.session.remove(autoScanRunKey);
-  }
-
-  async function triggerAutoScan(
-    descriptor: AutomationDescriptor,
-    tabId: number,
-    tabUrl: string,
-    tabTitle: string,
-  ): Promise<'started' | 'busy' | 'settled' | 'paused' | 'unavailable'> {
-    await autoScanRunReady;
-    const enabledKey = autoScanEnabledKeyFor(descriptor.automation.id);
-    const enabled = await chrome.storage.local.get(enabledKey);
-    if (enabled[enabledKey] !== true) return 'unavailable';
-    if (autoScanRun !== null) return recoverAutoScanRun(autoScanRun);
-    const target = contentMembers.members().find((member) => member.sender?.tab?.id === tabId);
-    if (target === undefined) return 'unavailable';
-    const run: AutoScanRun = { runId: crypto.randomUUID(), automationId: descriptor.automation.id };
-    autoScanRun = run;
-    await chrome.storage.session.set({ [autoScanRunKey]: run });
-    pipeline = pipeline.then(async () => {
-      const current = await chrome.storage.local.get(enabledKey);
-      if (current[enabledKey] !== true || autoScanRun?.runId !== run.runId) {
-        await releaseAutoScanRun(run);
-        return;
-      }
-      const [contextMessage, scanMessage] = autoScanDispatch(descriptor, tabUrl, tabTitle, run.runId);
-      // 自动化的两帧与人工回合走同一个上行出口，闸门因此对无人值守回合同样成立。
-      const origin: UpstreamOrigin = { tabId, url: tabUrl };
-      const context = await deliver(contextMessage, origin);
-      if (context.failure === 'site-denied') {
-        // 命中页：整轮不跑，触发器保持启用（把该站移出名单即恢复）。不发提示——
-        // 用户要的就是「别在这个站点上动」，一条「已暂停」提示本身也是打扰。
-        await releaseAutoScanRun(run);
-        return;
-      }
-      if (!context.accepted) {
-        await releaseAutoScanRun(run);
-        await chrome.storage.local.set({ [enabledKey]: false });
-        postStatus(`自动化「${run.automationId}」工作页上下文同步失败，已暂停。`);
-        return;
-      }
-      // 活跃执行页登记与「已触发」提示恒在闸门之后。
-      await admitActivePage(target);
-      scheduleGroupPagesReport();
-      postStatus(`自动化「${run.automationId}」已触发。`);
-      beginTurn();
-      // 服务端可拒绝自动回合（adr-021 fail-closed）。被拒的轮次不会有完成帧，
-      // 锁必须就地释放，否则悬挂到下周期被恢复判定当成异常并关停触发器。
-      const delivery = await deliver(scanMessage, origin);
-      if (delivery.accepted) return;
-      await releaseAutoScanRun(run);
-      if (decideAutoScanDelivery(delivery.httpStatus) === 'pause') {
-        await chrome.storage.local.set({ [enabledKey]: false });
-        postStatus(
-          `自动化「${run.automationId}」被服务端判为不可运行，已暂停；` +
-            '触发器可能已被删除或禁用，也可能是服务端暂未启用个人配置存储；核对后可在配置中心「自动化」页重新启用。',
-        );
-        return;
-      }
-      // deliver 已就具体失败因由发过提示（如 401 指向本地令牌）；此处只补「本轮没跑、会重试」。
-      postStatus(`自动化「${run.automationId}」本轮未启动，下个周期重试。`);
-    });
-    return 'started';
-  }
-
   /** 本组 tab 集/URL 可能变化（tabs.onUpdated/onRemoved）→ 防抖后重报全量清单。 */
   const notifyGroupTabsChanged = (): void => scheduleGroupPagesReport();
 
-  return { attachContent, attachPanel, queueComposerQuote, queueQuickAction, triggerAutoScan, configurationChanged, notifyGroupTabsChanged, close };
+  return { attachContent, attachPanel, queueComposerQuote, queueQuickAction, configurationChanged, notifyGroupTabsChanged, close };
 }
 
 type GroupBridge = ReturnType<typeof createGroupBridge>;
@@ -1665,7 +1485,7 @@ function bridgeFor(groupId: number): GroupBridge {
 }
 
 /**
- * 本机站点黑名单缓存读回（来自 refreshAutomationDescriptors 的那次 /v1/user-config）。
+ * 本机站点黑名单缓存读回（来自 refreshUserConfigMirrors 的那次 /v1/user-config）。
  * 缓存缺失/读失败一律回空名单：治理终判在服务端 compose，客户端不确定时不拦（U7）。
  */
 async function readSiteDenylist(): Promise<string[]> {
@@ -1700,7 +1520,7 @@ async function originGrantedFor(url: string): Promise<boolean> {
   return chrome.permissions.contains({ origins: [pattern] }).catch(() => false);
 }
 
-/** 已授权 origin 的本机缓存读回（来自 refreshAutomationDescriptors 的那次 /v1/user-config）。 */
+/** 已授权 origin 的本机缓存读回（来自 refreshUserConfigMirrors 的那次 /v1/user-config）。 */
 async function readGrantedOrigins(): Promise<string[]> {
   const items: Record<string, unknown> = await chrome.storage.local
     .get(GRANTED_ORIGINS_KEY)
@@ -1985,20 +1805,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     });
 });
 
-async function readAutomationDescriptors(): Promise<AutomationDescriptor[]> {
-  const items = await chrome.storage.local.get(AUTOMATION_DESCRIPTORS_KEY);
-  return parseAutomationDescriptors(items[AUTOMATION_DESCRIPTORS_KEY]);
-}
-
-async function disableAllAutomations(): Promise<void> {
-  const descriptors = await readAutomationDescriptors();
-  const entries: Record<string, false> = {};
-  for (const descriptor of descriptors) entries[autoScanEnabledKeyFor(descriptor.automation.id)] = false;
-  if (Object.keys(entries).length > 0) await chrome.storage.local.set(entries);
-}
-
 /**
- * L2 个人配置的单次拉取：自建触发器与站点黑名单同源于这一次响应，不为任一项另发请求。
+ * L2 个人配置的单次拉取：站点黑名单与已授权 origin 同源于这一次响应，不为任一项另发请求。
  * 任一环节失败即回 null，由各派生方按自身的不确定语义处置。
  */
 async function fetchUserConfig(baseUrl: string, token: string): Promise<unknown> {
@@ -2013,121 +1821,30 @@ async function fetchUserConfig(baseUrl: string, token: string): Promise<unknown>
 }
 
 /**
- * 描述符 = 服务端 pack 声明 ∪ 用户自建触发器派生（纯数据）；
- * pack 侧拉取失败保持现缓存，绝不凭空启用（fail-closed 不扫描）。
+ * 本机 L2 镜像键刷新：站点黑名单与已授权 origin 只在本轮确实拿到 L2 配置时覆写；
+ * 拉取失败保留上次值——名单是隐私开关，网络抖动不该把它静默清空（宁可多挡一站）。
+ * 应答成功但无该键即用户已清空，照实写空。
  */
-async function refreshAutomationDescriptors(): Promise<void> {
+async function refreshUserConfigMirrors(): Promise<void> {
   try {
     const baseUrl = await readServerBaseUrl();
     const token = await identity.getToken(baseUrl);
-    const [response, userConfig] = await Promise.all([
-      fetch(`${baseUrl}/v1/automation-descriptors`, { headers: { authorization: `Bearer ${token}` } }),
-      fetchUserConfig(baseUrl, token),
-    ]);
-    // 站点黑名单缓存只在本轮确实拿到 L2 配置时覆写；拉取失败保留上次名单——
-    // 名单是隐私开关，网络抖动不该把它静默清空（宁可多挡一站）。应答成功但无该键即用户已清空，照实写空。
+    const userConfig = await fetchUserConfig(baseUrl, token);
     if (userConfig !== null) {
       await chrome.storage.local.set({
         [SITE_DENYLIST_KEY]: siteDenylistFromUserConfig(userConfig),
-        // 已授权 origin 与黑名单同源于这一次响应：注册面的三方之一在此落盘，随后统一对齐。
         [GRANTED_ORIGINS_KEY]: grantedOriginsFromUserConfig(userConfig),
       });
     }
     await syncContentScriptRegistrations();
-    const watches = watchesFromUserConfig(userConfig);
-    if (!response.ok) return;
-    const body = await response.json() as { descriptors?: unknown };
-    const descriptors = parseAutomationDescriptors(body.descriptors);
-    await chrome.storage.local.set({
-      [AUTOMATION_DESCRIPTORS_KEY]: mergeAutomationDescriptors(descriptors, watches),
-    });
   } catch {
     // 网络/配置异常不影响既有缓存与会话主链路。
   }
 }
 
-/** 旧版单一闲鱼开关 → 按 automation id 命名的通用键；只在新键未写过时迁移一次。 */
-async function migrateLegacyAutoScanSettings(): Promise<void> {
-  const legacyEnabledKey = 'za.xianyuAutoScanEnabled';
-  const legacyMinutesKey = 'za.xianyuAutoScanMinutes';
-  const newEnabledKey = autoScanEnabledKeyFor('xianyu-auto-scan');
-  const newMinutesKey = autoScanMinutesKeyFor('xianyu-auto-scan');
-  const items = await chrome.storage.local.get([
-    legacyEnabledKey, legacyMinutesKey, newEnabledKey, newMinutesKey,
-  ]);
-  if (items[legacyEnabledKey] === undefined && items[legacyMinutesKey] === undefined) return;
-  const migrated: Record<string, unknown> = {};
-  if (items[newEnabledKey] === undefined && items[legacyEnabledKey] !== undefined) {
-    migrated[newEnabledKey] = items[legacyEnabledKey] === true;
-  }
-  if (items[newMinutesKey] === undefined && items[legacyMinutesKey] !== undefined) {
-    migrated[newMinutesKey] = normalizeAutoScanMinutes(items[legacyMinutesKey]);
-  }
-  if (Object.keys(migrated).length > 0) await chrome.storage.local.set(migrated);
-  await chrome.storage.local.remove([legacyEnabledKey, legacyMinutesKey]);
-}
-
-async function syncAutoScanAlarms(): Promise<void> {
-  const descriptors = await readAutomationDescriptors();
-  const alarms = await chrome.alarms.getAll();
-  for (const alarm of alarms) {
-    if (automationIdOfAlarm(alarm.name) !== null) await chrome.alarms.clear(alarm.name);
-  }
-  for (const descriptor of descriptors) {
-    const automationId = descriptor.automation.id;
-    const settings = await chrome.storage.local.get([
-      autoScanEnabledKeyFor(automationId),
-      autoScanMinutesKeyFor(automationId),
-    ]);
-    if (settings[autoScanEnabledKeyFor(automationId)] !== true) continue;
-    const periodInMinutes = normalizeAutoScanMinutes(
-      settings[autoScanMinutesKeyFor(automationId)],
-      descriptor.automation.defaultPeriodMinutes ?? undefined,
-    );
-    chrome.alarms.create(autoScanAlarmFor(automationId), { periodInMinutes });
-  }
-}
-
-async function triggerAutomation(automationId: string): Promise<void> {
-  const descriptor = (await readAutomationDescriptors())
-    .find((candidate) => candidate.automation.id === automationId);
-  if (descriptor === undefined) return;
-  const enabledKey = autoScanEnabledKeyFor(automationId);
-  const settings = await chrome.storage.local.get(enabledKey);
-  if (settings[enabledKey] !== true) return;
-  const tabs = await chrome.tabs.query({});
-  for (const tab of tabs) {
-    const groupId = tab.groupId;
-    if (
-      groupId === undefined ||
-      groupId === TAB_GROUP_ID_NONE ||
-      !isAutoScanWorkPage(descriptor, tab.url) ||
-      !(await isGroupMapped(groupId))
-    ) {
-      continue;
-    }
-    const bridge = groups.get(groupId);
-    if (bridge === undefined) continue;
-    if (tab.id !== undefined) {
-      const triggered = await bridge.triggerAutoScan(descriptor, tab.id, tab.url!, tab.title ?? '');
-      if (triggered !== 'unavailable') return;
-    }
-  }
-  // 找不到可用工作页：pack 自动化按「用户已离开该工作流」自我关停；watch 的目标页本就可能没开着，
-  // 关停会让新建触发器在首个周期自杀——只跳过本轮，等下次周期再试。
-  if (descriptor.packId !== WATCH_DESCRIPTOR_PACK_ID) {
-    await chrome.storage.local.set({ [enabledKey]: false });
-  }
-}
-
-const autoScanBootstrap = async (): Promise<void> => {
-  await migrateLegacyAutoScanSettings();
-  await refreshAutomationDescriptors();
-  await syncAutoScanAlarms();
-};
-void autoScanBootstrap();
-chrome.runtime.onStartup.addListener(() => void autoScanBootstrap());
-chrome.runtime.onInstalled.addListener(() => void autoScanBootstrap());
+void refreshUserConfigMirrors();
+chrome.runtime.onStartup.addListener(() => void refreshUserConfigMirrors());
+chrome.runtime.onInstalled.addListener(() => void refreshUserConfigMirrors());
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
   const installIdChange = changes['za.installId'];
@@ -2139,16 +1856,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
         await identity.invalidate();
       }
       for (const bridge of groups.values()) bridge.configurationChanged();
-      await refreshAutomationDescriptors();
-      await syncAutoScanAlarms();
+      await refreshUserConfigMirrors();
     })();
     return;
   }
-  if (changes[AUTOMATION_DESCRIPTORS_KEY] !== undefined) {
-    void syncAutoScanAlarms();
-    return;
-  }
-  // background 的 L2 刷新（refreshAutomationDescriptors）以一次 storage.local.set 同写这两个镜像键，故它们可能同批到达：
+  // background 的 L2 刷新（refreshUserConfigMirrors）以一次 storage.local.set 同写这两个镜像键，故它们可能同批到达：
   // 两者各自的处置必须都执行，任一分支不得吞掉另一分支（注册面只由两者的当刻交集推出，对齐一次即可）。
   const grantedChanged = changes[GRANTED_ORIGINS_KEY] !== undefined;
   const denylistChanged = changes[SITE_DENYLIST_KEY] !== undefined;
@@ -2162,14 +1874,6 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     }
     return;
   }
-  if (Object.keys(changes).some((key) => key.startsWith('za.autoScan.'))) {
-    // 配置中心保存后本机调度镜像先落盘：顺带重取描述符，新建的用户触发器无需重启即可排程。
-    void refreshAutomationDescriptors().then(() => syncAutoScanAlarms());
-  }
-});
-chrome.alarms.onAlarm.addListener((alarm) => {
-  const automationId = automationIdOfAlarm(alarm.name);
-  if (automationId !== null) void triggerAutomation(automationId);
 });
 
 // 切标签页即重判面板可见性：面板只在 zen 组的标签页上显示，并绑定该组会话。

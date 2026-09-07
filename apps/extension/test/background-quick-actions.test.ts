@@ -60,6 +60,8 @@ const USER_CONFIG = {
       '*': {
         quickActions: [{ id: 'my-note', label: '记一笔', template: '记一笔', context: 'none' }],
         disabledQuickActions: ['summarize-page'],
+        // 本机名单镜像由这一次应答覆写：不带则命中页用例的名单会被照实清空。
+        siteDenylist: [DENIED_ENTRY],
       },
     },
   },

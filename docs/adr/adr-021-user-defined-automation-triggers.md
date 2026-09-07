@@ -1,5 +1,7 @@
 # adr-021: 用户自建自动化触发器（平台模板闭集 + 参数层 watches + 只读强制）
 
+> **已废弃**：本 ADR 描述的自动化能力已于 2026-09-07 整体下线，正文保留作决策历史。
+
 ## 状态
 
 已接受（2026-09-03 转已接受：user-overlay watches 契约、平台内建只读模板与自动回合只读强制已实施，见 `packages/contracts/src/automation-template.ts` 与 `apps/server/src/watch-run.ts`。原始记录：2026-08-05，随 G5「L3 自动化泛化」批次立案；了结 adr-019 遗留的「用户自建触发器无契约」缺口，

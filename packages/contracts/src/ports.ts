@@ -17,7 +17,7 @@ import type {
   SnapshotEvidence,
 } from './client-access-layer.js';
 import type { AuditEvent, GateVerdict } from './audit-event.js';
-import type { PackAutomation, PackBuiltinTool, PackSource, QuickAction } from './config-snapshot.js';
+import type { PackBuiltinTool, PackSource, QuickAction } from './config-snapshot.js';
 
 // ---- AssemblyPort（②会话网关 ← ⑤配置中心：featureId 定位 + 注入组合）----
 
@@ -250,14 +250,6 @@ export interface ToolOwnership {
   toolId: string;
 }
 
-/** pack 周期自动化描述符（adr-019）：客户端调度与展示用的纯数据；治理（一单预算/run 状态机）全在服务端。 */
-export interface AutomationDescriptor {
-  packId: string;
-  /** 所属 pack 的 site.origin：客户端工作页判定的 origin 围栏。 */
-  origin: string;
-  automation: PackAutomation;
-}
-
 /** pack 内功能投影：title 缺省时展示回退 featureId。 */
 export interface PackFeatureDescriptor {
   featureId: string;
@@ -269,13 +261,6 @@ export interface PackToolDescriptor {
   toolId: string;
   baseTier: RiskTier;
   description: string;
-}
-
-/** pack 自动化投影（区别于 AutomationDescriptor：后者含调度所需 PackAutomation 全量）：仅展示与周期下限所需字段。 */
-export interface PackAutomationDescriptor {
-  id: string;
-  /** pack 预设唤醒周期；L2 minutes 下限 = max(本值, 平台下限)。 */
-  defaultPeriodMinutes?: number;
 }
 
 /**
@@ -299,7 +284,6 @@ export interface PackDescriptor {
   features: PackFeatureDescriptor[];
   /** 该 pack 各 feature 工具的并集（按 toolId 去重）。 */
   tools: PackToolDescriptor[];
-  automations: PackAutomationDescriptor[];
   /** pack 声明的用户可配置点（adr-020）；未声明时省略。 */
   configSchema?: JsonObject;
   /**
@@ -321,8 +305,6 @@ export interface AssemblyPort {
   listSites(): Promise<SiteDescriptor[]>;
   /** 逐 pack 列出工具归属（未去重）：toolgate 载入期命名空间纪律检测用。 */
   listToolOwnership(): Promise<ToolOwnership[]>;
-  /** 全 pack 自动化描述符（adr-019）：id 跨 pack 唯一（载入期查重拒载）；generic pack 无（schema 禁声明）。 */
-  listAutomations(): Promise<AutomationDescriptor[]>;
   /**
    * packId → pack.json 声明的 configSchema（adr-020）；未声明的 pack 不入表。
    * L2 写入通道以此表调 validateUserOverlay 做 packConfig 写入期校验（无表项即拒，fail-closed）。
@@ -402,11 +384,6 @@ export interface GateDecisionInput extends PackScopeInput {
    * params.targetPage 有值而本表缺省/未命中一律拒签（U7 fail-closed，禁回退活跃页）；无 targetPage 的调用不消费本表。
    */
   groupPages?: GroupPageEntry[];
-  /**
-   * 本回合无人在场（adr-024 D1，网关按 automationRun 判定后传入）：生效档为 hitl 一律 deny
-   * 且不消费任务级授权；缺省=人工回合，判定逐字节同基线。
-   */
-  unattended?: true;
 }
 
 /** 判定结果：分级矩阵 + 身份/实参校验，任一不过即 deny（fail-closed，U7）。 */
@@ -436,8 +413,6 @@ export interface IssueExecInstructionInput extends PackScopeInput {
   userConfig?: GateUserConfigInput;
   /** 会话组页面状态表快照：签发前独立重解析定向目标（语义同 GateDecisionInput.groupPages，U7 封 TOCTOU）。 */
   groupPages?: GroupPageEntry[];
-  /** 本回合无人在场（语义同 GateDecisionInput.unattended）；缺省=人工回合。 */
-  unattended?: true;
 }
 
 export interface AcceptExecResultInput {

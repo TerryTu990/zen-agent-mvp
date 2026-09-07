@@ -1,7 +1,7 @@
 /**
  * 不变量 IN 的验收（adr-027 按需注入双轨模型）：**content 脚本只出现在两类页面上——
  * (a) 用户在本会话里对其发起了动作的页（图标 / 右键 / 快捷动作 / 服务端下发的定向帧）、
- * (b) 用户为 watch 自动化显式授权过 origin 的页；其余任何页面上不注入。
+ * (b) 用户显式授权过 origin 的页；其余任何页面上不注入。
  * 注入面 = 授权集 − 站点黑名单。**
  *
  * 用例以「注入触发源」为单位枚举而非以代码路径为单位：轨一的每一种触发源各一条正例，
@@ -156,7 +156,6 @@ describe('轨二：只对「L2 声明 ∩ 本机已授权」的 origin 常驻注
           },
         };
       }
-      if (request.url === `${BASE_URL}/v1/automation-descriptors`) return { status: 200, body: { descriptors: [] } };
       return null;
     };
 
@@ -274,9 +273,6 @@ describe('黑名单优先于授权：两轨都不注入', () => {
               revision: 'rev-1',
             },
           };
-        }
-        if (request.url === `${BASE_URL}/v1/automation-descriptors`) {
-          return { status: 200, body: { descriptors: [] } };
         }
         return null;
       },

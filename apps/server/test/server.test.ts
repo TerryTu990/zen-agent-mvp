@@ -127,15 +127,6 @@ function postFrame(token: string, sessionId: string, frame: unknown): Promise<Re
   });
 }
 
-async function getAutomationRun(token: string, sessionId: string, runId: string): Promise<Record<string, unknown>> {
-  const response = await api(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/automation-runs/${encodeURIComponent(runId)}`,
-    { headers: authHeaders(token) },
-  );
-  expect(response.status).toBe(200);
-  return await response.json() as Record<string, unknown>;
-}
-
 async function getInjection(token: string, sessionId: string): Promise<Record<string, unknown>> {
   const res = await api(`/v1/sessions/${encodeURIComponent(sessionId)}/injection`, {
     headers: authHeaders(token),
@@ -1356,12 +1347,6 @@ describe('审计事件链（M4 全链路 + 脱敏 + 旁路）', () => {
     const execution = events.find((e) => e['type'] === 'tool-execution')!['data'] as Record<string, unknown>;
     expect(execution['outcome']).toBe('ok');
     expect(execution['execution']).toBe('client');
-    // 人工回合基线：run 归因键缺省（automationRunId/automationId 是无人值守回合专属）。
-    for (const event of events) {
-      expect(event['automationRunId']).toBeUndefined();
-      expect(event['automationId']).toBeUndefined();
-    }
-
     // 脱敏 + 无签名：事件全文不含 secret 样式，且不含 exec-instruction 的 signature 字段值。
     const dump = JSON.stringify(events);
     for (const sig of SECRET_SIGNATURES) expect(dump).not.toMatch(sig);
@@ -1621,46 +1606,7 @@ describe('adr-014 L2 注入贯通：个人规则进入实际 system 注入且与
   });
 });
 
-describe('adr-019 自动化描述符端点（pack 声明下发）', () => {
-  it('GET /v1/automation-descriptors 输出站点包根的 pack 自动化声明', async () => {
-    const srv = await startServer(serverOptions({ snapshotRoot: sitePacksRoot }));
-    try {
-      const token = await signToken();
-      const response = await fetch(`http://127.0.0.1:${srv.port}/v1/automation-descriptors`, {
-        headers: authHeaders(token),
-      });
-      expect(response.status).toBe(200);
-      const body = (await response.json()) as { descriptors: Array<Record<string, unknown>> };
-      expect(body.descriptors).toEqual([
-        {
-          packId: 'xianyu-seller',
-          origin: 'https://seller.goofish.com',
-          automation: {
-            id: 'xianyu-auto-scan',
-            prompt: '执行闲鱼待发货订单扫描。每轮最多处理一笔；任一页面、订单或回执状态不确定时立即暂停，不得重试发送。',
-            workRoutes: ['#/seller-trade/order-manage', '#/im'],
-            executionPreference: 'dom-only',
-            defaultPeriodMinutes: 5,
-          },
-        },
-      ]);
-    } finally {
-      await srv.close();
-    }
-  });
-
-  it('未鉴权请求被拒', async () => {
-    const srv = await startServer(serverOptions({ snapshotRoot: sitePacksRoot }));
-    try {
-      const response = await fetch(`http://127.0.0.1:${srv.port}/v1/automation-descriptors`);
-      expect(response.status).toBe(401);
-    } finally {
-      await srv.close();
-    }
-  });
-});
-
-describe('adr-024 治理决策链完整性（无人值守收口 / 停止吊销 / 批准复核）', () => {
+describe('adr-024 治理决策链完整性（停止吊销 / 批准复核）', () => {
   const ORDER_MANAGE_URL =
     'https://seller.goofish.com/?site=COMMONPRO#/seller-trade/order-manage';
   const IM_URL =
@@ -1697,52 +1643,7 @@ describe('adr-024 治理决策链完整性（无人值守收口 / 停止吊销 /
     });
   }
 
-  it('pack 声明自动化的无人值守回合命中 hitl 工具：服务端 deny，不广播确认卡、不签发指令', async () => {
-    const unattendedServer = await startServer(
-      serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 2 }),
-    );
-    const previousBaseUrl = baseUrl;
-    baseUrl = `http://127.0.0.1:${unattendedServer.port}`;
-    const token = await signToken();
-    const sessionId = await createSession(token);
-    const sse = await openSse(token, sessionId);
-    try {
-      await postFrame(token, sessionId, { type: 'context-report', sessionId, url: IM_URL });
-      await postFrame(token, sessionId, {
-        type: 'user-message',
-        sessionId,
-        text: '发送闲鱼测试消息',
-        automationRunId: 'adr024_unattended_run', automationId: 'xianyu-auto-scan',
-      });
-      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length === 1);
-      await reportSnapshot(
-        token,
-        sessionId,
-        String(framesByType(sse.frames, 'snapshot-request')[0]!['requestId']),
-        IM_URL,
-        [
-          { ref: 'za-message', role: 'textarea', label: '请输入消息' },
-          { ref: 'za-send', role: 'button', label: '发 送' },
-        ],
-      );
-      await sse.waitFor(() => lastCardStatus(sse.frames, SEND_TOOL) === 'failed');
-      // 无人在场时确认卡不得出现在任何客户端上——治理拒绝在服务端完成，不依赖插件自动 reject。
-      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
-      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
-      const decisions = toolDecisions(sessionId, SEND_TOOL);
-      expect(decisions.length).toBeGreaterThan(0);
-      expect(decisions[decisions.length - 1]).toMatchObject({
-        verdict: 'deny',
-        reason: 'hitl-unattended',
-      });
-    } finally {
-      sse.close();
-      baseUrl = previousBaseUrl;
-      await unattendedServer.close();
-    }
-  });
-
-  it('同一 hitl 工具在人工回合仍照常弹确认卡（收口只针对无人值守回合）', async () => {
+  it('hitl 工具照常弹确认卡（分级判定在服务端，客户端只渲染）', async () => {
     const attendedServer = await startServer(
       serverOptions({ snapshotRoot: acceptanceRoot, maxTurnRounds: 2 }),
     );

@@ -9,7 +9,7 @@
  *                   billing-guide（feature.md + facts.md + tools.json，一个 dom hitl 工具）
  *     g6-knowledge  http://127.0.0.1:4184  locations ["/"]（社区来源）
  *                   policy-guide（仅 feature.md + facts.md，无 tools.json = 知识型 pack）
- *   config-bad-engines  同 g6-explain 但 engines.contract=">=9.0.0"（平台契约 1.0.0，必然不满足）
+ *   config-bad-engines  同 g6-explain 但 engines.contract=">=9.0.0"（平台契约 2.0.0，必然不满足）
  *
  * ── E2E-A1 有据回答带引用 ───────────────────────────────────────────────
  * 前置：好快照 server 就绪；页面停在 /console/billing；注入视图已解析到 pack=g6-explain、feature=billing-guide。
@@ -633,7 +633,7 @@ async function caseD2(ctx, stopCurrentServer) {
   assert(stderrText.includes('快照拒载'), `${label}：stderr 未见拒载错误：${stderrText}`);
   assert(stderrText.includes('g6-explain'), `${label}：拒载错误未定位到具体 pack：${stderrText}`);
   assert(stderrText.includes('engines.contract'), `${label}：拒载错误未指明 engines.contract：${stderrText}`);
-  assert(/1\.0\.0/.test(stderrText), `${label}：拒载错误未给出平台契约版本：${stderrText}`);
+  assert(/2\.0\.0/.test(stderrText), `${label}：拒载错误未给出平台契约版本：${stderrText}`);
 
   // 拒载是整快照 fail-closed：进程不监听 → 客户端明示服务不可用，不静默降级成"仅基座可用"。
   // 断点可能落在下行事件流或上行投递，两条路径的用户可见文案不同，故按闭集匹配。
@@ -656,7 +656,7 @@ async function caseD2(ctx, stopCurrentServer) {
   writeEvidence('e2e-d', 'd2-case.json', {
     case: 'E2E-D2',
     title: 'pack v2 载入：engines 不满足拒载有可见错误',
-    前置: 'A1/A2/D1/D3 已跑完（本例打掉 server 进程，故置最后）；坏快照 config-bad-engines 的 engines.contract=">=9.0.0"，平台契约版本 1.0.0',
+    前置: 'A1/A2/D1/D3 已跑完（本例打掉 server 进程，故置最后）；坏快照 config-bad-engines 的 engines.contract=">=9.0.0"，平台契约版本 2.0.0',
     步骤: ['停好快照 server', '同端口以 config-bad-engines 启动 server', 'Side Panel 再发一条讲解消息'],
     断言: [
       `server 退出码 1；stderr 含「快照拒载」+ pack g6-explain + engines.contract + 平台契约版本（实测：${stderrText.trim().split('\n').at(-1) ?? ''}）`,

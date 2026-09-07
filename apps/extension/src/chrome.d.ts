@@ -197,12 +197,4 @@ declare namespace chrome {
       addListener(callback: (permissions: Descriptor) => void): void;
     };
   }
-
-  namespace alarms {
-    interface Alarm { name: string }
-    function create(name: string, alarmInfo: { periodInMinutes: number }): void;
-    function clear(name: string): Promise<boolean>;
-    function getAll(): Promise<Alarm[]>;
-    const onAlarm: { addListener(callback: (alarm: Alarm) => void): void };
-  }
 }

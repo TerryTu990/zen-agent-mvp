@@ -8,7 +8,6 @@ import {
   panelGroupKey,
   zenGroupKey,
   panelHistoryKeyForGroup,
-  autoScanRunKeyForGroup,
   TAB_GROUP_ID_NONE,
 } from '../src/activation.js';
 
@@ -65,7 +64,6 @@ describe('会话组存根键', () => {
     expect(sessionKeyForGroup(42)).toBe('za.sessionId.g42');
     expect(panelGroupKey(3)).toBe('za.panelGroup.w3');
     expect(panelHistoryKeyForGroup(42)).toBe('za.panelHistory.g42');
-    expect(autoScanRunKeyForGroup(42)).toBe('za.autoScanRun.g42');
     expect(zenGroupKey(42)).toBe('za.zenGroup.g42');
   });
 });

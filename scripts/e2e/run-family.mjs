@@ -30,7 +30,6 @@ const FAMILY = [
   { name: 'm5', script: 'run-m5.mjs', skipBuildAware: false },
   { name: 'explain-pack', script: 'run-g6-explain-pack.mjs', skipBuildAware: true },
   { name: 'user-config', script: 'run-g6-user-config.mjs', skipBuildAware: false },
-  { name: 'automation', script: 'run-g6-automation.mjs', skipBuildAware: false },
 ];
 
 function listArg(flag) {

@@ -1,5 +1,5 @@
 /**
- * `storage.onChanged` 的分支互不排斥：background 的 L2 刷新（`refreshAutomationDescriptors`）以**一次**
+ * `storage.onChanged` 的分支互不排斥：background 的 L2 刷新（`refreshUserConfigMirrors`）以**一次**
  * `storage.local.set` 同写授权集与站点黑名单两个镜像键，两键因此会同批到达。任一键的处置若吞掉同批的另一键，
  * 保存后的对齐就只做了一半——注册面对上了，服务端手里的旧组页面清单却仍留着已拉黑站点的 url/title。
  */
@@ -32,7 +32,6 @@ function serve(request: ServedRequest): Served | null {
   if (request.url === `${BASE_URL}/v1/user-config`) {
     return { status: 200, body: { overlay: { schemaVersion: 1, packs: {} }, revision: 'rev-1' } };
   }
-  if (request.url === `${BASE_URL}/v1/automation-descriptors`) return { status: 200, body: { descriptors: [] } };
   return null;
 }
 

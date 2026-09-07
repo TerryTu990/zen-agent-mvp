@@ -12,8 +12,8 @@ paths:
 ---
 
 ## ZA-C-EVAL-01*  改 assets/ 必跑功能配置评测
-**改 `assets/`（system-prompt 基座 / pack.json / feature.md / facts.md / tools.json / skills）后 MUST 跑功能配置评测集，全绿才算改对；评测维度闭集：讲解正确 / 装配换出 / 引导命中 / 工具触发 / HITL 触发 / 自动化触发。**
-- 「拒答边界」维度随基座通用化（2026-09-03）退出闭集；站点功能陈述的事实边界并入「讲解正确」维度判据。
+**改 `assets/`（system-prompt 基座 / pack.json / feature.md / facts.md / tools.json / skills）后 MUST 跑功能配置评测集，全绿才算改对；评测维度闭集：讲解正确 / 装配换出 / 引导命中 / 工具触发 / HITL 触发。**
+- 站点功能陈述的事实边界并入「讲解正确」维度判据。
 - 评测集与 runner 已建成（`scripts/evals/run.mjs`，报告落 `evals/runs/`）；维度名 MUST 与 runner 的 `dimension` 取值一致，闭集外的维度值 MUST 先改本条再用。
 - 判定：改了 assets/ 却未跑评测集（或未走查）就标完成 → 触发，先验证。
 

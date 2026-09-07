@@ -54,7 +54,7 @@ const packV2 = {
 describe('平台契约版本导出', () => {
   it('contractVersion 为 semver（engines.contract 的比对基准）', () => {
     expect(contractVersion).toMatch(/^[0-9]+\.[0-9]+\.[0-9]+$/);
-    expect(contractVersion).toBe('1.0.0');
+    expect(contractVersion).toBe('2.0.0');
   });
 });
 

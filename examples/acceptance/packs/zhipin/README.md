@@ -117,7 +117,7 @@ zhipin pack（配置制品）
 
 每个 JD → `{ 匹配度分, 回复概率档(高/中/低), 各维度理由, 决策 }`：
 
-- **匹配度高 ∧ 回复概率 ≥ 中** → **自动打招呼**（greet，沿用无人值守）
+- **匹配度高 ∧ 回复概率 ≥ 中** → **自动打招呼**（greet，沿用 per-task 授权）
 - **匹配度中 / 回复概率低但有弹性（E1 / R3）** → **列入边界清单交用户定**
 - **硬淘汰** → 弃，一句话说明原因
 
@@ -134,7 +134,7 @@ zhipin pack（配置制品）
 | resume | `resume.page-operate` | client · dom | **auto** | 只读采集画像、免授权——演示 auto tier |
 | resume | `resume.modify-resume` | client · dom | **forbidden** | 声明存在但永拒——**禁改简历**红线示范 |
 | job-search | `job-search.page-operate` | client · dom | hitl（per-task 缺省） | 代填筛选 / 读列表 |
-| job-search | `job-search.greet` | client · dom | hitl · **per-task** | 无人值守打招呼（首批授权后同任务自动放行） |
+| job-search | `job-search.greet` | client · dom | hitl · **per-task** | 批量打招呼（首批授权后同任务自动放行） |
 | job-search | `job-search.query-jobs` | **client · http** | auto | 只读查职位——http 代执行通道；urlTemplate 相对路径 `⚠待核` |
 | job-detail | `job-detail.page-operate` | client · dom | hitl | 代操作 JD 页 |
 | job-detail | `job-detail.greet` | client · dom | hitl · per-task | 打招呼 |

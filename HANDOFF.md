@@ -7,8 +7,8 @@
 ## 一、这是什么、到哪了
 
 **可被用户塑形的浏览器 agent harness**（「浏览器 agent 的 Claude Code / AI 时代的 Tampermonkey」）：
-在任意站点上叠加 agent，按 `packId`/`featureId` 动态装配规则、知识、工具面与自动化，提供四档能力（信任阶梯）——
-讲解（看）/ 引导（指）/ 受控代执行（做）/ 自动化（托管）。
+在任意站点上叠加 agent，按 `packId`/`featureId` 动态装配规则、知识与工具面，提供三档能力（信任阶梯）——
+讲解（看）/ 引导（指）/ 受控代执行（做）。
 源起 zen-flux-mvp 架构对谈，**复制已验证模式与契约、不共享代码**（adr-005）。
 
 **当前分支**：`main`（本轮分支 `opt/2026-09-07-task-auth-and-ux` 已合并）。
@@ -42,9 +42,9 @@
 | 命令 | 作用 |
 |---|---|
 | `pnpm build` / `pnpm test` / `pnpm lint:deps` / `pnpm verify:paths` | 构建 / 串行单测 / 依赖 lint / 验证脚本路径自检 |
-| `pnpm eval` / `node scripts/evals/run.mjs --check` | 协议层评测（105 场景 ≥3 跑 + 审计完整性）/ 判据自检（不跑 LLM） |
-| `pnpm test:e2e:family [-- --only=a,b] [--skip=c]` | **E2E 家族串行 runner**：夹具/端口守卫自检 → 一次构建 → 12 脚本串行 → 落盘 family-<rev>.json |
-| `pnpm test:e2e` `:m2` `:m3` `:m5` `:d3` `:coldstart` `:nav-attach` `:task-grant` `:sidepanel` `:explain-pack` `:user-config` `:automation` | 单门 E2E（真实插件 + mock LLM）；`:nav-attach` 用只授权指定 origin 的夹具测未接入路径，`:task-grant` 是一任务一授权金路径 |
+| `pnpm eval` / `node scripts/evals/run.mjs --check` | 协议层评测（104 场景 ≥3 跑 + 审计完整性）/ 判据自检（不跑 LLM） |
+| `pnpm test:e2e:family [-- --only=a,b] [--skip=c]` | **E2E 家族串行 runner**：夹具/端口守卫自检 → 一次构建 → 11 脚本串行 → 落盘 family-<rev>.json |
+| `pnpm test:e2e` `:m2` `:m3` `:m5` `:d3` `:coldstart` `:nav-attach` `:task-grant` `:sidepanel` `:explain-pack` `:user-config` | 单门 E2E（真实插件 + mock LLM）；`:nav-attach` 用只授权指定 origin 的夹具测未接入路径，`:task-grant` 是一任务一授权金路径 |
 | `pnpm test:e2e:real` / `:real-site` | 需真实凭证，**BLOCKED**（SEC-03） |
 
 E2E/评测端口全部可经 env 覆盖（`ZA_E2E_SERVER_PORT` / `ZA_E2E_MOCK_PORT` / `ZA_E2E_HOST_PORT` / `ZA_E2E_G6_*` /
@@ -86,7 +86,7 @@ adr-028（任务级一次授权）、adr-027 §4 补记（批准手势申请站�
 | 真机验收未做：一次授权卡 + 一次权限气泡 + 结果页接入 + 无重复打开 + 总结含正文（计划文档 §7.1） | 发布 2.2.0 / 0.12.0 后由 Terry 复跑同一百度任务 |
 | 真实 LLM / 真实站点 E2E BLOCKED，且 `run-real-llm.mjs` 未对齐 generic-web 导航授权路径 | Terry 提供凭证解除 BLOCKED 时（计划文档 §7.3） |
 | 任务授权卡呈现谓词 `isTaskGrantCard`（插件）与服务端登记谓词 `hasTaskPlan` 靠约定同构，无漂移守卫 | 该谓词出现第三处使用、或 hitl-request 帧增加 `taskGrant` 字段时改为帧字段下发 |
-| coldstart/task-grant/d3/automation 失败态 `result.json` 不含 commit 字段（其余脚本含） | 下次触碰这四个脚本时统一走 `scripts/e2e/evidence.mjs` |
+| coldstart/task-grant/d3 失败态 `result.json` 不含 commit 字段（其余脚本含） | 下次触碰这三个脚本时统一走 `scripts/e2e/evidence.mjs` |
 | 面板拉黑站点的须知文案偏长（composer notice 约 5 行） | 出现真实用户反馈时压缩措辞 |
 | `<all_urls>` 一次性申请改变了 adr-027 的权限体验口径（注入模型未变） | Terry 复核；回退即删 `conversation-hitl.ts` 的 `ensureSiteAccess`，代价是任务内自动导航打开的页无法接入 |
 | toolgate NonceStore / SessionStore / hitlGrants 仍是进程内存 | S4 状态外置里程碑 |

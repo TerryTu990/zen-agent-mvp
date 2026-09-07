@@ -79,7 +79,6 @@ export interface Harness {
   emitMessage(message: unknown, tab: FakeTab): void;
   emitIconClick(tab: FakeTab): void;
   emitTabUpdated(tabId: number, changeInfo: Record<string, unknown>, tab: FakeTab): void;
-  emitAlarm(name: string): void;
   /** 探针专用：模拟新标签页被创建（代执行开页 / target=_blank）。 */
   emitTabCreated(tab: FakeTab): void;
   /** 探针专用：模拟用户在扩展设置里追加了站点访问权限。 */
@@ -217,14 +216,13 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     iconClick: Array<(tab: FakeTab) => void>;
     tabUpdated: Array<(tabId: number, changeInfo: unknown, tab: FakeTab) => void>;
     connect: Array<(port: FakePort) => void>;
-    alarm: Array<(alarm: { name: string }) => void>;
     storageChanged: Array<(changes: unknown, areaName: string) => void>;
     tabRemoved: Array<(tabId: number, info: unknown) => void>;
     tabCreated: Array<(tab: FakeTab) => void>;
     permissionsAdded: Array<(descriptor: { origins?: string[] }) => void>;
     contextMenuClick: Array<(info: unknown, tab: FakeTab) => void>;
   } = {
-    message: [], iconClick: [], tabUpdated: [], connect: [], alarm: [],
+    message: [], iconClick: [], tabUpdated: [], connect: [],
     storageChanged: [], tabRemoved: [], tabCreated: [], permissionsAdded: [], contextMenuClick: [],
   };
   const menus: ContextMenuItem[] = [];
@@ -316,12 +314,6 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
         addListener: (cb: (descriptor: { origins?: string[] }) => void): void =>
           void listeners.permissionsAdded.push(cb),
       },
-    },
-    alarms: {
-      getAll: async (): Promise<unknown[]> => [],
-      clear: async (): Promise<boolean> => true,
-      create: (): void => {},
-      onAlarm: { addListener: (cb: (alarm: { name: string }) => void): void => void listeners.alarm.push(cb) },
     },
     sidePanel: {
       setOptions: async (options: { tabId?: number; enabled?: boolean }): Promise<void> => {
@@ -470,9 +462,6 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     },
     emitTabUpdated(tabId, changeInfo, tab) {
       for (const cb of listeners.tabUpdated) cb(tabId, changeInfo, tab);
-    },
-    emitAlarm(name) {
-      for (const cb of listeners.alarm) cb({ name });
     },
     emitTabCreated(tab) {
       tabs.set(tab.id, { ...tab });

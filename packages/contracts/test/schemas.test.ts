@@ -115,36 +115,6 @@ describe('C4 pack generic 兜底（与 site 互斥）', () => {
     expect(validate({ ...genericPack, generic: false })).toBe(false);
   });
 
-  const sitePack = {
-    packId: 'shop',
-    version: '0.1.0',
-    site: { origin: 'https://shop.example' },
-    featureIdRules: [{ urlPattern: '.*', featureId: 'orders' }],
-  };
-  const automation = {
-    id: 'shop-auto-scan',
-    prompt: '执行自动履约扫描。',
-    workRoutes: ['#/orders'],
-    executionPreference: 'dom-only',
-    defaultPeriodMinutes: 5,
-  };
-
-  it('站点 pack 声明 automations 合法（adr-019）', () => {
-    expect(
-      validate({ ...sitePack, automations: [automation] }),
-      JSON.stringify(validate.errors),
-    ).toBe(true);
-  });
-
-  it('generic pack 声明 automations 拒绝（无固定 origin 围栏）', () => {
-    expect(validate({ ...genericPack, automations: [automation] })).toBe(false);
-  });
-
-  it('automation 越 executionPreference 闭集拒绝', () => {
-    expect(
-      validate({ ...sitePack, automations: [{ ...automation, executionPreference: 'yolo' }] }),
-    ).toBe(false);
-  });
 });
 
 describe('C3 client-access-layer 消息帧', () => {
@@ -164,8 +134,6 @@ describe('C3 client-access-layer 消息帧', () => {
       sessionId: 's-001',
       text: '怎么筛选待发货订单？',
       executionPreference: 'dom-only',
-      automationRunId: 'scan_run_001',
-      automationId: 'watch-orders',
     },
     'text-delta': {
       type: 'text-delta',
@@ -224,20 +192,6 @@ describe('C3 client-access-layer 消息帧', () => {
       sessionId: 's-001',
       text: '刷新订单',
       executionPreference: 'client-decides',
-    },
-    'user-message 自动轮次标识过短': {
-      type: 'user-message',
-      sessionId: 's-001',
-      text: '自动扫描',
-      automationRunId: 'short',
-      automationId: 'watch-orders',
-    },
-    // 只带 automationRunId 会让服务端的 watch 归属判定整段被跳过，无人值守轮拿到完整工具面。
-    'user-message 自动回合缺 automationId': {
-      type: 'user-message',
-      sessionId: 's-001',
-      text: '自动扫描',
-      automationRunId: 'scan_run_002',
     },
     'turn-complete reason 越闭集': {
       type: 'turn-complete',
@@ -876,13 +830,13 @@ describe('C5 audit-event M3 门禁/裁决/执行事件', () => {
         durationMs: 12,
       },
     },
-    // 自动回合「本轮没看到被监测页」的结局：与 ok 分开，否则运行历史会把「没看成」渲染成「看过没变」。
+    // 「本轮没取到目标页快照」的结局：与 ok 分开，否则运行历史会把「没看成」渲染成「看过了」。
     'tool-execution skipped': {
       ...base,
       type: 'tool-execution',
       data: {
-        toolCallId: 'watch_run_2',
-        toolId: 'watch-orders',
+        toolCallId: 'call_snapshot_2',
+        toolId: 'page_snapshot',
         execution: 'server',
         outcome: 'skipped',
         durationMs: 8,

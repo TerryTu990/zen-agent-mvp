@@ -5,14 +5,12 @@ import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
 import type {
   AssemblyPort,
-  AutomationDescriptor,
   ComposeResult,
   ConfigSnapshotManifest,
   InjectionBlock,
   InjectionDescription,
   InjectionToolDescriptor,
   JsonObject,
-  PackAutomation,
   PackBuiltinTool,
   PackDescriptor,
   PackFeatureDescriptor,
@@ -104,8 +102,6 @@ interface LoadedPack {
   docsIndex: string | null;
   /** docs/ 绝对目录（readPackDoc 围栏基准）；docsIndex=null 时为 null。 */
   docsDir: string | null;
-  /** adr-019 周期自动化声明；无声明为空数组。 */
-  automations: PackAutomation[];
   /** pack 声明的用户可配置点（adr-020）；null = 未声明（L2 packConfig 写入期无表项即拒）。 */
   configSchema: JsonObject | null;
   /**
@@ -427,27 +423,10 @@ function loadPack(
     skills,
     docsIndex: docs.docsIndex,
     docsDir: docs.docsDir,
-    automations: pack.automations ?? [],
     builtinTools: pack.capabilities?.builtinTools ?? [],
     configSchema: pack.configSchema ?? null,
     quickActions: pack.capabilities?.quickActions ?? [],
   };
-}
-
-/** automation id 跨 pack 重复 → 载入期 fail-closed 拒载（id 是 alarm/单飞锁/完成帧的全局关联键）。 */
-function assertNoDuplicateAutomationIds(packs: LoadedPack[]): void {
-  const seen = new Map<string, string>();
-  for (const pack of packs) {
-    for (const automation of pack.automations) {
-      const prior = seen.get(automation.id);
-      if (prior !== undefined) {
-        throw new Error(
-          `快照拒载：automation id ${automation.id} 在 pack ${prior} 与 ${pack.packId} 重复`,
-        );
-      }
-      seen.set(automation.id, pack.packId);
-    }
-  }
 }
 
 /** 同 origin 内 location 前缀重复 → 载入期 fail-closed 拒载（避免激活歧义）。 */
@@ -510,7 +489,6 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
       packs.set(entry.packId, loaded);
     }
     assertNoDuplicateLocations([...packs.values()]);
-    assertNoDuplicateAutomationIds([...packs.values()]);
     return { version: registry.version, systemPrompt, packs, legacyPackId: null, genericPackId };
   }
 
@@ -542,7 +520,6 @@ function loadSnapshot(options: AssemblyOptions): LoadedSnapshot {
     builtinTools: [],
     docsIndex: docs.docsIndex,
     docsDir: docs.docsDir,
-    automations: [],
     configSchema: null,
     quickActions: [],
   };
@@ -1109,16 +1086,6 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
       }
       return ownership;
     },
-    async listAutomations() {
-      const descriptors: AutomationDescriptor[] = [];
-      for (const pack of getSnapshot().packs.values()) {
-        if (pack.origin === null) continue;
-        for (const automation of pack.automations) {
-          descriptors.push({ packId: pack.packId, origin: pack.origin, automation });
-        }
-      }
-      return structuredClone(descriptors);
-    },
     async listPacks() {
       const descriptors: PackDescriptor[] = [];
       for (const pack of getSnapshot().packs.values()) {
@@ -1144,12 +1111,6 @@ export function createAssemblyPort(options: AssemblyOptions): AssemblyPort {
           ...(pack.generic ? { generic: true as const } : {}),
           features,
           tools: [...tools.values()],
-          automations: pack.automations.map((automation) => ({
-            id: automation.id,
-            ...(automation.defaultPeriodMinutes !== undefined
-              ? { defaultPeriodMinutes: automation.defaultPeriodMinutes }
-              : {}),
-          })),
           ...(pack.configSchema !== null ? { configSchema: pack.configSchema } : {}),
           ...(pack.quickActions.length > 0 ? { quickActions: pack.quickActions } : {}),
         });

@@ -302,7 +302,7 @@ describe('展开尊重本轮 compose 的回落判定', () => {
   });
 });
 
-describe('未知 id 与自动回合', () => {
+describe('未知 id', () => {
   it('未知 id → 原文原样发起并标注 quickActionUnresolved', async () => {
     const { token, sessionId } = await newSession('qa-unknown');
     const capture = await runTurn(token, sessionId, {
@@ -314,21 +314,6 @@ describe('未知 id 与自动回合', () => {
       quickActionId: 'no-such-action',
       quickActionUnresolved: true,
     });
-  });
-
-  it('自动回合不接受快捷提问：带 automationId 同发即拒，未启动回合', async () => {
-    const { token, sessionId } = await newSession('qa-automation');
-    const before = mock.requests.length;
-    const res = await postFrame(token, sessionId, {
-      type: 'user-message',
-      sessionId,
-      text: 'x',
-      quickActionId: 'summarize-page',
-      automationId: 'some-watch',
-      automationRunId: 'run-000000001',
-    });
-    expect(res.status).toBe(400);
-    expect(mock.requests.length).toBe(before);
   });
 });
 
