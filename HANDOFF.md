@@ -15,28 +15,21 @@
 本轮由 Terry 2026-09-07 的真实试用反馈驱动（审计会话 f4978c06 复盘见
 `docs/plans/2026-09-07-task-auth-and-ux-round.md` §1-§2），做了五项产品改动 + 一次 E2E 有效性改造，产物见 §4。
 
-## 二、验证现状（本机实跑，2026-09-08，`opt/remove-automation` 合并态 `24df066`）
+## 二、验证现状（本机实跑，2026-09-08，第二批三分支合并态 `922140a`）
 
 | 门 | 命令 | 结果 |
 |---|---|---|
 | 依赖 lint（U2） | `pnpm lint:deps` | 绿 |
 | 验证脚本路径自检 | `pnpm verify:paths` | 绿 |
 | 构建 | `pnpm -r build` | 绿（7 workspace） |
-| 单测 | `pnpm -r --workspace-concurrency=1 test` | **1711 例全绿**（91 文件；自动化下线退役了一批随能力消失的用例） |
-| 评测 | `pnpm eval` | 104 组场景 × 3 跑全过；审计完整性 PASS（954 条事件）；报告 `evals/runs/2026-09-08-24df066-eval.md` |
-| 评测判据自检 | `node scripts/evals/run.mjs --check` | 绿（探针字面 27 条在位 + 104 条判据均可被证伪） |
-| 浏览器 E2E 家族（11 门） | `pnpm test:e2e:family` | **9 门绿 / 2 门红**：绿 = sidepanel、coldstart、nav-attach、task-grant、d3、m1、m2、explain-pack、user-config；红 = m3、m5（成因见下「已知未绿」，非本轮引入）；报告 `.za/e2e/family-24df066-dirty.json` |
+| 单测 | `pnpm -r --workspace-concurrency=1 test` | **1711 例全绿**（90 文件；执行偏好下线退役了随能力消失的用例，assets 批新增 1 个镜像判据文件） |
+| 评测 | `pnpm eval` | 107 组场景 × 3 跑全过；审计完整性 PASS（990 条事件）；报告 `evals/runs/2026-09-08-922140a-eval.md` |
+| 评测判据自检 | `node scripts/evals/run.mjs --check` | 绿（探针字面 30 条在位 + 107 条判据均可被证伪） |
+| 浏览器 E2E 家族（11 门） | `pnpm test:e2e:family` | **11 门全绿**：sidepanel、coldstart、nav-attach、task-grant、d3、m1、m2、m3、m5、explain-pack、user-config；报告 `.za/e2e/family-922140a-dirty.json` |
 
 家族 runner 落盘 `.za/e2e/family-<rev>[-dirty].json`（逐脚本退出码/耗时/git rev），各脚本证据在 `.za/e2e/e2e-evidence/<case>/result.json`。
 
 **已知未绿（如实记录）**：
-- `pnpm test:e2e:m3`：`d1 happy：应出现 tool-card 已完成状态` 断言失败。工具批次改为默认折叠后
-  （`conversation-hitl.ts` 的 `body.hidden = true`），`innerText` 不再返回被折叠的卡面文案，而断言仍按展开态取文本。
-  执行本体仍成立（`counts.cancel === 1`、卡片 `data-status="succeeded"`）。**在 `opt/remove-automation` 拉出点
-  `1cfced0` 上以同一消息复现**，非自动化下线引入；判据本身已失效，须由折叠改动的归属批次决定改断言还是改呈现。
-- `pnpm test:e2e:m5`：`组外标签页面板未被关闭（enabled=true）` 断言失败——组外标签页的 `chrome.sidePanel`
-  开关未被显式关掉。同样**在 `1cfced0` 上复现**，非自动化下线引入；这一条是行为判据，须先判定是面板接入改动的回归
-  还是判据过期。
 - `pnpm test:e2e:real`（真实 LLM）与 `test:e2e:real-site`（真实站点）**BLOCKED，未执行**：凭证在 `ZA-C-SEC-03` 读禁区，
   开发期不得装载。且 `run-real-llm.mjs` 只装载 host-demo 场景，与本轮 generic-web / 导航授权路径未对齐——
   锚点「Terry 提供凭证解除 BLOCKED 时」（计划文档 §7.3）。
@@ -49,7 +42,7 @@
 | 命令 | 作用 |
 |---|---|
 | `pnpm build` / `pnpm test` / `pnpm lint:deps` / `pnpm verify:paths` | 构建 / 串行单测 / 依赖 lint / 验证脚本路径自检 |
-| `pnpm eval` / `node scripts/evals/run.mjs --check` | 协议层评测（104 场景 ≥3 跑 + 审计完整性）/ 判据自检（不跑 LLM） |
+| `pnpm eval` / `node scripts/evals/run.mjs --check` | 协议层评测（107 场景 ≥3 跑 + 审计完整性）/ 判据自检（不跑 LLM） |
 | `pnpm test:e2e:family [-- --only=a,b] [--skip=c]` | **E2E 家族串行 runner**：夹具/端口守卫自检 → 一次构建 → 11 脚本串行 → 落盘 family-<rev>.json |
 | `pnpm test:e2e` `:m2` `:m3` `:m5` `:d3` `:coldstart` `:nav-attach` `:task-grant` `:sidepanel` `:explain-pack` `:user-config` | 单门 E2E（真实插件 + mock LLM）；`:nav-attach` 用只授权指定 origin 的夹具测未接入路径，`:task-grant` 是一任务一授权金路径 |
 | `pnpm test:e2e:real` / `:real-site` | 需真实凭证，**BLOCKED**（SEC-03） |
@@ -102,6 +95,6 @@ adr-028（任务级一次授权）、adr-027 §4 补记（批准手势申请站�
 
 ## 七、下一步建议
 
-1. **已发布（2026-09-07）**：服务端 `zen-agent-server:dc04179` @ lingm2（release `dc04179-20260906T233819Z-59982`，快照 2.2.0 与本仓 `assets/` 逐文件一致，healthz/匿名激活冒烟通过，容器 healthy）；插件 `release/artifacts/zen-agent-extension-0.12.0.zip`（本机 gitignore 产物，已解压到同名目录供 Chrome 加载，生产地址已烤入）。回滚见 release skill。
+1. **已发布（2026-09-07）**：服务端 `zen-agent-server:dc04179` @ lingm2（release `dc04179-20260906T233819Z-59982`，发布当刻快照 2.2.0 与当时 `assets/` 逐文件一致，healthz/匿名激活冒烟通过，容器 healthy）；线上仍是 2.2.0，本仓 `assets/` 已推进到 **2.4.0**，两批未发布改动尚未上线；插件 `release/artifacts/zen-agent-extension-0.12.0.zip`（本机 gitignore 产物，已解压到同名目录供 Chrome 加载，生产地址已烤入）。回滚见 release skill。
 2. **真机验收**：Terry 在 0.12.0 上按计划文档 §7.1 复跑「帮我打开百度，查询 AI agent 新闻，打开最值得关注的一条并总结」；任何一项不符按 §7.2 定位是手势/接入时长/模型行为哪一类。
 3. 上一轮遗留：r2 partial 两条（§6）；真实 LLM 门对齐（§6）。
