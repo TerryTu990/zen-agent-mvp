@@ -15,6 +15,7 @@ import {
 } from '../src/activation.js';
 import type { GroupPageEntry, GroupPagesFrame } from '../src/frames.js';
 import { siteDeniedSkipKey, SITE_DENYLIST_KEY } from '../src/site-denylist.js';
+import { GRANTED_ORIGINS_KEY } from '../src/injection.js';
 import {
   BASE_URL,
   disposeHarnesses,
@@ -430,7 +431,7 @@ describe('L2 拉取失败不清空本机名单', () => {
     });
     expect(h.requests.filter((request) => request.url === `${BASE_URL}/v1/user-config`)).toHaveLength(1);
     expect(h.local[SITE_DENYLIST_KEY]).toEqual([DENIED_ENTRY]);
-    expect(h.local['za.grantedOrigins']).toEqual(['https://shop.example']);
+    expect(h.local[GRANTED_ORIGINS_KEY]).toEqual(['https://shop.example']);
   });
 
   it('/v1/user-config 拉取成功且名单为空 → 覆写为空（用户确实清空了名单）', async () => {

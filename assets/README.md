@@ -4,7 +4,7 @@
 `system-prompt.md`（跨站点稳定基座，规则编号 `ZA-SYS-NN`）+ 根 `manifest.json`（registry）+
 `packs/<packId>/`（站点包：`pack.json` + `features/<id>/{feature.md, facts.md, tools.json}` + `skills/<fn>/SKILL.md` + `eval/`）。
 
-## 当前快照事实（2026-09-03）
+## 当前快照事实（2026-09-08）
 
 - registry（`manifest.json` 2.3.0）**只登记 `generic-web`** 一个 pack；它以 `generic: true` 声明为兜底包，
   不参与 origin/location 匹配——无站点 pack 命中且页面有 http(s) origin 时**无条件激活**（无部署级准入名单），

@@ -8,7 +8,7 @@
     "locations": ["/console"],
     "exclude": ["/console/private"]
   },
-  "engines": { "contract": "^1.0.0" },
+  "engines": { "contract": "^2.0.0" },
   "featureIdRules": [
     { "urlPattern": "127\\.0\\.0\\.1:4183/console/billing", "featureId": "billing-guide" }
   ],

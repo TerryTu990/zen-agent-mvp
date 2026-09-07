@@ -98,11 +98,6 @@ function evidenceRoot() {
   return resolve(raw === undefined || raw === '' ? DEFAULT_EVIDENCE_ROOT : raw);
 }
 
-/**
- * fs UserConfigStore 的 subject 段编码镜像（apps/server/src/user-config-store.ts encodeSegment）。
- * 仅用于 E2E-C 在服务端从未读过该 subject 时预置损坏文件；编码若漂移，C 段的 degraded 断言会直接失败，
- * 不会产生假通过。
- */
 /** 直写 L2 overlay（PUT /v1/user-config）：配置中心 UI 覆盖不到的字段（站点授权集）由此前置。 */
 async function putOverlay(serverBase, token, overlay) {
   const res = await fetch(`${serverBase}/v1/user-config`, {
@@ -113,6 +108,11 @@ async function putOverlay(serverBase, token, overlay) {
   if (!res.ok) throw new Error(`用户配置写入失败：${res.status} ${await res.text()}`);
 }
 
+/**
+ * fs UserConfigStore 的 subject 段编码镜像（apps/server/src/user-config-store.ts encodeSegment）。
+ * 仅用于 E2E-C 在服务端从未读过该 subject 时预置损坏文件；编码若漂移，C 段的 degraded 断言会直接失败，
+ * 不会产生假通过。
+ */
 function overlayPathFor(hostUserId) {
   const seg = (value) =>
     `${encodeURIComponent(value).replace(/\*/g, '%2A').replace(/^\.+$/, (dots) => dots.replace(/\./g, '%2E'))}-${createHash('sha256').update(value).digest('hex').slice(0, 8)}`;

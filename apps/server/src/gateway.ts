@@ -1098,11 +1098,6 @@ function rememberStoppedExecNonce(runtime: SessionRuntime, nonce: string): void 
  */
 type PendingHitlOutcome = HitlDecisionValue | 'stopped' | 'timeout';
 
-/** 回合收口结果：reason 是下发给客户端的终止原因（C3 闭集）。 */
-interface TurnOutcome {
-  reason: TurnCompleteReason;
-}
-
 /**
  * 快照观测正文里的 evidence 块（紧凑复述）；无 evidence 或正文非 JSON（含已是存根）→ null。
  * 观测体被不可信内容定界串包裹，解析前按开合标记剥壳——区外的治理注记若留在正文里解析必失败，
@@ -2038,7 +2033,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
      * 本轮 compose 定下的生效 pack 查表展开——回落仅基座的轮次里该 pack 的问法本就不可见。
      */
     quickActionRequest: { id: string; selectionText?: string } | null,
-  ): Promise<TurnOutcome> {
+  ): Promise<TurnCompleteReason> {
     const { sessionId } = session;
     const runtime = runtimeOf(sessionId);
     const cancelled = (): boolean => messageId !== undefined && runtime.cancelledMessageIds.has(messageId);
@@ -3087,7 +3082,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       : pruned;
     if (historyTruncated) notify(sessionId, HISTORY_TRUNCATED_NOTICE);
     deps.store.setHistory(sessionId, toStore);
-    return { reason: turnReason };
+    return turnReason;
   }
 
   async function handleFrames(
@@ -3198,7 +3193,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         runtime.turnChain = runtime.turnChain
           .then(async () => {
             runtime.runningMessageId = upstream.messageId ?? null;
-            const result = await runTurn(
+            turnReason = await runTurn(
               session,
               upstream.text,
               claims,
@@ -3206,7 +3201,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
               upstream.messageId,
               quickActionRequest,
             );
-            turnReason = result.reason;
           })
           .catch((cause) => {
             // 回合内部异常不外泄细节（SEC-04）：客户端只见类别，明细留本地日志
