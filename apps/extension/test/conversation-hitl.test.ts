@@ -177,23 +177,60 @@ describe('多回合叙述分段（回合边界不糊成一坨）', () => {
     expect(messages.querySelectorAll('.za-msg[data-role="assistant"]').length).toBe(2);
   });
 
-  it('一轮流结束（去抖静默）后再来 delta：另起气泡而非续接前一回合', () => {
+  /**
+   * 静默不是回合边界：模型流中途停顿多久，续来的 delta 都还属同一段回答。
+   * 按静默封口会把一段完整回答切成两个回合气泡，跨切点未闭合的 markdown 还会在两边各渲半截。
+   */
+  it('流中途静默超过光标阈值后再来 delta：续写同一气泡，markdown 不被切碎', () => {
+    vi.useFakeTimers();
+    try {
+      const messages = messagesEl();
+      const ui = createConversationUi(messages);
+
+      delta(ui, '**要');
+      vi.advanceTimersByTime(1500);
+      delta(ui, '点**：见下');
+
+      const bubbles = messages.querySelectorAll('.za-msg[data-role="assistant"] .za-bub');
+      expect(bubbles.length).toBe(1);
+      expect(bubbles[0]?.querySelector('b')?.textContent).toBe('要点');
+      expect(bubbles[0]?.textContent).toBe('要点：见下');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('静默即撤下光标，续来的 delta 重新挂上（光标只表述当下是否在出字）', () => {
     vi.useFakeTimers();
     try {
       const messages = messagesEl();
       const ui = createConversationUi(messages);
 
       delta(ui, '第一段');
+      const bubble = messages.querySelector('.za-msg[data-role="assistant"] .za-bub');
+      expect(bubble?.classList.contains('streaming')).toBe(true);
       vi.advanceTimersByTime(1500);
-      delta(ui, '第二段');
-
-      const bubbles = messages.querySelectorAll('.za-msg[data-role="assistant"] .za-bub');
-      expect(bubbles.length).toBe(2);
-      expect(bubbles[0]?.textContent).toBe('第一段');
-      expect(bubbles[1]?.textContent).toBe('第二段');
+      expect(bubble?.classList.contains('streaming')).toBe(false);
+      delta(ui, '，接着说');
+      expect(bubble?.classList.contains('streaming')).toBe(true);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('收到 turn-complete 封口后再来 delta：另起一个回合气泡', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    delta(ui, '第一段');
+    ui.completeTurn();
+    delta(ui, '第二段');
+
+    const bubbles = messages.querySelectorAll('.za-msg[data-role="assistant"] .za-bub');
+    expect(bubbles.length).toBe(2);
+    expect(bubbles[0]?.textContent).toBe('第一段');
+    expect(bubbles[1]?.textContent).toBe('第二段');
+    expect(bubbles[0]?.classList.contains('streaming')).toBe(false);
   });
 
   it('同一回合内的 markdown 流不被切碎：连续 delta 仍在同一气泡累积重渲染', () => {
