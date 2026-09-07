@@ -1882,11 +1882,13 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 });
 
 /**
- * 由组内页面打开的新页在创建当刻先启用面板。
- * 代执行开页是「创建→入组→设为活跃」的异步序列，入组事件到达之前它就可能成为活跃页；
- * SW 被回收重启后又会重跑一次全局禁用，此后没有逐页设置的新页同样落回禁用态。
- * 两种窗口里 Chrome 都会把侧边栏关掉，且切回启用页也不自动重开——故此处只开不关：
- * 这一刻新页可能尚未入组（groupId 仍为 -1），按当刻状态去关会关掉正在打开的面板。
+ * 生来就在 zen 组里的新页（Chrome 对组内页面打开的新标签页同步继承组号）在创建当刻先启用面板：
+ * SW 被回收重启会重跑一次全局禁用，此后没有逐页设置的新页落回禁用态，Chrome 切到它即关掉侧边栏，
+ * 且切回启用页也不自动重开。故此处只开不关——尚未入组的新页可能正走「创建→入组→设为活跃」的
+ * 异步序列，按当刻状态去关会关掉正在打开的面板。
+ * 启用的授权只认「该页此刻确在 zen 组」这一事实：opener 在组内不等于新页在组内，
+ * 据 opener 提前放行会把面板留在永远不入组的组外页上（面板只在任务组内出现）。
+ * 稍后才入组的新页由 tabs.onUpdated 的组号变更与 onActivated 各自补开。
  */
 chrome.tabs.onCreated.addListener((tab) => {
   void enablePanelForOpenedTab(tab);
@@ -1896,10 +1898,7 @@ async function enablePanelForOpenedTab(tab: chrome.tabs.Tab): Promise<void> {
   const tabId = tab.id;
   if (tabId === undefined) return;
   const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
-  const opener = tab.openerTabId === undefined ? null : await chrome.tabs.get(tab.openerTabId).catch(() => null);
-  const openerGroupId = opener?.groupId ?? TAB_GROUP_ID_NONE;
-  const candidate = tabGroupId !== TAB_GROUP_ID_NONE ? tabGroupId : openerGroupId;
-  if (candidate === TAB_GROUP_ID_NONE || !(await isZenGroup(candidate))) return;
+  if (!(await isZenGroup(tabGroupId))) return;
   await chrome.sidePanel
     .setOptions({ tabId, path: 'sidepanel.html', enabled: true })
     .catch(() => {});
