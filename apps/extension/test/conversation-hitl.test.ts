@@ -9,7 +9,11 @@ function messagesEl(): HTMLElement {
   return el;
 }
 
-function toolCard(status: ToolCardFrame['status'], overrides: Partial<ToolCardFrame> = {}): ToolCardFrame {
+/** detail = 服务端可选补发的失败原因；C3 契约镜像尚未登记它，故在此按未知可选字段附加。 */
+function toolCard(
+  status: ToolCardFrame['status'],
+  overrides: Partial<ToolCardFrame> & { detail?: string } = {},
+): ToolCardFrame {
   return {
     type: 'tool-card',
     sessionId: 's1',
@@ -136,6 +140,204 @@ describe('appendTextDelta assistant 气泡 markdown 渲染', () => {
     ui.appendTextDelta({ type: 'text-delta', sessionId: 's1', delta: 'b' });
 
     expect(messages.querySelectorAll('.za-msg[data-role="assistant"]').length).toBe(2);
+  });
+});
+
+describe('多回合叙述分段（回合边界不糊成一坨）', () => {
+  const delta = (ui: ReturnType<typeof createConversationUi>, text: string): void => {
+    ui.appendTextDelta({ type: 'text-delta', sessionId: 's1', delta: text });
+  };
+
+  it('工具卡打断后的 delta 另起一个气泡，并带回合序号与分隔标记', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    delta(ui, '先说明一下执行计划');
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'a', summary: '打开百度搜索页' }));
+    delta(ui, '点击已执行，我来查看新打开的页面内容');
+
+    const bubbles = messages.querySelectorAll('.za-msg[data-role="assistant"]');
+    expect(bubbles.length).toBe(2);
+    expect(bubbles[0]?.querySelector('.za-bub')?.textContent).toBe('先说明一下执行计划');
+    expect(bubbles[1]?.querySelector('.za-bub')?.textContent).toBe('点击已执行，我来查看新打开的页面内容');
+    expect(bubbles[0]?.classList.contains('za-msg-turn')).toBe(false);
+    expect(bubbles[1]?.classList.contains('za-msg-turn')).toBe(true);
+    expect(bubbles[1]?.querySelector('.za-who')?.textContent).toBe('Zen Agent · 回合 2');
+  });
+
+  it('HITL 卡打断后的 delta 另起一个气泡', async () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    delta(ui, '这一步需要你确认');
+    const decision = ui.promptHitl(hitlRequest());
+    messages.querySelector<HTMLButtonElement>('[data-za-hitl-reject]')?.click();
+    await decision;
+    delta(ui, '已取消');
+
+    expect(messages.querySelectorAll('.za-msg[data-role="assistant"]').length).toBe(2);
+  });
+
+  it('一轮流结束（去抖静默）后再来 delta：另起气泡而非续接前一回合', () => {
+    vi.useFakeTimers();
+    try {
+      const messages = messagesEl();
+      const ui = createConversationUi(messages);
+
+      delta(ui, '第一段');
+      vi.advanceTimersByTime(1500);
+      delta(ui, '第二段');
+
+      const bubbles = messages.querySelectorAll('.za-msg[data-role="assistant"] .za-bub');
+      expect(bubbles.length).toBe(2);
+      expect(bubbles[0]?.textContent).toBe('第一段');
+      expect(bubbles[1]?.textContent).toBe('第二段');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('同一回合内的 markdown 流不被切碎：连续 delta 仍在同一气泡累积重渲染', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    delta(ui, '**要');
+    delta(ui, '点**：见下');
+
+    const bubbles = messages.querySelectorAll('.za-msg[data-role="assistant"]');
+    expect(bubbles.length).toBe(1);
+    expect(bubbles[0]?.querySelector('b')?.textContent).toBe('要点');
+  });
+
+  it('用户再次发言后回合序号归零（新一轮任务从「Zen Agent」重新计数）', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    delta(ui, 'a');
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'a' }));
+    delta(ui, 'b');
+    ui.appendUserMessage('再问一个');
+    delta(ui, 'c');
+
+    const bubbles = messages.querySelectorAll('.za-msg[data-role="assistant"] .za-who');
+    expect([...bubbles].map((node) => node.textContent)).toEqual([
+      'Zen Agent',
+      'Zen Agent · 回合 2',
+      'Zen Agent',
+    ]);
+  });
+});
+
+describe('工具批次折叠（默认收起 + 机械摘要 + 失败可见）', () => {
+  const toggleOf = (messages: HTMLElement): HTMLButtonElement | null =>
+    messages.querySelector<HTMLButtonElement>('[data-za-toolgroup-toggle]');
+
+  it('默认收起：body hidden、aria-expanded=false，且 toggle 是可键盘操作的 button', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'a' }));
+
+    const toggle = toggleOf(messages);
+    expect(toggle?.tagName).toBe('BUTTON');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    expect(messages.querySelector<HTMLElement>('.za-toolgroup-body')?.hidden).toBe(true);
+    expect(messages.querySelector('.za-toolgroup')?.getAttribute('data-expanded')).toBe('false');
+  });
+
+  it('点击展开再点击收起：aria-expanded 与 body 可见性同步翻转', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'a' }));
+    const toggle = toggleOf(messages);
+    const body = messages.querySelector<HTMLElement>('.za-toolgroup-body');
+
+    toggle?.click();
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+    expect(body?.hidden).toBe(false);
+    expect(messages.querySelector('.za-toolgroup')?.getAttribute('data-expanded')).toBe('true');
+
+    toggle?.click();
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    expect(body?.hidden).toBe(true);
+  });
+
+  it('收起态摘要按状态计数，未成功计数不被折叠藏掉', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'a' }));
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'b' }));
+    ui.renderToolCard(toolCard('failed', { toolCallId: 'c' }));
+
+    expect(messages.querySelector('.za-toolgroup-summary')?.textContent).toBe('2 步已完成 · 1 步未成功');
+    expect(toggleOf(messages)?.getAttribute('data-status')).toBe('failed');
+  });
+
+  it('全部成功：摘要只报完成步数，聚合状态为 succeeded', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    for (const id of ['a', 'b', 'c']) ui.renderToolCard(toolCard('succeeded', { toolCallId: id }));
+
+    expect(messages.querySelector('.za-toolgroup-summary')?.textContent).toBe('3 步已完成');
+    expect(toggleOf(messages)?.getAttribute('data-status')).toBe('succeeded');
+  });
+
+  it('执行中：收起行挂 running 聚合状态（转圈动画挂载点）并计入摘要', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'a' }));
+    ui.renderToolCard(toolCard('running', { toolCallId: 'b' }));
+
+    expect(toggleOf(messages)?.getAttribute('data-status')).toBe('running');
+    expect(messages.querySelector('.za-toolgroup-summary')?.textContent).toBe('1 步执行中 · 1 步已完成');
+
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'b' }));
+    expect(toggleOf(messages)?.getAttribute('data-status')).toBe('succeeded');
+    expect(messages.querySelector('.za-toolgroup-summary')?.textContent).toBe('2 步已完成');
+  });
+
+  it('失败原因（可选 detail 字段）：有则渲染成一行，缺席则只有状态与工具名', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.renderToolCard(toolCard('failed', { toolCallId: 'a', summary: '点击「搜索」', detail: 'ref 已失效，请重新取快照' }));
+    ui.renderToolCard(toolCard('failed', { toolCallId: 'b', summary: '读取正文' }));
+
+    const cards = messages.querySelectorAll('[data-za-toolcard]');
+    expect(cards[0]?.querySelector('.za-toolcard-detail')?.textContent).toBe('ref 已失效，请重新取快照');
+    expect(cards[1]?.querySelector('.za-toolcard-detail')).toBeNull();
+    expect(cards[1]?.textContent).toContain('未成功：读取正文');
+  });
+
+  it('文本回合打断后的工具调用另起一组，各组摘要各自计数', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'a' }));
+    ui.appendTextDelta({ type: 'text-delta', sessionId: 's1', delta: '继续' });
+    ui.renderToolCard(toolCard('failed', { toolCallId: 'b' }));
+
+    const summaries = messages.querySelectorAll('.za-toolgroup-summary');
+    expect(summaries.length).toBe(2);
+    expect([...summaries].map((node) => node.textContent)).toEqual(['1 步已完成', '1 步未成功']);
+  });
+
+  it('跨组状态迁移就地更新原卡，并刷新它所属那一组的摘要', () => {
+    const messages = messagesEl();
+    const ui = createConversationUi(messages);
+
+    ui.renderToolCard(toolCard('running', { toolCallId: 'a' }));
+    ui.appendTextDelta({ type: 'text-delta', sessionId: 's1', delta: '继续' });
+    ui.renderToolCard(toolCard('running', { toolCallId: 'b' }));
+    ui.renderToolCard(toolCard('succeeded', { toolCallId: 'a' }));
+
+    expect(messages.querySelectorAll('[data-za-toolcard]').length).toBe(2);
+    const summaries = messages.querySelectorAll('.za-toolgroup-summary');
+    expect([...summaries].map((node) => node.textContent)).toEqual(['1 步已完成', '1 步执行中']);
   });
 });
 
