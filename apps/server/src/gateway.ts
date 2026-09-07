@@ -133,7 +133,7 @@ export interface GatewayDeps {
 
 export interface GatewayUserConfigDeps {
   store: UserConfigStore;
-  /** 写入期只收紧校验基线（validateOverlayAgainstL1）：全 pack 工具/自动化并集。 */
+  /** 写入期只收紧校验基线（validateOverlayAgainstL1）：全 pack 工具面并集。 */
   l1Baseline: UserOverlayL1Baseline;
   /** packId → pack 声明的 configSchema；validateUserOverlay 的 packConfig fail-closed 表。 */
   configSchemas: Record<string, JsonObject>;

@@ -103,6 +103,16 @@ function evidenceRoot() {
  * 仅用于 E2E-C 在服务端从未读过该 subject 时预置损坏文件；编码若漂移，C 段的 degraded 断言会直接失败，
  * 不会产生假通过。
  */
+/** 直写 L2 overlay（PUT /v1/user-config）：配置中心 UI 覆盖不到的字段（站点授权集）由此前置。 */
+async function putOverlay(serverBase, token, overlay) {
+  const res = await fetch(`${serverBase}/v1/user-config`, {
+    method: 'PUT',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(overlay),
+  });
+  if (!res.ok) throw new Error(`用户配置写入失败：${res.status} ${await res.text()}`);
+}
+
 function overlayPathFor(hostUserId) {
   const seg = (value) =>
     `${encodeURIComponent(value).replace(/\*/g, '%2A').replace(/^\.+$/, (dots) => dots.replace(/\./g, '%2E'))}-${createHash('sha256').update(value).digest('hex').slice(0, 8)}`;
@@ -597,7 +607,11 @@ async function main() {
     await panel.locator('[data-za-hitl-approve]').click();
     await waitFor(async () => (await panelText(panel)).includes(REFRESH_DONE), { label: 'B4 确认后执行完成' });
     assert(host.counts.refresh === 1, `B4：宿主刷新接口应恰调用一次，实际 ${host.counts.refresh}`);
-    note('B4 收紧生效：原 auto 工具改判 hitl → 弹确认卡 → 确认后经签名指令真实执行一次');
+    const doneCards = panel.locator('[data-za-toolcard][data-status="succeeded"]');
+    await waitFor(async () => (await doneCards.count()) > 0, { label: 'B4 执行卡呈现' });
+    const doneCardText = await doneCards.last().innerText();
+    assert(doneCardText.trim() !== '', 'B4：执行卡是空壳，用户看不到这一步做了什么');
+    note('B4 收紧生效：原 auto 工具改判 hitl → 弹确认卡 → 确认后经签名指令真实执行一次，面板留下 succeeded 执行卡');
 
     const b4Injection = await fetchInjection(serverBase, currentSessionIdSince(auditBaseB), tokenMain);
     const tightened = (b4Injection.tools ?? []).find((tool) => tool.toolId === TIGHTEN_TOOL);
@@ -623,6 +637,40 @@ async function main() {
       'B：审计 assembly 事件缺 userConfigRevision 定格');
     note('B 审计：teach/panel 两路写入事件 + 该工具 tool-decision=hitl + assembly 带 userConfigRevision');
     await options.close();
+
+    // B5 站点授权集 → 本机常驻注册面（adr-027 轨二）。
+    // 注册失败在产品里是静默的（background 对 registerContentScripts 的 rejection 只 catch 不报），
+    // 描述符形状一旦不被真实 chrome.scripting 接受，单测的假 chrome 照样全绿——故该往返只能在浏览器里判。
+    const grantedRegistrations = async () =>
+      sw.evaluate(async (pattern) => {
+        const scripts = await chrome.scripting.getRegisteredContentScripts();
+        return scripts
+          .filter((item) => (item.matches ?? []).includes(pattern))
+          .map((item) => ({ id: item.id, js: item.js }));
+      }, `${HOST_BASE}/*`);
+    // 镜像刷新只由身份/服务端地址变更与 SW 启动触发：改完 L2 得推一次，否则等的是下次冷启。
+    const pokeUserConfigMirrors = async () => {
+      await sw.evaluate(async (base) => {
+        await chrome.storage.local.remove('za.serverBaseUrl');
+        await chrome.storage.local.set({ 'za.serverBaseUrl': base });
+      }, serverBase);
+    };
+    assert((await grantedRegistrations()).length === 0, 'B5 前提：该 origin 尚未授权时不应有常驻注册项');
+    await putOverlay(serverBase, tokenMain, {
+      ...overlayAfterTighten,
+      packs: { ...overlayAfterTighten.packs, '*': { grantedOrigins: [HOST_BASE] } },
+    });
+    await pokeUserConfigMirrors();
+    await waitFor(async () => (await grantedRegistrations()).length > 0,
+      { label: 'B5 已授权 origin 进入常驻注册面' });
+    const [registration] = await grantedRegistrations();
+    assert(Array.isArray(registration.js) && registration.js.includes('dist/content.js'),
+      `B5：常驻注册载荷必须是插件自带产物，实际 ${JSON.stringify(registration.js)}`);
+    await putOverlay(serverBase, tokenMain, overlayAfterTighten);
+    await pokeUserConfigMirrors();
+    await waitFor(async () => (await grantedRegistrations()).length === 0,
+      { label: 'B5 撤销授权后常驻注册项被清掉' });
+    note('B5 站点授权集：L2 声明该 origin → 真实 chrome.scripting 注册常驻注入项（载荷为插件自带 dist/content.js）；L2 移除即对称注销');
 
     // ------------------------------------------------------------ E2E-C
     console.log('[6/6] E2E-C：治理故障语义（overlay 不可读的拆分降级）');

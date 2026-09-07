@@ -96,7 +96,6 @@
 - 公共信封：`eventId / type / ts / sessionId` 必填，`userId(=hostUserId) / tenant / packId / packVersion / featureId` 可选；`data` 按 type 分形（schema allOf if/then 强制）。
 - `user-config-write` 的 `data`：`{subject{tenant,hostUserId}, revision, overlay, origin}`——`revision` 为写后 overlay 内容 hash、`overlay` 为写后全量覆盖层（脱敏后，结构权威在 C7）、`origin` 闭集 `teach`（对话草稿经 config-decision 确认写入）| `panel`（配置中心面板结构化编辑）。任一 revision 内容可经审计流重建，满足事故回放。
 - L2 追溯字段：`assembly` 与 `tool-decision` 的 `data.userConfigRevision` = 本轮 compose 定格的 overlay revision，与 `user-config-write` 事件同值互证（缺省 = 本轮无 subject / degraded）。
-- 自动回合归因（adr-019/021）：顶层可选 `automationRunId`（本事件所属自动 run，与 C3 `user-message.automationRunId` 同值）与 `automationId`（pack 声明的 automation id 或用户自建 watch id）；人工回合省略。
 - 脱敏前置：工具实参/响应体/页面内容不入事件，只记 id、结局（`verdict`、`outcome` 闭集）与摘要（`rulesDigest`）；secret/凭证值任何字段禁入。
 - 落点页标注（adr-023，additive）：顶层可选 `page{handle, origin?}`——`tool-decision` / `hitl-verdict` / `tool-execution` 三类事件填写（缺省调用记活跃页，定向调用记目标页；状态表无句柄时整体省略）。句柄不透明，消费方只作等值比对；旧事件不带该字段依旧合法。
 - 旁路铁律：审计生产与落盘永远在控制流旁路，审计故障不影响会话与执行。
@@ -124,17 +123,16 @@
 
 **职责**：L2 用户级配置覆盖层——`subject=(tenant, hostUserId)` 维度的运行期覆盖，经 `UserConfigStore` 端口读写、`revision`（内容 hash）可追溯。与 C4 快照（L1）构成 U4 的双源：L2 **显式排除**在快照同构/不可变约束之外，另守只收紧 / 可审计 / 可追溯三约束。
 
-**结构**（`{schemaVersion, subject, packs, watches?}`，全程 `additionalProperties:false`）：
+**结构**（`{schemaVersion, subject, packs}`，全程 `additionalProperties:false`）：
 - `packs` 是作用域表：键 `"*"` = 全局作用域（跨站规则/事实、`verbosity` 偏好与 `siteDenylist`，零配置站点的个人定制载体；结构上无 `enabled`/`restrictions`/`packConfig`——无对应工具面可收紧）；其余键 = packId，走 pack 级作用域。
 - `siteDenylist`（用户级站点黑名单）只居全局作用域——它跨站点、不锚定任何 pack。条目文法两形态：`scheme://host[:port]` 精确 origin（比对时 www 与裸域互认，scheme/port 精确）、`scheme://*.host` 该域及其子域（scheme 精确，通配形态不比对端口）；`uniqueItems`，上限 200 条。**刻意不设 `*` 全通配**：那等价于关停整个产品，是危险且无意义的表达，文法层即拒。语义只收紧：命中 origin 上不装配任何站点包（含通用兜底包），回落仅基座——与 pack 级 `enabled:false` 共用同一条回落通路，两者以各自标注区分归因。**终判在服务端 compose**（U7）：客户端据同一份名单跳过激活只是隐私侧不上报，不构成治理生效；L2 读失败降级时读不到名单即不回落（存储故障不得让治理看起来已生效）。
 - pack 级作用域：`enabled`（只允许 `const false`，即 pack 级关停；缺省 = 启用）、`rules`/`facts`（条目带 `origin` = `manual` 面板录入 / `teach` 对话草稿确认写入，`featureId` 缺省 = 整 pack 生效）、`restrictions`、`packConfig`、`preferences`。
 - `restrictions` 是权限只收紧矩阵：`riskTierRaise` 值域闭集仅 `{hitl, forbidden}`（无 `auto`，结构上无放宽表达力）、`disabledTools` 从工具面移除不展示。
-- `preferences`：`verbosity` 闭集 `concise|standard|detailed`；`automations` 键 = 该 pack 声明的 automation id（adr-019），`enabled:false` 关停、`minutes` 写入期校验 ≥ pack 预设周期且 ≥ 平台下限（频率同属收紧维度）。
-- `watches`（adr-021）居顶层：用户自建周期触发器 = 「平台内建自动化模板 id + 参数」两成分（模板是 L0 代码闭集，用户不可定义模板），跨站点、不锚定 pack。只读模板发起的自动回合由服务端强制只读工具面（产品形态规则 R7 无人值守底线），故不构成能力扩张。
+- `preferences`：`verbosity` 闭集 `concise|standard|detailed`。
 
 **只收紧铁律（产品形态规则 R1）**：结构上不存在新增工具 / 改 adapter / 改 execution / 放宽 riskTier 或节流的表达能力；`riskTier` 合并语义恒 `max(L1, L2)`，全序 `auto < hitl < forbidden`。用户级能力扩展的唯一通道 = 自建 pack（走 L1 载入校验）。
 
-**组合校验器**：跨字段语义——同一 toolId 同时出现在 `riskTierRaise` 与 `disabledTools` 拒绝、`packConfig` 按该 pack 声明的 `configSchema`（adr-020）校验、watch 的 `templateId` 闭集与参数按模板 `paramsSchema` 校验——JSON Schema 表达不了，由 contracts 导出的 `validateUserOverlay` 承担；消费方 MUST 经该校验器，不得旁路只跑本 schema。
+**组合校验器**：跨字段语义——同一 toolId 同时出现在 `riskTierRaise` 与 `disabledTools` 拒绝、`packConfig` 按该 pack 声明的 `configSchema`（adr-020）校验——JSON Schema 表达不了，由 contracts 导出的 `validateUserOverlay` 承担；消费方 MUST 经该校验器，不得旁路只跑本 schema。
 
 **写入通道**：见 C3 `config-draft`/`config-decision` 帧（对话 teach 流）与配置中心面板 `PUT /v1/user-config`（结构化编辑）；两条路径都在落盘前过组合校验与只收紧校验，并落 C5 `user-config-write` 事件。
 

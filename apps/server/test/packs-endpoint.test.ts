@@ -1,6 +1,6 @@
 /**
  * 配置中心站点包页数据源：GET /v1/packs（经 AssemblyPort.listPacks 取数，网关只转发+鉴权）。
- * 输出闭集 = 已安装 pack 的 L1 自描述（人读名/版本/来源/站点围栏/功能/工具面 baseTier/自动化声明），
+ * 输出闭集 = 已安装 pack 的 L1 自描述（人读名/版本/来源/站点围栏/功能/工具面 baseTier），
  * 供 packs 页卡片与个人定制页收紧矩阵渲染；L2 覆盖层不在本端点（读 GET /v1/user-config）。
  */
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';

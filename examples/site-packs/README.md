@@ -1,7 +1,7 @@
 # examples/site-packs — 已下线的站点包
 
 生产快照 `assets/` 只装通用包 generic-web；本目录保存曾上线、现已从生产 registry 下线的站点包，
-作为完整可装配的快照根供测试与评测继续覆盖平台机制（订单识别、per-task / every-call HITL、周期自动化等）。
+作为完整可装配的快照根供测试与评测继续覆盖平台机制（订单识别、per-task / every-call HITL 等）。
 
 | pack | 站点 | 说明 |
 |---|---|---|

@@ -18,7 +18,7 @@
 客户端侧不是若干点状判定，而是一条可陈述、可验收的**不变量 SD**：*URL 命中名单的页面对服务端完全惰性——
 不发出任何上行帧、不接受任何下行指令的执行、不被登记为活跃执行页，也不激活*。
 它由三处统一出口施加、共用同一份判定：上行帧的统一出口（覆盖 `context-report` / `snapshot-report` /
-`exec-result` / 自动化回合的 `user-message` 等全部种类，无论来自 content 端口还是周期自动化）、
+`exec-result` / `user-message` 等全部种类）、
 下行帧落到页面的统一出口（`exec-instruction` / `guide-action` / `snapshot-request`）、活跃执行页登记。
 只掐上行而不管下行等于「照做但不告诉你」，故两个方向都收。
 **唯一允许自命中页上行的例外**是 `{ok:false, error:'site-denied'}` 形态的拒绝回执（不含任何页面数据）——
@@ -63,7 +63,7 @@
         ├── docs/                     # 可选：站点操作文档（渐进披露）
         │   └── <name>.md             #   frontmatter title/summary 进索引，正文经 pack_doc 按需读
         └── eval/                     # 可选：评测场景（装配器不加载，评测脚本用）
-            └── scenarios.json        #   讲解/装配换出/引导/工具/HITL/自动化 六维度
+            └── scenarios.json        #   讲解/装配换出/引导/工具/HITL 五维度
 ```
 
 **legacy 形态**：根 manifest 无 `packs` 数组时按单 pack 处理（`config-snapshot.schema.json`，缺省 packId=`default`、无 site 围栏），旧快照零迁移可用。
@@ -79,8 +79,8 @@
 3. 新建 `packs/wiki-example/features/wiki-page/{feature.md, facts.md, tools.json}`（§3.2）
 4. （可选）`docs/`、`skills/`、`eval/`
 5. 重启服务端（快照惰性载入一次并缓存；坏配置启动期 fail-fast 报 `快照拒载：…`）
-6. 若该站点要用周期自动化，在配置中心「全局设置 → 已授权常驻的站点」授权该 origin
-   （adr-027 轨二：无手势唤醒要求该 origin 已授权；会话内点图标即用，不需预先声明）
+6. 若希望 Zen 在该站点常驻（不必每次点图标唤起），在配置中心「全局设置 → 已授权常驻的站点」授权该 origin
+   （adr-027 轨二；会话内点图标即用，不需预先声明）
 
 ### 3.1 pack.json
 
@@ -106,7 +106,7 @@
 | `packId` / `version` | ✅ | 须与目录名、registry 登记一致 |
 | `name` | ⬜ | pack 人读名（packs 页 / 注入透明视图 / 确认卡展示，如"闲鱼卖家"）；缺省=展示回退 packId |
 | `summary` | ⬜ | 一句话站点用途——进"已安装站点索引"（跨站发现层），缺省回退 packId |
-| `generic` | ⬜ | `const true`：声明本 pack 为"无站点 pack 命中"时的兜底包；**与 `site` 互斥**、禁声明 `automations`（schema allOf 强制），不参与 origin/location 匹配与站点索引；无站点 pack 命中且页面有 http(s) origin 即**无条件激活**（无部署级准入名单；用户可用 L2 站点黑名单按站点关停），激活时以活跃页 origin 运行时绑定；registry 至多登记一个 |
+| `generic` | ⬜ | `const true`：声明本 pack 为"无站点 pack 命中"时的兜底包；**与 `site` 互斥**（schema allOf 强制），不参与 origin/location 匹配与站点索引；无站点 pack 命中且页面有 http(s) origin 即**无条件激活**（无部署级准入名单；用户可用 L2 站点黑名单按站点关停），激活时以活跃页 origin 运行时绑定；registry 至多登记一个 |
 | `site` | 条件 | **非 generic 时必填；`generic: true` 时 MUST 省略**（schema allOf 强制，写了即拒载） |
 | `site.origin` | ✅（有 `site` 时） | 激活围栏：`scheme://host[:port]` 精确匹配（无路径无尾斜杠）；同时是 http/server 工具请求与 navigate 目标的 origin 围栏 |
 | `site.locations` | ⬜ | 路径前缀数组（最长前缀胜出）；省略=整站 `["/"]` |
@@ -114,13 +114,12 @@
 | `tenant` | ⬜ | per-origin 身份路由键：`claims.tenant` 匹配它时会话记住该 origin 的宿主身份；单租户/无宿主身份诉求可省 |
 | `featureIdRules` | ✅ | pack 激活后的 url→featureId 有序映射（ECMAScript 正则，首个命中生效） |
 | `features` | ⬜ | 功能闭单；声明则启动校验目录齐备（缺失拒载），省略则按目录扫描 |
-| `automations` | ⬜ | 周期自动化声明（adr-019，≤5 条，纯调度/提示词数据不承载治理）：每条 `{id, prompt, workRoutes, executionPreference, defaultPeriodMinutes?}`——`workRoutes` 是工作页判定前缀（激活页 URL 去 origin 后的 path+hash 须以任一前缀开头，origin 恒取 `site.origin`），`executionPreference` 闭集 `auto` / `dom-only` / `prefer-client-api` / `prefer-server-api`，`defaultPeriodMinutes` 省略时按 5 分钟。`id` 跨 pack 唯一（载入期查重拒载）；generic pack 禁声明 |
 | `engines.contract` | ⬜ | 平台兼容声明（VS Code engines 范式，adr-020）：对 contracts 导出 `contractVersion` 的 semver range；载入期比对，range 非法或不满足即拒载（不降级猜测） |
 | `capabilities` | ⬜ | 结构化能力声明（MCP capabilities 范式），全部可选，知识型 pack（仅 feature.md+facts.md）合法缺省：`skills`（`skills/` 目录闭单，与目录**双向对账**——声明多一项或目录多一项均拒载）、`docs`（`docs/` 内相对路径闭单，同样双向对账）、`anchors`（featureId → 引导锚点数组 `{id, role, label, selectorHint?}`，契约定义的结构化锚点登记位，失配降级、不作准入门槛；装配端尚未接线消费，现行实践仍把定位锚点写在 `facts.md`，见 §3.3） |
 | `configSchema` | ⬜ | pack 声明的用户可配置点（adr-020）：一份**扁平顶层** JSON Schema 对象——必带 `type: "object"` + `properties`（键闭集即可配置点）+ `additionalProperties: false`，顶层不得出现 `$ref`/`allOf`/`patternProperties` 等组合关键字（键的值 schema 可任意复杂，复用走 `$defs` + 值内 `$ref`）。载入期校验形态与可编译性，两者任一不过即拒载；L2 `packConfig` 写入期按它校验（未声明或值越界即拒），注入期按同一份顶层 `properties` 取键，故写入端与注入端同源。取值以结构化数据注入，不改变工具 riskTier 与治理面 |
 | `integrity` | ⬜ | canonical 文件清单 sha256（U4 不可变的机械化验证）：键=pack 内相对路径、值=sha256 hex。装配端校验启用锚点=打包分发落地时，当前只做契约校验、不比对内容 |
 
-**generic 兜底包最小形态**（`assets/packs/generic-web/pack.json` 即此形态）：无 `site`、无 `automations`，激活完全由服务端准入名单决定。
+**generic 兜底包最小形态**（`assets/packs/generic-web/pack.json` 即此形态）：无 `site`，激活完全由服务端准入名单决定。
 
 ```json
 {
@@ -199,7 +198,7 @@
 ### 3.3 feature.md / facts.md 要点
 
 - `feature.md`（规则·守）：编号 `ZA-FEAT-NN`；讲清"该功能内 agent 怎么讲、什么必经工具、什么不做"。操作类功能记得写"先 `page_snapshot` 后动作、以页面证据复核成败"与 task 标题保持纪律。
-- `facts.md`（事实）：页面构成、元素定位锚点（aria-label/文本/角色，勿依赖动态 id）、操作 API、站点组件库交互注意（如自绘下拉须点选项）。事实不足会直接导致讲解臆造与操作失误——参照 `examples/acceptance/packs/mail-126` 的写法；`examples/site-packs/packs/xianyu-seller` 是含 `automations` 的完整站点包样例。
+- `facts.md`（事实）：页面构成、元素定位锚点（aria-label/文本/角色，勿依赖动态 id）、操作 API、站点组件库交互注意（如自绘下拉须点选项）。事实不足会直接导致讲解臆造与操作失误——参照 `examples/acceptance/packs/mail-126` 的写法；`examples/site-packs/packs/xianyu-seller` 是多功能完整站点包样例。
 
 ## 4. 服务端环境变量全表
 
@@ -266,7 +265,7 @@
 
 **注入模型（adr-027）**：产品清单不声明任何 `content_scripts`，插件默认不进入任何页面。
 会话内能力由 background 在用户手势或服务端定向帧到达时逐次注入（轨一）；
-周期自动化要求该 origin 已在配置中心授权，授权后按 origin 动态注册常驻脚本（轨二）。
+在配置中心授权过的 origin 按 origin 动态注册常驻脚本（轨二）。
 旧的 `za.autoActivate` 已删除——它是纯客户端 origin 名单，与「准入判定不下放客户端」（U7）有张力。
 
 ## 5. 运行数据落点（`.za/`，已 gitignore）

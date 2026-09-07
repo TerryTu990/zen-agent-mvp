@@ -1,7 +1,7 @@
 /**
  * G3（P2.5-c）写入通道端点测试：PUT/GET /v1/user-config 与 config-decision 拒收闭集。
  * subject 一律取自 JWT claims（tenant + hostUserId）；body.subject 与 claims 推导值不一致即 400。
- * 校验链 = validateUserOverlay（含 configSchemas）+ validateOverlayAgainstL1（基线自 assembly 全量工具/自动化）。
+ * 校验链 = validateUserOverlay（含 configSchemas）+ validateOverlayAgainstL1（基线自 assembly 全量工具面）。
  */
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync } from 'node:fs';

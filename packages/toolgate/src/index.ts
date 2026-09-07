@@ -638,7 +638,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
    * 判定链的校验段（fail-closed，U7）：工具闭集 → 分级（含 L2 定格收紧终值）→ 通道 → 实参 →
    * 身份 → 围栏与 dom 批次（ref 出自入参给的最近快照）。reason 只述依据、不含实参值（SEC-04）。
    * decide 与 reconfirmApproval 共用本实现，使批准恢复期的复核与首次判定逐条同源。
-   * 不含任务级授权复用与无人值守收口——那些是各自调用点的语义。
+   * 不含任务级授权复用——那是调用点的语义。
    */
   const validateCall = (
     input: GateDecisionInput,

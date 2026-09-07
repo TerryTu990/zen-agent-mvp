@@ -61,7 +61,7 @@ export function originMatchPattern(origin: string): string {
  * 浏览器已授予的某条匹配模式是否覆盖该 origin。
  * 逐 origin 授权得到的是精确模式，但用户在 chrome://extensions 把站点访问改成「在所有网站上」时，
  * 浏览器给回的是 `<all_urls>` 或裸通配主机这类模式，逐条授权会被它吸收——
- * 只按精确模式比对会在「用户明明全授权了」时把注册面判成空，自动化随之静默停摆。
+ * 只按精确模式比对会在「用户明明全授权了」时把注册面判成空，常驻注入随之静默失效。
  */
 export function grantedPatternCoversOrigin(pattern: string, origin: string): boolean {
   if (pattern === '<all_urls>') return true;

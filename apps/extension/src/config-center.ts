@@ -1039,8 +1039,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         'p',
         'za-cc-hint',
         '加进名单的站点上，Zen 不装配任何站点包，只留平台基座——判定在服务端，保存后下一轮装配即生效。' +
-          '保存成功后插件同步这份名单：名单内的站点不再激活会话、不再上报页面上下文、不进任务组页面清单，' +
-          '该站点上的站点包自动化与自建触发器到点也一律不跑，且不发提示。' +
+          '保存成功后插件同步这份名单：名单内的站点不再激活会话、不再上报页面上下文、不进任务组页面清单。' +
           '一处前提：服务端或本机读不到配置的那一轮不做拦截，该轮照常装配站点包、页面信息照常上行——' +
           '配置读取失败时以「照常辅助」兜底，不假装名单已经生效。',
       ),
@@ -1120,7 +1119,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
 
   /**
    * 授权判定的唯一出口：L2 声明 ∩ 本机浏览器权限。
-   * 两者之一缺席，该站点当下就不会被注入——只认 L2 会把「已授权」显示成一个自动化其实跑不起来的状态，
+   * 两者之一缺席，该站点当下就不会被注入——只认 L2 会把「已授权」显示成一个其实注入不进去的状态，
    * 且不给出任何补回授权的线索（浏览器侧的撤销不通知本页）。
    */
   function originAuthorized(origin: string): boolean {
@@ -1153,12 +1152,12 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       return false;
     }
     if (!(await (deps.requestOriginAccess?.(origin) ?? Promise.resolve(true)))) {
-      setStatus(`浏览器未授予 ${origin} 的访问权限：Zen 不会在该站点常驻，自动化到点也跑不起来`, true);
+      setStatus(`浏览器未授予 ${origin} 的访问权限：Zen 不会在该站点常驻`, true);
       return false;
     }
     localOriginAccess.set(origin, true);
     if (!state.grantedOrigins.includes(origin)) state.grantedOrigins = [...state.grantedOrigins, origin];
-    setStatus(`${origin} 已授权，点「保存」后自动化即可在该站点唤醒工作页`);
+    setStatus(`${origin} 已授权，点「保存」后 Zen 即可在该站点常驻`);
     return true;
   }
 
@@ -1182,7 +1181,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         'p',
         'za-cc-hint',
         'Zen 默认不进入任何页面：点图标或用右键唤起时才把执行器放进当前页，离开该页即失效。' +
-          '授权某个站点后，Zen 才可以在该站点常驻——周期自动化据此在你没有操作时也能唤醒工作页。' +
+          '授权某个站点后，Zen 才可以在该站点常驻，不必每次先点图标唤起。' +
           '授权只决定 Zen 在这些站点上是否出现，不改变任何操作的风险档位与确认要求。' +
           '被加进「不辅助的站点」名单的站点即使授权过也不会注入。',
       ),

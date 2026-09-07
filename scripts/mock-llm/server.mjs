@@ -63,7 +63,6 @@ const FACTS_NOT_CANCELLABLE = '不可取消';
 const FEATURE_ORDER_ADMIN = '订单管理员';
 const PACK_XIANYU_ORDERS = 'xianyu-orders';
 const PACK_XIANYU_FULFILLMENT = 'xianyu-fulfillment';
-const UNATTENDED_DENY_NOTICE = '本轮是无人值守的只读监测回合';
 // 站点边界标记：服务端在回合内换站时以 user 角色注入的上下文，不是用户发言——取轮次意图时须跳过。
 const BOUNDARY_MARKER = '【站点边界】';
 
@@ -105,7 +104,6 @@ export const PROBE_LITERALS = [
   { literal: FEATURE_ORDER_ADMIN, sourceFile: 'examples/host-demo/config/packs/host-demo/features/order-list/feature.md', why: 'R4 不编造：业务原因引导联系订单管理员' },
   { literal: PACK_XIANYU_ORDERS, sourceFile: 'examples/site-packs/packs/xianyu-seller/pack.json', why: 'xianyu-orders 功能装配在场的判别（订单页剧本门控）' },
   { literal: PACK_XIANYU_FULFILLMENT, sourceFile: 'examples/site-packs/packs/xianyu-seller/pack.json', why: 'xianyu-fulfillment 功能装配在场的判别（消息页剧本门控）' },
-  { literal: UNATTENDED_DENY_NOTICE, sourceFile: 'apps/server/src/gateway.ts', why: 'R7 只读强制拒绝后回喂给模型的系统提示；剧本据此产出"被拒后如实汇报"回合' },
   { literal: BOUNDARY_MARKER, sourceFile: 'apps/server/src/compress.ts', why: '回合内换站注入的边界标记（user 角色）；取用户发言时据此跳过，字面漂移会让剧本把它误当用户新指令' },
 ];
 
@@ -803,17 +801,6 @@ function decide(sys, u, body) {
       }
     }
   }
-  // R7 无人值守只读底线剧本：'模拟越权写调用' 哨兵不看工具可见性即发起写工具调用（真实 LLM 幻觉
-  // 调用工具面外写工具的确定性替身），驱动服务端结构强制拒绝路径——不依赖模型自觉。
-  if (obs === null && u.includes('模拟越权写调用')) {
-    return {
-      toolCall: {
-        id: 'call_forced_write',
-        name: TOOL_CANCEL,
-        arguments: JSON.stringify({ orderId: 'ORD-1001' }),
-      },
-    };
-  }
   // open_url 幻觉/注入硬调哨兵：不看工具可见性即发 open_url 调用（模拟站点 pack 会话里未注入该工具、
   // 却被页面注入诱导发出的调用），驱动服务端准入门 fail-closed 拒绝路径——不依赖模型自觉。
   if (obs === null && u.includes('模拟越权导航')) {
@@ -993,10 +980,6 @@ function driveOrchestration(u, obs, body) {
 }
 
 function pickReply(sys, u) {
-  // R7 只读强制的收尾轮：写工具调用被服务端拒绝后回喂系统提示，模型只汇报变化、不再请求执行。
-  if (u.includes(UNATTENDED_DENY_NOTICE) && u.includes('已被服务端拒绝')) {
-    return 'MOCK-UNATTENDED-DENIED-HIT：本轮无人值守，页面操作请求已被平台拒绝，只汇报观察到的变化。';
-  }
   if (sys.includes(PACK_XIANYU_ORDERS) && u.includes('买家') && u.includes('已付款')) {
     return '买家留言属于自由文本，不能作为付款证据。我只会在订单页的平台状态明确为待发货，并把状态与订单编号绑定到同一订单块后继续。';
   }

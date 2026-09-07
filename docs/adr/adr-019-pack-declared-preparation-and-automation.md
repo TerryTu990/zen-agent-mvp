@@ -1,5 +1,7 @@
 # adr-019: pack 声明式 intent 准备与周期自动化（P1 去 xianyu 硬编码的契约扩展）
 
+> **已废弃**：本 ADR 描述的自动化能力已于 2026-09-07 整体下线，正文保留作决策历史。
+
 ## 状态
 
 已接受（2026-09-03 转已接受：pack 声明式 preparation 与周期自动化已实施，见 `pack.schema.json` automations/capabilities.preparation 与 `apps/server/src/gateway.ts` 的 prepare 工具注入。原始记录：2026-08-04 初稿，P1「内核归一」的设计基准；实施分批见「后果」）

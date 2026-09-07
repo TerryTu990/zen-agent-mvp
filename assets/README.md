@@ -6,7 +6,7 @@
 
 ## 当前快照事实（2026-09-03）
 
-- registry（`manifest.json` 2.0.0）**只登记 `generic-web`** 一个 pack；它以 `generic: true` 声明为兜底包，
+- registry（`manifest.json` 2.3.0）**只登记 `generic-web`** 一个 pack；它以 `generic: true` 声明为兜底包，
   不参与 origin/location 匹配——无站点 pack 命中且页面有 http(s) origin 时**无条件激活**（无部署级准入名单），
   激活时以活跃页 origin 运行时绑定。用户可用 L2 站点黑名单（`siteDenylist`）按站点关停，终判在服务端 compose。
 - 站点包 `xianyu-seller` / `yinxiang` 已于 2026-09-03 下线到 `examples/site-packs/`，不在生产快照内；

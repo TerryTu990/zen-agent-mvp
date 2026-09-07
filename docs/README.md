@@ -41,13 +41,13 @@
 | [adr-015](adr/adr-015-chrome-side-panel.md) | D15 Chrome Side Panel 承载持久对话，页面只承担观察与执行 |
 | [adr-016](adr/adr-016-bounded-fulfillment-authorization.md) | D16 确定性履约采用服务端有界自动授权（经 adr-026 退役） |
 | [adr-017](adr/adr-017-feishu-card-inventory.md) | D17 飞书多维表作为轻量卡密库存账本（经 adr-026 退役） |
-| [adr-018](adr/adr-018-xianyu-periodic-fulfillment-trigger.md) | D18 周期履约触发与零参数可信准备（准备器经 adr-026 退役） |
-| [adr-019](adr/adr-019-pack-declared-preparation-and-automation.md) | D19 pack 声明式 intent 准备与周期自动化（核心去站点硬编码；preparation 面经 adr-026 退役） |
+| [adr-018](adr/adr-018-xianyu-periodic-fulfillment-trigger.md) | D18 周期履约触发与零参数可信准备（**已废弃**：准备器经 adr-026 退役、周期触发 2026-09-07 随自动化整体下线） |
+| [adr-019](adr/adr-019-pack-declared-preparation-and-automation.md) | D19 pack 声明式 intent 准备与周期自动化（**已废弃**：preparation 面经 adr-026 退役、自动化面 2026-09-07 整体下线） |
 | [adr-020](adr/adr-020-pack-contract-v2-registry-and-storage.md) | D20 pack 契约 v2、registry 与存储分发：三来源、capabilities/configSchema、多租户共享内容模型 |
-| [adr-021](adr/adr-021-user-defined-automation-triggers.md) | D21 用户自建自动化触发器：平台模板闭集 + 参数层 watches + 自动回合只读强制 |
+| [adr-021](adr/adr-021-user-defined-automation-triggers.md) | D21 用户自建自动化触发器：平台模板闭集 + 参数层 watches + 自动回合只读强制（**已废弃**：自动化能力 2026-09-07 整体下线） |
 | [adr-022](adr/adr-022-anonymous-auto-login.md) | D22 匿名自动登录：安装 id → 短期 JWT，Google 账号登录为正式投产前置条件 |
 | [adr-023](adr/adr-023-task-group-multi-tab-workspace.md) | D23 任务组多 tab 工作区：组级视野与定向操作（不透明页面句柄、按目标页校验围栏） |
-| [adr-024](adr/adr-024-unattended-closure-and-approval-revalidation.md) | D24 无人值守回合的服务端收口、批准的恢复期复核与授权作用域指纹 |
+| [adr-024](adr/adr-024-unattended-closure-and-approval-revalidation.md) | D24 无人值守回合的服务端收口、批准的恢复期复核与授权作用域指纹（D1 随自动化下线**已废弃**，D2-D4 有效） |
 | [adr-025](adr/adr-025-general-purpose-base-prompt.md) | D25 基座通用化——从「配置未覆盖即拒答」到「事实边界 + 通用助手」 |
 | [adr-026](adr/adr-026-retire-vertical-fulfillment-from-core.md) | D26 垂直履约退出核心契约：C6 回五端口、C1 删 authorization/preparation、两包退役，垂直能力只在 pack tools.json adapter 声明 |
 | [adr-027](adr/adr-027-on-demand-injection-dual-track.md) | D27 按需注入双轨模型：删 `<all_urls>` 常驻注入，轨一手势/定向帧一次性注入 + 轨二已授权 origin 动态注册（不变量 IN，注入面 = 授权集 − 站点黑名单） |

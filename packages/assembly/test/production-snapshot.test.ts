@@ -12,7 +12,7 @@ describe('生产快照（仅通用包）', () => {
   it('registry 只登记 generic-web：任意 http 页面解析为兜底包，站点索引为空', async () => {
     const resolved = await port.resolveFeature({ url: 'https://example.com/orders' });
     expect(resolved).toMatchObject({
-      snapshotVersion: '2.2.0',
+      snapshotVersion: '2.3.0',
       packId: 'generic-web',
       featureId: 'browse',
       generic: true,
