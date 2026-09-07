@@ -17,11 +17,6 @@ export type ClientCapability =
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export type HitlDecisionValue = 'approve' | 'reject';
-export type ExecutionPreference =
-  | 'auto'
-  | 'dom-only'
-  | 'prefer-client-api'
-  | 'prefer-server-api';
 export type ToolCardStatus = 'running' | 'succeeded' | 'failed';
 export type GuideActionKind = 'highlight' | 'scroll-to';
 
@@ -39,7 +34,6 @@ export interface UserMessageFrame {
   sessionId: string;
   text: string;
   messageId?: string;
-  executionPreference?: ExecutionPreference;
   /** 本轮由快捷提问发起：模板在服务端查表展开，客户端只发 id（不持模板副本、不做插值）。 */
   quickActionId?: string;
   /** 随快捷提问带上的页面选区正文（填模板的 {{selection}}）；仅在带 quickActionId 时有意义。 */

@@ -103,7 +103,6 @@ async function openSessionByMessage(panel: { emit(message: unknown): void }): Pr
     kind: 'user-message',
     messageId: 'm-open-session',
     text: '你好',
-    executionPreference: 'auto',
   });
   await settle();
 }
@@ -284,7 +283,6 @@ describe('快捷提问的上行帧', () => {
       kind: 'user-message',
       messageId: 'm-quickaction-1',
       text: '解释选中内容',
-      executionPreference: 'auto',
       quickActionId: 'explain-selection',
       selectionText: '这段话',
     });

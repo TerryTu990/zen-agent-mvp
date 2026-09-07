@@ -82,7 +82,7 @@ describe('停止手势的送达面', () => {
     const scene = await twoMemberGroup();
     scene.panel.emit({ kind: 'stop-operation' });
     await settle(20);
-    scene.panel.emit({ kind: 'user-message', messageId: 'm-1', text: '继续', executionPreference: 'auto' });
+    scene.panel.emit({ kind: 'user-message', messageId: 'm-1', text: '继续' });
     await settle(20);
     scene.h.pushDownstream(await scene.h.signExec(directedDomBatch()));
     await settle(20);

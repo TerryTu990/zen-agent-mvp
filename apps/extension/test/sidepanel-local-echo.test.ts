@@ -17,7 +17,7 @@ const userBubbles = (elements: SidePanelElements): string[] =>
   [...elements.messages.querySelectorAll('.za-msg[data-role="user"] .za-bub')].map((node) => node.textContent ?? '');
 
 /** 以最小 chrome 桩驱动真实面板：绑定任务组 → 建端口 → 收 panel-ready，落到可提交状态。 */
-async function startPanel(localStorageItems: Record<string, unknown> = {}): Promise<PanelHarness> {
+async function startPanel(): Promise<PanelHarness> {
   const sent: SidePanelToBackgroundMessage[] = [];
   const listeners: ((raw: unknown) => void)[] = [];
   const noopEvent = { addListener: () => undefined };
@@ -37,7 +37,7 @@ async function startPanel(localStorageItems: Record<string, unknown> = {}): Prom
       onUpdated: noopEvent,
     },
     storage: {
-      local: { get: async () => localStorageItems, set: async () => undefined },
+      local: { get: async () => ({}), set: async () => undefined },
       session: { get: async () => ({ 'za.panelGroup.1': 7 }) },
       onChanged: noopEvent,
     },
@@ -104,26 +104,6 @@ describe('Side Panel 本地即时回显', () => {
     expect(userBubbles(elements)).toEqual([]);
     expect(elements.input.value).toBe('改地址');
     expect(elements.messages.querySelector('.za-thinking')).toBeNull();
-  });
-
-  it('执行偏好从本机设置读取并随消息发出，未配置即 auto', async () => {
-    const { elements, sent } = await startPanel();
-    elements.input.value = '查订单';
-    elements.input.dispatchEvent(new Event('input'));
-    elements.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-    await flush();
-    const message = sent.find((item) => item.kind === 'user-message');
-    expect(message?.kind === 'user-message' && message.executionPreference).toBe('auto');
-
-    // 同一 document 内两个 #za-input 会让 jsdom 的 id 选择器命中前者；换页前先清空。
-    document.body.textContent = '';
-    const configured = await startPanel({ 'za.executionPreference': 'dom-only' });
-    configured.elements.input.value = '查订单';
-    configured.elements.input.dispatchEvent(new Event('input'));
-    configured.elements.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-    await flush();
-    const configuredMessage = configured.sent.find((item) => item.kind === 'user-message');
-    expect(configuredMessage?.kind === 'user-message' && configuredMessage.executionPreference).toBe('dom-only');
   });
 
   it('重连重放不含未确认消息时重建气泡，草稿不凭空消失', async () => {

@@ -796,7 +796,6 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           sessionId,
           text: message.text,
           ...('messageId' in message ? { messageId: message.messageId } : {}),
-          executionPreference: message.executionPreference,
           ...(message.quickActionId !== undefined ? { quickActionId: message.quickActionId } : {}),
           ...(message.selectionText !== undefined ? { selectionText: message.selectionText } : {}),
         };

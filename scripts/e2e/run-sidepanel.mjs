@@ -247,7 +247,6 @@ async function main() {
     assert(!(await panel.getByRole('button', { name: '上传知识文档' }).isDisabled()), '迟到任务组未自动绑定');
     await panel.evaluate(({ key }) => chrome.storage.session.set({ [key]: 322 }), { key: panelKey });
     await panel.locator('[data-za-shell][data-group-id="322"]').waitFor();
-    await panel.evaluate(() => chrome.storage.local.set({ 'za.executionPreference': 'dom-only' }));
     await panel.getByLabel('给 Zen 发送消息').fill('中文输入中');
     await panel.getByLabel('给 Zen 发送消息').dispatchEvent('keydown', { key: 'Enter', isComposing: true });
     assert((await panel.getByLabel('给 Zen 发送消息').inputValue()) === '中文输入中', '输入法候选确认不应发送消息');

@@ -104,7 +104,7 @@ async function attachTargetPage(scene: Scene): Promise<void> {
 async function groupWithoutPages(): Promise<Scene> {
   const h = await loadBackground({ tabs: [], storageSession: { ...mappedGroup } });
   const panel = h.connectPanel(GROUP_ID);
-  panel.emit({ kind: 'user-message', messageId: 'm-open', text: '打开收据页', executionPreference: 'auto' });
+  panel.emit({ kind: 'user-message', messageId: 'm-open', text: '打开收据页' });
   await settle(20);
   return { h, panel, pages: [], effects: () => effectsOf(h, []) };
 }
@@ -115,7 +115,7 @@ async function stopOperation(scene: Scene): Promise<void> {
 }
 
 async function beginNewTurn(scene: Scene): Promise<void> {
-  scene.panel.emit({ kind: 'user-message', messageId: `m-${Math.random().toString(36).slice(2)}`, text: '继续', executionPreference: 'auto' });
+  scene.panel.emit({ kind: 'user-message', messageId: `m-${Math.random().toString(36).slice(2)}`, text: '继续' });
   await settle(20);
 }
 

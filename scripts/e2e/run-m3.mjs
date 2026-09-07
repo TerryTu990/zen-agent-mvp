@@ -234,20 +234,7 @@ async function runScenarios(hostPage, panelPage, counts) {
   const groupSummary = await cancelGroup.locator('.za-toolgroup-summary').innerText();
   assert(groupSummary.includes('1 步已完成'), `d1 happy：收起态组头应报出已完成计数，实际 "${groupSummary}"`);
   console.log('  [pass] d1 HITL happy：确认 → 签名指令 → 页面 fetch /cancel → 结果回喂 → 成功总结');
-
-  await panelPage.evaluate(() => chrome.storage.local.set({ 'za.executionPreference': 'dom-only' }));
-  await panelPage.reload();
-  await panelPage.locator('#za-input:not([disabled])').waitFor({ state: 'visible', timeout: 10000 });
-  await waitFor(async () => (await panelPage.evaluate(() => chrome.storage.local.get('za.executionPreference')))['za.executionPreference'] === 'dom-only', {
-    label: '执行偏好持久化', timeoutMs: 5000,
-  });
-  await sendMessage(panelPage, '再次刷新订单列表');
-  await waitFor(async () => (await panelText(panelPage)).includes('当前执行偏好下没有可用的刷新工具'), {
-    label: 'DOM-only 拦截客户端 API', timeoutMs: 15000,
-  });
-  assert(counts.refresh === 1, `DOM-only 下客户端 API 不应再次调用，实际 ${counts.refresh}`);
   assert((await hostPage.locator('#za-root').count()) === 0, '宿主页面仍注入旧对话抽屉');
-  console.log('  [pass] 执行偏好：持久化、服务端工具面收窄、不可用通道暂停且未静默降级');
 }
 
 async function main() {

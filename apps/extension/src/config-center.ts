@@ -7,7 +7,6 @@
  * 服务端契约类型在此手抄镜像——插件不依赖 @zen-agent/*（U5）。
  */
 
-import { EXECUTION_PREFERENCE_OPTIONS } from './execution-preference.js';
 import {
   MAX_QUICK_ACTIONS_PER_SCOPE,
   QUICK_ACTION_LABEL_MAX,
@@ -15,7 +14,6 @@ import {
   QUICK_ACTION_TEMPLATE_MAX,
   type QuickActionContext,
 } from './quick-actions.js';
-import type { ExecutionPreference } from './frames.js';
 import { isSiteDenyEntry, MAX_SITE_DENYLIST_ENTRIES, siteDeniesUrl } from './site-denylist.js';
 import { isGrantedOriginEntry, MAX_GRANTED_ORIGINS } from './injection.js';
 
@@ -121,9 +119,7 @@ export interface ConfigCenterDeps {
   authToken: string;
   /** 全局设置页回显的用户自配服务端地址；空串 = 用构建缺省。 */
   serverBaseUrl: string;
-  /** 全局设置页回显的本机执行偏好（chrome.storage.local）。 */
-  executionPreference: ExecutionPreference;
-  saveSettings(patch: { serverBaseUrl?: string; executionPreference?: ExecutionPreference }): Promise<void>;
+  saveSettings(patch: { serverBaseUrl?: string }): Promise<void>;
   /**
    * 服务端地址信任归一（宿主注入 normalizeTrustedServerBaseUrl）：返回 null 即不受信。
    * 缺省 = 不切换本页请求基址（仅落盘，下次开页由宿主归一）——令牌绝不发往未归一地址。
@@ -433,7 +429,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
   // 基址在保存后就地更新：换地址后本页后续请求即用新值，无需重开。
   let apiBaseUrl = deps.baseUrl;
   let serverBaseUrl = deps.serverBaseUrl;
-  let executionPreference = deps.executionPreference;
 
   root.classList.add('za-cc');
   root.replaceChildren();
@@ -891,7 +886,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
   // ---- 全局设置页 ----
 
   let baseUrlInput: HTMLInputElement | null = null;
-  let executionPreferenceSelect: HTMLSelectElement | null = null;
   let siteDenySection: HTMLElement | null = null;
   let grantSection: HTMLElement | null = null;
 
@@ -946,25 +940,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     baseUrlField.append(baseUrlLabel, baseUrlInput);
     connection.append(identityField(), baseUrlField);
 
-    const execution = section('执行');
-    const executionLabel = el('label', 'za-cc-label', '执行偏好');
-    executionLabel.htmlFor = 'za-cc-execution-preference';
-    executionPreferenceSelect = el('select', 'za-cc-execution-preference');
-    executionPreferenceSelect.id = 'za-cc-execution-preference';
-    for (const option of EXECUTION_PREFERENCE_OPTIONS) {
-      const node = el('option', undefined, option.label);
-      node.value = option.value;
-      node.selected = option.value === executionPreference;
-      executionPreferenceSelect.append(node);
-    }
-    execution.append(
-      settingRow(
-        executionLabel,
-        '本机设置：Zen 代执行时优先走页面操作还是 API，只影响本浏览器发出的任务。',
-        executionPreferenceSelect,
-      ),
-    );
-
     const preferences = section('偏好');
     const verbosityLabel = el('label', 'za-cc-label', '回答详略');
     verbosityLabel.htmlFor = 'za-cc-verbosity';
@@ -1010,10 +985,10 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
 
     siteDenySection = buildSiteDenySection();
     grantSection = buildGrantSection();
-    panel.append(connection, execution, preferences, grantSection, siteDenySection, pending, locked);
+    panel.append(connection, preferences, grantSection, siteDenySection, pending, locked);
   }
 
-  /** 名单增删只换本节点：全局设置页的地址与执行偏好是未提交的输入值，整页重渲会把它们抹掉。 */
+  /** 名单增删只换本节点：全局设置页的地址是未提交的输入值，整页重渲会把它抹掉。 */
   function refreshSiteDenySection(): void {
     const next = buildSiteDenySection();
     siteDenySection?.replaceWith(next);
@@ -1344,11 +1319,11 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
   }
 
   /**
-   * 本机设置持久化（服务端地址、执行偏好）：与 L2 提交解耦——服务端不可达时用户仍须能改地址。
+   * 本机设置持久化（服务端地址）：与 L2 提交解耦——服务端不可达时用户仍须能改地址。
    * 写入成功后同步刷新本实例持有的基址，后续请求即用新值。
    */
   async function persistLocalSettings(): Promise<boolean> {
-    const patch: { serverBaseUrl?: string; executionPreference?: ExecutionPreference } = {};
+    const patch: { serverBaseUrl?: string } = {};
     const baseUrl = baseUrlInput?.value.trim() ?? '';
     // 地址信任归一是采用该地址的前置条件：未归一地址一律不落盘、更不切换本页基址——
     // 否则本页会立刻把令牌发往该地址（server-url 的 TLS/loopback 硬门不得被绕过）。
@@ -1359,14 +1334,11 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       if (trustedBaseUrl === null) untrustedBaseUrl = true;
       else patch.serverBaseUrl = baseUrl;
     }
-    const selectedPreference = (executionPreferenceSelect?.value ?? executionPreference) as ExecutionPreference;
-    if (selectedPreference !== executionPreference) patch.executionPreference = selectedPreference;
     if (Object.keys(patch).length === 0) {
       if (untrustedBaseUrl) throw new UntrustedBaseUrlError();
       return false;
     }
     await deps.saveSettings(patch);
-    if (patch.executionPreference !== undefined) executionPreference = patch.executionPreference;
     if (patch.serverBaseUrl !== undefined) {
       serverBaseUrl = patch.serverBaseUrl;
       if (trustedBaseUrl !== null && trustedBaseUrl !== '') {
