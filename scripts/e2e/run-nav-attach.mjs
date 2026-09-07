@@ -15,7 +15,10 @@
  *     组内只有一个 B 页（tab 数不变）；
  *  ④ 两次定向快照回喂分别含「最多重试一次」与「不要再重试」，且服务端从未向浏览器广播 snapshot-request 帧；
  *  ⑤ 批准点击内 chrome.permissions.request 恰调用一次、实参 origins=["<all_urls>"]（夹具桩化，立即 resolve(false)）；
- *  ⑥ 面板最终文案含「点击 Zen 图标」指引、无 MOCK- 哨兵。
+ *  ⑥ 面板最终文案含「点击 Zen 图标」指引、无 MOCK- 哨兵；
+ *  ⑦ 面板的未接入信号区恰有 B 一行、原因为「尚未取得该站点的访问权限」，点「让 Zen 接入这一页」
+ *     在手势内发出 origins=["http://localhost/*"] 的权限询问并触发一次真实补注入——权限仍未授予，
+ *     故补注入必然失败，面板如实呈现「仍未接入」且 B 上依旧没有 content。
  *
  * 运行：node scripts/e2e/run-nav-attach.mjs（ZA_E2E_SKIP_BUILD=1 复用既有构建产物）
  */
@@ -62,6 +65,8 @@ const SITE_B_ORIGIN = `http://localhost:${HOST_B_PORT}`;
 const SITE_A_URL = `${SITE_A_ORIGIN}/landing.html`;
 const SITE_B_URL = `${SITE_B_ORIGIN}/article.html`;
 const GRANTED_HOST_PERMISSIONS = ['http://127.0.0.1/*'];
+const SITE_B_PERMISSION_PATTERN = 'http://localhost/*';
+const ATTACH_REASON_PERMISSION = '尚未取得该站点的访问权限';
 const TASK = '先打开 A 站再打开 B 站并读取 B 的内容';
 const PLAN = ['打开 A 站', '打开 B 站', '读取 B 页正文并总结'];
 const FINAL_REPLY = 'B 页已打开但尚未接入：请在该页点击 Zen 图标授权本站后告诉我，我再继续读取。';
@@ -523,7 +528,7 @@ async function main() {
     );
     await panel.screenshot({ path: join(EVIDENCE_DIR, 'panel-final.png'), fullPage: true });
 
-    console.log('[6/7] 断言：回喂接入语义、B silent 无 content、止损 deny、定向快照拒绝口径、无 snapshot-request 帧…');
+    console.log('[6/7] 断言：回喂接入语义、B silent 无 content、面板未接入原因与手动补接入、止损 deny、定向快照拒绝口径、无 snapshot-request 帧…');
     const stepObs = (step) => mock.requests.find((request) => request.step === step)?.obs ?? null;
     const obsA = stepObs(1);
     assert(obsA !== null && obsA.includes('"attached":true') && obsA.includes('页面已接入'), `① A 的回喂未标记已接入：${obsA}`);
@@ -559,6 +564,62 @@ async function main() {
       JSON.stringify(permissionRequests[0]) === JSON.stringify({ origins: ['<all_urls>'] }),
       `⑤ permissions.request 实参应为 {origins:["<all_urls>"]}，实际 ${JSON.stringify(permissionRequests[0])}`,
     );
+
+    const pageRows = panel.locator('[data-za-pages] [data-za-page-row]');
+    await waitFor(
+      async () => {
+        const rows = await pageRows.allInnerTexts();
+        if (rows.length !== 1) return `未接入信号区有 ${rows.length} 行：${JSON.stringify(rows)}`;
+        return rows[0].includes(ATTACH_REASON_PERMISSION) ? true : rows[0];
+      },
+      `⑦ 面板未接入信号区恰有 B 一行且原因为「${ATTACH_REASON_PERMISSION}」`,
+      30_000,
+    );
+    const rowUrl = await pageRows.first().locator('.za-page-name').getAttribute('title');
+    assert(
+      typeof rowUrl === 'string' && rowUrl.startsWith(SITE_B_ORIGIN),
+      `⑦ 未接入行指向的应是 B 页，实际 ${rowUrl}`,
+    );
+    await panel.screenshot({ path: join(EVIDENCE_DIR, 'panel-unattached-page.png'), fullPage: true });
+    // 手动补接入：按钮点击即用户手势，缺权限时先在手势内问该站点权限，再走一次真实注入重试。
+    const injectedBeforeRetry = tabsB[0].reachable;
+    assert(injectedBeforeRetry === false, '⑦ 重试前 B 就应是未接入态，前置不成立');
+    await pageRows.first().locator('[data-za-page-attach]').click();
+    await waitFor(
+      async () => {
+        const requests = await readPermissionRequests(panel);
+        return requests.length === 2 ? true : `permissions.request 仍为 ${requests.length} 次`;
+      },
+      '⑦ 补接入按钮在手势内发出站点权限询问',
+      10_000,
+    );
+    const retryRequests = await readPermissionRequests(panel);
+    assert(
+      JSON.stringify(retryRequests[1]) === JSON.stringify({ origins: [SITE_B_PERMISSION_PATTERN] }),
+      `⑦ 补接入的权限询问实参应为 {origins:["${SITE_B_PERMISSION_PATTERN}"]}，实际 ${JSON.stringify(retryRequests[1])}`,
+    );
+    await waitFor(
+      async () => {
+        const notice = await panel.locator('[data-za-composer-notice]').innerText();
+        return notice.includes('仍未接入') ? true : notice;
+      },
+      '⑦ 权限仍未授予时面板如实呈现补接入失败',
+      15_000,
+    );
+    const reachableAfterRetry = await sw.evaluate(async (groupId) => {
+      const tabs = await chrome.tabs.query({ groupId });
+      for (const tab of tabs) {
+        if (!(tab.url ?? '').startsWith('http://localhost:')) continue;
+        try {
+          await chrome.tabs.sendMessage(tab.id, { kind: 'refresh-context' });
+          return true;
+        } catch {
+          return false;
+        }
+      }
+      return null;
+    }, group.groupId);
+    assert(reachableAfterRetry === false, `⑦ 未授权的 B 页不应因一次重试就接上：${reachableAfterRetry}`);
 
     const events = auditEvents(auditPath);
     const decisions = events.filter((event) => event.type === 'tool-decision').map((event) => event.data);
@@ -608,6 +669,7 @@ async function main() {
           hitlCards: hitlSeen,
           permissionRequests,
           groupPages: manifestRows,
+          attachRetryPermissionRequest: retryRequests[1],
           mockSteps: mock.requests.map((request) => request.step),
         },
         null,

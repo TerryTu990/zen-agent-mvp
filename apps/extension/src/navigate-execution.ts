@@ -27,6 +27,12 @@ export interface NavigateExecutorDeps {
   markMemberActive(tabId: number): void;
   /** 登记待激活 tabId：该页端口接入时被接管为活跃执行页。 */
   noteExpectedActiveTab(tabId: number): void;
+  /**
+   * 把该标签页的面板置为启用。Chrome 一旦切到面板禁用的标签页即关闭侧边栏，
+   * 且切回启用页也不会自动重开（重开只能在用户手势内调打开接口）——故落点被设为活跃**之前**
+   * 必须先启用，否则 agent 每开一页都会把用户的面板关掉。
+   */
+  attachPanelToTab(tabId: number): Promise<void>;
   sendActivate(tabId: number): Promise<void>;
   /** exec-result 回喂上行管线（与 content 侧代执行结果同一通道）。 */
   forwardExecResult(result: ExecResultFrame): void;
@@ -53,6 +59,7 @@ export function createNavigateExecutor(deps: NavigateExecutorDeps): NavigateExec
       const groupTabs = await deps.tabs.query({ groupId: deps.groupId }).catch(() => []);
       const target = decideNavigateTarget(url, groupTabs, initiatorTabId);
       if (target.kind !== 'create') {
+        await deps.attachPanelToTab(target.tabId);
         await deps.tabs.update(
           target.tabId,
           target.kind === 'update' ? { url, active: true } : { active: true },
@@ -62,7 +69,8 @@ export function createNavigateExecutor(deps: NavigateExecutorDeps): NavigateExec
         void deps.sendActivate(target.tabId);
         return { ok: true, url };
       }
-      // 先入组再激活：active:true 的瞬间新页尚未入组，onActivated/面板会按组外把面板关掉（竞态）。
+      // 先入组、再启用面板、最后才设为活跃：入组事件与面板启用都异步，
+      // active:true 抢在它们之前会让 Chrome 按组外/禁用把面板关掉（关掉后不再自动重开）。
       const created = await deps.tabs.create({
         url,
         ...(windowId !== undefined ? { windowId } : {}),
@@ -70,6 +78,7 @@ export function createNavigateExecutor(deps: NavigateExecutorDeps): NavigateExec
       });
       if (created.id !== undefined) {
         await deps.tabs.group({ tabIds: created.id, groupId: deps.groupId });
+        await deps.attachPanelToTab(created.id);
         await deps.tabs.update(created.id, { active: true });
         deps.noteExpectedActiveTab(created.id);
         // 主动通知新页激活（content 已加载时即接入）；未加载时其自身 request-activate 走 reconnect 兜底。

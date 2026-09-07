@@ -174,3 +174,12 @@ button { cursor: pointer; }
 .za-toolcard-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .za-toolcard-detail { color: var(--ink-soft); font-size: 10px; line-height: 1.45; word-break: break-word; }
 .za-toolcard:has(.za-toolcard-detail) { align-items: flex-start; }
+
+/* 未接入页面的信号区：composer 上方；本组每一页都接上时容器 hidden 不占位。 */
+.za-pages { display: flex; flex-direction: column; gap: 6px; padding: 0 8px 8px; }
+.za-pages-title { margin: 0; color: var(--ink-soft); font-size: 10px; line-height: 1.5; }
+.za-page-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, .78); }
+.za-page-name { min-width: 0; flex: 1 1 100%; overflow: hidden; color: var(--ink); font-size: 11px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.za-page-reason { min-width: 0; flex: 1 1 auto; color: var(--warning); font-size: 10px; line-height: 1.45; }
+.za-page-attach { flex: 0 0 auto; padding: 3px 9px; border: 1px solid var(--agent); border-radius: 999px; background: var(--agent-soft); color: var(--agent-deep); font-size: 10px; line-height: 1.5; white-space: nowrap; }
+.za-page-attach:hover { background: white; }

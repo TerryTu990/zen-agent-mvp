@@ -22,6 +22,11 @@ export interface FakeTab {
   title?: string;
   groupId: number;
   windowId: number;
+  /** 缺省视为活动页：多数用例组内只有一页，不必逐个标注。 */
+  active?: boolean;
+  /** 'loading' | 'complete'；缺省视为已加载完成。 */
+  status?: string;
+  openerTabId?: number;
   /** 导航已发起但尚未提交：真实 Chrome 此刻 url 为空串，目标地址只在 pendingUrl 上。 */
   pendingUrl?: string;
 }
@@ -66,6 +71,8 @@ export interface Harness {
   activated: number[];
   /** 被 chrome.scripting.executeScript 注入 content 脚本的 tabId，按发生序（重复注入重复记）。 */
   injected: number[];
+  /** chrome.sidePanel.setOptions 的入参，按发生序（面板启用时序按此断言）。 */
+  panelOptions: Array<{ tabId?: number; enabled?: boolean }>;
   /** 当前动态注册着的 content script 项（轨二）。 */
   registrations: Array<{ id: string; matches?: string[]; js?: string[] }>;
   requests: ServedRequest[];
@@ -73,6 +80,10 @@ export interface Harness {
   emitIconClick(tab: FakeTab): void;
   emitTabUpdated(tabId: number, changeInfo: Record<string, unknown>, tab: FakeTab): void;
   emitAlarm(name: string): void;
+  /** 探针专用：模拟新标签页被创建（代执行开页 / target=_blank）。 */
+  emitTabCreated(tab: FakeTab): void;
+  /** 探针专用：模拟用户在扩展设置里追加了站点访问权限。 */
+  emitPermissionsAdded(origins: string[]): void;
   /** 探针专用：模拟 chrome.storage.local.set 引发的 onChanged 广播。 */
   emitStorageChanged(changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName?: string): void;
   /** 探针专用：模拟任意 tab 被关闭（含不在任务组内的 tab）。 */
@@ -192,6 +203,7 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
   for (const tab of options.tabs ?? []) tabs.set(tab.id, { ...tab });
   const activated: number[] = [];
   const injected: number[] = [];
+  const panelOptions: Array<{ tabId?: number; enabled?: boolean }> = [];
   const registrations: Array<{ id: string; matches?: string[]; js?: string[] }> = [];
   const grantedOrigins: string[] = [...(options.grantedOrigins ?? [])];
   const injectionDenied = new Set(options.injectionDeniedTabs ?? []);
@@ -208,10 +220,12 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     alarm: Array<(alarm: { name: string }) => void>;
     storageChanged: Array<(changes: unknown, areaName: string) => void>;
     tabRemoved: Array<(tabId: number, info: unknown) => void>;
+    tabCreated: Array<(tab: FakeTab) => void>;
+    permissionsAdded: Array<(descriptor: { origins?: string[] }) => void>;
     contextMenuClick: Array<(info: unknown, tab: FakeTab) => void>;
   } = {
     message: [], iconClick: [], tabUpdated: [], connect: [], alarm: [],
-    storageChanged: [], tabRemoved: [], contextMenuClick: [],
+    storageChanged: [], tabRemoved: [], tabCreated: [], permissionsAdded: [], contextMenuClick: [],
   };
   const menus: ContextMenuItem[] = [];
 
@@ -298,6 +312,10 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
         }
         return true;
       },
+      onAdded: {
+        addListener: (cb: (descriptor: { origins?: string[] }) => void): void =>
+          void listeners.permissionsAdded.push(cb),
+      },
     },
     alarms: {
       getAll: async (): Promise<unknown[]> => [],
@@ -306,7 +324,9 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
       onAlarm: { addListener: (cb: (alarm: { name: string }) => void): void => void listeners.alarm.push(cb) },
     },
     sidePanel: {
-      setOptions: async (): Promise<void> => {},
+      setOptions: async (options: { tabId?: number; enabled?: boolean }): Promise<void> => {
+        panelOptions.push(options);
+      },
       open: async (): Promise<void> => {},
       close: async (): Promise<void> => {},
     },
@@ -321,9 +341,12 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
         if (tab === undefined) throw new Error('no such tab');
         return tab;
       },
-      async query(queryInfo: { groupId?: number }): Promise<FakeTab[]> {
-        const all = [...tabs.values()];
-        return queryInfo.groupId === undefined ? all : all.filter((tab) => tab.groupId === queryInfo.groupId);
+      async query(queryInfo: { groupId?: number; active?: boolean; windowId?: number }): Promise<FakeTab[]> {
+        return [...tabs.values()].filter((tab) => {
+          if (queryInfo.groupId !== undefined && tab.groupId !== queryInfo.groupId) return false;
+          if (queryInfo.windowId !== undefined && tab.windowId !== queryInfo.windowId) return false;
+          return queryInfo.active === undefined || (tab.active ?? true) === queryInfo.active;
+        });
       },
       async create(props: { url: string; windowId?: number }): Promise<FakeTab> {
         nextTabId += 1;
@@ -360,6 +383,9 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
           void listeners.tabUpdated.push(cb),
       },
       onActivated: { addListener: (): void => {} },
+      onCreated: {
+        addListener: (cb: (tab: FakeTab) => void): void => void listeners.tabCreated.push(cb),
+      },
       onRemoved: {
         addListener: (cb: (tabId: number, info: unknown) => void): void => void listeners.tabRemoved.push(cb),
       },
@@ -432,6 +458,7 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     tabs,
     activated,
     injected,
+    panelOptions,
     registrations,
     requests,
     emitMessage(message, tab) {
@@ -446,6 +473,14 @@ export async function loadBackground(options: LoadOptions = {}): Promise<Harness
     },
     emitAlarm(name) {
       for (const cb of listeners.alarm) cb({ name });
+    },
+    emitTabCreated(tab) {
+      tabs.set(tab.id, { ...tab });
+      for (const cb of listeners.tabCreated) cb(tabs.get(tab.id)!);
+    },
+    emitPermissionsAdded(origins) {
+      for (const origin of origins) if (!grantedOrigins.includes(origin)) grantedOrigins.push(origin);
+      for (const cb of listeners.permissionsAdded) cb({ origins });
     },
     emitStorageChanged(changes, areaName = 'local') {
       for (const cb of listeners.storageChanged) cb(changes, areaName);

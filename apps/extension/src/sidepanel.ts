@@ -12,9 +12,16 @@ import {
   SIDE_PANEL_PORT_NAME,
   type BackgroundToSidePanelMessage,
   type MessageDeliveryFailure,
+  type PanelPageEntry,
   type SidePanelUiEvent,
   type SidePanelToBackgroundMessage,
 } from './messaging.js';
+import {
+  isAttachRetryable,
+  PAGE_ATTACH_REASON_TEXT,
+  permissionPatternFor,
+  type PageAttachReason,
+} from './page-attach.js';
 import { panelQuickActions, type QuickActionView } from './quick-actions.js';
 import { siteDeniedSkipKey } from './site-denylist.js';
 
@@ -71,6 +78,8 @@ const PANEL_STATE_NOTICES: Record<PanelState, string> = {
 export interface SidePanelElements {
   shell: HTMLElement;
   messages: HTMLElement;
+  /** 未接入页面的信号区；本组每一页都接上时整块 hidden 不占位。 */
+  pages: HTMLElement;
   quickActions: HTMLElement;
   input: HTMLTextAreaElement;
   action: HTMLButtonElement;
@@ -88,6 +97,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
         <div class="za-empty"><strong>把操作交给 Zen</strong><span>对话会留在这里；页面只负责观察与执行。</span></div>
       </section>
       <footer class="za-composer">
+        <div class="za-pages" data-za-pages role="group" aria-label="未接入的页面" hidden></div>
         <div class="za-quick-actions" data-za-quick-actions role="group" aria-label="快捷提问" hidden></div>
         <div class="za-composer-surface" data-za-composer-state="idle">
           <div class="za-attachments" data-za-attachments hidden></div>
@@ -117,6 +127,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
     </section>`;
   const shell = root.querySelector<HTMLElement>('[data-za-shell]');
   const messages = root.querySelector<HTMLElement>('[data-za-messages]');
+  const pages = root.querySelector<HTMLElement>('[data-za-pages]');
   const quickActions = root.querySelector<HTMLElement>('[data-za-quick-actions]');
   const input = root.querySelector<HTMLTextAreaElement>('#za-input');
   const action = root.querySelector<HTMLButtonElement>('[data-za-action]');
@@ -128,6 +139,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
   if (
     shell === null ||
     messages === null ||
+    pages === null ||
     quickActions === null ||
     input === null ||
     action === null ||
@@ -142,6 +154,7 @@ export function mountSidePanel(root: HTMLElement): SidePanelElements {
   return {
     shell,
     messages,
+    pages,
     quickActions,
     input,
     action,
@@ -172,8 +185,14 @@ export function startSidePanel(elements: SidePanelElements): void {
   let pendingMessageId: string | null = null;
   let pendingMessage: PendingUserMessage | null = null;
   let quickActions: QuickActionView[] = [];
+  /**
+   * 是否已收到过一份清单。收到之前不知道本页有哪些问法（右键入口可能先于首份清单到达），
+   * 收到之后清单即权威：不在其中的 id 一律不发（见 sendQuickAction）。
+   */
+  let quickActionsKnown = false;
   /** chips 是否已按本页装配面收窄过一次（会话建立前的首屏只有兜底面）。 */
   let quickActionsScoped = false;
+  let groupPages: PanelPageEntry[] = [];
   let deliveryAwaiting = false;
   let localEcho: LocalEcho | null = null;
   let activeMessageId: string | null = null;
@@ -386,6 +405,60 @@ export function startSidePanel(elements: SidePanelElements): void {
   };
 
   /**
+   * 未接入页面的信号区（adr-027 §4 当初接受的「注入失败对用户零信号」在此收口）：
+   * 只列 silent 行——已接入的页在浏览器标签栏里看得见，重列一遍只是噪声；
+   * 这里要答的是「为什么这一页 Zen 读不了、我能做什么」。
+   * 原因措辞与可重试性都取自 page-attach（本机事实，不是治理判定）。
+   */
+  const renderPages = (): void => {
+    const unattached = groupPages.filter((page) => page.status === 'silent');
+    elements.pages.replaceChildren();
+    elements.pages.hidden = unattached.length === 0;
+    if (unattached.length === 0) return;
+    const heading = document.createElement('p');
+    heading.className = 'za-pages-title';
+    heading.textContent = '以下页面在任务组里，但 Zen 还没接入：';
+    elements.pages.append(heading);
+    for (const page of unattached) {
+      const reason: PageAttachReason = page.reason ?? 'unknown';
+      const row = document.createElement('div');
+      row.className = 'za-page-row';
+      row.dataset['zaPageRow'] = String(page.tabId);
+      const name = document.createElement('span');
+      name.className = 'za-page-name';
+      name.textContent = page.title ?? page.url;
+      name.title = page.url;
+      const why = document.createElement('span');
+      why.className = 'za-page-reason';
+      why.textContent = PAGE_ATTACH_REASON_TEXT[reason];
+      row.append(name, why);
+      if (isAttachRetryable(reason)) {
+        const attach = document.createElement('button');
+        attach.type = 'button';
+        attach.className = 'za-page-attach';
+        attach.dataset['zaPageAttach'] = String(page.tabId);
+        attach.textContent = '让 Zen 接入这一页';
+        attach.addEventListener('click', () => void attachPage(page));
+        row.append(attach);
+      }
+      elements.pages.append(row);
+    }
+  };
+
+  /**
+   * 手动补接入：按钮点击本身就是用户手势——缺站点访问权限时只有在手势内才问得出来，
+   * 问完（无论用户是否授予）再请 background 重试一次注入，成败由它如实回执。
+   */
+  const attachPage = async (page: PanelPageEntry): Promise<void> => {
+    const pattern = page.reason === 'permission' ? permissionPatternFor(page.url) : null;
+    if (pattern !== null) {
+      // 用户关掉授权气泡即视为未授予：仍按一次普通重试继续，成败由 background 如实回执。
+      await chrome.permissions.request({ origins: [pattern] }).catch(() => false);
+    }
+    send({ kind: 'attach-page', tabId: page.tabId });
+  };
+
+  /**
    * 取数与面板状态同判据：本机确实跳过了这一页的激活时连请求都不发——
    * 命中站点黑名单的页不该因为一排 chips 就在服务端建出会话（右键项由 background 一并撤掉）。
    */
@@ -516,7 +589,17 @@ export function startSidePanel(elements: SidePanelElements): void {
       requestQuickActions();
     } else if (message.kind === 'quick-actions') {
       quickActions = message.actions;
+      quickActionsKnown = true;
       renderQuickActions();
+    } else if (message.kind === 'group-page-status') {
+      groupPages = message.pages;
+      renderPages();
+    } else if (message.kind === 'attach-page-result') {
+      setActionNotice(
+        message.ok
+          ? '已接入这一页'
+          : '这一页仍未接入：浏览器拒绝了本次注入，多半是该站点的访问权限仍未取得',
+      );
     } else if (message.kind === 'compose-quick-action') {
       void sendQuickAction(message.actionId, message.label, message.selectionText);
     } else if (message.kind === 'session-failed') {
@@ -661,6 +744,9 @@ export function startSidePanel(elements: SidePanelElements): void {
     applyPanelState('waiting');
     elements.messages.textContent = '';
     ui = createConversationUi(elements.messages);
+    // 上一组的成员页与本组无关：留着既误导用户，其补接入按钮也指向组外的 tab。
+    groupPages = [];
+    renderPages();
     ready = false;
     resetActivity();
     connect();
@@ -670,6 +756,10 @@ export function startSidePanel(elements: SidePanelElements): void {
    * 快捷提问发送（chips 与右键入口共用）：正文由服务端按 quickActionId 展开，
    * 面板只把 label 作本地回声与「服务端查不到时的原文」——查不到那一轮用户看到的就是他点的那句话。
    * 其余状态机（幂等编号 / 本地回声 / 停止 / 投递失败回滚）与普通发送同一套，不另起一条路径。
+   *
+   * 已知本页清单而该 id 不在其中时一律不发：本页展不开的问法按 label 原文送上去，
+   * 用户看到的是自己点的那句话、模型收到的却是一句没有模板支撑的空问，两边都不对。
+   * 尚未收到过任何清单时照发——右键入口可能先于首份清单到达，而它的条目本就派生自同一份清单。
    */
   const sendQuickAction = async (
     actionId: string,
@@ -677,6 +767,10 @@ export function startSidePanel(elements: SidePanelElements): void {
     selectionText?: string,
   ): Promise<void> => {
     if (isBusy()) return;
+    if (quickActionsKnown && !quickActions.some((action) => action.id === actionId)) {
+      setActionNotice('本页没有可用的快捷提问');
+      return;
+    }
     const messageId = crypto.randomUUID();
     pendingMessageId = messageId;
     submitting = true;

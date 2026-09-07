@@ -2,7 +2,8 @@
 /**
  * 面板上的快捷提问 chips（R-5）：清单只来自 background 的合并投影，点击只发 quickActionId。
  * 判据：selection 类不进 chips（面板取不到页面选区）、本机跳过激活的页连取数请求都不发、
- * 点击发出的上行消息里没有模板（客户端不持第二份副本）、首条消息受理后按本页装配面收窄一次。
+ * 点击发出的上行消息里没有模板（客户端不持第二份副本）、首条消息受理后按本页装配面收窄一次、
+ * 以及本页清单里没有的问法一律不按 label 原文下发。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { panelGroupKey } from '../src/activation.js';
@@ -150,6 +151,34 @@ describe('快捷提问 chips', () => {
     deliver({ kind: 'message-result', messageId, accepted: true });
     await flush();
     expect(requests()).toBe(before + 1);
+  });
+
+  it('已知本页清单为空：右键送来的问法不按 label 原文下发，改给一句须知', async () => {
+    const { sent, deliver, elements } = await startPanel();
+    deliver({ kind: 'quick-actions', actions: [] });
+    deliver({
+      kind: 'compose-quick-action',
+      actionId: 'summarize-page',
+      label: '总结本页',
+      selectionText: '',
+    });
+    await flush();
+    expect(sent.find((entry) => entry.kind === 'user-message')).toBeUndefined();
+    expect(elements.composerNotice.textContent).toBe('本页没有可用的快捷提问');
+  });
+
+  it('尚未收到过任何清单：右键入口照发（其条目本就派生自同一份清单）', async () => {
+    const { sent, deliver } = await startPanel();
+    deliver({
+      kind: 'compose-quick-action',
+      actionId: 'explain-selection',
+      label: '解释选中内容',
+      selectionText: '这段话',
+    });
+    await flush();
+    expect(sent.find((entry) => entry.kind === 'user-message')).toMatchObject({
+      quickActionId: 'explain-selection',
+    });
   });
 
   it('本机确实跳过了本页激活：面板不绑组、一条 chip 都不出现（右键项由 background 撤）', async () => {

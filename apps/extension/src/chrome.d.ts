@@ -26,6 +26,10 @@ declare namespace chrome {
       windowId?: number;
       groupId?: number;
       active?: boolean;
+      /** 'loading' | 'complete'：采样当刻页面尚在加载时执行器可能还没进去。 */
+      status?: string;
+      /** 打开本页的那个标签页（target=_blank / 代执行开页）；用户直接新建的页无此字段。 */
+      openerTabId?: number;
       /** 导航已发起但 URL 尚未 commit 时的目标地址。 */
       pendingUrl?: string;
     }
@@ -63,6 +67,10 @@ declare namespace chrome {
     };
     const onActivated: {
       addListener(callback: (activeInfo: { tabId: number; windowId: number }) => void): void;
+    };
+    /** 新标签页创建当刻（尚未入组、尚未成为活动页）：面板启用要赶在它被激活之前。 */
+    const onCreated: {
+      addListener(callback: (tab: Tab) => void): void;
     };
     const onRemoved: {
       addListener(callback: (tabId: number, removeInfo: { windowId: number }) => void): void;
@@ -184,6 +192,10 @@ declare namespace chrome {
     function remove(descriptor: Descriptor): Promise<boolean>;
     function contains(descriptor: Descriptor): Promise<boolean>;
     function getAll(): Promise<{ origins?: string[]; permissions?: string[] }>;
+    /** 用户在扩展设置里追加授权时触发；参数只带本次新增的部分。 */
+    const onAdded: {
+      addListener(callback: (permissions: Descriptor) => void): void;
+    };
   }
 
   namespace alarms {

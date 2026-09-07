@@ -54,6 +54,9 @@ function createHarness(options?: {
     tabs,
     markMemberActive: (tabId) => calls.push({ fn: 'markMemberActive', args: [tabId] }),
     noteExpectedActiveTab: (tabId) => calls.push({ fn: 'noteExpectedActiveTab', args: [tabId] }),
+    attachPanelToTab: async (tabId) => {
+      calls.push({ fn: 'attachPanelToTab', args: [tabId] });
+    },
     sendActivate: async (tabId) => {
       calls.push({ fn: 'sendActivate', args: [tabId] });
     },
@@ -92,6 +95,7 @@ describe('performNavigate：chrome 调用序列', () => {
     expect(outcome).toEqual({ ok: true, url: 'https://example.com/a' });
     expect(calls).toEqual([
       { fn: 'tabs.query', args: [{ groupId: 42 }] },
+      { fn: 'attachPanelToTab', args: [2] },
       { fn: 'tabs.update', args: [2, { active: true }] },
       { fn: 'markMemberActive', args: [2] },
       { fn: 'noteExpectedActiveTab', args: [2] },
@@ -107,6 +111,7 @@ describe('performNavigate：chrome 调用序列', () => {
     expect(outcome).toEqual({ ok: true, url: 'https://example.com/detail/9' });
     expect(calls).toEqual([
       { fn: 'tabs.query', args: [{ groupId: 42 }] },
+      { fn: 'attachPanelToTab', args: [3] },
       { fn: 'tabs.update', args: [3, { url: 'https://example.com/detail/9', active: true }] },
       { fn: 'noteExpectedActiveTab', args: [3] },
       { fn: 'sendActivate', args: [3] },
@@ -123,6 +128,7 @@ describe('performNavigate：chrome 调用序列', () => {
       'tabs.query',
       'tabs.create',
       'tabs.group',
+      'attachPanelToTab',
       'tabs.update',
       'noteExpectedActiveTab',
       'sendActivate',
@@ -137,13 +143,15 @@ describe('performNavigate：chrome 调用序列', () => {
     expect(outcome).toEqual({ ok: true, url: 'https://example.com/a' });
     expect(calls).toEqual([
       { fn: 'tabs.query', args: [{ groupId: 42 }] },
+      { fn: 'attachPanelToTab', args: [9] },
       { fn: 'tabs.update', args: [9, { url: 'https://example.com/a', active: true }] },
       { fn: 'noteExpectedActiveTab', args: [9] },
       { fn: 'sendActivate', args: [9] },
     ]);
   });
 
-  it('组内无同源页：create(inactive) → group → update(active)，激活晚于入组', async () => {
+  // 面板启用必须早于「设为活跃」：Chrome 切到面板禁用的标签页即关闭侧边栏，且切回也不自动重开。
+  it('组内无同源页：create(inactive) → group → 启用面板 → update(active)', async () => {
     const { executor, calls } = createHarness({ groupTabs: [], createdTabId: 11 });
     const outcome = await executor.performNavigate('https://example.com/a', 7);
     expect(outcome).toEqual({ ok: true, url: 'https://example.com/a' });
@@ -151,6 +159,7 @@ describe('performNavigate：chrome 调用序列', () => {
       { fn: 'tabs.query', args: [{ groupId: 42 }] },
       { fn: 'tabs.create', args: [{ url: 'https://example.com/a', windowId: 7, active: false }] },
       { fn: 'tabs.group', args: [{ tabIds: 11, groupId: 42 }] },
+      { fn: 'attachPanelToTab', args: [11] },
       { fn: 'tabs.update', args: [11, { active: true }] },
       { fn: 'noteExpectedActiveTab', args: [11] },
       { fn: 'sendActivate', args: [11] },
