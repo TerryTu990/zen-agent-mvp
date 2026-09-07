@@ -120,23 +120,11 @@ export interface PackManifest {
   generic?: true;
   featureIdRules: FeatureIdRule[];
   features?: string[];
-  /** adr-019 周期自动化声明（纯调度/提示词数据，不承载治理）；generic pack 禁声明（schema allOf 强制）。 */
-  automations?: PackAutomation[];
   engines?: PackEngines;
   capabilities?: PackCapabilities;
   /** pack 声明的用户可配置点（adr-020）：JSON Schema 对象；L2 packConfig 写入期按此校验。 */
   configSchema?: JsonObject;
   integrity?: PackIntegrity;
-}
-
-/** pack 周期自动化声明：客户端按此调度周期唤醒并发起自动回合；id 跨 pack 唯一（载入期查重拒载）。 */
-export interface PackAutomation {
-  id: string;
-  prompt: string;
-  /** 工作页判定：激活页 URL 去 origin 后（path+hash）须以任一前缀开头；origin 恒取 pack.site.origin。 */
-  workRoutes: string[];
-  executionPreference: 'auto' | 'dom-only' | 'prefer-client-api' | 'prefer-server-api';
-  defaultPeriodMinutes?: number;
 }
 
 /** pack 来源归属（adr-020）：仅展示归属（来源徽章），载入校验对三来源一律相同；缺省 = official。 */

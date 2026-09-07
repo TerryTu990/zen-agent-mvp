@@ -42,16 +42,6 @@
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*$"
     },
-    "automationRunId": {
-      "$comment": "本事件所属自动回合（C3 user-message.automationRunId）：无人值守 run 的审计归因键；人工回合省略。",
-      "type": "string",
-      "pattern": "^[A-Za-z0-9_-]{8,128}$"
-    },
-    "automationId": {
-      "$comment": "发起该自动回合的自动化标识：pack 声明的 automation id（adr-019）或用户自建 watch id（adr-021）；人工回合省略。",
-      "type": "string",
-      "pattern": "^[a-z][a-z0-9-]{0,63}$"
-    },
     "page": {
       "$comment": "事件落点页标注（adr-023，additive 扩展——旧消费方可忽略）：handle=会话作用域不透明页面句柄（消费方 MUST NOT 解析内部结构，U5：Chrome tabId 等形态标识禁入）；origin=该页 origin，URL 不可解析时省略。D1 于 tool-decision/hitl-verdict/tool-execution 以活跃页填充；定向落地（D2/D3）后为目标页。",
       "type": "object",
@@ -220,10 +210,6 @@
           "$comment": "L2 收紧后的本轮生效分级（riskTier 字段为静态定义值）；缺省=无 L2 收紧、生效值即静态值。",
           "type": "string",
           "enum": ["auto", "hitl", "forbidden"]
-        },
-        "unattendedReadOnly": {
-          "$comment": "本轮由只读自动化模板发起、工具面被平台强制收窄为只读（adr-021，R7 无人值守底线）的判定归因：越界工具请求以 verdict=deny 落此标注，是「无人值守不执行写操作」的机械可检证据；缺省=非只读强制轮。",
-          "const": true
         }
       }
     },

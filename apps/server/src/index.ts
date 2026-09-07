@@ -164,12 +164,6 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
               id: tool.id,
               riskTier: tool.riskTier,
             })),
-            automations: (await ports.assembly.listAutomations()).map((descriptor) => ({
-              id: descriptor.automation.id,
-              ...(descriptor.automation.defaultPeriodMinutes !== undefined
-                ? { defaultPeriodMinutes: descriptor.automation.defaultPeriodMinutes }
-                : {}),
-            })),
           },
         }
       : undefined;

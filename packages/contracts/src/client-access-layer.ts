@@ -47,15 +47,6 @@ export interface UserMessageFrame {
   text: string;
   messageId?: string;
   executionPreference?: ExecutionPreference;
-  /** 插件后台生成的自动扫描轮次标识；只收紧服务端单轮预算，不授予任何执行权限。 */
-  automationRunId?: string;
-  /**
-   * 发起本自动回合的自动化标识：pack 自动化声明 id（adr-019）或用户自建 watch id（adr-021）；
-   * 完成帧 tool-card 以此为 toolId 精确关联。本字段只收紧不授权——服务端解析到只读模板的 watch 即
-   * 强制该轮只读工具面；解析不到（既非已声明 pack 自动化也非已存 watch）一律拒绝该轮而非回落普通回合——
-   * 回落会把无人值守轮交还完整工具面，R7 只读底线随之失守。
-   */
-  automationId?: string;
   /**
    * 本轮由快捷提问发起（R-5）：服务端在激活 pack 的 L1 声明与该 subject 的 L2 覆盖层中按此 id 查表，
    * 取其 template 展开为本轮用户轮消息。查不到或已被用户停用即按 text 原样发起并在审计标注——

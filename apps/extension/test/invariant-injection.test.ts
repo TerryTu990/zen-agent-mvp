@@ -156,7 +156,6 @@ describe('轨二：只对「L2 声明 ∩ 本机已授权」的 origin 常驻注
           },
         };
       }
-      if (request.url === `${BASE_URL}/v1/automation-descriptors`) return { status: 200, body: { descriptors: [] } };
       return null;
     };
 
@@ -274,9 +273,6 @@ describe('黑名单优先于授权：两轨都不注入', () => {
               revision: 'rev-1',
             },
           };
-        }
-        if (request.url === `${BASE_URL}/v1/automation-descriptors`) {
-          return { status: 200, body: { descriptors: [] } };
         }
         return null;
       },

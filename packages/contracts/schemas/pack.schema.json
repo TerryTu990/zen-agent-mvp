@@ -73,13 +73,6 @@
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/featureId" }
     },
-    "automations": {
-      "$comment": "adr-019 周期自动化声明（纯调度/提示词数据，不承载治理）：客户端按描述符调度周期唤醒，以 user-message(automationId+automationRunId) 发起自动回合；一单预算与 run 状态机全在服务端。id 跨 pack 唯一（载入期查重拒载）；generic pack 禁声明（无固定 origin 围栏，allOf 强制）。",
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 5,
-      "items": { "$ref": "#/$defs/automation" }
-    },
     "engines": {
       "$comment": "平台兼容声明（VS Code engines 范式）：contract 为对平台契约版本（contracts 导出 contractVersion）的 semver range；载入期以 checkContractCompatibility 比对，range 非法或不满足即拒载（fail-closed，不降级猜测）。pattern 只做语法面守卫（token 闭集 + 至少一个版本数字），range 语法权威在载入期 semver 判定。",
       "type": "object",
@@ -169,11 +162,6 @@
       "if": { "properties": { "generic": { "const": true } }, "required": ["generic"] },
       "then": { "properties": { "site": false } },
       "else": { "properties": { "site": true }, "required": ["site"] }
-    },
-    {
-      "$comment": "generic pack 禁声明 automations：周期唤醒的工作页判定依赖 pack 固定 origin。",
-      "if": { "properties": { "generic": { "const": true } }, "required": ["generic"] },
-      "then": { "properties": { "automations": false } }
     }
   ],
   "$defs": {
@@ -187,42 +175,6 @@
         "role": { "type": "string", "minLength": 1 },
         "label": { "type": "string", "minLength": 1 },
         "selectorHint": { "type": "string", "minLength": 1, "maxLength": 200 }
-      }
-    },
-    "automation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "prompt", "workRoutes", "executionPreference"],
-      "properties": {
-        "id": {
-          "$comment": "自动化标识（kebab，跨 pack 唯一）：alarm/单飞锁/完成帧 tool-card 的关联键。",
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9-]{0,63}$"
-        },
-        "prompt": {
-          "$comment": "自动回合的用户侧提示词（纯数据，随 pack 版本化与评测）。",
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 500
-        },
-        "workRoutes": {
-          "$comment": "工作页判定：激活页 URL 去 origin 后（path+hash）须以任一前缀开头；origin 恒取 pack.site.origin。",
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 10,
-          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
-        },
-        "executionPreference": {
-          "$comment": "自动回合执行偏好，与 C3 $defs/executionPreference 同闭集（跨契约对齐）。",
-          "type": "string",
-          "enum": ["auto", "dom-only", "prefer-client-api", "prefer-server-api"]
-        },
-        "defaultPeriodMinutes": {
-          "$comment": "缺省唤醒周期（分钟）；用户可在客户端覆盖，缺省 5。",
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 60
-        }
       }
     },
     "quickAction": {

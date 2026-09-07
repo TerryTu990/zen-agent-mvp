@@ -21,7 +21,6 @@ const PACKS: PackView[] = [
     origin: 'https://shop.example',
     features: [{ featureId: 'orders' }],
     tools: [],
-    automations: [],
     quickActions: [
       { id: 'explain-selection', label: '解释选中内容', context: 'selection' },
       { id: 'summarize-page', label: '总结本页', context: 'page' },

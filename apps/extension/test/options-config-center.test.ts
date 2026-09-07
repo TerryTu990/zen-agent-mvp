@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
- * 配置中心四页（站点包 / 个人定制 / 自动化 / 全局设置）：同一 options 页内的 tab 切换。
- * 治理语义机械体现：R1 只收紧（低于 baseTier 的档位在 UI 层不可选、周期不得低于 pack 预设）、
+ * 配置中心三页（站点包 / 个人定制 / 全局设置）：同一 options 页内的 tab 切换。
+ * 治理语义机械体现：R1 只收紧（低于 baseTier 的档位在 UI 层不可选）、
  * R4 逐条来源可追溯、R6 未实现能力如实呈现为禁用占位；令牌值不入 DOM（SEC-04）。
  * 读写链路：GET /v1/packs + GET /v1/user-config → 待保存态 → PUT /v1/user-config?expectedRevision=。
  */
@@ -9,7 +9,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   describeSaveFailure,
   isTierSelectable,
-  minPeriodMinutes,
   mountConfigCenter,
   type ConfigCenterDeps,
   type ConfigCenterHandle,
@@ -39,7 +38,6 @@ const PACKS: PackView[] = [
       { toolId: 'order-list.refresh-orders', baseTier: 'auto', description: '刷新订单列表。' },
       { toolId: 'order-list.purge-orders', baseTier: 'forbidden', description: '清空全部订单。' },
     ],
-    automations: [{ id: 'demo-scan', defaultPeriodMinutes: 5 }],
   },
   {
     packId: 'local-crm',
@@ -48,7 +46,6 @@ const PACKS: PackView[] = [
     origin: 'http://crm.internal.example',
     features: [{ featureId: 'crm-notes' }],
     tools: [],
-    automations: [],
   },
 ];
 
@@ -175,16 +172,6 @@ function panel(root: HTMLElement, tab: string): HTMLElement {
   return el!;
 }
 
-/**
- * 指定自建触发器行内的授权入口。自动化页同时渲染站点包自动化行，两种行的授权入口同类同名，
- * 面板级选择器会把另一种行的入口算进来。
- */
-function watchGrant(root: HTMLElement, watchId: string): HTMLButtonElement | null {
-  return panel(root, 'automation').querySelector<HTMLButtonElement>(
-    `.za-cc-watch[data-za-watch-id="${watchId}"] .za-cc-row-grant`,
-  );
-}
-
 function putCalls(harness: Harness): FetchCall[] {
   return harness.calls.filter((call) => call.method === 'PUT');
 }
@@ -210,12 +197,6 @@ describe('纯逻辑：R1 只收紧的机械判定', () => {
     expect(isTierSelectable('forbidden', 'forbidden')).toBe(true);
   });
 
-  it('周期下限恒为 max(pack 预设, 平台下限 1)', () => {
-    expect(minPeriodMinutes(5)).toBe(5);
-    expect(minPeriodMinutes(undefined)).toBe(1);
-    expect(minPeriodMinutes(0)).toBe(1);
-  });
-
   it('保存失败文案：409 提示重载、400 呈现服务端 issues（不吞错误）', () => {
     expect(describeSaveFailure(409, { error: 'revision 不符' })).toContain('已重新加载');
     const message = describeSaveFailure(400, {
@@ -238,19 +219,18 @@ describe('四页 tab 切换', () => {
     harness = createHarness();
   });
 
-  it('四个入口齐备，缺省展示站点包页，其余面板隐藏', async () => {
+  it('三个入口齐备，缺省展示站点包页，其余面板隐藏', async () => {
     await mounted(harness);
     const tabs = [...harness.root.querySelectorAll('.za-cc-nav-item')].map((el) =>
       el.getAttribute('data-za-tab'),
     );
-    expect(tabs).toEqual(['packs', 'overlay', 'automation', 'global']);
+    expect(tabs).toEqual(['packs', 'overlay', 'global']);
     expect(harness.root.textContent).toContain('站点包');
     expect(harness.root.textContent).toContain('个人定制');
-    expect(harness.root.textContent).toContain('自动化');
     expect(harness.root.textContent).toContain('全局设置');
 
     expect(panel(harness.root, 'packs').hidden).toBe(false);
-    for (const tab of ['overlay', 'automation', 'global']) {
+    for (const tab of ['overlay', 'global']) {
       expect(panel(harness.root, tab).hidden).toBe(true);
     }
   });
@@ -258,10 +238,10 @@ describe('四页 tab 切换', () => {
   it('点击导航项切换可见面板（互斥）', async () => {
     await mounted(harness);
     harness.root
-      .querySelector<HTMLElement>('.za-cc-nav-item[data-za-tab="automation"]')!
+      .querySelector<HTMLElement>('.za-cc-nav-item[data-za-tab="overlay"]')!
       .dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
-    expect(panel(harness.root, 'automation').hidden).toBe(false);
+    expect(panel(harness.root, 'overlay').hidden).toBe(false);
     expect(panel(harness.root, 'packs').hidden).toBe(true);
   });
 });
@@ -434,195 +414,6 @@ describe('个人定制页（规则清单 + 收紧矩阵 + 全局作用域）', (
 
     const restrictions = lastPutOverlay(harness).packs['host-demo']?.restrictions;
     expect(restrictions?.riskTierRaise?.['order-list.cancel-order']).toBeUndefined();
-  });
-});
-
-describe('自动化页（周期偏好写 L2）', () => {
-  let harness: Harness;
-  beforeEach(() => {
-    harness = createHarness();
-  });
-
-  it('逐 automation 一行：开关 + 周期输入，min 属性为 pack 预设周期', async () => {
-    await mounted(harness);
-    const row = panel(harness.root, 'automation').querySelector<HTMLElement>(
-      '.za-cc-automation[data-za-automation-id="demo-scan"]',
-    )!;
-    expect(row).not.toBeNull();
-    expect(row.querySelector<HTMLInputElement>('.za-cc-automation-enabled')).not.toBeNull();
-    expect(row.querySelector<HTMLInputElement>('.za-cc-automation-minutes')?.min).toBe('5');
-  });
-
-  it('周期低于 max(pack 预设, 1) 时禁止提交并提示下限', async () => {
-    const handle = await mounted(harness);
-    setValue(
-      harness.root.querySelector<HTMLInputElement>('.za-cc-automation-minutes[data-za-automation-id="demo-scan"]')!,
-      '2',
-    );
-    await handle.save();
-
-    expect(putCalls(harness)).toHaveLength(0);
-    const status = harness.root.querySelector('.za-cc-status')?.textContent ?? '';
-    expect(status).toContain('5');
-    expect(status).toContain('下限');
-  });
-
-  it('合法周期与开关写入 preferences.automations', async () => {
-    const handle = await mounted(harness);
-    const row = harness.root.querySelector<HTMLElement>(
-      '.za-cc-automation[data-za-automation-id="demo-scan"]',
-    )!;
-    const enabled = row.querySelector<HTMLInputElement>('.za-cc-automation-enabled')!;
-    enabled.checked = true;
-    enabled.dispatchEvent(new Event('change', { bubbles: true }));
-    setValue(row.querySelector<HTMLInputElement>('.za-cc-automation-minutes')!, '10');
-
-    await handle.save();
-    expect(lastPutOverlay(harness).packs['host-demo']?.preferences?.automations?.['demo-scan']).toEqual({
-      enabled: true,
-      minutes: 10,
-    });
-  });
-});
-
-describe('自动化页 · 用户自建触发器（adr-021）', () => {
-  const WATCH: NonNullable<UserOverlayView['watches']>[number] = {
-    id: 'watch-1',
-    templateId: 'page-watch',
-    url: 'https://example.test/news',
-    minutes: 15,
-    enabled: true,
-    focus: '关注版本号',
-  };
-
-  function watchRows(harness: Harness): HTMLElement[] {
-    return [...panel(harness.root, 'automation').querySelectorAll<HTMLElement>('.za-cc-watch')];
-  }
-
-  function createButton(harness: Harness): HTMLButtonElement {
-    return panel(harness.root, 'automation').querySelector<HTMLButtonElement>('.za-cc-watch-create')!;
-  }
-
-  it('新建触发器落为 watches 一条，并镜像进本机调度存储', async () => {
-    const mirrored: Record<string, { enabled: boolean; minutes: number }>[] = [];
-    const harness = createHarness({ saveAutomations: async (prefs) => void mirrored.push(prefs) });
-    const handle = await mounted(harness);
-    createButton(harness).click();
-
-    const row = watchRows(harness)[0]!;
-    setValue(row.querySelector<HTMLInputElement>('.za-cc-watch-url')!, 'https://example.test/news');
-    setValue(row.querySelector<HTMLInputElement>('.za-cc-watch-minutes')!, '30');
-    setValue(row.querySelector<HTMLInputElement>('.za-cc-watch-focus')!, '关注版本号');
-    await handle.save();
-
-    expect(lastPutOverlay(harness).watches).toEqual([
-      {
-        id: 'watch-1',
-        templateId: 'page-watch',
-        url: 'https://example.test/news',
-        minutes: 30,
-        enabled: true,
-        focus: '关注版本号',
-      },
-    ]);
-    expect(mirrored[0]?.['watch-1']).toEqual({ enabled: true, minutes: 30 });
-  });
-
-  /**
-   * 触发器停在名单站点上时到点静默不跑（连一条「已暂停」提示都不发，那是刻意的）。
-   * 「自动化」页若仍把它显示成启用、按周期汇报，用户会一直等一份永远不来的报告。
-   */
-  it('监测地址落在不辅助名单内的触发器标注「因站点名单暂不运行」（N2-COPY-03）', async () => {
-    const harness = createHarness();
-    harness.stored.overlay = {
-      ...overlayFixture(),
-      packs: { '*': { siteDenylist: ['https://bank.example'] } },
-      watches: [{ ...WATCH, id: 'watch-9', url: 'https://bank.example/accounts' }],
-    };
-    await mounted(harness);
-    const row = watchRows(harness).find((candidate) => candidate.dataset['zaWatchId'] === 'watch-9');
-    expect(row?.textContent ?? '').toContain('因站点名单暂不运行');
-  });
-
-  it('监测地址不在名单内的触发器不带该标注（对照）', async () => {
-    const harness = createHarness();
-    harness.stored.overlay = {
-      ...overlayFixture(),
-      packs: { '*': { siteDenylist: ['https://bank.example'] } },
-      watches: [{ ...WATCH }],
-    };
-    await mounted(harness);
-    const row = watchRows(harness).find((candidate) => candidate.dataset['zaWatchId'] === WATCH.id);
-    expect(row?.textContent ?? '').not.toContain('因站点名单暂不运行');
-  });
-
-  it('监测地址非 http/https 时禁止提交并给出可定位提示', async () => {
-    const harness = createHarness();
-    const handle = await mounted(harness);
-    createButton(harness).click();
-    setValue(watchRows(harness)[0]!.querySelector<HTMLInputElement>('.za-cc-watch-url')!, 'ftp://x/y');
-    await handle.save();
-
-    expect(putCalls(harness)).toHaveLength(0);
-    expect(harness.root.querySelector('.za-cc-status')?.textContent ?? '').toContain('watch-1');
-  });
-
-  it('周期低于平台下限时禁止提交并提示下限', async () => {
-    const harness = createHarness();
-    const handle = await mounted(harness);
-    createButton(harness).click();
-    const row = watchRows(harness)[0]!;
-    setValue(row.querySelector<HTMLInputElement>('.za-cc-watch-url')!, 'https://example.test/news');
-    setValue(row.querySelector<HTMLInputElement>('.za-cc-watch-minutes')!, '3');
-    await handle.save();
-
-    expect(putCalls(harness)).toHaveLength(0);
-    const status = harness.root.querySelector('.za-cc-status')?.textContent ?? '';
-    expect(status).toContain('5');
-    expect(status).toContain('下限');
-  });
-
-  it('已有实例回显参数；删空最后一条时省略 watches 键（空数组写入期会被拒）', async () => {
-    const harness = createHarness();
-    harness.stored.overlay!.watches = [{ ...WATCH }];
-    const handle = await mounted(harness);
-    const row = watchRows(harness)[0]!;
-    expect(row.querySelector<HTMLInputElement>('.za-cc-watch-url')!.value).toBe(WATCH.url);
-    expect(row.querySelector<HTMLInputElement>('.za-cc-watch-minutes')!.value).toBe('15');
-    expect(row.querySelector<HTMLInputElement>('.za-cc-watch-focus')!.value).toBe('关注版本号');
-
-    row.querySelector<HTMLButtonElement>('.za-cc-watch-remove')!.click();
-    await handle.save();
-    expect(Object.hasOwn(lastPutOverlay(harness), 'watches')).toBe(false);
-  });
-
-  it('删除触发器按危险态渲染，与其他不可撤销入口同形', async () => {
-    const harness = createHarness();
-    harness.stored.overlay!.watches = [{ ...WATCH }];
-    await mounted(harness);
-    const remove = watchRows(harness)[0]!.querySelector<HTMLButtonElement>('.za-cc-watch-remove')!;
-    expect(remove.classList.contains('za-cc-btn-danger')).toBe(true);
-  });
-
-  it('模板闭集外的实例原样回传，不因面板不识别而静默删除', async () => {
-    const harness = createHarness();
-    const foreign = { ...WATCH, id: 'watch-future', templateId: 'page-diff-v2' };
-    harness.stored.overlay!.watches = [foreign];
-    const handle = await mounted(harness);
-    expect(watchRows(harness)[0]!.querySelector('.za-cc-watch-url')).toBeNull();
-
-    await handle.save();
-    expect(lastPutOverlay(harness).watches).toEqual([foreign]);
-  });
-
-  it('达到条数上限后新建入口禁用（不做假跳转）', async () => {
-    const harness = createHarness();
-    harness.stored.overlay!.watches = [1, 2, 3, 4, 5].map((index) => ({
-      ...WATCH,
-      id: `watch-${index}`,
-    }));
-    await mounted(harness);
-    expect(createButton(harness).disabled).toBe(true);
   });
 });
 
@@ -1053,81 +844,6 @@ describe('保存链路（乐观并发 + 服务端校验反馈）', () => {
     expect(status).toContain('个人配置未提交');
   });
 
-  it('自动化本机镜像只在 PUT 成功后落盘：保存失败不得让闹钟先跑起来', async () => {
-    const mirrored: Array<Record<string, { enabled: boolean; minutes: number }>> = [];
-    const withMirror = createHarness({
-      localAutomations: {},
-      saveAutomations: async (prefs) => {
-        mirrored.push(prefs);
-      },
-    });
-    const handle = await mounted(withMirror);
-    const toggle = withMirror.root.querySelector<HTMLInputElement>(
-      '.za-cc-automation .za-cc-automation-enabled',
-    );
-    expect(toggle, '自动化页须有启用开关').not.toBeNull();
-    toggle!.checked = true;
-    toggle!.dispatchEvent(new Event('change', { bubbles: true }));
-
-    withMirror.putQueue.push({ status: 503, body: { error: '用户配置存储不可用' } });
-    await handle.save();
-    expect(mirrored).toHaveLength(0);
-
-    await handle.save();
-    expect(mirrored.length).toBeGreaterThan(0);
-  });
-
-  it('周期上界与调度端一致：超界拒绝提交（否则调度端会回落成更密的周期）', async () => {
-    const handle = await mounted(harness);
-    const minutes = harness.root.querySelector<HTMLInputElement>('.za-cc-automation-minutes');
-    expect(minutes, '自动化页须有周期输入').not.toBeNull();
-    expect(minutes!.max).toBe('60');
-    minutes!.value = '120';
-    minutes!.dispatchEvent(new Event('change', { bubbles: true }));
-
-    const before = putCalls(harness).length;
-    await handle.save();
-    expect(putCalls(harness)).toHaveLength(before);
-    expect(harness.root.querySelector('.za-cc-status')?.textContent ?? '').toContain('60');
-  });
-
-  it('本机显式暂停的自动化不被 L2 启用态覆盖，并渲染「本机已暂停」', async () => {
-    const paused = createHarness({ localAutomations: { 'demo-scan': { enabled: false } } });
-    paused.stored.overlay = {
-      schemaVersion: 1,
-      subject: SUBJECT,
-      packs: {
-        'host-demo': { preferences: { automations: { 'demo-scan': { enabled: true, minutes: 10 } } } },
-      },
-    };
-    await mounted(paused);
-    const row = paused.root.querySelector<HTMLElement>(
-      '.za-cc-automation[data-za-automation-id="demo-scan"]',
-    );
-    expect(row, '自动化行须存在').not.toBeNull();
-    const toggle = row!.querySelector<HTMLInputElement>('.za-cc-automation-enabled');
-    expect(toggle, '自动化行须有启用开关').not.toBeNull();
-    expect(toggle!.checked).toBe(false);
-    expect(row!.querySelector('.za-cc-badge-paused')).not.toBeNull();
-  });
-
-  it('本机从未配置（键缺省）不得判为已暂停：L2 启用态照常回显', async () => {
-    const fresh = createHarness({ localAutomations: { 'demo-scan': {} } });
-    fresh.stored.overlay = {
-      schemaVersion: 1,
-      subject: SUBJECT,
-      packs: {
-        'host-demo': { preferences: { automations: { 'demo-scan': { enabled: true, minutes: 10 } } } },
-      },
-    };
-    await mounted(fresh);
-    const row = fresh.root.querySelector<HTMLElement>(
-      '.za-cc-automation[data-za-automation-id="demo-scan"]',
-    )!;
-    expect(row.querySelector<HTMLInputElement>('.za-cc-automation-enabled')!.checked).toBe(true);
-    expect(row.querySelector('.za-cc-badge-paused')).toBeNull();
-  });
-
   it('存量 disabledTools 如实呈现为「已禁用」，零编辑保存不改变任何 restrictions（只收紧不被撤销）', async () => {
     const withDisabled = createHarness();
     withDisabled.stored.overlay = {
@@ -1303,25 +1019,22 @@ describe('全局设置页 · 授权态以本机浏览器权限对账', () => {
       schemaVersion: 1,
       subject: SUBJECT,
       packs: { '*': { grantedOrigins: ['https://shop.example'] } },
-      watches: [
-        { id: 'watch-1', templateId: 'page-watch', url: 'https://shop.example/orders', minutes: 30, enabled: true },
-      ],
     };
   }
 
-  it('L2 已授权但浏览器侧已撤销：自动化行仍标「站点未授权」并给出授权入口', async () => {
+  it('L2 已授权但浏览器侧已撤销：授权列表就地标「浏览器已撤销访问」', async () => {
     const harness = createHarness({ hasOriginAccess: async () => false });
     harness.stored.overlay = grantedOverlay();
     await mounted(harness);
-    expect(panel(harness.root, 'automation').textContent).toContain('自动化需先授权站点');
-    expect(watchGrant(harness.root, 'watch-1'), '本机权限缺失时该行必须给出可点的授权入口').not.toBeNull();
+    await settled();
+    expect(harness.root.querySelector<HTMLElement>('.za-cc-site-grant-entry')!.textContent)
+      .toContain('浏览器已撤销访问');
   });
 
   it('L2 与本机都在：不误报未授权（对照，判据不是恒为真）', async () => {
     const harness = createHarness({ hasOriginAccess: async () => true });
     harness.stored.overlay = grantedOverlay();
     await mounted(harness);
-    expect(watchGrant(harness.root, 'watch-1')).toBeNull();
     expect(panel(harness.root, 'global').querySelector('.za-cc-site-grant-regrant')).toBeNull();
   });
 
@@ -1346,7 +1059,6 @@ describe('全局设置页 · 授权态以本机浏览器权限对账', () => {
     await settled();
     expect(requested).toEqual(['https://shop.example']);
     expect(harness.root.querySelector('.za-cc-site-grant-regrant')).toBeNull();
-    expect(watchGrant(harness.root, 'watch-1')).toBeNull();
   });
 
   it('本机缺失时重复输入该 origin 走重新申请，而不是回「已在授权列表里」', async () => {
@@ -1371,58 +1083,6 @@ describe('全局设置页 · 授权态以本机浏览器权限对账', () => {
     const harness = createHarness();
     harness.stored.overlay = grantedOverlay();
     await mounted(harness);
-    expect(watchGrant(harness.root, 'watch-1')).toBeNull();
     expect(harness.root.querySelector('.za-cc-site-grant-regrant')).toBeNull();
-  });
-});
-
-/**
- * 自动化页的授权入口：无手势唤醒的触发器必须就地说明「需先授权站点」并给出入口。
- * 两种行同一判据——站点包自动化在未授权 origin 上同样静默不跑，页头「每行给出授权入口」
- * 这句承诺必须对站点包自动化行与自建触发器行都成立。
- */
-describe('自动化页 · 站点授权入口', () => {
-  it('站点包自动化行同样标注未授权并给出授权入口（按 pack 的 origin 围栏）', async () => {
-    const requested: string[] = [];
-    const harness = createHarness({
-      requestOriginAccess: async (origin) => {
-        requested.push(origin);
-        return true;
-      },
-    });
-    await mounted(harness);
-    const row = panel(harness.root, 'automation').querySelector<HTMLElement>('[data-za-automation-id="demo-scan"]');
-    expect(row, '缺少站点包自动化行').not.toBeNull();
-    expect(row!.textContent).toContain('站点未授权');
-    const grant = row!.querySelector<HTMLButtonElement>('.za-cc-row-grant');
-    expect(grant, '站点包自动化行须给出授权入口').not.toBeNull();
-    grant!.click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(requested).toEqual(['http://127.0.0.1:4173']);
-    const regranted = panel(harness.root, 'automation').querySelector<HTMLElement>(
-      '[data-za-automation-id="demo-scan"]',
-    );
-    expect(regranted!.querySelector('.za-cc-row-grant'), '授权后该行不再提示未授权').toBeNull();
-  });
-
-  it('未授权的触发器行标注「站点未授权」并给出授权按钮；授权后标注消失', async () => {
-    const harness = createHarness({ requestOriginAccess: async () => true });
-    harness.stored.overlay = {
-      schemaVersion: 1,
-      subject: harness.stored.subject,
-      packs: {},
-      watches: [
-        { id: 'watch-1', templateId: 'page-watch', url: 'https://shop.example/orders', minutes: 30, enabled: true },
-      ],
-    };
-    await mounted(harness);
-    expect(panel(harness.root, 'automation').textContent).toContain('自动化需先授权站点');
-    const grant = watchGrant(harness.root, 'watch-1');
-    expect(grant, '未授权行须给出授权入口').not.toBeNull();
-    grant!.click();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(watchGrant(harness.root, 'watch-1'), '授权后该行不再提示未授权').toBeNull();
   });
 });

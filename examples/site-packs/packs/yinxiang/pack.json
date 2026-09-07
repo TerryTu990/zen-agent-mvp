@@ -8,7 +8,7 @@
     "locations": ["/"]
   },
   "engines": {
-    "contract": "^1.0.0"
+    "contract": "^2.0.0"
   },
   "featureIdRules": [
     {

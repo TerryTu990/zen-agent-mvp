@@ -75,7 +75,6 @@ import type {
   UserOverlayL1Baseline,
   UserOverlayPackScope,
   UserOverlayRiskTierRaise,
-  UserOverlayWatch,
 } from '@zen-agent/contracts';
 import type { TokenVerifier } from './auth.js';
 import { createActivationRequestValidator, issueActivationToken } from './activation.js';
@@ -96,17 +95,6 @@ import {
   selectToolsForPreference,
 } from './execution-preference.js';
 import { expandQuickAction, visibleQuickActions } from './quick-actions.js';
-import {
-  changeSummary,
-  diffWatchSnapshots,
-  hasWatchChange,
-  isWatchWorkPage,
-  resolveWatchRun,
-  watchPageKey,
-  watchReportPrompt,
-  watchSnapshotOf,
-  type WatchSnapshot,
-} from './watch-run.js';
 
 export interface GatewayDeps {
   assembly: AssemblyPort;
@@ -450,9 +438,6 @@ interface PendingConfigDraft {
 }
 
 const CONFIG_DRAFT_TTL_MS = 600_000;
-
-/** watch 比对基线的进程内条目上界（LRU 逐出）：防长驻无界增长。 */
-const WATCH_BASELINE_MAX = 500;
 
 /** overlay 写入体积守卫：端点守总量（字节/条目），schema 守单作用域形状上界（maxItems/maxProperties）。 */
 const USER_OVERLAY_MAX_BYTES = 128 * 1024;
@@ -1087,8 +1072,6 @@ interface SessionRuntime {
   domContextByPage: Map<string, DomGateContext>;
   /** 配置草稿挂起表（adr-014 teach 流）：draftId → 草稿；一次性 + TTL，config-decision 消费。 */
   pendingConfigDrafts: Map<string, PendingConfigDraft>;
-  /** 自动扫描状态由服务端持有，供 MV3 service worker 重启后查询恢复单飞锁。 */
-  automationRuns: Map<string, { status: 'running' | 'succeeded' | 'failed'; updatedAt: number }>;
   /** 本会话不可信内容定界 nonce：随机化即防伪造（对话与页面都猜不到，无法预置配对的闭合标记）。 */
   untrustedNonce: string;
   /** 本会话已落过审计事件的可疑句式类别：快照与清单每轮全量重建，不去重则同一类别每轮刷屏。 */
@@ -1115,15 +1098,8 @@ function rememberStoppedExecNonce(runtime: SessionRuntime, nonce: string): void 
  */
 type PendingHitlOutcome = HitlDecisionValue | 'stopped' | 'timeout';
 
-/** 自动回合归因（C5 automationRunId/automationId）：人工回合恒为 null。 */
-interface AutomationRunRef {
-  runId: string;
-  automationId: string;
-}
-
-/** 回合收口结果：ok 决定自动化 run 的成败，reason 是下发给客户端的终止原因（C3 闭集）。 */
+/** 回合收口结果：reason 是下发给客户端的终止原因（C3 闭集）。 */
 interface TurnOutcome {
-  ok: boolean;
   reason: TurnCompleteReason;
 }
 
@@ -1206,20 +1182,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
   // 已安装 pack 展示投影（快照不可变，惰性一次）：确认卡的来源 pack 名与来源徽章取此（R4）。
   let packsPromise: Promise<PackDescriptor[]> | undefined;
   const getPacks = (): Promise<PackDescriptor[]> => (packsPromise ??= deps.assembly.listPacks());
-
-  // 全 pack 工具的静态分级表（快照不可变，惰性一次）：只读自动回合拒绝越界工具时的 riskTier 归因依据。
-  let toolTiersPromise: Promise<Map<string, RiskTier>> | undefined;
-  const getToolTiers = (): Promise<Map<string, RiskTier>> =>
-    (toolTiersPromise ??= deps.assembly
-      .allTools()
-      .then((tools) => new Map(tools.map((tool) => [tool.id, tool.riskTier]))));
-
-  /**
-   * watch 实例的上轮快照基线（adr-021）：键含 subject，故跨会话复用同一实例基线——
-   * 插件重建会话不会误报"整页新增"。进程内态：重启后首轮重新建基线（该轮不报告）。
-   */
-  // 进程内比对基线（LRU 上界；重启后首轮重建基线不报告——见 adr-021 后果）。
-  const watchBaselines = new Map<string, WatchSnapshot>();
 
   /**
    * generic 兜底装配：活跃页是 http/https 即激活，packOrigin 绑活跃页 origin。
@@ -1408,7 +1370,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
         domContext: null,
         domContextByPage: new Map(),
         pendingConfigDrafts: new Map(),
-        automationRuns: new Map(),
         untrustedNonce: untrustedNonce(),
         untrustedPatternsSeen: new Set(),
       };
@@ -1467,7 +1428,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
   /**
    * 记一条审计事件（record-only 旁路，U6/C5）：网关只传 schema 允许字段（不含实参/响应体/签名/secret），
    * 脱敏前置由此构造保证、audit sink 再兜一层。eventId/ts 就地生成；audit.record 契约不抛，无需 try/catch。
-   * run 存在＝本事件属某个无人值守自动回合（adr-021 归因键）；人工回合缺省。
    */
   const recordEvent = (
     sessionId: string,
@@ -1475,7 +1435,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
     featureId: string | null,
     body: Pick<AuditEvent, 'type' | 'data'>,
     pack?: PackRef,
-    run?: AutomationRunRef,
     page?: AuditPageRef,
   ): void => {
     deps.audit.record({
@@ -1487,9 +1446,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
       ...(pack?.packId != null ? { packId: pack.packId } : {}),
       ...(pack?.packVersion != null ? { packVersion: pack.packVersion } : {}),
       ...(featureId !== null ? { featureId } : {}),
-      ...(run !== undefined
-        ? { automationRunId: run.runId, automationId: run.automationId }
-        : {}),
       ...(page !== undefined ? { page } : {}),
       ...body,
     } as AuditEvent);
@@ -1509,7 +1465,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     featureId: string | null,
     kind: UntrustedKind,
     body: string,
-    origin?: { pack?: PackRef; run?: AutomationRunRef; toolCallId?: string },
+    origin?: { pack?: PackRef; toolCallId?: string },
   ): string => {
     const runtime = runtimeOf(sessionId);
     const wrapped = wrapUntrustedContent(kind, runtime.untrustedNonce, body);
@@ -1529,7 +1485,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
           },
         },
         origin?.pack,
-        origin?.run,
       );
     }
     return wrapped.content;
@@ -1648,10 +1603,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
     call: { toolCallId: string; params: JsonObject },
     evidenceRules: SnapshotEvidenceRule[],
     userConfig: GateUserConfigInput | undefined,
-    /** 本回合无人在场（automationRun 存在即真）：hitl 档在服务端直接拒绝，不广播确认卡（adr-024 D1）。 */
-    unattended: boolean,
-    /** 本回合的自动化 run 归因（C5 automationRunId/automationId）；人工回合为 null。 */
-    run: AutomationRunRef | null,
     cancelled: () => boolean,
   ): Promise<ExecSubflowOutcome> {
     const { sessionId } = session;
@@ -1707,7 +1658,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ...(execAudit.status !== undefined ? { status: execAudit.status } : {}),
           durationMs: Date.now() - execAudit.startedAt,
         },
-      }, pack, run ?? undefined, auditPageRef());
+      }, pack, auditPageRef());
     };
     const stopped = async (): Promise<Observation> => {
       if (execAudit.stopOutcome !== null) recordExecution(execAudit.stopOutcome);
@@ -1808,7 +1759,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
       ...(domContext !== undefined ? { domContext } : {}),
       ...(userConfig !== undefined ? { userConfig } : {}),
       ...groupPagesNow(),
-      ...(unattended ? { unattended: true as const } : {}),
     });
     if (cancelled()) return stopped();
     recordEvent(sessionId, claims, featureId, {
@@ -1827,7 +1777,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ? { effectiveTier: effectiveTierOf(tool, userConfig) }
           : {}),
       },
-    }, pack, run ?? undefined, auditPageRef());
+    }, pack, auditPageRef());
     if (decision.verdict === 'deny') {
       finish('failed', decision.reason ?? 'denied');
       return { toolCallId, ok: false, content: null, error: decision.reason ?? 'denied' };
@@ -1916,7 +1866,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
           decision: verdict,
           ...(syntheticStop ? { synthetic: 'stopped' as const } : {}),
         },
-      }, pack, run ?? undefined, auditPageRef());
+      }, pack, auditPageRef());
       // 到期收口的归因单独记一条 deny：hitl-verdict 的 synthetic 闭集只认 stopped（C5），
       // 若不另记，无人裁决在审计里与用户真实拒绝不可分。
       if (hitlTimedOut) {
@@ -1929,7 +1879,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             verdict: 'deny',
             reason: HITL_TIMEOUT_ERROR,
           },
-        }, pack, run ?? undefined, auditPageRef());
+        }, pack, auditPageRef());
       }
       if (cancelled()) return stopped();
       if (verdict === 'reject') {
@@ -1951,7 +1901,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             verdict: 'deny',
             reason: approvalStale,
           },
-        }, pack, run ?? undefined, auditPageRef());
+        }, pack, auditPageRef());
       }
       // 批准即任务级授权：登记 grant，同会话同 pack 同 origin 的同任务后续调用（跨工具，含导航）
       // decide 直接放行。两类批准只覆盖本次调用、不登记：every-call 工具（确认卡语义是"这一次"，不得
@@ -1994,7 +1944,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
         claims,
         ...scope,
         ...(userConfig !== undefined ? { userConfig } : {}),
-        ...(unattended ? { unattended: true as const } : {}),
       });
       // 请求已发出即副作用可能已发生：停止也必须留下执行结局（结局按实际回执）。
       execAudit.stopOutcome = execOutcome(observation);
@@ -2018,7 +1967,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
           ...(issueDomContext !== undefined ? { domContext: issueDomContext } : {}),
           ...(userConfig !== undefined ? { userConfig } : {}),
           ...groupPagesNow(),
-          ...(unattended ? { unattended: true as const } : {}),
         });
       } catch (cause) {
         issueRefusal = issueRefusalText(cause);
@@ -2086,18 +2034,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
     executionPreference: ExecutionPreference,
     messageId: string | undefined,
     /**
-     * 本回合的自动化 run（pack 声明自动化经此路径）：非 null 即无人值守——
-     * 既是判定/签发的 unattended 依据（adr-024 D1），也是本回合全部审计事件的归因键（C5）。
-     */
-    run: AutomationRunRef | null,
-    /**
      * 本轮的快捷提问（R-5）：text 是客户端原文（chip 上那句话），模板在本回合首次装配后按
      * 本轮 compose 定下的生效 pack 查表展开——回落仅基座的轮次里该 pack 的问法本就不可见。
      */
     quickActionRequest: { id: string; selectionText?: string } | null,
   ): Promise<TurnOutcome> {
     const { sessionId } = session;
-    const unattended = run !== null;
     const runtime = runtimeOf(sessionId);
     const cancelled = (): boolean => messageId !== undefined && runtime.cancelledMessageIds.has(messageId);
     const llmRequestId = messageId === undefined ? undefined : `${sessionId}:${messageId}`;
@@ -2195,7 +2137,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
             ? { quickActionUnresolved: true as const }
             : {}),
         },
-      }, pack, run ?? undefined);
+      }, pack);
       // L2 定格面（封 TOCTOU）：本轮 compose 冻结的生效面贯穿全部判定与签发；
       // 降级（读失败无缓存）无 revision，以 degraded 标志表示——此时工具面已全 forbidden（U7）。
       const userConfig: GateUserConfigInput | undefined = gateUserConfigOf(composed);
@@ -2314,7 +2256,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
     // 本回合最近一轮 done 事件透传的 usage 实数（工具轮也读到 done，故工具轮同样有值）；
     // 落盘边界压缩触发估算优先用它，缺省回退字符近似。
     let lastUsage: UsageTokens | undefined;
-    let automationFailed = false;
     turnLoop: for (let round = 0; round < deps.maxTurnRounds; round += 1) {
       if (cancelled()) break;
       let roundText = '';
@@ -2416,7 +2357,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
           if (event.usage !== undefined) lastUsage = event.usage;
           if (event.truncated === true) truncatedAnswer = true;
           if (event.stopReason === 'error') {
-            automationFailed = true;
             if (event.errorKind === 'invalid-tool-args' && event.invalidToolCall !== undefined) {
               invalidCall = event.invalidToolCall;
             } else {
@@ -2550,7 +2490,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   outcome: 'skipped',
                   durationMs: Date.now() - snapshotStartedAt,
                 },
-              }, pack, run ?? undefined, targetPageRef);
+              }, pack, targetPageRef);
               continue;
             }
           }
@@ -2567,7 +2507,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
           });
           const report = await reported;
           if (report === null) {
-            automationFailed = true;
             broadcast(sessionId, {
               type: 'tool-card',
               sessionId,
@@ -2587,7 +2526,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   outcome: 'timeout',
                   durationMs: Date.now() - snapshotStartedAt,
                 },
-              }, pack, run ?? undefined, targetPageRef);
+              }, pack, targetPageRef);
             }
             continue;
           }
@@ -2672,7 +2611,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
               featureId,
               report.text !== undefined ? 'page-text' : 'page-elements',
               reportBody,
-              { pack, ...(run !== null ? { run } : {}), toolCallId: call.toolCallId },
+              { pack, toolCallId: call.toolCallId },
             ),
             ...pageNotes,
           ].join('\n');
@@ -2697,7 +2636,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
               outcome: 'ok',
               durationMs: Date.now() - snapshotStartedAt,
             },
-          }, pack, run ?? undefined, targetPageRef);
+          }, pack, targetPageRef);
           continue;
         }
 
@@ -2846,7 +2785,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   featureId,
                   'pack-doc',
                   JSON.stringify({ content: doc.content ?? '', truncated: doc.truncated === true }),
-                  { pack, ...(run !== null ? { run } : {}), toolCallId: call.toolCallId },
+                  { pack, toolCallId: call.toolCallId },
                 )
               : JSON.stringify({ error: doc.error ?? '读取失败' }),
             doc.ok ? null : (doc.error ?? 'pack-doc-read-failed'),
@@ -2929,7 +2868,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
             }
             tailText += notice;
             notify(sessionId, notice);
-            automationFailed = true;
             settled = true;
             turnReason = 'tool-not-available';
             notExecutedRest(callIndex + 1);
@@ -2968,7 +2906,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
                   verdict: 'deny',
                   reason: ALREADY_OPEN_NOT_ATTACHED_ERROR,
                 },
-              }, pack, run ?? undefined, activePageRef(session));
+              }, pack, activePageRef(session));
               broadcast(sessionId, {
                 type: 'tool-card',
                 sessionId,
@@ -2977,7 +2915,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
                 status: 'failed',
                 mode: navToolDef.execution,
               });
-              automationFailed = true;
               feed(
                 call,
                 `${JSON.stringify({ error: ALREADY_OPEN_NOT_ATTACHED_ERROR, url: navUrlParam, attached: false })}\n${NAV_NOT_ATTACHED_NOTE}`,
@@ -2997,8 +2934,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
             call,
             evidenceRules,
             userConfig,
-            unattended,
-            run,
             cancelled,
           );
           let navObsContent = JSON.stringify(
@@ -3070,7 +3005,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
             unavailableNotified = true;
             notify(sessionId, '该操作暂未支持。');
           }
-          automationFailed = true;
           feed(
             call,
             JSON.stringify({ error: 'tool-not-available', available: tools.map((spec) => spec.name) }),
@@ -3088,11 +3022,8 @@ export function createGateway(deps: GatewayDeps): Gateway {
           call,
           evidenceRules,
           userConfig,
-          unattended,
-          run,
           cancelled,
         );
-        if (!observation.ok) automationFailed = true;
         // 回喂 agent：assistant 调用轮回声本轮 tool_calls（OpenAI 兼容 API 要求 role:tool 须有前置
         // 带 tool_calls 的 assistant 消息，否则拒绝孤儿 tool 消息）+ observation（仅规整结果，U7）。
         feed(
@@ -3100,7 +3031,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
           observation.ok
             ? untrusted(sessionId, claims, featureId, 'tool-result', JSON.stringify(observation.content), {
                 pack,
-                ...(run !== null ? { run } : {}),
                 toolCallId: call.toolCallId,
               })
             : JSON.stringify({ error: observation.error }),
@@ -3114,7 +3044,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
           '同一步骤已连续失败多次，我先停在这里，避免无效重试；可以换一种做法或换个目标再说一次。';
         tailText += notice;
         notify(sessionId, notice);
-        automationFailed = true;
         settled = true;
         turnReason = 'consecutive-failures';
         break;
@@ -3125,7 +3054,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
       const notice = '已停止当前任务。';
       tailText += notice;
       notify(sessionId, notice);
-      automationFailed = true;
       settled = true;
       turnReason = 'stopped';
     } else if (!settled) {
@@ -3133,7 +3061,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
       const notice = '本轮操作步数已达上限，我先停在这里；回复「继续」可接着做。';
       tailText += notice;
       notify(sessionId, notice);
-      automationFailed = true;
       turnReason = 'max-rounds';
     }
     if (tailText !== '') {
@@ -3160,203 +3087,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       : pruned;
     if (historyTruncated) notify(sessionId, HISTORY_TRUNCATED_NOTICE);
     deps.store.setHistory(sessionId, toStore);
-    return { ok: !automationFailed, reason: turnReason };
-  }
-
-  /**
-   * watch 自动回合（adr-021，R7 无人值守底线的结构强制）：服务端自取只读快照 → 与上轮基线比对 →
-   * 仅在有变化时驱动一次报告轮。报告轮的工具面为空——只读模板结构上取不到任何写能力（比 pack 工具面
-   * 再收窄一层），模型幻觉出的工具调用一律 deny 并落审计，不签发代执行指令、不挂 HITL（无人可确认，
-   * 挂起只会让 run 悬空）。变化结论由服务端比对给出，模型只负责渲染报告正文（R6）。
-   * 本回合不写会话历史：watch 目标页常与人工会话不同站，自动报告不应污染用户对话上下文。
-   */
-  async function runWatchTurn(
-    session: SessionState,
-    claims: IdentityClaims,
-    watch: UserOverlayWatch,
-    run: { runId: string; automationId: string },
-    text: string,
-    messageId: string | undefined,
-  ): Promise<{ ok: boolean; summary?: string; reason: TurnCompleteReason }> {
-    const { sessionId } = session;
-    const runtime = runtimeOf(sessionId);
-    const cancelled = (): boolean =>
-      messageId !== undefined && runtime.cancelledMessageIds.has(messageId);
-    const startedAt = Date.now();
-    // 装配按 watch 的目标 URL（而非会话活跃页）解析：watch 跨站点，报告依据的是被监测页的配置面。
-    const resolved = await deps.assembly.resolveFeature({ url: watch.url });
-    const { packId, packVersion, featureId, genericOrigin } = gateGeneric(resolved, watch.url);
-    const watchOrigin = originOf(watch.url);
-    const composed = await deps.assembly.compose({
-      sessionId,
-      packId,
-      featureId,
-      subject: subjectOf(claims),
-      ...(watchOrigin !== '' ? { origin: watchOrigin } : {}),
-    });
-    const pack: PackRef =
-      composed.packId === null
-        ? { packId: null, packVersion: null }
-        : { packId, packVersion, ...(genericOrigin !== undefined ? { genericOrigin } : {}) };
-    const settle = (
-      outcome: 'ok' | 'error' | 'timeout' | 'skipped',
-      summary?: string,
-    ): { ok: boolean; summary?: string; reason: TurnCompleteReason } => {
-      recordEvent(
-        sessionId,
-        claims,
-        featureId,
-        {
-          type: 'tool-execution',
-          data: {
-            toolCallId: run.runId,
-            toolId: run.automationId,
-            execution: 'server',
-            outcome,
-            durationMs: Date.now() - startedAt,
-          },
-        },
-        pack,
-        run,
-        activePageRef(session),
-      );
-      // skipped 对客户端按成功收尾（释放单飞锁、不停用触发器），但在审计里与 ok 分开——
-      // 「本轮没看成」和「看过、没变」是两回事，运行历史不能把前者渲染成后者（R6）。
-      const ok = outcome === 'ok' || outcome === 'skipped';
-      return {
-        ok,
-        ...(summary !== undefined ? { summary } : {}),
-        reason: ok ? 'completed' : cancelled() ? 'stopped' : 'llm-error',
-      };
-    };
-
-    const requestId = randomUUID();
-    const reported = waitForSnapshot(sessionId, requestId);
-    broadcast(sessionId, { type: 'snapshot-request', sessionId, requestId });
-    const report = await reported;
-    if (report === null) return settle('timeout');
-    if (cancelled()) return settle('error');
-    // 上报 URL 不可解析＝客户端上报畸形，是真故障，不能与「切了页」混为一谈。
-    if (watchPageKey(report.url) === null) return settle('error');
-    // 上报的页不是被监测页：不更新基线、不产报告（不可采信客户端上报，U7）。
-    // 这不是故障——用户在派发与取快照之间切了页、站点回写了参数都会走到这里，
-    // 记成失败会让客户端把触发器整条停用，一次页内点击就毁掉用户的监测；
-    // 但也不是「无变化」，故单列 skipped，运行历史据此区分「没看成」与「看过没变」。
-    if (!isWatchWorkPage(watch.url, report.url)) return settle('skipped');
-    const snapshot = watchSnapshotOf(
-      report.url,
-      report.title ?? '',
-      redactSnapshotValues(report.elements),
-      report.notices ?? [],
-    );
-    // 基线按 (subject, watchId, 被监测页) 归并：改指目标页不与旧页比对，避免虚假「新增/消失」报告。
-    const baselineKey = JSON.stringify([claims.tenant, claims.hostUserId, watch.id, watchPageKey(watch.url)]);
-    const previous = watchBaselines.get(baselineKey);
-    // 基线推进（LRU 上界防无界增长）：首轮与无变化轮即刻推进；有变化轮推迟到报告成功之后——
-    // 否则报告失败会把已检出的变化连同基线一起吞掉，该变化永不再报（R6）。
-    const advanceBaseline = (): void => {
-      if (watchBaselines.size >= WATCH_BASELINE_MAX && !watchBaselines.has(baselineKey)) {
-        const oldest = watchBaselines.keys().next().value;
-        if (oldest !== undefined) watchBaselines.delete(oldest);
-      }
-      watchBaselines.delete(baselineKey);
-      watchBaselines.set(baselineKey, snapshot);
-    };
-    // 首轮只建基线（无可比对上轮）；无变化不打扰面板，只留审计——两者都不产报告。
-    if (previous === undefined) {
-      advanceBaseline();
-      return settle('ok');
-    }
-    const change = diffWatchSnapshots(previous, snapshot);
-    if (!hasWatchChange(change)) {
-      advanceBaseline();
-      return settle('ok');
-    }
-    const summary = changeSummary(change);
-
-    recordEvent(
-      sessionId,
-      claims,
-      featureId,
-      {
-        type: 'assembly',
-        data: {
-          snapshotVersion: composed.snapshotVersion,
-          featureId,
-          toolIds: [],
-          skillIds: composed.skills.map((skill) => skill.id),
-          ...(composed.userConfigRevision !== undefined
-            ? { userConfigRevision: composed.userConfigRevision }
-            : {}),
-          ...(composed.userConfigStale === true ? { userConfigStale: true as const } : {}),
-          ...(composed.userConfigDegraded !== undefined
-            ? { userConfigDegraded: composed.userConfigDegraded }
-            : {}),
-          ...(composed.packDisabled === true ? { packDisabled: true as const } : {}),
-          ...(composed.disabledPackId !== undefined ? { disabledPackId: composed.disabledPackId } : {}),
-          ...(composed.siteDenied === true ? { siteDenied: true as const } : {}),
-        },
-      },
-      pack,
-      run,
-    );
-
-    const messages: LlmMessage[] = [
-      { role: 'system', content: systemContentFor(composed, pack, watch.url) },
-      { role: 'user', content: watchReportPrompt({ text, watch, snapshot, change, summary }) },
-    ];
-    const llmRequestId = messageId === undefined ? undefined : `${sessionId}:${messageId}`;
-    let narrated = false;
-    for (let round = 0; round < deps.maxTurnRounds; round += 1) {
-      if (cancelled()) break;
-      let call: { toolCallId: string; name: string } | null = null;
-      let failed = false;
-      for await (const event of deps.llm.chat({
-        messages,
-        ...(llmRequestId !== undefined ? { requestId: llmRequestId } : {}),
-      })) {
-        if (cancelled()) break;
-        if (event.kind === 'text-delta') {
-          broadcast(sessionId, { type: 'text-delta', sessionId, delta: event.delta });
-        } else if (event.kind === 'tool-call') {
-          call = { toolCallId: event.toolCallId, name: event.name };
-          break;
-        } else if (event.kind === 'done' && event.stopReason === 'error') {
-          failed = true;
-        }
-      }
-      if (call === null) {
-        narrated = !failed;
-        break;
-      }
-      // 只读强制的机械拒绝：本轮不存在放行分支，工具名是否在任何 pack 工具面内都不改变结论。
-      recordEvent(
-        sessionId,
-        claims,
-        featureId,
-        {
-          type: 'tool-decision',
-          data: {
-            toolCallId: call.toolCallId,
-            toolId: call.name,
-            riskTier: (await getToolTiers()).get(call.name) ?? 'forbidden',
-            verdict: 'deny',
-            reason: '无人值守只读自动回合：本轮工具面为空，任何工具调用一律拒绝且不执行',
-            unattendedReadOnly: true,
-          },
-        },
-        pack,
-        run,
-        activePageRef(session),
-      );
-      messages.push({
-        role: 'user',
-        content: `（系统提示）本轮是无人值守的只读监测回合，工具 ${call.name} 的调用已被服务端拒绝，不会执行，也没有人可以确认它。请仅依据上文内容如实汇报本轮变化，不要再发起任何工具调用。`,
-      });
-    }
-    // 报告成功才推进基线：失败轮保留上轮基线，同一变化下轮仍会被检出并再报一次。
-    if (narrated) advanceBaseline();
-    return settle(narrated ? 'ok' : 'error', summary);
+    return { reason: turnReason };
   }
 
   async function handleFrames(
@@ -3414,65 +3145,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
       }
       case 'user-message': {
         const runtime = runtimeOf(session.sessionId);
-        // watch 归属判定先于一切回合登记（adr-021）：不可运行的实例不占幂等位、不产任何帧。
-        // 存储读失败时不得回落普通回合——那会让 watch id 拿到完整工具面，只读强制被绕过（fail-closed）。
-        let watchRun: UserOverlayWatch | null = null;
-        // 自动回合的两个标识必须同行：只带 automationRunId 的帧若被当普通回合放行，
-        // 无人值守轮次即拿到完整工具面——归属判定的入口不能由客户端自愿声明与否决定。
-        if (upstream.automationRunId !== undefined && upstream.automationId === undefined) {
-          sendJson(res, 400, { error: '自动回合缺少 automationId，未启动回合' });
-          return;
-        }
-        // 快捷提问只服务用户轮：无人值守轮的问法由模板决定，两者同发即语义冲突。
-        // 拒绝而不是丢掉其中一个——静默丢弃会让客户端以为它发出去的那条生效了。
-        if (upstream.quickActionId !== undefined && upstream.automationId !== undefined) {
-          sendJson(res, 400, { error: '自动回合不接受快捷提问，未启动回合' });
-          return;
-        }
-        // 上面的守卫使两者同在同缺，绑成一个值让后续无须各自兜底。
-        const automationRun =
-          upstream.automationRunId !== undefined && upstream.automationId !== undefined
-            ? { runId: upstream.automationRunId, automationId: upstream.automationId }
-            : null;
-        if (upstream.automationId !== undefined) {
-          // pack 声明的自动化取自装配快照（L1），其合法性与 L2 存储是否装配无关——
-          // 把这一判定挂在可选依赖上会让拒绝面随组装方式漂移。
-          const packDeclared = (await deps.assembly.listAutomations()).some(
-            (descriptor) => descriptor.automation.id === upstream.automationId,
-          );
-          if (!packDeclared && deps.userConfig === undefined) {
-            sendJson(res, 403, { error: '未启用用户配置存储，无法确认自动化实例，未启动自动回合' });
-            return;
-          }
-          if (!packDeclared && deps.userConfig !== undefined) {
-            let overlay: UserOverlay | null;
-            let stale = false;
-            try {
-              const read = await deps.userConfig.store.read(subjectOf(claims));
-              overlay = read.overlay;
-              stale = read.stale === true;
-            } catch {
-              sendJson(res, 503, { error: '用户配置暂不可用，未启动自动回合' });
-              return;
-            }
-            const resolution = resolveWatchRun(overlay, upstream.automationId);
-            // 未解析出 watch 且不是 pack 声明的自动化：一律拒绝，绝不回落普通回合——
-            // 无人值守轮次拿到完整工具面即 R7 失守。
-            if (resolution.kind === 'none') {
-              sendJson(res, stale ? 503 : 403, {
-                error: stale
-                  ? '用户配置为降级快照，无法确认自动化实例，未启动自动回合'
-                  : '未知自动化实例，未启动自动回合',
-              });
-              return;
-            }
-            if (resolution.kind === 'blocked') {
-              sendJson(res, 403, { error: `自动化实例不可运行：${resolution.reason}` });
-              return;
-            }
-            if (resolution.kind === 'ready') watchRun = resolution.watch;
-          }
-        }
         /**
          * 快捷提问（R-5）：受理处只把 id 与选区正文原样带下去，展开在回合内按本轮 compose 的
          * 生效 pack 查表——模板只替换用户轮消息正文，system 注入、工具面与任何判定都不受其影响（U8）。
@@ -3519,13 +3191,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
             if (completed !== undefined) deps.store.setMessageTurn(session.sessionId, completed[0], null);
           }
         }
-        if (automationRun !== null) {
-          if (runtime.automationRuns.has(automationRun.runId)) {
-            sendJson(res, 409, { error: '自动扫描轮次已存在' });
-            return;
-          }
-          runtime.automationRuns.set(automationRun.runId, { status: 'running', updatedAt: Date.now() });
-        }
         runtime.pendingTurns += 1;
         if (upstream.messageId !== undefined) runtime.activeMessageIds.add(upstream.messageId);
         // 回合终止原因随完成帧下发；回合内部异常（catch 分支）无原因可言，缺省即不标注。
@@ -3533,64 +3198,15 @@ export function createGateway(deps: GatewayDeps): Gateway {
         runtime.turnChain = runtime.turnChain
           .then(async () => {
             runtime.runningMessageId = upstream.messageId ?? null;
-            try {
-              // watch run 的变化摘要随完成帧呈现（R6）：无变化轮不带 summary，面板据此不打扰用户。
-              let summary: string | undefined;
-              let succeeded: boolean;
-              if (watchRun !== null) {
-                const result = await runWatchTurn(
-                  session,
-                  claims,
-                  watchRun,
-                  { runId: automationRun?.runId ?? randomUUID(), automationId: watchRun.id },
-                  upstream.text,
-                  upstream.messageId,
-                );
-                succeeded = result.ok;
-                summary = result.summary;
-                turnReason = result.reason;
-              } else {
-                const result = await runTurn(
-                  session,
-                  upstream.text,
-                  claims,
-                  upstream.executionPreference ?? 'auto',
-                  upstream.messageId,
-                  automationRun,
-                  quickActionRequest,
-                );
-                succeeded = result.ok;
-                turnReason = result.reason;
-              }
-              if (automationRun !== null) {
-                runtime.automationRuns.set(automationRun.runId, {
-                  status: succeeded ? 'succeeded' : 'failed',
-                  updatedAt: Date.now(),
-                });
-                broadcast(session.sessionId, {
-                  type: 'tool-card',
-                  sessionId: session.sessionId,
-                  toolCallId: automationRun.runId,
-                  toolId: automationRun.automationId,
-                  status: succeeded ? 'succeeded' : 'failed',
-                  ...(summary !== undefined ? { summary } : {}),
-                  mode: 'server',
-                });
-              }
-            } catch (cause) {
-              if (automationRun !== null) {
-                runtime.automationRuns.set(automationRun.runId, { status: 'failed', updatedAt: Date.now() });
-                broadcast(session.sessionId, {
-                  type: 'tool-card',
-                  sessionId: session.sessionId,
-                  toolCallId: automationRun.runId,
-                  toolId: automationRun.automationId,
-                  status: 'failed',
-                  mode: 'server',
-                });
-              }
-              throw cause;
-            }
+            const result = await runTurn(
+              session,
+              upstream.text,
+              claims,
+              upstream.executionPreference ?? 'auto',
+              upstream.messageId,
+              quickActionRequest,
+            );
+            turnReason = result.reason;
           })
           .catch((cause) => {
             // 回合内部异常不外泄细节（SEC-04）：客户端只见类别，明细留本地日志
@@ -3832,15 +3448,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
     sendJson(res, 200, description);
   }
 
-  function handleAutomationRun(res: ServerResponse, session: SessionState, runId: string): void {
-    const run = runtimeOf(session.sessionId).automationRuns.get(runId);
-    if (run === undefined) {
-      sendJson(res, 404, { error: '自动扫描轮次不存在' });
-      return;
-    }
-    sendJson(res, 200, run);
-  }
-
   function handleTurnState(res: ServerResponse, session: SessionState): void {
     sendJson(res, 200, { running: runtimeOf(session.sessionId).pendingTurns > 0 });
   }
@@ -4019,28 +3626,12 @@ export function createGateway(deps: GatewayDeps): Gateway {
       sendJson(res, 404, { error: '未知路由' });
       return;
     }
-    if (pathname === '/v1/automation-descriptors' && req.method === 'GET') {
-      // adr-019：pack 声明的周期自动化描述符（纯调度/提示词数据）；客户端据此调度 alarm 与渲染开关，治理仍全在服务端。
-      sendJson(res, 200, { descriptors: await deps.assembly.listAutomations() });
-      return;
-    }
     if (pathname === '/v1/packs' && req.method === 'GET') {
       // 配置中心 L1 数据源：已安装 pack 的展示投影（只读、无副作用）；L2 关停/收紧状态走 /v1/user-config。
       sendJson(res, 200, { packs: await deps.assembly.listPacks() });
       return;
     }
-    const automationMatch = /^\/v1\/sessions\/([^/]+)\/automation-runs\/([^/]+)$/.exec(pathname);
     const match = /^\/v1\/sessions\/([^/]+)\/(frames|events|injection|turn-state|stop)$/.exec(pathname);
-    if (automationMatch && req.method === 'GET') {
-      const sessionId = decodeURIComponent(automationMatch[1]!);
-      const session = deps.store.get(sessionId);
-      if (!session || session.ownerSub !== claims.sub) {
-        sendJson(res, 404, { error: '会话不存在' });
-        return;
-      }
-      deps.store.refreshClaims(sessionId, claims);
-      return handleAutomationRun(res, session, decodeURIComponent(automationMatch[2]!));
-    }
     if (match) {
       const sessionId = decodeURIComponent(match[1]!);
       const session = deps.store.get(sessionId);

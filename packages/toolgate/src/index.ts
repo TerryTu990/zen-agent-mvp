@@ -65,8 +65,6 @@ const DEFAULT_HITL_GRANT_TTL_MS = 900000;
 const DEFAULT_NONCE_STORE_MAX = 10000;
 /** 客户端解释器对用户点「停止」的约定错误串：命中即吊销本会话的全部任务授权。 */
 const USER_STOPPED_ERROR = 'user-stopped';
-/** 无人值守回合命中需确认档的拒绝归因（adr-024 D1）：审计据此机械检验「无人在场没有静默执行」。 */
-const HITL_UNATTENDED_REASON = 'hitl-unattended';
 /**
  * 批准在恢复执行前已不成立的拒绝归因前缀（adr-024 D3）：以 `approval-stale:<底层依据>` 形态返回，
  * 使「批准已失效」可按前缀机械检验，同时保留具体依据供 agent 如实转述与审计定位（R6 / SEC-04：
@@ -749,8 +747,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       if (input.toolId === SITE_NAVIGATE_TOOL_ID || input.toolId === OPEN_URL_TOOL_ID) {
         const navChecked = validateBuiltinNavigation(input);
         if ('reason' in navChecked) return deny(navChecked.reason);
-        // 无人值守回合：导航同属需确认项，且不消费任务级授权（adr-024 D1）。
-        if (input.unattended === true) return deny(HITL_UNATTENDED_REASON);
         const navTask = input.params['task'];
         if (typeof navTask === 'string' && consumeGrant(input, navTask)) {
           return { verdict: 'allow' };
@@ -764,25 +760,20 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       // 敏感控件写入（密码框/文件选择）：批次不因静态档为 auto 而免确认，也不消费任务级授权——
       // 「同任务此前批准过」不构成对下一次敏感写入的知情同意。
       if (sensitiveFill === true) {
-        if (input.unattended === true) return deny(HITL_UNATTENDED_REASON);
         return { verdict: 'hitl', ...hitlDisplay(steps) };
       }
       // 任务级授权（跨工具共享）：带 task 且同作用域该任务已获批未闲置过期 → 放行（一任务一确认）。
       // 复用判定必须在 dom 步骤校验之后——已授权任务的非法批次仍 deny（U7 fail-closed）；
-      // every-call 工具跳过复用查询（对外不可撤回动作次次单独确认，不复用授权）；
-      // 无人值守回合一律不查授权——「同任务此前有人批准过」在无人在场时不构成放行依据（adr-024 D1）。
+      // every-call 工具跳过复用查询（对外不可撤回动作次次单独确认，不复用授权）。
       const grantTask = input.params['task'];
       if (
         riskTier === 'hitl' &&
-        input.unattended !== true &&
         tool.hitlMode !== 'every-call' &&
         typeof grantTask === 'string' &&
         consumeGrant(input, grantTask)
       ) {
         return { verdict: 'allow' };
       }
-      // R7 的服务端落点：无人在场时需确认档一律拒绝，不广播确认卡、不无界挂起等待。
-      if (riskTier === 'hitl' && input.unattended === true) return deny(HITL_UNATTENDED_REASON);
       if (riskTier === 'hitl') return { verdict: 'hitl', ...hitlDisplay(steps) };
       return { verdict: 'allow' };
     },
@@ -848,10 +839,6 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
       // 签发是治理终点：以与 decide 同一冻结的 L2 定格面独立重校验（U7，封 TOCTOU）。
       if (effectiveRiskTier(tool, input.userConfig) === 'forbidden') {
         throw new Error('签发拒绝：工具在 L2 定格面为 forbidden');
-      }
-      // 无人值守收口在签发处独立复述（adr-024 D1）：需确认档不签发，不依赖 decide 已拒的假设。
-      if (input.unattended === true && effectiveRiskTier(tool, input.userConfig) === 'hitl') {
-        throw new Error(`签发拒绝：${HITL_UNATTENDED_REASON}`);
       }
       let request: ExecRequest | DomExecRequest;
       let targetPageHandle: string | undefined;

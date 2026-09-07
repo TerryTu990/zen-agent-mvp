@@ -32,11 +32,6 @@ interface PackToolView {
   description: string;
 }
 
-interface PackAutomationView {
-  id: string;
-  defaultPeriodMinutes?: number;
-}
-
 interface PackView {
   packId: string;
   name?: string;
@@ -48,7 +43,6 @@ interface PackView {
   generic?: true;
   features: PackFeatureView[];
   tools: PackToolView[];
-  automations: PackAutomationView[];
   configSchema?: Record<string, unknown>;
 }
 
@@ -128,10 +122,9 @@ describe('GET /v1/packs（配置中心站点包页 L1 数据源）', () => {
     expect(pack.tools.every((tool) => typeof tool.description === 'string' && tool.description.length > 0)).toBe(
       true,
     );
-    expect(pack.automations).toEqual([]);
   });
 
-  it('站点包根 site-packs：xianyu-seller 版本/来源/功能/自动化声明如实透出', async () => {
+  it('站点包根 site-packs：xianyu-seller 版本/来源/功能如实透出', async () => {
     const srv = await startServer(serverOptions({ snapshotRoot: sitePacksRoot }));
     try {
       const response = await fetchPacks(`http://127.0.0.1:${srv.port}`, await signToken());
@@ -151,7 +144,6 @@ describe('GET /v1/packs（配置中心站点包页 L1 数据源）', () => {
         'xianyu-orders',
         'xianyu-fulfillment',
       ]);
-      expect(pack!.automations).toEqual([{ id: 'xianyu-auto-scan', defaultPeriodMinutes: 5 }]);
       expect(pack!.tools.map((tool) => tool.toolId)).toContain('xianyu-orders.page-operate');
       expect(pack!.tools.every((tool) => ['auto', 'hitl', 'forbidden'].includes(tool.baseTier))).toBe(true);
     } finally {
@@ -224,7 +216,6 @@ describe('GET /v1/packs（配置中心站点包页 L1 数据源）', () => {
       expect(pack.name).toBe('公司 CRM');
       expect(pack.source).toBe('local');
       expect(pack.tools).toEqual([]);
-      expect(pack.automations).toEqual([]);
       expect(pack.features.map((feature) => feature.featureId)).toEqual(['crm-notes']);
     } finally {
       await srv.close();

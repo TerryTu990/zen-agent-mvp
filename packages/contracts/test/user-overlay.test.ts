@@ -58,10 +58,7 @@ const validOverlay = {
         disabledTools: ['reply-buyer.batch-reply'],
       },
       packConfig: { greeting: '您好，感谢咨询。' },
-      preferences: {
-        verbosity: 'standard',
-        automations: { 'xianyu-auto-scan': { enabled: false, minutes: 10 } },
-      },
+      preferences: { verbosity: 'standard' },
     },
     'noisy-shop': { enabled: false },
   },

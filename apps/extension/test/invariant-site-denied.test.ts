@@ -11,7 +11,6 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { pageHandlesKeyForGroup, sessionKeyForGroup, zenGroupKey } from '../src/activation.js';
-import { AUTOMATION_DESCRIPTORS_KEY, autoScanAlarmFor, autoScanEnabledKeyFor } from '../src/auto-scan.js';
 import type { DownstreamFrame, ExecInstructionFrame, GroupPagesFrame, UpstreamFrame } from '../src/frames.js';
 import { SITE_DENYLIST_KEY } from '../src/site-denylist.js';
 import {
@@ -29,7 +28,6 @@ const WINDOW_ID = 1;
 const DENIED_ENTRY = 'https://bank.example';
 const DENIED_URL = 'https://bank.example/accounts';
 const ALLOWED_URL = 'https://shop.example/orders';
-const AUTOMATION_ID = 'bank-watch';
 /** 只有本页才拿得到的内容：任何一帧把它带出去即为不变量破裂的可读证据。 */
 const PAGE_ONLY_CANARY = '账户余额 123456';
 
@@ -41,18 +39,6 @@ const mappedGroup: Record<string, unknown> = {
   [zenGroupKey(GROUP_ID)]: true,
   // 句柄表预置：定向下行帧的落点反查依赖它，且早于首次组清单对齐（300ms 防抖）。
   [pageHandlesKeyForGroup(GROUP_ID)]: { nextSeq: 3, byTab: { '11': 'p1', '12': 'p2' } },
-};
-
-const automationDescriptor = {
-  packId: 'user-watch',
-  origin: DENIED_ENTRY,
-  automation: {
-    id: AUTOMATION_ID,
-    prompt: '只读巡检当前页面',
-    workRoutes: ['/accounts'],
-    executionPreference: 'dom-only',
-    defaultPeriodMinutes: 15,
-  },
 };
 
 interface Scene {
@@ -71,8 +57,6 @@ async function sceneAfterDenylisting(): Promise<Scene> {
     tabs: [deniedTab, allowedTab],
     storageSession: { ...mappedGroup },
   });
-  h.local[AUTOMATION_DESCRIPTORS_KEY] = [automationDescriptor];
-  h.local[autoScanEnabledKeyFor(AUTOMATION_ID)] = true;
   const denied = h.connectContent(deniedTab);
   const allowed = h.connectContent(allowedTab);
   const panel = h.connectPanel(GROUP_ID);
@@ -130,11 +114,6 @@ interface UpstreamCase {
   emit(scene: Scene): Promise<void>;
 }
 
-async function fireAutomation(scene: Scene): Promise<void> {
-  scene.h.emitAlarm(autoScanAlarmFor(AUTOMATION_ID));
-  await settle(20);
-}
-
 const UPSTREAM_CASES: Record<UpstreamFrame['type'], UpstreamCase[]> = {
   'context-report': [
     {
@@ -144,11 +123,6 @@ const UPSTREAM_CASES: Record<UpstreamFrame['type'], UpstreamCase[]> = {
         denied.emit({ kind: 'context-report', url: DENIED_URL, title: PAGE_ONLY_CANARY });
         await settle();
       },
-    },
-    {
-      name: '周期自动化的工作页上下文同步',
-      origin: 'denied-page',
-      emit: fireAutomation,
     },
   ],
   'snapshot-report': [
@@ -191,11 +165,6 @@ const UPSTREAM_CASES: Record<UpstreamFrame['type'], UpstreamCase[]> = {
     },
   ],
   'user-message': [
-    {
-      name: '周期自动化的无人值守回合提示词',
-      origin: 'denied-page',
-      emit: fireAutomation,
-    },
     {
       name: '用户在面板里发言',
       origin: 'other-source',

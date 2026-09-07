@@ -123,7 +123,7 @@ describe('packs 作用域键规模上界（maxProperties=100，含 "*"）', () =
         rules: entries(3, 'r'),
         facts: entries(1, 'f'),
         restrictions: { riskTierRaise: { 'xianyu-orders.page-operate': 'forbidden' } },
-        preferences: { automations: { 'xianyu-auto-scan': { enabled: false } } },
+        preferences: { verbosity: 'detailed' },
       },
       'noisy-shop': { enabled: false },
     });

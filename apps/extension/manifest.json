@@ -37,7 +37,6 @@
     "sidePanel",
     "tabGroups",
     "tabs",
-    "alarms",
     "contextMenus"
   ],
   "commands": {

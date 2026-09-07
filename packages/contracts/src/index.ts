@@ -75,7 +75,6 @@ export type {
   PackCapabilities,
   PackIntegrity,
   PackManifest,
-  PackAutomation,
   PackSource,
   RegistryPackEntry,
   RegistryManifest,
@@ -109,13 +108,6 @@ export {
   stripInvisibleFormatChars,
   stripDisplayUnsafeChars,
 } from './untrusted.js';
-export type { AutomationTemplateId, PlatformAutomationTemplate } from './automation-template.js';
-export {
-  PLATFORM_AUTOMATION_TEMPLATES,
-  PLATFORM_MIN_WATCH_MINUTES,
-  WATCH_FOCUS_MAX_LENGTH,
-  findAutomationTemplate,
-} from './automation-template.js';
 export type {
   UserConfigSubject,
   UserOverlayEntryOrigin,
@@ -123,17 +115,14 @@ export type {
   UserOverlayRiskTierRaise,
   UserOverlayRestrictions,
   UserOverlayVerbosity,
-  UserOverlayAutomationPreference,
   UserOverlayPackPreferences,
   UserOverlayGlobalScope,
   UserOverlayPackScope,
-  UserOverlayWatch,
   UserOverlay,
   UserOverlayValidationIssue,
   ValidateUserOverlayOptions,
   UserOverlayValidationResult,
   UserOverlayL1ToolBaseline,
-  UserOverlayL1AutomationBaseline,
   UserOverlayL1Baseline,
 } from './user-overlay.js';
 export { validateUserOverlay, validateOverlayAgainstL1, compileConfigSchema } from './user-overlay.js';
@@ -153,10 +142,8 @@ export type {
   ReadPackDocResult,
   SiteDescriptor,
   ToolOwnership,
-  AutomationDescriptor,
   PackFeatureDescriptor,
   PackToolDescriptor,
-  PackAutomationDescriptor,
   PackDescriptor,
   AssemblyPort,
   DomGateContext,

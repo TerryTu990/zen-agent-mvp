@@ -4,7 +4,7 @@
  */
 import semver from 'semver';
 
-export const contractVersion = '1.0.0';
+export const contractVersion = '2.0.0';
 
 export type ContractCompatibility =
   | { compatible: true }

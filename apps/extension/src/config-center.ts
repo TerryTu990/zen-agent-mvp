@@ -1,5 +1,5 @@
 /**
- * 配置中心（options 页）四页：站点包 / 个人定制 / 自动化 / 全局设置。
+ * 配置中心（options 页）三页：站点包 / 个人定制 / 全局设置。
  * L1 只读投影取自 GET /v1/packs；L2 编辑面读写 /v1/user-config（?expectedRevision= 乐观并发，
  * 409 即重载后由用户复核重提）。治理语义在 UI 层机械成立：低于 pack 基线的档位不可选（只收紧）、
  * 条目逐条标来源与作用域、未开放能力置灰且不做假跳转。
@@ -7,14 +7,6 @@
  * 服务端契约类型在此手抄镜像——插件不依赖 @zen-agent/*（U5）。
  */
 
-import {
-  MAX_AUTO_SCAN_MINUTES,
-  MAX_WATCHES,
-  PLATFORM_MIN_WATCH_MINUTES,
-  WATCH_FOCUS_MAX_LENGTH,
-  WATCH_TEMPLATE_IDS,
-  type WatchTemplateId,
-} from './auto-scan.js';
 import { EXECUTION_PREFERENCE_OPTIONS } from './execution-preference.js';
 import {
   MAX_QUICK_ACTIONS_PER_SCOPE,
@@ -45,11 +37,6 @@ export interface PackToolView {
   description: string;
 }
 
-export interface PackAutomationView {
-  id: string;
-  defaultPeriodMinutes?: number;
-}
-
 /** L1 声明的快捷提问在配置中心的投影：只用于「显示/停用」开关，故不取模板（不持第二份副本）。 */
 export interface PackQuickActionView {
   id: string;
@@ -77,7 +64,6 @@ export interface PackView {
   generic?: true;
   features: PackFeatureView[];
   tools: PackToolView[];
-  automations: PackAutomationView[];
   configSchema?: Record<string, unknown>;
   /** pack 预置的快捷提问；未声明时省略。 */
   quickActions?: PackQuickActionView[];
@@ -95,11 +81,6 @@ export interface OverlayEntryView {
   origin: OverlayEntryOrigin;
   sourceSessionId?: string;
   createdAt: string;
-}
-
-export interface OverlayAutomationPreferenceView {
-  enabled: boolean;
-  minutes?: number;
 }
 
 /**
@@ -124,25 +105,12 @@ export interface OverlayScopeView {
   packConfig?: Record<string, unknown>;
   preferences?: {
     verbosity?: Verbosity;
-    automations?: Record<string, OverlayAutomationPreferenceView>;
   };
 }
-
-/** 用户自建触发器（adr-021）：平台内建模板 id + 参数，跨站点故居 overlay 顶层。 */
-export interface UserOverlayWatchView {
-  id: string;
-  templateId: string;
-  url: string;
-  minutes: number;
-  enabled: boolean;
-  focus?: string;
-}
-
 export interface UserOverlayView {
   schemaVersion: 1;
   subject: UserConfigSubjectView;
   packs: Record<string, OverlayScopeView>;
-  watches?: UserOverlayWatchView[];
 }
 
 export interface ConfigCenterDeps {
@@ -161,10 +129,6 @@ export interface ConfigCenterDeps {
    * 缺省 = 不切换本页请求基址（仅落盘，下次开页由宿主归一）——令牌绝不发往未归一地址。
    */
   normalizeBaseUrl?(value: string): string | null;
-  /** 本地调度存储（background alarm 数据源）现存的自动化偏好：L2 未声明该项时的回显来源。 */
-  localAutomations?: Record<string, { enabled?: boolean; minutes?: number }>;
-  /** 把面板上的自动化偏好全量镜像回本地调度存储；缺省 = 只写 L2。 */
-  saveAutomations?(prefs: Record<string, { enabled: boolean; minutes: number }>): Promise<void>;
   /**
    * 把保存后的站点黑名单全量镜像回本机存储（background 激活判定的数据源）；缺省 = 只写 L2，
    * 本机侧要等下次冷启动重拉才收紧。
@@ -216,15 +180,12 @@ const VERBOSITY_LABEL: Record<Verbosity, string> = {
   detailed: '详细',
 };
 const TIERS: RiskTier[] = ['auto', 'hitl', 'forbidden'];
-const WATCH_TEMPLATE_LABEL: Record<WatchTemplateId, string> = { 'page-watch': '页面变化监测' };
-const PLATFORM_MIN_PERIOD_MINUTES = 1;
 /** 状态行呈现的服务端 issues 条数上限（超出以计数收尾）。 */
 const ISSUE_DISPLAY_LIMIT = 5;
 const GLOBAL_SCOPE = '*';
 const TABS: { id: string; label: string }[] = [
   { id: 'packs', label: '站点包' },
   { id: 'overlay', label: '个人定制' },
-  { id: 'automation', label: '自动化' },
   { id: 'global', label: '全局设置' },
 ];
 
@@ -234,11 +195,6 @@ class UntrustedBaseUrlError extends Error {}
 /** R1 只收紧：候选档位不严于 pack 基线即不可选。 */
 export function isTierSelectable(baseTier: RiskTier, candidate: RiskTier): boolean {
   return TIER_ORDER[candidate] >= TIER_ORDER[baseTier];
-}
-
-/** 周期下限 = max(pack 预设, 平台下限)；频率只收紧。 */
-export function minPeriodMinutes(defaultPeriodMinutes?: number): number {
-  return Math.max(defaultPeriodMinutes ?? PLATFORM_MIN_PERIOD_MINUTES, PLATFORM_MIN_PERIOD_MINUTES);
 }
 
 /** 读取失败的人读化：与保存路径分开——读路径没有提交动作，不得复用保存/重提文案。 */
@@ -348,27 +304,6 @@ function clonePacks(overlay: UserOverlayView | null): Record<string, OverlayScop
     : (JSON.parse(JSON.stringify(overlay.packs)) as Record<string, OverlayScopeView>);
 }
 
-interface AutomationDraft {
-  packId: string;
-  enabled: boolean;
-  /** true = L2 记为启用但本机因异常暂停（须用户显式重开）。 */
-  pausedLocally?: boolean;
-  minutes: number;
-  minMinutes: number;
-}
-
-/** 用户自建触发器的待保存态；focus 空串 = 未设关注点（写回时省略该键）。 */
-interface WatchDraft {
-  id: string;
-  templateId: WatchTemplateId;
-  url: string;
-  minutes: number;
-  enabled: boolean;
-  focus: string;
-  /** true = L2 记为启用但本机因异常暂停（须用户显式重开）。 */
-  pausedLocally?: boolean;
-}
-
 interface CenterState {
   packs: PackView[];
   /** 服务端当前 overlay 的 packs 深拷贝：未在面板暴露的字段（facts/packConfig/未安装 pack 作用域）原样保留。 */
@@ -379,10 +314,6 @@ interface CenterState {
   removedEntries: Set<string>;
   /** (packId, toolId) → 面板选定的生效档位（等于 baseTier 即无收紧）。 */
   tiers: Map<string, RiskTier>;
-  automations: Map<string, AutomationDraft>;
-  watches: WatchDraft[];
-  /** 模板闭集外（本插件版本尚不认识）的 watch：原样回传，不因面板不识别而静默删除用户配置。 */
-  foreignWatches: UserOverlayWatchView[];
   /** 空串 = 未设置，跟随站点包默认。 */
   verbosity: Verbosity | '';
   /** "*" 作用域的站点黑名单待保存态；空数组 = 无名单（写回时省略该键）。 */
@@ -442,44 +373,20 @@ function buildOverlay(state: CenterState, subject: UserConfigSubjectView): UserO
       else raise[tool.toolId] = chosen;
     }
 
-    const automations: Record<string, OverlayAutomationPreferenceView> = {
-      ...(existing?.preferences?.automations ?? {}),
-    };
-    for (const automation of pack.automations) {
-      const draft = state.automations.get(automation.id);
-      if (draft === undefined) continue;
-      if (draft.enabled || draft.minutes !== draft.minMinutes) {
-        automations[automation.id] = { enabled: draft.enabled, minutes: draft.minutes };
-      } else {
-        delete automations[automation.id];
-      }
-    }
-
-    if (Object.keys(raise).length > 0 || Object.keys(automations).length > 0 || disabledTools.length > 0) {
+    if (Object.keys(raise).length > 0 || disabledTools.length > 0) {
       const scope = ensureScope(packs, pack.packId);
-      if (Object.keys(raise).length > 0 || disabledTools.length > 0) {
-        scope.restrictions = {
-          ...scope.restrictions,
-          ...(Object.keys(raise).length > 0 ? { riskTierRaise: raise } : {}),
-          ...(disabledTools.length > 0 ? { disabledTools } : {}),
-        };
-        if (Object.keys(raise).length === 0) delete scope.restrictions.riskTierRaise;
-        if (disabledTools.length === 0) delete scope.restrictions.disabledTools;
-      }
-      if (Object.keys(automations).length > 0) {
-        scope.preferences = { ...scope.preferences, automations };
-      }
+      scope.restrictions = {
+        ...scope.restrictions,
+        ...(Object.keys(raise).length > 0 ? { riskTierRaise: raise } : {}),
+        ...(disabledTools.length > 0 ? { disabledTools } : {}),
+      };
+      if (Object.keys(raise).length === 0) delete scope.restrictions.riskTierRaise;
+      if (disabledTools.length === 0) delete scope.restrictions.disabledTools;
     }
     const scope = packs[pack.packId];
-    if (scope !== undefined) {
-      if (Object.keys(raise).length === 0 && scope.restrictions !== undefined) {
-        delete scope.restrictions.riskTierRaise;
-        if (Object.keys(scope.restrictions).length === 0) delete scope.restrictions;
-      }
-      if (Object.keys(automations).length === 0 && scope.preferences !== undefined) {
-        delete scope.preferences.automations;
-        if (Object.keys(scope.preferences).length === 0) delete scope.preferences;
-      }
+    if (scope !== undefined && Object.keys(raise).length === 0 && scope.restrictions !== undefined) {
+      delete scope.restrictions.riskTierRaise;
+      if (Object.keys(scope.restrictions).length === 0) delete scope.restrictions;
     }
   }
 
@@ -505,20 +412,7 @@ function buildOverlay(state: CenterState, subject: UserConfigSubjectView): UserO
     if (Object.keys(scope).length === 0) delete packs[key];
   }
 
-  const watches: UserOverlayWatchView[] = [
-    ...state.foreignWatches,
-    ...state.watches.map((draft) => ({
-      id: draft.id,
-      templateId: draft.templateId,
-      url: draft.url.trim(),
-      minutes: draft.minutes,
-      enabled: draft.enabled,
-      ...(draft.focus.trim() === '' ? {} : { focus: draft.focus.trim() }),
-    })),
-  ];
-
-  // 删空时省略 watches 键：契约的 watchList minItems=1，空数组会被写入期拒收。
-  return { schemaVersion: 1, subject, packs, ...(watches.length > 0 ? { watches } : {}) };
+  return { schemaVersion: 1, subject, packs };
 }
 
 export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): ConfigCenterHandle {
@@ -530,9 +424,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     disabled: new Set(),
     removedEntries: new Set(),
     tiers: new Map(),
-    automations: new Map(),
-    watches: [],
-    foreignWatches: [],
     verbosity: '',
     siteDenylist: [],
     grantedOrigins: [],
@@ -997,260 +888,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     return wrap;
   }
 
-  // ---- 自动化页 ----
-
-  function renderAutomationPanel(): void {
-    const panel = panelOf('automation');
-    const create = el('button', 'za-cc-btn za-cc-btn-primary za-cc-watch-create', '新建触发器');
-    create.type = 'button';
-    create.disabled = state.watches.length + state.foreignWatches.length >= MAX_WATCHES;
-    if (create.disabled) create.title = `每人最多 ${MAX_WATCHES} 个自建触发器`;
-    create.addEventListener('click', () => {
-      state.watches.push({
-        id: nextWatchId(),
-        templateId: 'page-watch',
-        url: '',
-        minutes: PLATFORM_MIN_WATCH_MINUTES,
-        enabled: true,
-        focus: '',
-      });
-      renderAutomationPanel();
-    });
-    panel.replaceChildren(
-      pageHead('自动化', '按周期替你查看已打开的工作页；无人值守的轮次只读不写。', [create]),
-      notice('无人值守任务不允许自动执行不可撤销的写操作——平台底线，不可配置。', 'lock'),
-      notice(
-        '自动化需先授权站点：Zen 默认不进入任何页面，未授权的站点到点不跑，也不发提示（每行给出授权入口）。' +
-          '周期自动化只唤醒已打开且已加入会话组的声明工作页，不会自动新建页面。' +
-          '你自建的触发器在目标页未打开、或当前地址与监测地址不一致时只跳过本轮；站点包自动化在离开工作流后会自动停止。' +
-          '落在「不辅助的站点」名单内的页面上，两类触发器到点一律不跑，也不发提示——触发器仍显示为启用，等的是你把该站点移出名单。',
-      ),
-    );
-    if (state.loadError !== null) {
-      panel.append(notice(state.loadError, 'warn'));
-      return;
-    }
-    for (const pack of state.packs.filter((candidate) => candidate.automations.length > 0)) {
-      const group = section(`${packLabel(pack, pack.packId)}${pack.origin === undefined ? '' : ` · ${pack.origin}`}`);
-      for (const automation of pack.automations) {
-        group.append(renderAutomationRow(pack, automation));
-      }
-      panel.append(group);
-    }
-    panel.append(renderWatchSection());
-  }
-
-  /** 新触发器 id：与既有 watch 及站点包自动化 id 都不撞名（撞名写入期拒收，且回合归属不可判定）。 */
-  function nextWatchId(): string {
-    const taken = new Set([
-      ...state.watches.map((draft) => draft.id),
-      ...state.foreignWatches.map((watch) => watch.id),
-      ...state.packs.flatMap((pack) => pack.automations.map((automation) => automation.id)),
-    ]);
-    for (let index = 1; ; index += 1) {
-      const candidate = `watch-${index}`;
-      if (!taken.has(candidate)) return candidate;
-    }
-  }
-
-  function renderWatchSection(): HTMLElement {
-    const group = section('任意站点 · 无需站点包');
-    group.classList.add('za-cc-watches');
-    group.append(
-      el(
-        'p',
-        'za-cc-hint',
-        `平台通用模板：${WATCH_TEMPLATE_LABEL['page-watch']}——按周期读取你已打开并加入会话组的目标页，与上轮快照比对；有变化时在侧边栏汇报，无变化不打扰。平台不会自动新建页面，目标页需保持打开。当前比对的是可交互要素、表格与列表项、页面提示文本与标题；普通段落正文里的纯文字改动（如内嵌的价格数字）暂时检不出，此类页面可能长期无汇报。`,
-      ),
-    );
-    if (state.watches.length === 0 && state.foreignWatches.length === 0) {
-      group.append(el('p', 'za-cc-empty', '尚未创建自建触发器。'));
-      return group;
-    }
-    for (const draft of state.watches) group.append(renderWatchRow(draft));
-    for (const watch of state.foreignWatches) {
-      const row = el('div', 'za-cc-watch za-cc-watch-foreign');
-      row.dataset['zaWatchId'] = watch.id;
-      const main = el('div', 'za-cc-row-main');
-      main.append(el('span', 'za-cc-automation-name', watch.id), badge('za-cc-badge-kind', `模板 ${watch.templateId}`));
-      const notes = el('div', 'za-cc-row-notes');
-      notes.append(
-        el('span', 'za-cc-hint', '该模板本插件版本尚不认识，保持原样不作改动；升级插件后可在此编辑。'),
-      );
-      row.append(main, notes);
-      group.append(row);
-    }
-    return group;
-  }
-
-  /**
-   * 自动化行的站点授权入口（两种行共用）：自动化是无手势唤醒，未授权该 origin 时到点根本注入不进去，
-   * 且不发任何提示——不就地给出授权入口，这一行等于承诺了一份永远不来的周期汇报。
-   * origin 为 null（地址尚未填好/不可解析/pack 未声明站点围栏）时不给入口：无从判定要授权哪个站点。
-   */
-  function appendGrantEntry(notes: HTMLElement, origin: string | null): void {
-    if (origin === null || originAuthorized(origin)) return;
-    const grant = el('button', 'za-cc-btn za-cc-row-grant', '授权此站点');
-    grant.type = 'button';
-    grant.addEventListener('click', () => {
-      void grantOrigin(origin).then((granted) => {
-        if (!granted) return;
-        renderAutomationPanel();
-        refreshGrantSection();
-      });
-    });
-    notes.append(
-      badge('za-cc-badge-warn', '站点未授权', '自动化需先授权站点：未授权时到点不跑，也不发提示'),
-      grant,
-    );
-  }
-
-  function renderWatchRow(draft: WatchDraft): HTMLElement {
-    const row = el('div', 'za-cc-watch');
-    row.dataset['zaWatchId'] = draft.id;
-
-    const enabled = el('input', 'za-cc-watch-enabled');
-    enabled.type = 'checkbox';
-    enabled.dataset['zaWatchId'] = draft.id;
-    enabled.checked = draft.enabled;
-    enabled.addEventListener('change', () => {
-      draft.enabled = enabled.checked;
-    });
-    const enabledLabel = el('label', 'za-cc-switch');
-    enabledLabel.append(enabled, el('span', 'za-cc-switch-text', '启用'));
-
-    const url = el('input', 'za-cc-watch-url');
-    url.type = 'url';
-    url.dataset['zaWatchId'] = draft.id;
-    url.placeholder = 'https://example.com/page';
-    url.value = draft.url;
-    url.addEventListener('change', () => {
-      draft.url = url.value;
-    });
-    const urlLabel = el('label', 'za-cc-field-inline');
-    urlLabel.append(el('span', undefined, '监测地址'), url);
-
-    const minutes = el('input', 'za-cc-watch-minutes');
-    minutes.type = 'number';
-    minutes.dataset['zaWatchId'] = draft.id;
-    minutes.min = String(PLATFORM_MIN_WATCH_MINUTES);
-    minutes.max = String(MAX_AUTO_SCAN_MINUTES);
-    minutes.step = '1';
-    minutes.value = String(draft.minutes);
-    minutes.addEventListener('change', () => {
-      draft.minutes = Number(minutes.value);
-    });
-    const minutesLabel = el('label', 'za-cc-field-inline');
-    minutesLabel.append(el('span', undefined, '周期（分钟）'), minutes);
-
-    const focus = el('input', 'za-cc-watch-focus');
-    focus.type = 'text';
-    focus.dataset['zaWatchId'] = draft.id;
-    focus.maxLength = WATCH_FOCUS_MAX_LENGTH;
-    focus.placeholder = '关注点（可空）';
-    focus.value = draft.focus;
-    focus.addEventListener('change', () => {
-      draft.focus = focus.value;
-    });
-    const focusLabel = el('label', 'za-cc-field-inline');
-    focusLabel.append(el('span', undefined, '关注点'), focus);
-
-    const remove = el('button', 'za-cc-btn za-cc-btn-danger za-cc-watch-remove', '删除');
-    remove.type = 'button';
-    remove.dataset['zaWatchId'] = draft.id;
-    remove.addEventListener('click', () => {
-      state.watches = state.watches.filter((candidate) => candidate !== draft);
-      renderAutomationPanel();
-    });
-
-    const main = el('div', 'za-cc-row-main');
-    main.append(
-      el('span', 'za-cc-automation-name', WATCH_TEMPLATE_LABEL[draft.templateId]),
-      badge('za-cc-badge-kind', '用户自建'),
-      badge('za-cc-badge-read', '只读', '平台强制只读工具面，无人值守回合不执行任何写操作'),
-    );
-    if (draft.pausedLocally === true) {
-      main.append(badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'));
-    }
-    main.append(enabledLabel, remove);
-
-    const fields = el('div', 'za-cc-row-fields');
-    fields.append(urlLabel, minutesLabel, focusLabel);
-
-    const notes = el('div', 'za-cc-row-notes');
-    notes.append(
-      el(
-        'span',
-        'za-cc-hint',
-        `周期 ${PLATFORM_MIN_WATCH_MINUTES}–${MAX_AUTO_SCAN_MINUTES} 分钟（下限=平台底线，只可调稀不可调密）`,
-      ),
-    );
-    appendGrantEntry(notes, originOfUrl(draft.url));
-    // 启用态 + 名单内地址 = 到点静默不跑：不标注则这一行等于承诺了一份永远不来的周期汇报。
-    if (siteDeniesUrl(state.siteDenylist, draft.url)) {
-      notes.append(
-        badge(
-          'za-cc-badge-warn',
-          '因站点名单暂不运行',
-          '监测地址在「不辅助的站点」名单内：到点不跑，也不发提示；把该站点移出名单即恢复',
-        ),
-      );
-    }
-    row.append(main, fields, notes);
-    return row;
-  }
-
-  function renderAutomationRow(pack: PackView, automation: PackAutomationView): HTMLElement {
-    const draft = state.automations.get(automation.id)!;
-    const row = el('div', 'za-cc-automation');
-    row.dataset['zaAutomationId'] = automation.id;
-
-    const enabled = el('input', 'za-cc-automation-enabled');
-    enabled.type = 'checkbox';
-    enabled.dataset['zaAutomationId'] = automation.id;
-    enabled.checked = draft.enabled;
-    enabled.addEventListener('change', () => {
-      draft.enabled = enabled.checked;
-    });
-    const enabledLabel = el('label', 'za-cc-switch');
-    enabledLabel.append(enabled, el('span', 'za-cc-switch-text', '启用'));
-
-    const minutes = el('input', 'za-cc-automation-minutes');
-    minutes.type = 'number';
-    minutes.dataset['zaAutomationId'] = automation.id;
-    minutes.min = String(draft.minMinutes);
-    minutes.max = String(MAX_AUTO_SCAN_MINUTES);
-    minutes.step = '1';
-    minutes.value = String(draft.minutes);
-    minutes.addEventListener('change', () => {
-      draft.minutes = Number(minutes.value);
-    });
-    const minutesLabel = el('label', 'za-cc-field-inline');
-    minutesLabel.append(el('span', undefined, '周期（分钟）'), minutes);
-
-    const main = el('div', 'za-cc-row-main');
-    main.append(el('span', 'za-cc-automation-name', automation.id), badge('za-cc-badge-kind', '站点包预置'));
-    if (draft.pausedLocally === true) {
-      main.append(badge('za-cc-badge-paused', '本机已暂停', '自动轮次异常后本机暂停，需在此显式重新启用'));
-    }
-    main.append(enabledLabel);
-
-    const fields = el('div', 'za-cc-row-fields');
-    fields.append(minutesLabel);
-
-    const notes = el('div', 'za-cc-row-notes');
-    notes.append(
-      el(
-        'span',
-        'za-cc-hint',
-        `周期 ${draft.minMinutes}–${MAX_AUTO_SCAN_MINUTES} 分钟（下限=站点包预设，只可调稀不可调密）`,
-      ),
-    );
-    appendGrantEntry(notes, pack.origin !== undefined && isGrantedOriginEntry(pack.origin) ? pack.origin : null);
-    row.append(main, fields, notes);
-    return row;
-  }
-
   // ---- 全局设置页 ----
 
   let baseUrlInput: HTMLInputElement | null = null;
@@ -1490,7 +1127,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     return state.grantedOrigins.includes(origin) && localOriginAccess.get(origin) !== false;
   }
 
-  /** 已授权集在本机的实际状态重探；有变动才重渲（授权面与自动化页同判据，须一并更新）。 */
+  /** 已授权集在本机的实际状态重探；有变动才重渲。 */
   async function syncLocalOriginAccess(): Promise<void> {
     const probe = deps.hasOriginAccess;
     if (probe === undefined) return;
@@ -1503,17 +1140,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     }
     if (!changed) return;
     refreshGrantSection();
-    renderAutomationPanel();
-  }
-
-  /** watch 监测地址 → origin；地址尚未填好或不可解析时为 null（此时不给授权入口）。 */
-  function originOfUrl(value: string): string | null {
-    try {
-      const origin = new URL(value.trim()).origin;
-      return isGrantedOriginEntry(origin) ? origin : null;
-    } catch {
-      return null;
-    }
   }
 
   /**
@@ -1570,7 +1196,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       remove.addEventListener('click', () => {
         void revokeOrigin(origin).then(() => {
           refreshGrantSection();
-          renderAutomationPanel();
         });
       });
       row.append(el('span', 'za-cc-site-grant-text', origin), remove);
@@ -1581,14 +1206,13 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
           void grantOrigin(origin).then((granted) => {
             if (!granted) return;
             refreshGrantSection();
-            renderAutomationPanel();
           });
         });
         row.append(
           badge(
             'za-cc-badge-warn',
             '浏览器已撤销访问',
-            '这条声明仍在，但浏览器当下没有给 Zen 该站点的访问权限：自动化到点跑不起来，点「重新授权」即可补回',
+            '这条声明仍在，但浏览器当下没有给 Zen 该站点的访问权限：点「重新授权」即可补回',
           ),
           regrant,
         );
@@ -1624,7 +1248,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
         if (granted) {
           input.value = '';
           refreshGrantSection();
-          renderAutomationPanel();
         }
       });
     });
@@ -1637,7 +1260,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
   function renderAll(): void {
     renderPacksPanel();
     renderOverlayPanel();
-    renderAutomationPanel();
     renderGlobalPanel();
     revisionLabel.textContent = state.revision === '' ? '' : `配置版本 ${state.revision}`;
   }
@@ -1664,31 +1286,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     state.packs = Array.isArray(packs) ? (packs as PackView[]) : [];
   }
 
-  /**
-   * 服务端 watches 落为待保存态：本机停用优先于 L2 启用（与站点包自动化同一语义——
-   * background 在自动轮次异常时以本机键暂停，该暂停须由用户显式重开）。
-   */
-  function adoptWatches(watches: UserOverlayWatchView[]): void {
-    state.watches = [];
-    state.foreignWatches = [];
-    for (const watch of watches) {
-      if (!(WATCH_TEMPLATE_IDS as readonly string[]).includes(watch.templateId)) {
-        state.foreignWatches.push(watch);
-        continue;
-      }
-      const local = deps.localAutomations?.[watch.id];
-      state.watches.push({
-        id: watch.id,
-        templateId: watch.templateId as WatchTemplateId,
-        url: watch.url,
-        minutes: local?.minutes ?? watch.minutes,
-        enabled: local?.enabled === false ? false : watch.enabled,
-        focus: watch.focus ?? '',
-        pausedLocally: local?.enabled === false && watch.enabled,
-      });
-    }
-  }
-
   /** 服务端 overlay 落为面板待保存态的初值；未在面板暴露的字段留在 basePacks 里原样回传。 */
   function adoptOverlay(body: unknown): void {
     const payload = (body ?? {}) as {
@@ -1709,10 +1306,8 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     state.verbosity = state.basePacks[GLOBAL_SCOPE]?.preferences?.verbosity ?? '';
     state.siteDenylist = [...(state.basePacks[GLOBAL_SCOPE]?.siteDenylist ?? [])];
     state.grantedOrigins = [...(state.basePacks[GLOBAL_SCOPE]?.grantedOrigins ?? [])];
-    adoptWatches(overlay?.watches ?? []);
 
     state.tiers = new Map();
-    state.automations = new Map();
     for (const pack of state.packs) {
       const scope = state.basePacks[pack.packId];
       const disabledTools = new Set(scope?.restrictions?.disabledTools ?? []);
@@ -1723,23 +1318,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
           tierKey(pack.packId, tool.toolId),
           raised ?? (disabledTools.has(tool.toolId) ? 'forbidden' : tool.baseTier),
         );
-      }
-      for (const automation of pack.automations) {
-        const min = minPeriodMinutes(automation.defaultPeriodMinutes);
-        const local = deps.localAutomations?.[automation.id];
-        const stored = scope?.preferences?.automations?.[automation.id] ?? local;
-        // local.enabled 只在本机键存在时出现：区分「显式暂停」与「从未配置」，
-        // 后者不得被判成暂停（否则会呈现一个从未发生的事实，R6）。
-        // 本机停用优先于 L2 启用：background 在自动轮次异常时以本机键暂停（唯一生效的调度开关），
-        // 该暂停须由用户显式重开，不被面板回显与保存静默恢复。
-        const enabled = local?.enabled === false ? false : stored?.enabled ?? false;
-        state.automations.set(automation.id, {
-          packId: pack.packId,
-          enabled,
-          pausedLocally: local?.enabled === false && scope?.preferences?.automations?.[automation.id]?.enabled === true,
-          minutes: stored?.minutes ?? min,
-          minMinutes: min,
-        });
       }
     }
   }
@@ -1764,43 +1342,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     const config = await getJson('/v1/user-config');
     if (config.status === 200) adoptOverlay(config.body);
     renderAll();
-  }
-
-  function invalidAutomation(): { id: string; min: number; max: number } | null {
-    for (const [id, draft] of state.automations) {
-      if (
-        !Number.isInteger(draft.minutes) ||
-        draft.minutes < draft.minMinutes ||
-        draft.minutes > MAX_AUTO_SCAN_MINUTES
-      ) {
-        return { id, min: draft.minMinutes, max: MAX_AUTO_SCAN_MINUTES };
-      }
-    }
-    return null;
-  }
-
-  /** 自建触发器的提交前自检：服务端仍是权威（写入期双校验链），此处只为就地给出可定位提示。 */
-  function invalidWatch(): string | null {
-    for (const draft of state.watches) {
-      const url = draft.url.trim();
-      let protocol = '';
-      try {
-        protocol = new URL(url).protocol;
-      } catch {
-        protocol = '';
-      }
-      if (protocol !== 'http:' && protocol !== 'https:') {
-        return `触发器「${draft.id}」的监测地址须是 http/https 开头的完整网址`;
-      }
-      if (
-        !Number.isInteger(draft.minutes) ||
-        draft.minutes < PLATFORM_MIN_WATCH_MINUTES ||
-        draft.minutes > MAX_AUTO_SCAN_MINUTES
-      ) {
-        return `触发器「${draft.id}」的周期须在 ${PLATFORM_MIN_WATCH_MINUTES}–${MAX_AUTO_SCAN_MINUTES} 分钟之间（下限=平台底线）`;
-      }
-    }
-    return null;
   }
 
   /**
@@ -1837,20 +1378,7 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
     return true;
   }
 
-  /** 自动化的本地调度镜像（background alarm 的真实数据源）：仅在 L2 写入成功后落盘，避免「保存失败却已在跑」。 */
-  async function persistAutomationMirror(): Promise<void> {
-    if (deps.saveAutomations === undefined) return;
-    const prefs: Record<string, { enabled: boolean; minutes: number }> = {};
-    for (const [id, draft] of state.automations) {
-      prefs[id] = { enabled: draft.enabled, minutes: draft.minutes };
-    }
-    for (const draft of state.watches) {
-      prefs[draft.id] = { enabled: draft.enabled, minutes: draft.minutes };
-    }
-    await deps.saveAutomations(prefs);
-  }
-
-  /** 站点黑名单的本机镜像（background 激活判定的数据源）：与自动化同律，仅在 L2 写入成功后落盘。 */
+  /** 站点黑名单的本机镜像（background 激活判定的数据源）：仅在 L2 写入成功后落盘。 */
   async function persistSiteDenylistMirror(): Promise<void> {
     if (deps.saveSiteDenylist === undefined) return;
     await deps.saveSiteDenylist([...state.siteDenylist]);
@@ -1863,19 +1391,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
   }
 
   async function save(): Promise<void> {
-    const invalid = invalidAutomation();
-    if (invalid !== null) {
-      setStatus(
-        `自动化「${invalid.id}」的周期须在 ${invalid.min}–${invalid.max} 分钟之间（下限=站点包预设，上限=调度上界）`,
-        true,
-      );
-      return;
-    }
-    const invalidWatchMessage = invalidWatch();
-    if (invalidWatchMessage !== null) {
-      setStatus(invalidWatchMessage, true);
-      return;
-    }
     let localSaved = false;
     try {
       localSaved = await persistLocalSettings();
@@ -1935,7 +1450,6 @@ export function mountConfigCenter(root: HTMLElement, deps: ConfigCenterDeps): Co
       state.removedEntries = new Set();
       revisionLabel.textContent = `配置版本 ${state.revision}`;
       try {
-        await persistAutomationMirror();
         await persistSiteDenylistMirror();
         await persistGrantedOriginsMirror();
       } catch {

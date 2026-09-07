@@ -6,7 +6,6 @@
  * （拉黑前那一报如实上行、句柄不悬空、L2 拉取失败保留名单）。
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { AUTOMATION_DESCRIPTORS_KEY } from '../src/auto-scan.js';
 import {
   pageHandlesKeyForGroup,
   panelGroupKey,
@@ -402,8 +401,7 @@ describe('L2 拉取失败不清空本机名单', () => {
       denylist: [DENIED_ENTRY],
       tabs: [deniedTab],
       storageSession: mappedGroup,
-      serve: (request) =>
-        request.url === `${BASE_URL}/v1/automation-descriptors` ? { status: 200, body: { descriptors: [] } } : null,
+      serve: () => null,
     });
     expect(h.local[SITE_DENYLIST_KEY]).toEqual([DENIED_ENTRY]);
     h.emitIconClick(deniedTab);
@@ -411,24 +409,19 @@ describe('L2 拉取失败不清空本机名单', () => {
     expect(h.activated).toEqual([]);
   });
 
-  it('黑名单与自建触发器派生自同一次 /v1/user-config 拉取，不为任一项另发请求', async () => {
-    const watch = {
-      id: 'watch-1',
-      templateId: 'page-watch',
-      url: 'https://shop.example/orders',
-      minutes: 15,
-      enabled: true,
-    };
+  it('黑名单与站点授权集派生自同一次 /v1/user-config 拉取，不为任一项另发请求', async () => {
     const h = await loadBackground({
       tabs: [deniedTab],
       serve: (request) => {
-        if (request.url === `${BASE_URL}/v1/automation-descriptors`) return { status: 200, body: { descriptors: [] } };
         if (request.url === `${BASE_URL}/v1/user-config`) {
           return {
             status: 200,
             body: {
               revision: 'rev-1',
-              overlay: { schemaVersion: 1, packs: { '*': { siteDenylist: [DENIED_ENTRY] } }, watches: [watch] },
+              overlay: {
+                schemaVersion: 1,
+                packs: { '*': { siteDenylist: [DENIED_ENTRY], grantedOrigins: ['https://shop.example'] } },
+              },
             },
           };
         }
@@ -437,8 +430,7 @@ describe('L2 拉取失败不清空本机名单', () => {
     });
     expect(h.requests.filter((request) => request.url === `${BASE_URL}/v1/user-config`)).toHaveLength(1);
     expect(h.local[SITE_DENYLIST_KEY]).toEqual([DENIED_ENTRY]);
-    const descriptors = h.local[AUTOMATION_DESCRIPTORS_KEY] as Array<{ automation: { id: string } }>;
-    expect(descriptors.map((descriptor) => descriptor.automation.id)).toEqual([watch.id]);
+    expect(h.local['za.grantedOrigins']).toEqual(['https://shop.example']);
   });
 
   it('/v1/user-config 拉取成功且名单为空 → 覆写为空（用户确实清空了名单）', async () => {
@@ -446,13 +438,10 @@ describe('L2 拉取失败不清空本机名单', () => {
       denylist: [DENIED_ENTRY],
       tabs: [deniedTab],
       storageSession: mappedGroup,
-      serve: (request) => {
-        if (request.url === `${BASE_URL}/v1/automation-descriptors`) return { status: 200, body: { descriptors: [] } };
-        if (request.url === `${BASE_URL}/v1/user-config`) {
-          return { status: 200, body: { revision: 'rev-1', overlay: { schemaVersion: 1, packs: { '*': {} } } } };
-        }
-        return null;
-      },
+      serve: (request) =>
+        request.url === `${BASE_URL}/v1/user-config`
+          ? { status: 200, body: { revision: 'rev-1', overlay: { schemaVersion: 1, packs: { '*': {} } } } }
+          : null,
     });
     expect(h.local[SITE_DENYLIST_KEY]).toEqual([]);
   });
