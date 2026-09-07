@@ -241,5 +241,37 @@
       "mustNotMention": ["gp-", "# 任务组页面清单"],
       "behavior": "无 group-pages 上报（旧插件/单页）时不注入清单：agent 明说只掌握活跃页、不编造组内其他页面（不误导，adr-023 D1）"
     }
+  },
+  {
+    "id": "base-unreadable-page-open-url",
+    "dimension": "hitl",
+    "mockOnly": true,
+    "url": "about:blank",
+    "featureId": null,
+    "question": "帮我在网上找一下今天的头条新闻，读完给我讲讲讲了什么",
+    "expect": {
+      "targetToolId": "open_url",
+      "frameCounts": {
+        "targetToolCalls": 1,
+        "hitlRequests": 1,
+        "execInstructions": 1
+      },
+      "judges": [{ "kind": "regex", "pattern": "^MOCK-UNREADABLE-PAGE-HIT" }],
+      "mustNotMention": [
+        "MOCK-UNREADABLE-PAGE-MISS",
+        "MOCK-UNREADABLE-PAGE-ERROR",
+        "MOCK-OPEN-URL-MISSING",
+        "无法完成"
+      ],
+      "expectDecisions": [
+        {
+          "toolId": "open_url",
+          "riskTier": "hitl",
+          "verdict": "hitl",
+          "hitlDecision": "approve"
+        }
+      ],
+      "behavior": "空白页冷启动（about:blank → 仅基座、无 page_snapshot、只注入 open_url）上给一个需要网页内容的真实任务：基座 ZA-SYS-09 两半（不可读页先开页 / 能力按轮判定）MUST 同时到达模型——先 open_url 打开目标页、经平台确认后签发导航指令，而不是以「没有页面读取能力」为由拒答。任一半被删或改写即 MOCK-UNREADABLE-PAGE-MISS→红（该分支文本含「无法完成」，拒答同时被 mustNotMention 抓住）；真实模型在多轮历史里的自我强化仍须人工走查"
+    }
   }
 ]

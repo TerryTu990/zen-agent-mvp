@@ -9,9 +9,9 @@
   自己扮演客户端：发上行帧、读 SSE 下行帧，收到 `exec-instruction` 代插件之职调宿主 API 回 `exec-result`，
   收到 `hitl-request` 按场景 `expect.hitlVerdict` 回 `hitl-decision`，收到 `snapshot-request` 回场景声明的
   确定性快照。LLM 为确定性 mock（`scripts/mock-llm/server.mjs`），非真实模型。
-- **四个快照根依次独占同端口起 server**：`examples/host-demo/config`（跑本目录 `scenarios.json` 16 场景）、
+- **四个快照根依次独占同端口起 server**：`examples/host-demo/config`（跑本目录 `scenarios.json` 17 场景）、
   `examples/acceptance`、`assets`（生产快照）、`examples/site-packs`（已下线站点包）；每根再按
-  `packs/*/eval/scenarios.json` 自动发现逐 pack 跑。当前合计 104 组场景。
+  `packs/*/eval/scenarios.json` 自动发现逐 pack 跑。当前合计 107 组场景。
 - **维度覆盖**：`explain` / `assembly-swap` 与 `assembly` / `guide` / `tool` / `hitl` 均有场景。
 - **宿主 API mock 有状态**：`orders` 状态表 + `calls` 调用流水，**每跑重置**；场景可用 `hostState` /
   `hostCalls` / `hostCallsAbsent` 断言代执行的真实副作用（批准后状态已变、拒绝后状态未变且接口未被调用）。
@@ -47,7 +47,9 @@
 ## scenarios.json 字段
 
 本目录 `scenarios.json`（host-demo 根）：`{id, dimension, page（相对 host-demo 的页面路径）,
-featureId（服务端应判定值，null=无命中仅基座）, question, expect}`；`dimension: assembly-swap` 另有
+featureId（服务端应判定值，null=无命中仅基座）, question, expect}`；`page` 之外也可写完整 `url`——
+基座场景据此以 `about:blank` 之类静默页发起，得到「仅基座、无 page_snapshot、只注入 open_url」的
+冷启动装配面；`dimension: assembly-swap` 另有
 `flow`（页面跳转序列），判据是服务端 featureId 判定与 describeInjection 注入块随之切换；
 `groupPagesReports` 声明 `user-message` 之前按序上报的任务组页面清单（adr-023）。
 
