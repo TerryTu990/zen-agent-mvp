@@ -222,8 +222,17 @@ async function runScenarios(hostPage, panelPage, counts) {
     label: 'd1 happy：等待取消成功总结', timeoutMs: 15000,
   });
   assert(counts.cancel === 1, `d1 happy：POST /api/orders/ORD-1001/cancel 应恰 1 次，实际 ${counts.cancel}`);
-  const finalText = await panelText(panelPage);
-  assert(finalText.includes('已完成：'), 'd1 happy：应出现 tool-card 已完成状态');
+  // 工具批次默认收起，卡面文案不进 innerText：状态判据落到卡自身的 data-status 与收起态组头的机械摘要上。
+  // 裁决当刻 closeToolBatch 另起一组，故末组恰是本次取消批次。
+  const cancelGroup = panelPage.locator('.za-toolgroup').last();
+  const cardCount = await cancelGroup.locator('[data-za-toolcard]').count();
+  assert(cardCount === 1, `d1 happy：本批次应恰 1 张 tool-card，实际 ${cardCount}`);
+  const succeededCount = await cancelGroup.locator('[data-za-toolcard][data-status="succeeded"]').count();
+  assert(succeededCount === 1, `d1 happy：tool-card 应到达已完成状态，实际 succeeded 卡 ${succeededCount} 张`);
+  const cardCopy = (await cancelGroup.locator('.za-toolcard-copy').textContent()) ?? '';
+  assert(cardCopy.startsWith('已完成：'), `d1 happy：tool-card 文案应为已完成态，实际 "${cardCopy}"`);
+  const groupSummary = await cancelGroup.locator('.za-toolgroup-summary').innerText();
+  assert(groupSummary.includes('1 步已完成'), `d1 happy：收起态组头应报出已完成计数，实际 "${groupSummary}"`);
   console.log('  [pass] d1 HITL happy：确认 → 签名指令 → 页面 fetch /cancel → 结果回喂 → 成功总结');
 
   await panelPage.evaluate(() => chrome.storage.local.set({ 'za.executionPreference': 'dom-only' }));
