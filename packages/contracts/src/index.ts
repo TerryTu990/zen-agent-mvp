@@ -125,7 +125,12 @@ export type {
   UserOverlayL1ToolBaseline,
   UserOverlayL1Baseline,
 } from './user-overlay.js';
-export { validateUserOverlay, validateOverlayAgainstL1, compileConfigSchema } from './user-overlay.js';
+export {
+  validateUserOverlay,
+  validateOverlayAgainstL1,
+  compileConfigSchema,
+  stripRetiredOverlayKeys,
+} from './user-overlay.js';
 export type { ContractCompatibility } from './contract-version.js';
 export { contractVersion, checkContractCompatibility } from './contract-version.js';
 export type {

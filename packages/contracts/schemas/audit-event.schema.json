@@ -256,7 +256,7 @@
       }
     },
     "toolExecutionData": {
-      "$comment": "执行结局事件：outcome 闭集——ok 成功回喂 / error 宿主 API 报错 / timeout 指令 ttl 过期或结果未归 / invalid-result 结果未过 resultSchema 校验被拒回喂（U7）/ skipped 本轮未执行且非故障（如自动回合上报的不是被监测页）/ issue-rejected 判定放行但签发被拒、未下发指令、零副作用（故无 nonce）/ dispatched-unknown 指令已下发、结果因用户中断未归、副作用未知。skipped MUST NOT 与 ok 合并统计——运行历史据此区分「看过、没变」与「本轮没看成」；issue-rejected MUST NOT 与 error 合并统计——事故回放据此区分「没执行」与「执行失败」，dispatched-unknown 是「停止时副作用可能已发生」的机械可检证据。不记请求与响应体本身。",
+      "$comment": "执行结局事件：outcome 闭集——ok 成功回喂 / error 宿主 API 报错 / timeout 指令 ttl 过期或结果未归 / invalid-result 结果未过 resultSchema 校验被拒回喂（U7）/ skipped 本轮未执行且非故障（如定向快照的目标页与请求不符被拒）/ issue-rejected 判定放行但签发被拒、未下发指令、零副作用（故无 nonce）/ dispatched-unknown 指令已下发、结果因用户中断未归、副作用未知。skipped MUST NOT 与 ok 合并统计——事故回放据此区分「执行了、无事发生」与「本轮压根没执行」；issue-rejected MUST NOT 与 error 合并统计——事故回放据此区分「没执行」与「执行失败」，dispatched-unknown 是「停止时副作用可能已发生」的机械可检证据。不记请求与响应体本身。",
       "type": "object",
       "additionalProperties": false,
       "required": ["toolCallId", "toolId", "execution", "outcome"],

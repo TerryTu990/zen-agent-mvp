@@ -162,6 +162,44 @@ describe('fs UserConfigStore（adr-014 §6 存储与故障语义）', () => {
     expect(read.overlay?.packs['shop']?.rules).toHaveLength(201);
   });
 
+  it('存量已退役键（自动化下线前写下的 watches / preferences.automations）：读路径剥离后放行', async () => {
+    const { dir, store } = storeIn();
+    await store.write(subject, overlayOf('占位。'));
+    const tenantDir = join(dir, readdirSync(dir)[0]!);
+    const file = join(tenantDir, readdirSync(tenantDir)[0]!);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        schemaVersion: 1,
+        subject,
+        packs: {
+          shop: {
+            rules: [{ id: 'r-1', text: '仍在的规则。', origin: 'manual', createdAt: '2026-08-05T00:00:00.000Z' }],
+            preferences: { verbosity: 'concise', automations: { 'scan-orders': { enabled: true, minutes: 30 } } },
+          },
+        },
+        watches: [
+          { id: 'watch-1', templateId: 'page-watch', url: 'https://example.com/a', minutes: 15, enabled: true },
+        ],
+      }),
+      'utf8',
+    );
+    // 新实例绕过进程内 lastGood：证明放行来自剥离本身，而非 stale 缓存兜底
+    const fresh = createFsUserConfigStore({ dir });
+    const read = await fresh.read(subject);
+    expect(read.stale).toBeUndefined();
+    expect(read.overlay).toEqual({
+      schemaVersion: 1,
+      subject,
+      packs: {
+        shop: {
+          rules: [{ id: 'r-1', text: '仍在的规则。', origin: 'manual', createdAt: '2026-08-05T00:00:00.000Z' }],
+          preferences: { verbosity: 'concise' },
+        },
+      },
+    });
+  });
+
   it('既超规模又结构非法：仍走降级（放行只对纯规模越界，不得成为结构校验的绕过口）', async () => {
     const { dir, store } = storeIn();
     await store.write(subject, overlayOf('占位。'));

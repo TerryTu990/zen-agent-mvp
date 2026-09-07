@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
-import { validateUserOverlay } from '../src/index.js';
+import { stripRetiredOverlayKeys, validateUserOverlay } from '../src/index.js';
 
 const schemasDir = new URL('../schemas/', import.meta.url).pathname;
 
@@ -223,5 +223,55 @@ describe('C7 user-overlay 组合校验器（schema + 跨字段语义，消费方
       packs: { '*': { restrictions: { disabledTools: ['x.y'] } } },
     });
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('C7 已退役键剥离（读路径存量兼容）', () => {
+  const legacy = {
+    schemaVersion: 1,
+    subject,
+    packs: {
+      'xianyu-seller': {
+        preferences: { verbosity: 'concise', automations: { 'scan-orders': { enabled: false } } },
+      },
+    },
+    watches: [
+      {
+        id: 'watch-1',
+        templateId: 'page-watch',
+        url: 'https://example.com/a',
+        minutes: 15,
+        enabled: true,
+      },
+    ],
+  };
+
+  it('带退役键的存量 overlay 直接校验被拒——剥离后通过（剥离是唯一兼容口）', () => {
+    expect(validateUserOverlay(legacy).ok).toBe(false);
+    const { value, dropped } = stripRetiredOverlayKeys(legacy);
+    expect(dropped).toEqual(['/watches', '/packs/xianyu-seller/preferences/automations']);
+    const result = validateUserOverlay(value);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+  });
+
+  it('剥离只删退役键、不改其余内容，且入参不被修改', () => {
+    const snapshot = JSON.stringify(legacy);
+    const { value } = stripRetiredOverlayKeys(legacy);
+    expect(value).toEqual({
+      schemaVersion: 1,
+      subject,
+      packs: { 'xianyu-seller': { preferences: { verbosity: 'concise' } } },
+    });
+    expect(JSON.stringify(legacy)).toBe(snapshot);
+  });
+
+  it('无退役键时 dropped 为空；非对象输入原样返回', () => {
+    expect(stripRetiredOverlayKeys(validOverlay).dropped).toEqual([]);
+    expect(stripRetiredOverlayKeys(null)).toEqual({ value: null, dropped: [] });
+  });
+
+  it('剥离不放宽结构校验：退役键之外的未知键剥离后仍被拒', () => {
+    const { value } = stripRetiredOverlayKeys({ ...legacy, bogusTopLevel: 1 });
+    expect(validateUserOverlay(value).ok).toBe(false);
   });
 });

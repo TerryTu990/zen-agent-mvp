@@ -9,7 +9,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { validateUserOverlay } from '@zen-agent/contracts';
+import { stripRetiredOverlayKeys, validateUserOverlay } from '@zen-agent/contracts';
 import type {
   UserConfigReadResult,
   UserConfigStore,
@@ -129,7 +129,15 @@ export function createFsUserConfigStore(options: FsUserConfigStoreOptions): User
       } catch {
         return degrade(key, 'JSON 解析失败');
       }
-      const validated = validateUserOverlay(parsed);
+      // 已退役键（自动化下线从 C7 删去的 watches / preferences.automations）在校验前剥离：
+      // 剥离面由 contracts 持有，写入期不剥离，存量文件在用户下次保存时落盘清除。
+      const { value: sanitized, dropped } = stripRetiredOverlayKeys(parsed);
+      if (dropped.length > 0) {
+        console.warn(
+          `[user-config] overlay 含已退役键（${dropped.join('、')}），读路径已剥离；下次保存即落盘清除`,
+        );
+      }
+      const validated = validateUserOverlay(sanitized);
       if (!validated.ok) {
         // 规模上界（条目数/作用域数）是写入期约束：早于该约束写下的存量 overlay 结构仍合法，
         // 读路径放行并告警，避免用户配置因契约收紧变为不可读且无自助恢复路径；结构非法仍降级。
@@ -139,7 +147,7 @@ export function createFsUserConfigStore(options: FsUserConfigStoreOptions): User
         console.warn(
           `[user-config] overlay 规模超出当前上界（${validated.issues.length} 项），已按存量放行；下次保存时须先精简`,
         );
-        const oversized = parsed as UserOverlay;
+        const oversized = sanitized as UserOverlay;
         const oversizedRevision = sha256Hex(raw);
         remember(key, oversized, oversizedRevision);
         return { overlay: oversized, revision: oversizedRevision };

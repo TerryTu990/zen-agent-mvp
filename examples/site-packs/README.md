@@ -5,7 +5,7 @@
 
 | pack | 站点 | 说明 |
 |---|---|---|
-| `xianyu-seller` | 闲鱼卖家 PC 端 | 数据导航、订单识别、消息页受控发送、周期自动扫描 |
+| `xianyu-seller` | 闲鱼卖家 PC 端 | 数据导航、订单识别、消息页受控发送 |
 | `yinxiang` | 印象笔记网页版 | 把外部网页读到的内容整理成笔记 |
 
 重新上架 = 把 pack 目录移回 `assets/packs/` 并登记进 `assets/manifest.json`（registry 只加载已登记的 pack）。

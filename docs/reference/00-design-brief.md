@@ -108,7 +108,7 @@ D21（adr-021）用户自建自动化触发器（**已废弃**：2026-09-07 随�
 
 ## 7. 治理体系（两层，速查入口 `CLAUDE.md`）
 
-- **开发期**：`.claude/rules/ZA-*.md`（COMMON 四类 + WHERE U1-U8 + AGENT 运行期边界 + EVAL 六维评测，闭集见 `ZA-C-EVAL-01`）
+- **开发期**：`.claude/rules/ZA-*.md`（COMMON 四类 + WHERE U1-U8 + AGENT 运行期边界 + EVAL 五维评测，闭集见 `ZA-C-EVAL-01`）
   + hooks 三件套（secret-guard / bash-guard / verify-on-stop）。
 - **运行期**：`assets/`——system-prompt 基座（`ZA-SYS-*`）+ registry + packs（`ZA-FEAT-*`，仅约束
   本仓官方制品）；MUST NOT 进开发会话（ZA-C-AGENT-01）；pack 纯数据（ZA-C-AGENT-03）；

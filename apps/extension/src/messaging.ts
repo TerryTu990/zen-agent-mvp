@@ -69,7 +69,7 @@ export type BackgroundToContentMessage =
   | { kind: 'frame'; frame: DownstreamFrame }
   | { kind: 'stop-operation' }
   // 新回合开始：解除页面侧的停止闩。停止是回合级事实，闩在一次停止后保持置位，
-  // 只有这条显式信号（用户发新消息 / 自动回合起跑）才复位它。
+  // 只有这条显式信号（用户发新消息）才复位它。
   | { kind: 'resume-operation' }
   // navigate-request 的回执：ok 时 url 为新开页目标地址，供 content 组 exec-result。
   | { kind: 'navigate-result'; requestId: string; ok: boolean; url?: string; error?: string };

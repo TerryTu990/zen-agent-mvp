@@ -223,6 +223,43 @@ export function validateUserOverlay(
   return issues.length > 0 ? { ok: false, issues } : { ok: true, overlay };
 }
 
+/** 已退役的 pack 偏好键（自动化下线后从 packPreferences 移除）。 */
+const RETIRED_PACK_PREFERENCE_KEY = 'automations';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 剥离已退役键（读路径专用）：自动化下线从 C7 删去顶层 watches 与 pack 作用域 preferences.automations，
+ * 而 schemaVersion 未随之递增、schema 全程 additionalProperties:false——存量 overlay 因此整份不可读。
+ * 校验前先剥离，档位同 UserOverlayValidationIssue.kind='scale' 的存量放行：契约收紧不应使用户配置
+ * 变为不可读且无自助恢复路径。写入期 MUST NOT 调用——带退役键的写入一律拒收，存量文件在用户下次保存时落盘清除。
+ * 入参不被修改；dropped 为被剥离键的 JSON Pointer，供调用方告警。
+ */
+export function stripRetiredOverlayKeys(value: unknown): { value: unknown; dropped: string[] } {
+  if (!isPlainObject(value)) return { value, dropped: [] };
+  const cloned = structuredClone(value);
+  const dropped: string[] = [];
+  if (Object.hasOwn(cloned, 'watches')) {
+    delete cloned['watches'];
+    dropped.push('/watches');
+  }
+  const packs = cloned['packs'];
+  if (isPlainObject(packs)) {
+    for (const [packId, scope] of Object.entries(packs)) {
+      if (!isPlainObject(scope)) continue;
+      const preferences = scope['preferences'];
+      if (!isPlainObject(preferences)) continue;
+      if (Object.hasOwn(preferences, RETIRED_PACK_PREFERENCE_KEY)) {
+        delete preferences[RETIRED_PACK_PREFERENCE_KEY];
+        dropped.push(`/packs/${packId}/preferences/${RETIRED_PACK_PREFERENCE_KEY}`);
+      }
+    }
+  }
+  return { value: cloned, dropped };
+}
+
 export interface UserOverlayL1ToolBaseline {
   id: string;
   riskTier: RiskTier;

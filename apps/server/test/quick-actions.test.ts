@@ -302,7 +302,7 @@ describe('展开尊重本轮 compose 的回落判定', () => {
   });
 });
 
-describe('未知 id 与自动回合', () => {
+describe('未知 id', () => {
   it('未知 id → 原文原样发起并标注 quickActionUnresolved', async () => {
     const { token, sessionId } = await newSession('qa-unknown');
     const capture = await runTurn(token, sessionId, {
@@ -315,7 +315,6 @@ describe('未知 id 与自动回合', () => {
       quickActionUnresolved: true,
     });
   });
-
 });
 
 describe('GET /v1/packs 投影 quickActions（配置中心数据源）', () => {

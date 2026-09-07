@@ -213,7 +213,7 @@ describe('纯逻辑：R1 只收紧的机械判定', () => {
   });
 });
 
-describe('四页 tab 切换', () => {
+describe('三页 tab 切换', () => {
   let harness: Harness;
   beforeEach(() => {
     harness = createHarness();
