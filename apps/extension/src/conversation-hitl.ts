@@ -11,6 +11,14 @@ import type {
 import { renderMarkdown } from './markdown.js';
 
 type ToolMode = NonNullable<ToolCardFrame['mode']>;
+type ToolStatus = ToolCardFrame['status'];
+
+/** 一批工具调用的折叠区：收起态只留 toggle 上的机械摘要，展开才列出 body 内每条调用。 */
+interface ToolGroup {
+  toggle: HTMLButtonElement;
+  summary: HTMLElement;
+  body: HTMLElement;
+}
 
 const MODE_LABEL: Record<ToolMode, string> = {
   client: '客户端发起',
@@ -25,12 +33,16 @@ export interface UserMessageHandle {
 
 export interface ConversationUi {
   appendUserMessage(text: string): UserMessageHandle;
-  /** 回合首个 delta 开新 assistant 气泡并增量追加；用户再次发言即关闭当前回合。 */
+  /**
+   * 回合首个 delta 开新 assistant 气泡并增量追加（气泡内累积重渲染，markdown 结构不被切碎）。
+   * 工具卡、确认卡、用户发言与流结束都封口当前气泡，下一个 delta 另起一个回合气泡。
+   */
   appendTextDelta(frame: TextDeltaFrame): void;
   /** 呈现可定位、不含 token/密钥值的错误或状态说明（SEC-04）。 */
   showStatus(message: string): void;
   showThinking(): void;
   hideThinking(): void;
+  /** 同批工具调用折叠成一行（默认收起，摘要含未成功计数）；展开后逐条列出状态与可选原因。 */
   renderToolCard(frame: ToolCardFrame): void;
   /** 弹 HITL 卡片等用户裁决；客户端只呈现与回传、零治理判定。 */
   promptHitl(frame: HitlRequestFrame): Promise<HitlDecisionValue | null>;
@@ -38,11 +50,23 @@ export interface ConversationUi {
   cancelHitl(): void;
 }
 
-const STATUS_LABEL: Record<ToolCardFrame['status'], string> = {
+const STATUS_LABEL: Record<ToolStatus, string> = {
   running: '执行中',
   succeeded: '已完成',
   failed: '未成功',
 };
+
+/** 折叠摘要里各状态的出现次序：进行中在前（当下正发生什么），未成功殿后但恒不省略。 */
+const SUMMARY_ORDER: ToolStatus[] = ['running', 'succeeded', 'failed'];
+
+/**
+ * 工具卡上的失败原因：服务端可选补发的展示字段，C3 契约镜像尚未登记它，故按未知字段容错读取——
+ * 非空字符串才呈现，缺席或类型不符一律只留状态与工具名，客户端不本地推断成因（U8）。
+ */
+function detailOf(frame: ToolCardFrame): string | undefined {
+  const detail = (frame as ToolCardFrame & { detail?: unknown }).detail;
+  return typeof detail === 'string' && detail !== '' ? detail : undefined;
+}
 
 /** 面向用户的实参摘要；仅供 HITL 卡片呈现用户须知悉的将发生内容，不进 tool-card。 */
 function summarizeParams(params: JsonObject): string {
@@ -145,10 +169,12 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
   // 当前流式中的 assistant 气泡（挂 .streaming 显闪烁光标）；无 done 帧，以去抖判定流结束。
   let streamingBub: HTMLElement | null = null;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
-  // 同一 toolCallId 的状态迁移就地更新同一张卡片，避免 running→succeeded 产生两张卡。
-  const toolCards = new Map<string, HTMLElement>();
-  // 工具卡按调用模式归组，同 mode 的卡进同一 section body。
-  const toolGroups = new Map<ToolMode, HTMLElement>();
+  // 本次用户发言以来已开的 assistant 气泡数；≥2 即为同一轮任务内的后续回合，需署名标号与分隔。
+  let assistantTurn = 0;
+  // 同一 toolCallId 的状态迁移就地更新同一张卡片（连同它所属的组摘要），避免 running→succeeded 产生两张卡。
+  const toolCards = new Map<string, { card: HTMLElement; group: ToolGroup }>();
+  // 当前这批工具卡按调用模式归组；批次被文本/用户发言/确认卡打断即清空，下一批另起新组。
+  const toolGroups = new Map<ToolMode, ToolGroup>();
   let thinking: HTMLElement | null = null;
   let pendingHitl: { card: HTMLElement; resolve: (decision: HitlDecisionValue | null) => void } | null = null;
 
@@ -165,16 +191,25 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
       streamingBub.classList.remove('streaming');
       streamingBub = null;
     }
+    // 流结束即封口本回合气泡：后续 delta 另起一个，回合边界不被叙述连成一坨。
+    assistantBody = null;
+    assistantRaw = '';
   };
 
-  /** 每条消息＝wrapper[data-role] > .za-who 署名 + .za-bub 气泡；返回气泡供填充。 */
-  const appendMessage = (role: 'user' | 'assistant'): HTMLElement => {
+  /** 收束当前工具批次：已渲染的卡仍可就地迁移状态，但后续新卡另起一组。 */
+  const closeToolBatch = (): void => {
+    toolGroups.clear();
+  };
+
+  /** 每条消息＝wrapper[data-role] > .za-who 署名 + .za-bub 气泡；turn ≥2 标出回合序号与分隔。 */
+  const appendMessage = (role: 'user' | 'assistant', turn = 1): HTMLElement => {
     const wrap = document.createElement('div');
     wrap.className = 'za-msg';
     wrap.dataset['role'] = role;
+    if (turn > 1) wrap.classList.add('za-msg-turn');
     const who = document.createElement('div');
     who.className = 'za-who';
-    who.textContent = WHO_LABEL[role];
+    who.textContent = turn > 1 ? `${WHO_LABEL[role]} · 回合 ${turn}` : WHO_LABEL[role];
     const bub = document.createElement('div');
     bub.className = 'za-bub';
     wrap.append(who, bub);
@@ -184,32 +219,77 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
     return bub;
   };
 
-  const ensureToolGroup = (mode: ToolMode): HTMLElement => {
-    let body = toolGroups.get(mode) ?? null;
-    if (body === null) {
-      const section = document.createElement('div');
-      section.className = 'za-toolgroup';
-      section.dataset['mode'] = mode;
-      const title = document.createElement('div');
-      title.className = 'za-toolgroup-title';
-      title.textContent = MODE_LABEL[mode];
-      body = document.createElement('div');
-      body.className = 'za-toolgroup-body';
-      section.append(title, body);
-      messages.append(section);
-      toolGroups.set(mode, body);
+  /**
+   * 收起态那一行的机械摘要与聚合状态：只数本组已渲染的卡，不做任何解释性归因。
+   * 未成功计数恒不省略——收起是为降噪，不是为藏失败。
+   */
+  const refreshToolGroup = (group: ToolGroup): void => {
+    const counts: Record<ToolStatus, number> = { running: 0, succeeded: 0, failed: 0 };
+    for (const card of group.body.querySelectorAll('[data-za-toolcard]')) {
+      const status = card.getAttribute('data-status');
+      if (status === 'running' || status === 'succeeded' || status === 'failed') counts[status] += 1;
     }
-    return body;
+    group.summary.textContent = SUMMARY_ORDER.filter((status) => counts[status] > 0)
+      .map((status) => `${counts[status]} 步${STATUS_LABEL[status]}`)
+      .join(' · ');
+    group.toggle.dataset['status'] =
+      counts.running > 0 ? 'running' : counts.failed > 0 ? 'failed' : 'succeeded';
+  };
+
+  const ensureToolGroup = (mode: ToolMode): ToolGroup => {
+    const existing = toolGroups.get(mode);
+    if (existing !== undefined) return existing;
+
+    const section = document.createElement('div');
+    section.className = 'za-toolgroup';
+    section.dataset['mode'] = mode;
+    section.dataset['expanded'] = 'false';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'za-toolgroup-toggle';
+    toggle.setAttribute('data-za-toolgroup-toggle', '');
+    toggle.setAttribute('aria-expanded', 'false');
+    const state = document.createElement('span');
+    state.className = 'za-toolcard-state';
+    state.setAttribute('aria-hidden', 'true');
+    const title = document.createElement('span');
+    title.className = 'za-toolgroup-title';
+    title.textContent = MODE_LABEL[mode];
+    const summary = document.createElement('span');
+    summary.className = 'za-toolgroup-summary';
+    const caret = document.createElement('span');
+    caret.className = 'za-toolgroup-caret';
+    caret.setAttribute('aria-hidden', 'true');
+    caret.textContent = '›';
+    toggle.append(state, title, summary, caret);
+
+    const body = document.createElement('div');
+    body.className = 'za-toolgroup-body';
+    body.hidden = true;
+
+    section.append(toggle, body);
+    messages.append(section);
+    toggle.addEventListener('click', () => {
+      const expanded = toggle.getAttribute('aria-expanded') !== 'true';
+      toggle.setAttribute('aria-expanded', String(expanded));
+      section.dataset['expanded'] = String(expanded);
+      body.hidden = !expanded;
+    });
+
+    const group: ToolGroup = { toggle, summary, body };
+    toolGroups.set(mode, group);
+    return group;
   };
 
   return {
     appendUserMessage(text) {
       clearStreaming();
+      closeToolBatch();
+      assistantTurn = 0;
       const bubble = appendMessage('user');
       bubble.textContent = text;
       scrollToEnd();
-      assistantBody = null;
-      assistantRaw = '';
       return {
         settle(next) {
           bubble.textContent = next;
@@ -221,7 +301,9 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
     },
     appendTextDelta(frame) {
       if (assistantBody === null) {
-        const bubble = appendMessage('assistant');
+        closeToolBatch();
+        assistantTurn += 1;
+        const bubble = appendMessage('assistant', assistantTurn);
         bubble.classList.add('streaming');
         streamingBub = bubble;
         assistantBody = document.createElement('div');
@@ -239,6 +321,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
     },
     showStatus(message) {
       clearStreaming();
+      closeToolBatch();
       thinking?.remove();
       thinking = null;
       const status = document.createElement('div');
@@ -267,26 +350,42 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
       clearStreaming();
       thinking?.remove();
       thinking = null;
-      let card = toolCards.get(frame.toolCallId) ?? null;
-      if (card === null) {
-        card = document.createElement('div');
+      let entry = toolCards.get(frame.toolCallId) ?? null;
+      if (entry === null) {
+        const card = document.createElement('div');
         card.setAttribute('data-za-toolcard', '');
         card.className = 'za-toolcard';
-        toolCards.set(frame.toolCallId, card);
-        ensureToolGroup(frame.mode ?? 'client').append(card);
+        const group = ensureToolGroup(frame.mode ?? 'client');
+        group.body.append(card);
+        entry = { card, group };
+        toolCards.set(frame.toolCallId, entry);
       }
+      const { card, group } = entry;
       card.setAttribute('data-status', frame.status);
       card.textContent = '';
       const state = document.createElement('span');
       state.className = 'za-toolcard-state';
       state.setAttribute('aria-hidden', 'true');
+      const main = document.createElement('div');
+      main.className = 'za-toolcard-main';
       const copy = document.createElement('span');
+      copy.className = 'za-toolcard-copy';
       copy.textContent = `${STATUS_LABEL[frame.status]}：${frame.summary ?? frame.toolId}`;
-      card.append(state, copy);
+      main.append(copy);
+      const failureDetail = detailOf(frame);
+      if (failureDetail !== undefined) {
+        const detail = document.createElement('span');
+        detail.className = 'za-toolcard-detail';
+        detail.textContent = failureDetail;
+        main.append(detail);
+      }
+      card.append(state, main);
+      refreshToolGroup(group);
       scrollToEnd();
     },
     promptHitl(frame) {
       clearStreaming();
+      closeToolBatch();
       thinking?.remove();
       thinking = null;
       return new Promise<HitlDecisionValue | null>((resolve) => {

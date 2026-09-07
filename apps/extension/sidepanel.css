@@ -152,3 +152,25 @@ button { cursor: pointer; }
 .za-quick-action { max-width: 100%; overflow: hidden; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255, 255, 255, .78); color: var(--ink-soft); font-size: 11px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; transition: border-color .16s ease, color .16s ease, background .16s ease; }
 .za-quick-action:hover:not(:disabled) { border-color: var(--agent); background: var(--agent-soft); color: var(--agent-deep); }
 .za-quick-action:disabled { opacity: .45; cursor: default; }
+
+/* 多回合分隔：同一轮任务里 agent 的第 2 个及之后的气泡各自成段，读者能看清回合边界。 */
+.za-msg-turn { margin-top: 2px; padding-top: 11px; border-top: 1px dashed var(--line); }
+
+/* 工具批次折叠：收起态只留 toggle 一行（状态图标 + 分组名 + 机械摘要）。 */
+.za-toolgroup-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: 9px; color: var(--ink-soft); background: transparent; font: 11px/1.5 var(--mono); text-align: left; }
+.za-toolgroup-toggle:hover { border-color: var(--line); background: rgba(255, 255, 255, .65); }
+.za-toolgroup-toggle:focus-visible { outline: 2px solid var(--agent); outline-offset: 1px; }
+.za-toolgroup-toggle[data-status="succeeded"] { color: var(--ok); }
+.za-toolgroup-toggle[data-status="failed"] { color: var(--clay); }
+.za-toolgroup-toggle[data-status="running"] .za-toolcard-state { border-right-color: transparent; animation: za-spin .8s linear infinite; }
+.za-toolgroup-toggle[data-status="succeeded"] .za-toolcard-state { border: 0; border-radius: 0; transform: rotate(-45deg); width: 9px; height: 5px; border-left: 2px solid currentColor; border-bottom: 2px solid currentColor; }
+.za-toolgroup-toggle[data-status="failed"] .za-toolcard-state { border: 0; border-radius: 0; }
+.za-toolgroup-toggle[data-status="failed"] .za-toolcard-state::before { content: "×"; display: block; margin-top: -5px; font-size: 15px; }
+.za-toolgroup-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.za-toolgroup-caret { flex: 0 0 auto; transition: transform .16s ease; }
+.za-toolgroup-toggle[aria-expanded="true"] .za-toolgroup-caret { transform: rotate(90deg); }
+/* .za-toolgroup-body 自带 display:flex，会盖过 [hidden] 的 UA 规则，故显式收起。 */
+.za-toolgroup-body[hidden] { display: none; }
+.za-toolcard-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.za-toolcard-detail { color: var(--ink-soft); font-size: 10px; line-height: 1.45; word-break: break-word; }
+.za-toolcard:has(.za-toolcard-detail) { align-items: flex-start; }
