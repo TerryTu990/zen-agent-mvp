@@ -407,6 +407,7 @@ function archiveAudit(caseDir, name, since, installIds) {
     assert(!text.includes(installId), `${name} 审计片段泄漏安装 id`);
   }
   assert(!/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(text), `${name} 审计片段含 JWT 原文`);
+  assert(!text.includes(JWT_SECRET) && !text.includes(SIGNING_SECRET), `${name} 审计片段泄漏本地 harness 密钥`);
   writeEvidence(caseDir, name, `${text}\n`);
   return picked;
 }
