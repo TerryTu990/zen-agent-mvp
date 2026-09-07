@@ -27,15 +27,6 @@
       "type": "string",
       "minLength": 1
     },
-    "executionPreference": {
-      "type": "string",
-      "enum": [
-        "auto",
-        "dom-only",
-        "prefer-client-api",
-        "prefer-server-api"
-      ]
-    },
     "upstreamFrame": {
       "$comment": "上行帧闭集（客户端 → 网关，HTTP）。",
       "oneOf": [
@@ -150,9 +141,6 @@
         "messageId": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]{8,128}$"
-        },
-        "executionPreference": {
-          "$ref": "#/$defs/executionPreference"
         },
         "quickActionId": {
           "$comment": "本轮由快捷提问发起（R-5）：服务端在激活 pack 的 L1 声明与该 subject 的 L2 覆盖层中按此 id 查表，取其 template 展开为本轮用户轮消息（客户端不持第二份模板副本，也不做插值）。查不到或被用户停用即按 text 原样发起本轮并在审计标注——快捷提问是问法，不是授权：它 MUST NOT 改变工具面、riskTier 与任何判定。",

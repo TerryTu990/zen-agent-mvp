@@ -93,7 +93,7 @@ describe('停止手势与落页帧的顺序', () => {
     const scene = await activeGroup();
     scene.panel.emit({ kind: 'stop-operation' });
     await settle(20);
-    scene.panel.emit({ kind: 'user-message', messageId: 'm-1', text: '继续', executionPreference: 'auto' });
+    scene.panel.emit({ kind: 'user-message', messageId: 'm-1', text: '继续' });
     await settle(20);
     scene.push(guideAction);
     await settle(20);

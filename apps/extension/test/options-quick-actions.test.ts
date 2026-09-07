@@ -64,7 +64,6 @@ function createHarness(overlay: UserOverlayView | null): Harness {
     baseUrl: 'http://127.0.0.1:8787',
     authToken: 'fake-token',
     serverBaseUrl: 'http://127.0.0.1:8787',
-    executionPreference: 'auto',
     saveSettings: async () => undefined,
   };
   return { root, deps, puts };

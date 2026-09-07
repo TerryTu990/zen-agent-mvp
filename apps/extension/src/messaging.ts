@@ -7,7 +7,6 @@ import type { QuickActionView } from './quick-actions.js';
 import type {
   DownstreamFrame,
   ExecResultFrame,
-  ExecutionPreference,
   GroupPageStatus,
   HitlDecisionValue,
   SnapshotReportFrame,
@@ -82,7 +81,6 @@ export type SidePanelToBackgroundMessage =
       messageId: string;
       text: string;
       displayText?: string;
-      executionPreference: ExecutionPreference;
       /** 本轮由快捷提问发起：模板由服务端查表展开，面板只发 id（不持模板副本）。 */
       quickActionId?: string;
       /** 随快捷提问带上的页面选区正文；仅右键入口会带。 */

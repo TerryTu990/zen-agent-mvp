@@ -6,8 +6,6 @@ import {
 } from './composer-attachments.js';
 import { renderConfigDraftCard } from './config-draft-card.js';
 import { createConversationUi, type UserMessageHandle } from './conversation-hitl.js';
-import { EXECUTION_PREFERENCE_KEY, parseExecutionPreference } from './execution-preference.js';
-import type { ExecutionPreference } from './frames.js';
 import {
   SIDE_PANEL_PORT_NAME,
   type BackgroundToSidePanelMessage,
@@ -26,15 +24,6 @@ import { panelQuickActions, type QuickActionView } from './quick-actions.js';
 import { siteDeniedSkipKey } from './site-denylist.js';
 
 type PendingUserMessage = Extract<SidePanelToBackgroundMessage, { kind: 'user-message' }>;
-
-async function readExecutionPreference(): Promise<ExecutionPreference> {
-  try {
-    const items = await chrome.storage.local.get(EXECUTION_PREFERENCE_KEY);
-    return parseExecutionPreference(items[EXECUTION_PREFERENCE_KEY]);
-  } catch {
-    return 'auto';
-  }
-}
 
 /**
  * 提交瞬间落地的本地回显：气泡先出、输入框即刻清空，不等服务端回声。
@@ -779,13 +768,11 @@ export function startSidePanel(elements: SidePanelElements): void {
     ui.showThinking();
     scrollMessagesToLatest();
     updateComposer();
-    const executionPreference = await readExecutionPreference();
     deliveryAwaiting = true;
     pendingMessage = {
       kind: 'user-message',
       messageId,
       text: label,
-      executionPreference,
       quickActionId: actionId,
       ...(selectionText !== undefined && selectionText !== '' ? { selectionText } : {}),
     };
@@ -834,7 +821,6 @@ export function startSidePanel(elements: SidePanelElements): void {
     ui.showThinking();
     scrollMessagesToLatest();
     updateComposer();
-    const executionPreference = await readExecutionPreference();
     let prepared: Awaited<ReturnType<typeof prepareAttachments>>;
     try {
       prepared = await prepareAttachments(files);
@@ -859,7 +845,6 @@ export function startSidePanel(elements: SidePanelElements): void {
       messageId,
       text: prompt,
       ...(prepared.length > 0 ? { displayText: echoText } : {}),
-      executionPreference,
     };
     showLocalEcho(messageId, echoText);
     const sent = send(pendingMessage);

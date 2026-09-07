@@ -17,12 +17,6 @@ export type ClientCapability =
 
 export type HitlDecisionValue = 'approve' | 'reject';
 
-export type ExecutionPreference =
-  | 'auto'
-  | 'dom-only'
-  | 'prefer-client-api'
-  | 'prefer-server-api';
-
 export type ToolCardStatus = 'running' | 'succeeded' | 'failed';
 
 /** 页面动作闭集（纯引导，无副作用）：填表/替点走 delegated-execution 的 dom 通道（adr-011），不入本闭集。 */
@@ -46,7 +40,6 @@ export interface UserMessageFrame {
   sessionId: string;
   text: string;
   messageId?: string;
-  executionPreference?: ExecutionPreference;
   /**
    * 本轮由快捷提问发起（R-5）：服务端在激活 pack 的 L1 声明与该 subject 的 L2 覆盖层中按此 id 查表，
    * 取其 template 展开为本轮用户轮消息。查不到或已被用户停用即按 text 原样发起并在审计标注——

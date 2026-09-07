@@ -38,7 +38,6 @@ import type {
   DownstreamFrame,
   ExecInstructionFrame,
   ExecutionOutcome,
-  ExecutionPreference,
   ExecResultFrame,
   GateUserConfigInput,
   GroupPageEntry,
@@ -90,10 +89,6 @@ import { pruneStaleSnapshots, snapshotPageKey, SNAPSHOT_TOOL_NAME } from './hist
 import { wrapUntrustedContent } from './untrusted.js';
 import { listApplications, recordApplication } from './applications.js';
 import type { SessionState, SessionStore } from './sessions.js';
-import {
-  executionPreferenceInstruction,
-  selectToolsForPreference,
-} from './execution-preference.js';
 import { expandQuickAction, visibleQuickActions } from './quick-actions.js';
 
 export interface GatewayDeps {
@@ -387,7 +382,7 @@ const SITE_NAVIGATE_TOOL_SPEC: LlmToolSpec = {
 
 /**
  * built-in 通用页面导航工具（generic pack 配套）：不入 pack tools.json，仅当 generic pack 激活
- * （活跃页是 http/https）或静默页冷启动，且执行偏好允许 dom 时注入。经 toolgate 专路裁决
+ * （活跃页是 http/https）或静默页冷启动时注入。经 toolgate 专路裁决
  * （协议闭集 http/https + 禁内嵌凭证；带 task 且任务已获授权即放行，否则确认）与一次性签名下发，
  * 构造 navigate dom 指令复用客户端跨窗口开页入组（U7）。
  */
@@ -1295,14 +1290,9 @@ export function createGateway(deps: GatewayDeps): Gateway {
   /**
    * open_url 的注入门与调用准入门共用本谓词（单一判定点，防两门漂移）：
    * generic pack 激活（genericOrigin 已绑定）即可用；静默页冷启动在仅基座会话上同样可用——
-   * 保持仅基座装配，只放通用开页；执行偏好不容 dom 时一律不可用。
+   * 保持仅基座装配，只放通用开页。
    */
-  function openUrlAdmittedFor(
-    pack: PackRef,
-    activeUrl: string,
-    executionPreference: ExecutionPreference,
-  ): boolean {
-    if (executionPreference !== 'auto' && executionPreference !== 'dom-only') return false;
+  function openUrlAdmittedFor(pack: PackRef, activeUrl: string): boolean {
     if (pack.genericOrigin !== undefined) return true;
     return pack.packId === null && isSilentPageUrl(activeUrl);
   }
@@ -2026,7 +2016,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
     session: SessionState,
     text: string,
     claims: IdentityClaims,
-    executionPreference: ExecutionPreference,
     messageId: string | undefined,
     /**
      * 本轮的快捷提问（R-5）：text 是客户端原文（chip 上那句话），模板在本回合首次装配后按
@@ -2038,9 +2027,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
     const runtime = runtimeOf(sessionId);
     const cancelled = (): boolean => messageId !== undefined && runtime.cancelledMessageIds.has(messageId);
     const llmRequestId = messageId === undefined ? undefined : `${sessionId}:${messageId}`;
-    const preferenceInstruction = executionPreferenceInstruction(executionPreference);
-    const withPreference = (content: string): string =>
-      preferenceInstruction === null ? content : `${content}\n\n${preferenceInstruction}`;
     /**
      * 快捷提问展开（R-5）：查表面绑本轮 compose 定下的生效 pack——pack 被关停或本页命中站点黑名单时
      * compose 已回落仅基座，该 pack 的预置问法本轮不可见，一律按客户端原文原样发起并标 unresolved。
@@ -2136,10 +2122,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
       // L2 定格面（封 TOCTOU）：本轮 compose 冻结的生效面贯穿全部判定与签发；
       // 降级（读失败无缓存）无 revision，以 degraded 标志表示——此时工具面已全 forbidden（U7）。
       const userConfig: GateUserConfigInput | undefined = gateUserConfigOf(composed);
-      const selectedHostTools = selectToolsForPreference(composed.tools, executionPreference);
-      const hostToolsById = new Map(selectedHostTools.map((tool) => [tool.id, tool]));
+      const hostTools = composed.tools;
+      const hostToolsById = new Map(hostTools.map((tool) => [tool.id, tool]));
       const evidenceById = new Map<string, SnapshotEvidenceRule>();
-      for (const tool of selectedHostTools) {
+      for (const tool of hostTools) {
         if (!isDomTool(tool)) continue;
         for (const rule of tool.adapter.snapshotEvidence ?? []) {
           if (!evidenceById.has(rule.id)) evidenceById.set(rule.id, rule);
@@ -2148,18 +2134,14 @@ export function createGateway(deps: GatewayDeps): Gateway {
       const evidenceRules = [...evidenceById.values()];
       const guideTools: LlmToolSpec[] = composed.facts !== null ? [GUIDE_TOOL_SPEC] : [];
       // 快照工具只在工具面含 dom 工具时注入：无 dom 操作面就不给观察入口（最小工具面）。
-      const snapshotTools: LlmToolSpec[] = selectedHostTools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
+      const snapshotTools: LlmToolSpec[] = hostTools.some(isDomTool) ? [SNAPSHOT_TOOL_SPEC] : [];
       // pack_doc 只在激活 pack 有 docs 索引时注入（渐进披露）：无索引则不给读取入口。
       const docTools: LlmToolSpec[] = composed.docsIndex !== null ? [PACK_DOC_TOOL_SPEC] : [];
       // site_navigate 与站点索引同门：仅当注入了"已安装站点索引"（≥2 site）时给跨站导航入口；单 site 无跨站意义。
-      const navTools: LlmToolSpec[] =
-        composed.sitesIndex !== null &&
-        (executionPreference === 'auto' || executionPreference === 'dom-only')
-          ? [SITE_NAVIGATE_TOOL_SPEC]
-          : [];
+      const navTools: LlmToolSpec[] = composed.sitesIndex !== null ? [SITE_NAVIGATE_TOOL_SPEC] : [];
       // open_url 注入门＝调用准入门（openUrlAdmittedFor）：generic pack 激活或静默页冷启动
       // 才给通用导航入口；站点 pack 会话不注入。
-      const openUrlOk = openUrlAdmittedFor(pack, url, executionPreference);
+      const openUrlOk = openUrlAdmittedFor(pack, url);
       const openUrlTools: LlmToolSpec[] = openUrlOk ? [OPEN_URL_TOOL_SPEC] : [];
       // 投递记录（业务日志）注入门＝激活 pack 的 capabilities.builtinTools 声明（缺省即不注入）：
       // 平台内建工具面不对任意站点强加求职域工具。注入门与调用准入门共用 appToolsOk 单一谓词（防两门漂移）。
@@ -2180,7 +2162,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
         ...openUrlTools,
         ...appTools,
         ...configTools,
-        ...selectedHostTools.map((tool) => toLlmToolSpec(tool, groupPagesManifestInjected(session))),
+        ...hostTools.map((tool) => toLlmToolSpec(tool, groupPagesManifestInjected(session))),
       ];
       return { pack, featureId, composed, hostToolsById, tools, evidenceRules, siteOrigin, userConfig, openUrlOk, appToolsOk };
     };
@@ -2225,7 +2207,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       {
         role: 'system',
         content: withManifest(
-          withPreference(systemContent),
+          systemContent,
           await groupPagesManifest(session, packColumnCache, tools),
         ),
       },
@@ -2967,7 +2949,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
               messages[0] = {
                 role: 'system',
                 content: withManifest(
-                  withPreference(systemContentFor(composed, pack, landedUrl)),
+                  systemContentFor(composed, pack, landedUrl),
                   await groupPagesManifest(session, packColumnCache, tools),
                 ),
               };
@@ -3197,7 +3179,6 @@ export function createGateway(deps: GatewayDeps): Gateway {
               session,
               upstream.text,
               claims,
-              upstream.executionPreference ?? 'auto',
               upstream.messageId,
               quickActionRequest,
             );

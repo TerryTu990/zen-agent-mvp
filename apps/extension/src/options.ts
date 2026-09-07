@@ -1,10 +1,9 @@
 /**
- * 选项页宿主：把 chrome.storage.local 的本机设置（服务端地址 / 执行偏好）接到配置中心三页上，
+ * 选项页宿主：把 chrome.storage.local 的本机设置（服务端地址）接到配置中心三页上，
  * 并以匿名身份（adr-022）取得本页读写 L2 所需的令牌；令牌值不入 DOM（ZA-C-SEC-04）。
  * 站点黑名单双写：L2 + 本机 `za.siteDenylist`（background 激活判定的数据源），保存成功即同步。
  */
 import { mountConfigCenter } from './config-center.js';
-import { EXECUTION_PREFERENCE_KEY, parseExecutionPreference } from './execution-preference.js';
 import { createIdentityProvider } from './identity.js';
 import { normalizeTrustedServerBaseUrl } from './server-url.js';
 import { SITE_DENYLIST_KEY } from './site-denylist.js';
@@ -36,14 +35,12 @@ void chrome.storage.local.get(null).then(async (items) => {
     baseUrl,
     authToken,
     serverBaseUrl,
-    executionPreference: parseExecutionPreference(items[EXECUTION_PREFERENCE_KEY]),
     normalizeBaseUrl: normalizeTrustedServerBaseUrl,
     async saveSettings(patch) {
       const entries: Record<string, unknown> = {};
       if (patch.serverBaseUrl !== undefined && patch.serverBaseUrl !== '') {
         entries[BASEURL_KEY] = patch.serverBaseUrl;
       }
-      if (patch.executionPreference !== undefined) entries[EXECUTION_PREFERENCE_KEY] = patch.executionPreference;
       if (patch.serverBaseUrl === '') await chrome.storage.local.remove(BASEURL_KEY);
       if (Object.keys(entries).length > 0) await chrome.storage.local.set(entries);
     },

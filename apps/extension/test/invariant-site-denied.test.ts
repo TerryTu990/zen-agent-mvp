@@ -169,7 +169,7 @@ const UPSTREAM_CASES: Record<UpstreamFrame['type'], UpstreamCase[]> = {
       name: '用户在面板里发言',
       origin: 'other-source',
       emit: async ({ panel }) => {
-        panel.emit({ kind: 'user-message', messageId: 'm-1', text: '这个页面能做什么', executionPreference: 'auto' });
+        panel.emit({ kind: 'user-message', messageId: 'm-1', text: '这个页面能做什么' });
         await settle();
       },
     },
