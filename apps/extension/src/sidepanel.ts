@@ -16,10 +16,10 @@ import {
   type SidePanelUiEvent,
   type SidePanelToBackgroundMessage,
 } from './messaging.js';
-import { originMatchPattern } from './injection.js';
 import {
   isAttachRetryable,
   PAGE_ATTACH_REASON_TEXT,
+  permissionPatternFor,
   type PageAttachReason,
 } from './page-attach.js';
 import { panelQuickActions, type QuickActionView } from './quick-actions.js';
@@ -450,12 +450,10 @@ export function startSidePanel(elements: SidePanelElements): void {
    * 问完（无论用户是否授予）再请 background 重试一次注入，成败由它如实回执。
    */
   const attachPage = async (page: PanelPageEntry): Promise<void> => {
-    if (page.reason === 'permission') {
-      try {
-        await chrome.permissions.request({ origins: [originMatchPattern(new URL(page.url).origin)] });
-      } catch {
-        // 地址不可解析或用户关掉了授权气泡：仍按一次普通重试继续，让 background 给出真实结果。
-      }
+    const pattern = page.reason === 'permission' ? permissionPatternFor(page.url) : null;
+    if (pattern !== null) {
+      // 用户关掉授权气泡即视为未授予：仍按一次普通重试继续，成败由 background 如实回执。
+      await chrome.permissions.request({ origins: [pattern] }).catch(() => false);
     }
     send({ kind: 'attach-page', tabId: page.tabId });
   };

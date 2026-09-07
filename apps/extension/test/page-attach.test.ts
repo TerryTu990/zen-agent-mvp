@@ -8,6 +8,7 @@ import {
   isAttachRetryable,
   isRestrictedPage,
   PAGE_ATTACH_REASON_TEXT,
+  permissionPatternFor,
   type PageAttachReason,
 } from '../src/page-attach.js';
 
@@ -36,6 +37,17 @@ describe('isRestrictedPage：浏览器一律不允许注入的地址', () => {
     'https://shop.example/pdf-guide',
   ])('%s 判为可注入', (url) => {
     expect(isRestrictedPage(url)).toBe(false);
+  });
+});
+
+describe('permissionPatternFor：站点权限的匹配模式', () => {
+  it('去掉端口：chrome 的匹配模式主机段不带端口，带端口的实参会被判非法', () => {
+    expect(permissionPatternFor('http://localhost:4232/article.html')).toBe('http://localhost/*');
+    expect(permissionPatternFor('https://shop.example/orders?q=1#x')).toBe('https://shop.example/*');
+  });
+
+  it('地址不可解析即拿不出可询问的范围', () => {
+    expect(permissionPatternFor('不是一个地址')).toBeNull();
   });
 });
 

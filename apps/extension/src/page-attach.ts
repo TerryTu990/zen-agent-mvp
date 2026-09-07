@@ -30,6 +30,20 @@ export function isRestrictedPage(url: string): boolean {
   return parsed.pathname.toLowerCase().endsWith('.pdf');
 }
 
+/**
+ * 地址 → chrome 站点权限的匹配模式。Chrome 的匹配模式主机段不带端口，一条 host 模式即覆盖该主机
+ * 全部端口；带端口的模式会被 permissions API 判为非法实参（查询直接抛错）。故此处按
+ * scheme://host 归一。地址不可解析即回 null（拿不出可询问的范围）。
+ */
+export function permissionPatternFor(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.hostname}/*`;
+  } catch {
+    return null;
+  }
+}
+
 export interface PageAttachInput {
   url: string;
   /** 该页命中用户的「不辅助的站点」名单：故意行为，不该被「修复」。 */

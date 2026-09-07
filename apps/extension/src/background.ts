@@ -94,11 +94,10 @@ import {
   decideRegisteredOrigins,
   GRANTED_ORIGINS_KEY,
   grantedOriginsFromUserConfig,
-  originMatchPattern,
   parseGrantedOrigins,
   planRegistrations,
 } from './injection.js';
-import { decideAttachReason, isRestrictedPage } from './page-attach.js';
+import { decideAttachReason, isRestrictedPage, permissionPatternFor } from './page-attach.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
 // 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
@@ -1696,13 +1695,9 @@ async function injectContentScript(tabId: number): Promise<boolean> {
  * 地址不可解析或查询失败一律按未覆盖：此判定只用于向用户解释现象，宁可多给一次重试入口。
  */
 async function originGrantedFor(url: string): Promise<boolean> {
-  let origin: string;
-  try {
-    origin = new URL(url).origin;
-  } catch {
-    return false;
-  }
-  return chrome.permissions.contains({ origins: [originMatchPattern(origin)] }).catch(() => false);
+  const pattern = permissionPatternFor(url);
+  if (pattern === null) return false;
+  return chrome.permissions.contains({ origins: [pattern] }).catch(() => false);
 }
 
 /** 已授权 origin 的本机缓存读回（来自 refreshAutomationDescriptors 的那次 /v1/user-config）。 */
