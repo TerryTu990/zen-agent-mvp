@@ -342,6 +342,13 @@ export interface DomGateContext {
   path: string;
   /** 快照页 origin（ADR-013）：site pack 的非 navigate dom 步须 === 工具所属 pack origin，越界即 deny。 */
   origin?: string;
+  /**
+   * 产出这批 ref 的快照页完整 URL：ref 是每份快照内的顺序编号、跨页不通用且会重号，
+   * 故缺省批次签发前须以本值比对状态表活跃页，证明这批 ref 仍属落点那一页。缺省=客户端未报来源页 URL。
+   */
+  url?: string;
+  /** 快照页的内容脚本实例标识（导航/刷新即变、同文档内 URL 变动不变）：缺省批次据此钉指令，执行侧副作用前就地核对。 */
+  pageInstanceId?: string;
   /** 最近快照元素的最小语义：按 ref 反查 role，判定敏感控件与确认卡「将发生什么」。 */
   elements?: SnapshotElement[];
   /** 最近快照按 pack 配方生成的结构化证据：只含闭集状态统计，不含消息正文。 */

@@ -213,6 +213,62 @@ function resolveTargetPage(
   return { target: entry };
 }
 
+/** 状态表活跃页 URL（服务端自持事实：group-pages 每帧全量重建）；无活跃条目=事实缺失，返回 undefined。 */
+function activePageUrlOf(groupPages: GroupPageEntry[] | undefined): string | undefined {
+  return groupPages?.find((page) => page.status === 'active')?.url;
+}
+
+/**
+ * 页面身份键：origin + path + search，忽略 hash——同文档内锚点跳转不算换页，ref 仍然有效。
+ * 不可解析的地址取剥 hash 后的原串（比对退化为字面等值，方向仍是收紧）。
+ */
+function pageIdentityKey(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+  } catch {
+    const hash = url.indexOf('#');
+    return hash === -1 ? url : url.slice(0, hash);
+  }
+}
+
+/**
+ * 快照来源页与当前活跃页是否已经不是同一页：两侧事实都在手才判（任一缺失=无从证明，交由
+ * 签发侧下钉的执行前就地核对兜底）。两侧均取服务端自持事实（snapshot-report / group-pages），
+ * 与模型入参无关。
+ */
+function pageChanged(snapshotUrl: string | undefined, activeUrl: string | undefined): boolean {
+  if (snapshotUrl === undefined || activeUrl === undefined) return false;
+  return pageIdentityKey(snapshotUrl) !== pageIdentityKey(activeUrl);
+}
+
+/**
+ * 缺省批次落点已换页的拒签理由：直接回喂 agent 作引导（不含实参值，SEC-04）。
+ * ref 是每份快照内的顺序编号、跨页会重号，落到别的页会解析到别的元素——故重新观察才是唯一出路。
+ */
+const PAGE_CHANGED_REASON =
+  '页面已变化（这批引用出自另一张快照，当前活跃页已不是产出它的那一页）：请重新快照后再操作';
+
+/**
+ * dom 批次的执行侧就地校验基准（签发到执行之间页走样即 context-mismatch，副作用前拒绝）：
+ * 定向批次钉状态表目标页 URL（与其围栏同基准）——覆盖边界是状态表落后于目标页真实 URL 时，
+ * 对该快照仍合法的批次也会被判 context-mismatch（方向 fail-safe，代价是可用性抖动）；
+ * 缺省批次钉产出这批 ref 的快照页身份，优先页面实例标识（导航/刷新即变，同文档内 URL 变动不误伤），
+ * 客户端未报实例时退回快照 URL。单步 navigate 不钉——silent 页由 background 直执行、无页可核对。
+ */
+function pageIdentityStamp(
+  steps: DomStep[],
+  domContext: DomGateContext | undefined,
+  target: GroupPageEntry | undefined,
+): { expectedPageUrl?: string; expectedPageInstanceId?: string } {
+  if (steps.some((step) => step.action === 'navigate')) return {};
+  if (target !== undefined) return { expectedPageUrl: target.url };
+  if (domContext?.pageInstanceId !== undefined) {
+    return { expectedPageInstanceId: domContext.pageInstanceId };
+  }
+  return domContext?.url !== undefined ? { expectedPageUrl: domContext.url } : {};
+}
+
 /** 路径段前缀匹配（与装配层围栏语义一致）：'/' 匹配一切；'/console' 匹配 '/console' 与 '/console/...'。 */
 function locationMatches(path: string, loc: string): boolean {
   if (loc === '/') return true;
@@ -228,6 +284,8 @@ function locationMatches(path: string, loc: string): boolean {
  * 无 packOrigin 的 pack 无 origin 围栏基准，定向一律拒（缺省路径不受影响）；
  * silent 页仅单步 navigate 可签（通道分级）；ref 批次仍须 domContext（此时它是目标页定向快照的上下文），
  * 定向单步 navigate 免 domContext（silent 页无快照可取）。
+ * 缺省批次（target 缺省，作用于活跃页）另判来源页：快照来源页与状态表活跃页不是同一页即 deny
+ * ——ref 跨页重号，落到别的页会点到别的元素。
  * 敏感控件闭集：按 domContext.elements 反查 ref 的 role——read 命中 SENSITIVE_READ_ROLES
  * 即 deny；elements 缺省时 read 一律 deny（信息缺失不降级放行）；fill 命中 SENSITIVE_FILL_ROLES
  * 置 sensitiveFill，调用点据此强制逐次确认。
@@ -241,6 +299,7 @@ function validateDomSteps(
   packOrigin: string | undefined,
   urlInFence: (url: string) => boolean,
   target?: GroupPageEntry,
+  activePageUrl?: string,
 ): { steps: DomStep[]; sensitiveFill?: true } | { reason: string } {
   // 任务标题必填：它是任务级 HITL 授权的作用域标识（用户批准的就是它），也是审计可读锚点。
   const task = params['task'];
@@ -296,8 +355,14 @@ function validateDomSteps(
         return { reason: 'origin-fence-violation' };
       }
     }
-  } else if (packOrigin !== undefined && !hasNavigate && domContext?.origin !== packOrigin) {
-    return { reason: 'origin-fence-violation' };
+  } else if (!hasNavigate) {
+    if (packOrigin !== undefined && domContext?.origin !== packOrigin) {
+      return { reason: 'origin-fence-violation' };
+    }
+    // 缺省批次作用于「当前活跃页」，而这批 ref 只在产出它的那份快照里有意义：两者已不是同一页
+    // 即拒签，不下发任何指令。方向 fail-safe——状态表短暂落后于真实活跃页时会误拒一次可用批次，
+    // 代价是 agent 重新快照重试；反向漏判的代价是副作用落在意料之外的页面上。
+    if (pageChanged(domContext?.url, activePageUrl)) return { reason: PAGE_CHANGED_REASON };
   }
   const refs = new Set(domContext?.refs ?? []);
   const roleByRef = new Map((domContext?.elements ?? []).map((element) => [element.ref, element.role]));
@@ -614,6 +679,7 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
         input.packOrigin,
         urlInFence,
         resolvedTarget.target,
+        activePageUrlOf(input.groupPages),
       );
       if ('reason' in validated) return { reason: validated.reason };
       return {
@@ -803,21 +869,13 @@ export function createToolGatePort(options: ToolGateOptions): ToolGatePort {
           input.packOrigin,
           urlInFence,
           resolvedTarget.target,
+          activePageUrlOf(input.groupPages),
         );
         if ('reason' in validated) throw new Error(`dom 批次校验未过：${validated.reason}`);
-        // 定向批次的执行侧就地校验基准：与围栏同基准=状态表目标页 URL，签发到执行之间页走样即 context-mismatch。
-        // 状态表无页面实例概念，故只钉 URL；单步 navigate 不钉——silent 页由 background 直执行、无页可核对。
-        // 覆盖边界：基准取状态表 URL 而非产出这批 refs 的定向快照 URL——状态表落后于目标页真实 URL 时，
-        // 对该快照仍合法的批次也会被执行侧判 context-mismatch（方向 fail-safe，代价是可用性抖动）。
-        const targetPageUrl =
-          resolvedTarget.target !== undefined &&
-          !validated.steps.some((step) => step.action === 'navigate')
-            ? resolvedTarget.target.url
-            : undefined;
         request = {
           kind: 'dom',
           steps: validated.steps,
-          ...(targetPageUrl !== undefined ? { expectedPageUrl: targetPageUrl } : {}),
+          ...pageIdentityStamp(validated.steps, input.domContext, resolvedTarget.target),
         };
       } else {
         const adapter = tool.adapter;

@@ -829,7 +829,11 @@ describe('toolgate dom 批次 — fail-closed 校验与签发（adr-011）', () 
       summary: '点一下',
     };
     const instruction = await port.issueExecInstruction({ ...base, params: dirtyParams, domContext });
-    expect(instruction.request).toEqual({ kind: 'dom', steps: [{ action: 'click', ref: 'za-2' }] });
+    expect(instruction.request).toEqual({
+      kind: 'dom',
+      expectedPageInstanceId: 'page-instance-1',
+      steps: [{ action: 'click', ref: 'za-2' }],
+    });
     // 签名覆盖净化后的 request：同 secret 可复算。
     expect(instruction.signature).toBe(
       computeExecSignature(SIGN_FIXTURE, {
@@ -1539,13 +1543,19 @@ describe('toolgate adr-023 D3 — 定向副作用（目标页解析/围栏/通�
     steps: [{ action: 'navigate', url: 'https://seller.example/console/orders' }],
     summary: '导航激活',
   };
+  /** 缺省批次的判定基准＝活跃页快照：来源页身份与状态表 active 条目同页，否则本就该按「页面已变化」拒签。 */
+  const activeDomContext = {
+    ...domContext,
+    path: '/console/orders',
+    url: 'https://seller.example/console/orders',
+  };
   const domBase = {
     sessionId: 's-d3',
     toolCallId: 'c-d3',
     toolId: domTool.id,
     claims: validClaims,
     packOrigin: 'https://seller.example',
-    domContext,
+    domContext: activeDomContext,
     groupPages,
   };
 
@@ -1595,13 +1605,17 @@ describe('toolgate adr-023 D3 — 定向副作用（目标页解析/围栏/通�
       expectedPageUrl: 'https://seller.example/console/token',
       steps: [{ action: 'click', ref: 'za-2' }],
     });
-    // 缺省（无 targetPage）路径逐字节不变：不钉任何页面上下文字段。
+    // 缺省（无 targetPage）批次改钉快照页身份：客户端报了实例标识即用它（比 URL 严，同文档内 URL 变动不误伤）。
     const plain = await port.issueExecInstruction({
       ...domBase,
       toolCallId: 'c-d3-plain',
       params: refBatch,
     });
-    expect(plain.request).toEqual({ kind: 'dom', steps: [{ action: 'click', ref: 'za-2' }] });
+    expect(plain.request).toEqual({
+      kind: 'dom',
+      expectedPageInstanceId: 'page-instance-1',
+      steps: [{ action: 'click', ref: 'za-2' }],
+    });
   });
 
   it('句柄未命中状态表 → deny page-not-in-group；未传 groupPages 而带 targetPage → 同拒（fail-closed 禁回退活跃页）', async () => {
@@ -1845,6 +1859,119 @@ describe('toolgate adr-023 D3 — 定向副作用（目标页解析/围栏/通�
     expect(await port.decide({ ...noContext, params: refBatch })).toEqual({
       verdict: 'deny',
       reason: 'dom-context-missing',
+    });
+  });
+});
+
+/**
+ * 缺省 dom 批次的来源页比对：ref 是每份快照内的顺序编号、跨页重号，故「产出这批 ref 的那一页」
+ * 不再是当前活跃页时，同名 ref 会解析到另一页上的另一个元素——签发前即拒。
+ * 夹具刻意让两页同 origin 同 path 只差 query：origin/path 围栏都命中，红只可能来自本条判定。
+ */
+describe('toolgate — 缺省 dom 批次的快照来源页 vs 活跃页（页面身份 fail-closed）', () => {
+  const SNAPSHOT_URL = 'https://seller.example/console/token?order=order-1';
+  const ORIGIN = 'https://seller.example';
+  const sourceContext = {
+    refs: ['za-2'],
+    path: '/console/token',
+    origin: ORIGIN,
+    url: SNAPSHOT_URL,
+    pageInstanceId: 'page-instance-1',
+    elements: [{ ref: 'za-2', role: 'button', label: '发送' }],
+  };
+  const refBatch = {
+    task: '在结果页点击',
+    steps: [{ action: 'click', ref: 'za-2' }],
+    summary: '点击发送',
+  };
+  const pagesWithActive = (url: string): GroupPageEntry[] => [
+    { handle: 'p1', url, status: 'active' },
+    { handle: 'p2', url: 'https://seller.example/console/other', status: 'background' },
+  ];
+  const base = {
+    sessionId: 's-f1',
+    toolCallId: 'c-f1',
+    toolId: domTool.id,
+    claims: validClaims,
+    packOrigin: ORIGIN,
+    domContext: sourceContext,
+  };
+
+  it('活跃页已换（同 origin 同 path，仅 query 不同）→ decide deny 页面已变化，签发侧独立复述拒签', async () => {
+    const port = makePort();
+    const call = {
+      ...base,
+      params: refBatch,
+      groupPages: pagesWithActive('https://seller.example/console/token?order=order-2'),
+    };
+    const decision = await port.decide(call);
+    expect(decision.verdict).toBe('deny');
+    expect(decision.reason).toContain('页面已变化');
+    expect(decision.reason).toContain('重新快照');
+    await expect(port.issueExecInstruction(call)).rejects.toThrow(/页面已变化/);
+  });
+
+  it('活跃页仍是快照那一页（hash 不计入身份）→ allow，且签发钉快照页实例标识', async () => {
+    const port = makePort();
+    const call = {
+      ...base,
+      params: refBatch,
+      groupPages: pagesWithActive(`${SNAPSHOT_URL}#section`),
+    };
+    expect(await port.decide(call)).toEqual({ verdict: 'allow' });
+    const frame = await port.issueExecInstruction(call);
+    expect(frame.request).toEqual({
+      kind: 'dom',
+      expectedPageInstanceId: 'page-instance-1',
+      steps: [{ action: 'click', ref: 'za-2' }],
+    });
+  });
+
+  it('客户端未报快照页实例标识 → 退回钉快照 URL（执行侧仍有可核对维度）', async () => {
+    const { pageInstanceId: _instance, ...noInstance } = sourceContext;
+    const frame = await makePort().issueExecInstruction({
+      ...base,
+      domContext: noInstance,
+      params: refBatch,
+      groupPages: pagesWithActive(SNAPSHOT_URL),
+    });
+    expect(frame.request).toEqual({
+      kind: 'dom',
+      expectedPageUrl: SNAPSHOT_URL,
+      steps: [{ action: 'click', ref: 'za-2' }],
+    });
+  });
+
+  it('两侧事实缺一即不判（无状态表 / 快照未报来源页）：判定与比对上线前一致', async () => {
+    const port = makePort();
+    expect(await port.decide({ ...base, params: refBatch })).toEqual({ verdict: 'allow' });
+    const { url: _url, ...noUrl } = sourceContext;
+    expect(
+      await port.decide({
+        ...base,
+        domContext: noUrl,
+        params: refBatch,
+        groupPages: pagesWithActive('https://seller.example/console/token?order=order-2'),
+      }),
+    ).toEqual({ verdict: 'allow' });
+  });
+
+  it('缺省单步 navigate 不比对来源页（navigate 本就是换页），也不钉页面身份', async () => {
+    const port = makePort();
+    const call = {
+      ...base,
+      params: {
+        task: '换页',
+        steps: [{ action: 'navigate', url: 'https://seller.example/console/orders' }],
+        summary: '导航',
+      },
+      groupPages: pagesWithActive('https://seller.example/console/other'),
+    };
+    expect(await port.decide(call)).toEqual({ verdict: 'allow' });
+    const frame = await port.issueExecInstruction(call);
+    expect(frame.request).toEqual({
+      kind: 'dom',
+      steps: [{ action: 'navigate', url: 'https://seller.example/console/orders' }],
     });
   });
 });

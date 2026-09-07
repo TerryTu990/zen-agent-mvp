@@ -377,6 +377,11 @@
             "client",
             "server"
           ]
+        },
+        "failureReason": {
+          "$comment": "失败归因（仅 status=failed 下发）：与回喂 agent 同一句的已脱敏短语；纯展示不承载判定，不含密钥值/token 原文/栈细节（SEC-04）。",
+          "type": "string",
+          "minLength": 1
         }
       }
     },

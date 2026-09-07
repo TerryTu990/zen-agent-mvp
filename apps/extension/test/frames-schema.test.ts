@@ -202,6 +202,7 @@ const FRAME_PROPERTY_MIRRORS: { def: string; keys: string[] }[] = [
     def: 'toolCard',
     keys: keysOf<ToolCardFrame>({
       type: true, sessionId: true, toolCallId: true, toolId: true, status: true, summary: true, mode: true,
+      failureReason: true,
     }),
   },
   {
