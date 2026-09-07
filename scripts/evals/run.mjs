@@ -23,9 +23,9 @@ const SERVER_DIST = join(REPO_ROOT, 'apps', 'server', 'dist', 'main.js');
 const SCENARIOS_PATH = join(REPO_ROOT, 'evals', 'scenarios.json');
 // 装配快照根（server 载入）+ pack 级评测发现根（ADR-013 §4：扫 packs 各 eval/scenarios.json 逐 pack 跑）。
 // 四根分阶段各起一台 server（同端口先后独占）——各根的 pack origin 互不相同，须独立载入。当前分布：
-//   host-demo   evals/scenarios.json 的 16 条主场景（该根下无 pack 级 eval 集）
-//   acceptance  5 个验收 pack 共 46 条：codeflow-console 2 / generic-web 17 / mail-126 3 / xianyu-seller 19 / zhipin 5
-//   assets      生产 pack generic-web 17 条
+//   host-demo   evals/scenarios.json 的 17 条主场景（该根下无 pack 级 eval 集）
+//   acceptance  5 个验收 pack 共 47 条：codeflow-console 2 / generic-web 18 / mail-126 3 / xianyu-seller 19 / zhipin 5
+//   assets      生产 pack generic-web 18 条
 //   site-packs  已下线站点包 25 条：xianyu-seller 18 / yinxiang 7
 const SNAPSHOT_ROOT = join(REPO_ROOT, 'examples', 'host-demo', 'config');
 const ACCEPTANCE_ROOT = join(REPO_ROOT, 'examples', 'acceptance');
