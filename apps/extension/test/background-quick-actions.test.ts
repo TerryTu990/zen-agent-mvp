@@ -1,8 +1,8 @@
 /**
  * 快捷提问在 background 上的两个入口（R-5）：面板 chips 取数与右键菜单派生共用同一份清单。
- * 判据分四组：取数只走两个无会话投影端点（/v1/packs + /v1/user-config，开面板不建会话）、
+ * 判据分五组：取数只走两个无会话投影端点（/v1/packs + /v1/user-config，开面板不建会话）、
  * 会话已建立后按注入自省的 packId/featureId 过滤、右键菜单在兜底项之后追加派生项、
- * 命中站点黑名单的页连取数都不发。
+ * 命中站点黑名单的页连取数都不发、以及首屏兜底面只在本页可激活时才呈现。
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { sessionKeyForGroup, zenGroupKey } from '../src/activation.js';
@@ -193,6 +193,49 @@ describe('面板 chips 取数（quick-actions-request）', () => {
       label: '解释选中内容',
       selectionText: '这段话',
     });
+  });
+});
+
+describe('尚无会话时的首屏兜底面：本页可激活才给', () => {
+  /**
+   * 兜底包只在有 http/https 来源的页上激活。浏览器内部页永远不产生上下文上报，本轮 packId 恒为空，
+   * 呈现的 chip 点下去必然查不到模板——那正是「在新标签页点『总结本页』，agent 答无法总结本页」的来路。
+   */
+  it('活动页是浏览器内部页：一条 chip 都不给（点下去必然展不开）', async () => {
+    const internalTab: FakeTab = { id: 21, url: 'chrome://newtab/', groupId: GROUP_ID, windowId: WINDOW_ID };
+    const h = await loadBackground({
+      tabs: [internalTab],
+      storageSession: { [zenGroupKey(GROUP_ID)]: true },
+      serve: serveQuickActions,
+    });
+    const panel = h.connectPanel(GROUP_ID);
+    panel.emit({ kind: 'quick-actions-request', siteDenied: false });
+    await settle();
+    expect(lastQuickActions(panel)).toEqual([]);
+    expect(h.menus.map((item) => item.id)).toEqual(['za-explain-selection']);
+  });
+
+  it('组内活动页是 http/https：兜底面照常呈现（对照，收窄只由地址驱动）', async () => {
+    const internalTab: FakeTab = {
+      id: 21,
+      url: 'chrome://newtab/',
+      groupId: GROUP_ID,
+      windowId: WINDOW_ID,
+      active: false,
+    };
+    const h = await loadBackground({
+      tabs: [internalTab, { ...tab, active: true }],
+      storageSession: { [zenGroupKey(GROUP_ID)]: true },
+      serve: serveQuickActions,
+    });
+    const panel = h.connectPanel(GROUP_ID);
+    panel.emit({ kind: 'quick-actions-request', siteDenied: false });
+    await settle();
+    expect(lastQuickActions(panel)?.map((action) => action.id)).toEqual([
+      'explain-anything',
+      'what-is-this-page',
+      'my-note',
+    ]);
   });
 });
 

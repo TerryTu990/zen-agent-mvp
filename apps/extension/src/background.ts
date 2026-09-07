@@ -41,6 +41,7 @@ import {
   type ContentRuntimeMessage,
   type BackgroundRuntimeMessage,
   type MessageDeliveryFailure,
+  type PanelPageEntry,
 } from './messaging.js';
 import { reducePanelHistory, removeSettledConfigDraft, removeSettledHitl } from './panel-history.js';
 import { verifyExecInstruction } from './exec-verification.js';
@@ -93,9 +94,11 @@ import {
   decideRegisteredOrigins,
   GRANTED_ORIGINS_KEY,
   grantedOriginsFromUserConfig,
+  originMatchPattern,
   parseGrantedOrigins,
   planRegistrations,
 } from './injection.js';
+import { decideAttachReason, isRestrictedPage } from './page-attach.js';
 
 // 服务端地址缺省值：发布构建经 esbuild --define 注入生产地址（release/build-extension.sh），
 // 开发构建回退本机；chrome.storage 的 za.serverBaseUrl 仍可覆盖（调试用）。
@@ -1005,7 +1008,10 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
     noteExpectedActiveTab: (tabId) => {
       expectedActiveTabId = tabId;
     },
-    sendActivate: (tabId) => sendActivate(tabId),
+    attachPanelToTab: (tabId) => applyPanelForTabId(tabId),
+    sendActivate: async (tabId) => {
+      await sendActivate(tabId);
+    },
     // background 自产的导航回执：只含服务端签发时已定值的 URL，不归属任何页面（origin=null）。
     forwardExecResult: (result) => {
       pipeline = pipeline.then(async () => {
@@ -1092,6 +1098,73 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       .catch(() => {});
   }
 
+  /**
+   * 面板侧的成员页接入态清单。与上行清单同源于一次 tabs.query，但保留命中站点黑名单的成员：
+   * 那条剔除是不让 agent 读到该页，不是不让用户知道 Zen 为什么没接入它。
+   * silent 行的原因只由浏览器 API 当刻能答的本机事实推出（协议闭集 / 权限持有 / 加载中 / 名单命中），
+   * 不构成治理判定——治理终判恒在服务端（U7）。
+   */
+  async function collectPanelPages(): Promise<PanelPageEntry[] | null> {
+    if (groupId < 0) return null;
+    const queried = await chrome.tabs.query({ groupId }).catch(() => null);
+    if (queried === null) return null;
+    const denylist = await readSiteDenylist();
+    const portTabIds = new Set<number>();
+    for (const member of contentMembers.members()) {
+      const tabId = member.sender?.tab?.id;
+      if (tabId !== undefined) portTabIds.add(tabId);
+    }
+    const activeTabId = contentMembers.targets('active-page')[0]?.sender?.tab?.id ?? null;
+    const pages: PanelPageEntry[] = [];
+    for (const tab of queried) {
+      const url = tabUrlOf(tab);
+      if (tab.id === undefined || url === undefined || url === '') continue;
+      const title = tab.title === undefined || tab.title === '' ? {} : { title: tab.title };
+      if (portTabIds.has(tab.id)) {
+        pages.push({
+          tabId: tab.id,
+          url,
+          ...title,
+          status: tab.id === activeTabId ? 'active' : 'background',
+        });
+        continue;
+      }
+      pages.push({
+        tabId: tab.id,
+        url,
+        ...title,
+        status: 'silent',
+        reason: decideAttachReason({
+          url,
+          siteDenied: siteDeniesUrl(denylist, url),
+          originGranted: await originGrantedFor(url),
+          loading: tab.status === 'loading',
+        }),
+      });
+    }
+    return pages;
+  }
+
+  async function reportPanelPages(): Promise<void> {
+    if (abort.signal.aborted || panels.size === 0) return;
+    const pages = await collectPanelPages();
+    if (pages === null || abort.signal.aborted) return;
+    postToPanels({ kind: 'group-page-status', pages });
+  }
+
+  /**
+   * 面板发起的手动补接入：落点必须仍在本组——面板持有的清单可能已滞后，
+   * 注入面不得越出任务组边界。成败按注入的实际结果如实回报（站点权限仍未取得的页照样失败），
+   * 不静默降级；无论成败都重采一次清单，让原因行跟上当刻事实。
+   */
+  async function attachPageFromPanel(tabId: number): Promise<boolean> {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (tab === null || (tab.groupId ?? TAB_GROUP_ID_NONE) !== groupId) return false;
+    const attached = await sendActivate(tabId);
+    scheduleGroupPagesReport();
+    return attached;
+  }
+
   // 防抖 300ms 合并突发（开组/批量导航），到期才采集最终全量快照组帧；单页也上报（≥2 页
   // 门槛是服务端注入门槛，审计活跃页标注仍需状态表）。投递走既有串行管线保证与 context-report
   // 的先后序；失败不重试不阻塞——下个触发点自然带来新全量帧。
@@ -1099,6 +1172,9 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   // 与拒绝一并止于本帧，既不外溢成未处理拒绝，也不让一次失败毒化整条上行串行链。
   const scheduleGroupPagesReport = createTrailingDebounce(300, () => {
     void reportGroupPages().catch(() => {});
+    // 面板清单与上行清单同一触发点、各走各的通道：上行要过会话与闸门，面板只是本机现象的如实呈现，
+    // 任一侧失败都不该拖住另一侧。
+    void reportPanelPages().catch(() => {});
   });
   // 桥建立（含 SW 重启重建、面板先于 content 接入）即补一帧全量：
   // 服务端状态表不滞留桥空窗期间已关闭/离组的旧页。
@@ -1229,15 +1305,33 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
   }
 
   /**
+   * 本组当刻的活动页地址。尚无会话时的首屏兜底面要按它判本页能不能激活——
+   * 浏览器内部页/扩展页永不产生上下文上报，错发的 chips 在这类页上不会被后续刷新收窄。
+   * 组内查不到活动页（隔离负数组键 / 用户在别的窗口）即回 null，按「本页不可激活」处置。
+   */
+  async function activeGroupPageUrl(): Promise<string | null> {
+    if (groupId < 0) return null;
+    const [tab] = await chrome.tabs.query({ groupId, active: true }).catch(() => []);
+    const url = tab === undefined ? undefined : tabUrlOf(tab);
+    return url === undefined || url === '' ? null : url;
+  }
+
+  /**
    * 本轮取数的作用域：会话已在的组按注入自省给出的 packId/featureId（不另立一套激活判定）；
    * 尚无会话时按 generic 兜底包呈现首屏——为一排 chips 建会话会在服务端
    * 落一条 session-start，那是用户没做任何事就产生的可观察行为。自省读不出即回 null（弃本轮取数）。
+   * 兜底包只在有 http/https 来源的页上激活：本页拿不出这样的来源时本轮 packId 恒为空，
+   * 此时呈现的 chip 点下去必然查不到模板——一条都不给，与「宁可少给入口」同向。
    */
   async function quickActionScope(
     packsBody: unknown,
   ): Promise<{ packId: string | null; featureId: string | null } | null> {
     const session = sessionPromise === null ? null : await sessionPromise;
-    if (session === null) return { packId: genericPackIdFromPacks(packsBody), featureId: null };
+    if (session === null) {
+      const url = await activeGroupPageUrl();
+      if (url === null || isRestrictedPage(url)) return null;
+      return { packId: genericPackIdFromPacks(packsBody), featureId: null };
+    }
     const injection = await fetch(`${session.baseUrl}/v1/sessions/${session.sessionId}/injection`, {
       headers: { authorization: `Bearer ${session.token}` },
       signal: abort.signal,
@@ -1331,6 +1425,7 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
           postPanel(port, pendingQuickAction);
           pendingQuickAction = null;
         }
+        void reportPanelPages().catch(() => {});
       });
     };
     finishAttach();
@@ -1350,6 +1445,12 @@ function createGroupBridge(groupId: number, onEmpty: () => void) {
       if (message.kind === 'quick-actions-request') {
         void resolveQuickActions(message.siteDenied).then((actions) =>
           postPanel(port, { kind: 'quick-actions', actions }),
+        );
+        return;
+      }
+      if (message.kind === 'attach-page') {
+        void attachPageFromPanel(message.tabId).then((ok) =>
+          postPanel(port, { kind: 'attach-page-result', tabId: message.tabId, ok }),
         );
         return;
       }
@@ -1590,6 +1691,20 @@ async function injectContentScript(tabId: number): Promise<boolean> {
   }
 }
 
+/**
+ * 本机 chrome.permissions 是否已覆盖该地址所属 origin（面板清单据此说明「缺站点访问权限」）。
+ * 地址不可解析或查询失败一律按未覆盖：此判定只用于向用户解释现象，宁可多给一次重试入口。
+ */
+async function originGrantedFor(url: string): Promise<boolean> {
+  let origin: string;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    return false;
+  }
+  return chrome.permissions.contains({ origins: [originMatchPattern(origin)] }).catch(() => false);
+}
+
 /** 已授权 origin 的本机缓存读回（来自 refreshAutomationDescriptors 的那次 /v1/user-config）。 */
 async function readGrantedOrigins(): Promise<string[]> {
   const items: Record<string, unknown> = await chrome.storage.local
@@ -1684,7 +1799,7 @@ async function revokeStaleActivationSkips(): Promise<void> {
  * 注入与激活恒同出一口：任何激活入口都必须先保证 content 在场，否则「已激活」只是一句空话。
  * executeScript 失败（该 origin 未授权且无 activeTab / 页面本身不可注入）即就此收手，连激活也不发——
  * 本页保持无 content，不降级、不改投，页面能力随之缺席，服务端按目标不可达处置。
- * 客户端不为此单独提示：失败对用户不可观察，能力缺席由服务端的 silent 页叙述兜住。
+ * 返回值即「执行器是否已进到这一页」：面板的手动补接入据此如实回执，不猜、不降级。
  * content 侧的重复注入守卫使本调用幂等。
  * 本函数内的黑名单判定是**兜底**：它在全部激活入口（握手 / 工具栏图标 / 组内导航补发 /
  * 拖入已映射组 / navigate 代执行开页）的最后一步，保证任何入口都发不出激活。
@@ -1693,15 +1808,16 @@ async function revokeStaleActivationSkips(): Promise<void> {
  * 两处职责不同，不是重复判定（判定逻辑仍只有 isSiteDeniedPage 一份）。
  * 每条路径都就地登记/撤销「本机跳过了这一页的激活」的事实，面板的客户端自述只认它。
  */
-async function sendActivate(tabId: number): Promise<void> {
+async function sendActivate(tabId: number): Promise<boolean> {
   if (await isSiteDeniedPage({ tabId })) {
     await noteActivationSkipped(tabId, true);
-    return;
+    return false;
   }
   await noteActivationSkipped(tabId, false);
-  if (!(await injectContentScript(tabId))) return;
+  if (!(await injectContentScript(tabId))) return false;
   const message: BackgroundRuntimeMessage = { kind: 'activate' };
   await chrome.tabs.sendMessage(tabId, message).catch(() => {});
+  return true;
 }
 
 // SPA 同文档导航（pushState/replaceState 无 window 事件）后促已激活页重报上下文，使服务端装配跟随新子路由。
@@ -2065,6 +2181,49 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.tabs.onActivated.addListener((activeInfo) => {
   void applyPanelForTabId(activeInfo.tabId);
 });
+
+/**
+ * 由组内页面打开的新页在创建当刻先启用面板。
+ * 代执行开页是「创建→入组→设为活跃」的异步序列，入组事件到达之前它就可能成为活跃页；
+ * SW 被回收重启后又会重跑一次全局禁用，此后没有逐页设置的新页同样落回禁用态。
+ * 两种窗口里 Chrome 都会把侧边栏关掉，且切回启用页也不自动重开——故此处只开不关：
+ * 这一刻新页可能尚未入组（groupId 仍为 -1），按当刻状态去关会关掉正在打开的面板。
+ */
+chrome.tabs.onCreated.addListener((tab) => {
+  void enablePanelForOpenedTab(tab);
+});
+
+async function enablePanelForOpenedTab(tab: chrome.tabs.Tab): Promise<void> {
+  const tabId = tab.id;
+  if (tabId === undefined) return;
+  const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
+  const opener = tab.openerTabId === undefined ? null : await chrome.tabs.get(tab.openerTabId).catch(() => null);
+  const openerGroupId = opener?.groupId ?? TAB_GROUP_ID_NONE;
+  const candidate = tabGroupId !== TAB_GROUP_ID_NONE ? tabGroupId : openerGroupId;
+  if (candidate === TAB_GROUP_ID_NONE || !(await isZenGroup(candidate))) return;
+  await chrome.sidePanel
+    .setOptions({ tabId, path: 'sidepanel.html', enabled: true })
+    .catch(() => {});
+}
+
+/**
+ * 站点访问权限到手即补注入：某页因缺该站点权限注入失败后，用户随后在扩展设置里授予权限
+ * 不会重放这一页的激活——不补这一刀，那一页要等它重新加载或被重新激活才接得上。
+ * 逐个任务组成员重走激活出口（sendActivate 自带黑名单闸门与幂等守卫），组外页一概不碰。
+ */
+chrome.permissions.onAdded.addListener(() => {
+  void reattachZenGroupTabs();
+});
+
+async function reattachZenGroupTabs(): Promise<void> {
+  const tabs = await chrome.tabs.query({}).catch(() => []);
+  for (const tab of tabs) {
+    const tabGroupId = tab.groupId ?? TAB_GROUP_ID_NONE;
+    if (tab.id === undefined || tabGroupId === TAB_GROUP_ID_NONE) continue;
+    if (!(await isZenGroup(tabGroupId))) continue;
+    await sendActivate(tab.id);
+  }
+}
 
 // 拖 tab 入某 zen 会话组（groupId 变为已映射组）→ 通知该页激活并接入同一会话。
 // 面板可见性：离组必关；入组只在该组确为 zen 组时开，**入组一律不关**——

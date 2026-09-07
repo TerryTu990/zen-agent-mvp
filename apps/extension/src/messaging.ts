@@ -2,14 +2,30 @@
  * content ↔ background 的 Port 内部消息（插件私有，不属 C3 契约）。
  * sessionId 由 background 唯一持有：content 只交原料，background 组 C3 上行帧。
  */
+import type { PageAttachReason } from './page-attach.js';
 import type { QuickActionView } from './quick-actions.js';
 import type {
   DownstreamFrame,
   ExecResultFrame,
   ExecutionPreference,
+  GroupPageStatus,
   HitlDecisionValue,
   SnapshotReportFrame,
 } from './frames.js';
+
+/**
+ * 任务组成员页在面板上的呈现条目。与上行的 group-pages 同源于一次 tabs.query，但另有两处不同：
+ * 保留被站点黑名单剔除的成员（那条剔除是不让 agent 读到该页，不是不让用户知道 Zen 为何没接入它），
+ * 且按 tabId 而非会话句柄标识——句柄是上行帧的对外标识，插件内部通道不必也不该借用它（U5）。
+ */
+export interface PanelPageEntry {
+  tabId: number;
+  url: string;
+  title?: string;
+  status: GroupPageStatus;
+  /** 仅 silent 行有：本机可答的未接入原因。 */
+  reason?: PageAttachReason;
+}
 
 export type SidePanelUiEvent =
   | {
@@ -78,6 +94,8 @@ export type SidePanelToBackgroundMessage =
   // 快捷提问 chips 取数：面板不持有会话与令牌，由 background 合并 /v1/packs 与 /v1/user-config 后回投影。
   // siteDenied = 本机确实跳过了这一页的激活（面板持有该事实）：background 据此连会话都不建。
   | { kind: 'quick-actions-request'; siteDenied: boolean }
+  // 用户在面板上手动补接入某页：一次带用户手势的注入重试（站点权限询问已在面板侧问过）。
+  | { kind: 'attach-page'; tabId: number }
   | { kind: 'stop-operation'; messageId?: string }
   | { kind: 'ping' };
 
@@ -100,6 +118,10 @@ export type BackgroundToSidePanelMessage =
   | { kind: 'quick-actions'; actions: QuickActionView[] }
   // 右键选中某条快捷提问：面板按普通用户消息路径发出（本地回声/停止/幂等全部复用）。
   | { kind: 'compose-quick-action'; actionId: string; label: string; selectionText: string }
+  // 本组成员页当刻的接入态；silent 行附本机可答的原因，面板据此给出信号与手动补接入入口。
+  | { kind: 'group-page-status'; pages: PanelPageEntry[] }
+  // 手动补接入的回执：ok=false 即本次注入仍未成功（如站点权限仍未取得），面板如实呈现、不改口径。
+  | { kind: 'attach-page-result'; tabId: number; ok: boolean }
   | { kind: 'stop-result'; messageId?: string; accepted: boolean }
   | { kind: 'operation-state'; running: boolean }
   | {
