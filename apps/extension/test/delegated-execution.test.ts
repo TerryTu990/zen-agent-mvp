@@ -56,6 +56,31 @@ describe('delegated-execution 页面环境代执行', () => {
     expect(runs).toBe(0);
   });
 
+  it('只钉页面实例的缺省批次：同 URL 但页面已换实例（重载/换文档）→ 副作用前拒绝，回 context-mismatch', async () => {
+    let runs = 0;
+    const exec = createDelegatedExecutor(
+      fetch,
+      {
+        run: async () => {
+          runs += 1;
+          return { ok: true, body: { completedSteps: 1 } };
+        },
+      },
+      () => ({ url: 'https://seller.example/console/token', pageInstanceId: 'page-after-reload' }),
+      () => 2_000,
+    );
+    const result = await exec.execute(
+      instruction({
+        kind: 'dom',
+        expectedPageInstanceId: 'page-at-snapshot',
+        steps: [{ action: 'click', ref: 'za-2' }],
+      }),
+    );
+    // 引用编号是每份快照内的顺序号：换了文档同名 ref 就是另一个元素，故必须报「落点页不对」而非「找不到引用」。
+    expect(result).toMatchObject({ ok: false, error: 'context-mismatch' });
+    expect(runs).toBe(0);
+  });
+
   it('只钉 URL 的定向指令：当前页 URL 一致即执行（未钉的页面实例维度不参与判定）', async () => {
     let runs = 0;
     const exec = createDelegatedExecutor(

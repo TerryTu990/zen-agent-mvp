@@ -984,6 +984,140 @@ describe('HITL 卡目标 URL 与缺省零变化回归', () => {
   });
 });
 
+/**
+ * 缺省 dom 批次的落点页身份（服务端自持事实比对）：这批 ref 出自哪一页的快照，就只能落在那一页。
+ * 快照来源页与状态表活跃页不是同一页时，服务端在下发任何指令前拒签，失败归因随 tool-card 到面板。
+ */
+describe('缺省批次落点页身份：快照来源页 ≠ 活跃页即拒签', () => {
+  it('活跃页已换（同 origin 围栏内的另一页）→ 零指令下发，tool-card 带失败归因，agent 收到重新快照的引导', async () => {
+    const token = await signToken();
+    const { sessionId, sse } = await startGroupSession(token);
+    try {
+      await driveTurn(token, sessionId, '缺省快照后操作');
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length > 0);
+      const snapRequest = framesByType(sse.frames, 'snapshot-request')[0]!;
+      // 快照回报的是组内另一页（客户端在此期间已切页）：origin 与路径围栏都命中，只有落点页身份对不上。
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(snapRequest['requestId']),
+        url: BG_URL,
+        title: '文件夹页',
+        pageInstanceId: 'page-instance-bg',
+        elements: [{ ref: 'za-9', role: 'button', label: '发送' }],
+      });
+      await sse.waitFor(() => joinedText(sse).includes(OBS_ECHO_PREFIX));
+      await awaitTurnComplete(sse);
+      // 拒签发生在确认与签发之前：既不弹确认卡，也不下发任何一次性指令（零副作用面）。
+      expect(framesByType(sse.frames, 'hitl-request')).toHaveLength(0);
+      expect(framesByType(sse.frames, 'exec-instruction')).toHaveLength(0);
+      const failedCards = framesByType(sse.frames, 'tool-card').filter(
+        (frame) => frame['toolId'] === DOM_TOOL && frame['status'] === 'failed',
+      );
+      expect(failedCards).toHaveLength(1);
+      expect(String(failedCards[0]!['failureReason'])).toContain('页面已变化');
+      // 同一句也回喂 agent：模型据此重新快照，而不是拿旧引用重试。
+      expect(joinedText(sse)).toContain('页面已变化');
+    } finally {
+      sse.close();
+    }
+    const decisions = eventsOf(sessionId, 'tool-decision', 'toolId', DOM_TOOL);
+    expect(decisions).toHaveLength(1);
+    expect((decisions[0]!['data'] as Record<string, unknown>)['verdict']).toBe('deny');
+  });
+
+  it('快照来源页即活跃页 → 照常放行，签发的指令钉住那一页的实例标识', async () => {
+    const token = await signToken();
+    const { sessionId, sse } = await startGroupSession(token);
+    try {
+      await driveTurn(token, sessionId, '缺省快照后操作');
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length > 0);
+      const snapRequest = framesByType(sse.frames, 'snapshot-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(snapRequest['requestId']),
+        url: ACTIVE_URL,
+        title: '写信页',
+        pageInstanceId: 'page-instance-active',
+        elements: [{ ref: 'za-9', role: 'button', label: '发送' }],
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(hitl['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      const instruction = framesByType(sse.frames, 'exec-instruction')[0]!;
+      expect(instruction['request']).toEqual({
+        kind: 'dom',
+        expectedPageInstanceId: 'page-instance-active',
+        steps: [{ action: 'click', ref: 'za-9' }],
+      });
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instruction['nonce']),
+        ok: true,
+        body: { completedSteps: 1, url: ACTIVE_URL },
+      });
+      await sse.waitFor(() => joinedText(sse).includes(OBS_ECHO_PREFIX));
+      await awaitTurnComplete(sse);
+    } finally {
+      sse.close();
+    }
+  });
+
+  it('执行侧回执 context-mismatch → tool-card 失败归因如实透出该码（面板可定位）', async () => {
+    const token = await signToken();
+    const { sessionId, sse } = await startGroupSession(token);
+    try {
+      await driveTurn(token, sessionId, '缺省快照后操作');
+      await sse.waitFor(() => framesByType(sse.frames, 'snapshot-request').length > 0);
+      const snapRequest = framesByType(sse.frames, 'snapshot-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'snapshot-report',
+        sessionId,
+        requestId: String(snapRequest['requestId']),
+        url: ACTIVE_URL,
+        title: '写信页',
+        pageInstanceId: 'page-instance-active',
+        elements: [{ ref: 'za-9', role: 'button', label: '发送' }],
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'hitl-request').length > 0);
+      const hitl = framesByType(sse.frames, 'hitl-request')[0]!;
+      await postFrame(token, sessionId, {
+        type: 'hitl-decision',
+        sessionId,
+        hitlId: String(hitl['hitlId']),
+        decision: 'approve',
+      });
+      await sse.waitFor(() => framesByType(sse.frames, 'exec-instruction').length > 0);
+      const instruction = framesByType(sse.frames, 'exec-instruction')[0]!;
+      // 客户端在副作用前发现落点页已不是授权基准那一页，机械拒绝并如实回执。
+      await postFrame(token, sessionId, {
+        type: 'exec-result',
+        sessionId,
+        nonce: String(instruction['nonce']),
+        ok: false,
+        error: 'context-mismatch',
+      });
+      await sse.waitFor(() => joinedText(sse).includes(OBS_ECHO_PREFIX));
+      await awaitTurnComplete(sse);
+      const failedCards = framesByType(sse.frames, 'tool-card').filter(
+        (frame) => frame['toolId'] === DOM_TOOL && frame['status'] === 'failed',
+      );
+      expect(failedCards).toHaveLength(1);
+      expect(failedCards[0]!['failureReason']).toBe('context-mismatch');
+    } finally {
+      sse.close();
+    }
+  });
+});
+
 /** HITL 卡目标地址的取值口径（纯函数）：卡上只呈现本次将被签发执行的目标。 */
 describe('hitlTargetUrl 取值口径', () => {
   const domFixture: DomToolDefinition = {

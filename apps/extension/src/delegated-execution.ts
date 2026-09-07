@@ -34,8 +34,9 @@ export function createDelegatedExecutor(
           return { type: 'exec-result', sessionId, nonce, ok: false, error: 'dom-runner-unavailable' };
         }
         const page = currentPage();
-        // 逐字段独立比对：服务端按可核对的维度下钉（当前只有定向批次钉状态表目标页 URL），
-        // 未下钉的维度不参与判定；任一已钉维度不符即在副作用前拒绝。
+        // 逐字段独立比对：服务端按可核对的维度下钉（定向批次钉状态表目标页 URL，缺省批次钉产出
+        // 这批 ref 的快照页身份），未下钉的维度不参与判定；任一已钉维度不符即在副作用前拒绝并回
+        // context-mismatch——「落点页不是授权基准那一页」与「ref 在本页找不到」是两回事，不可混报。
         if (
           (request.expectedPageUrl !== undefined && request.expectedPageUrl !== page.url) ||
           (request.expectedPageInstanceId !== undefined &&

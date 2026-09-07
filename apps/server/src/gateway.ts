@@ -966,6 +966,21 @@ function issueRefusalText(cause: unknown): string {
     : ISSUE_REFUSED_GENERIC;
 }
 
+const TOOL_CARD_FAILURE_REASON_MAX = 160;
+
+/**
+ * tool-card 失败归因的下发前处置（SEC-04）：入参可能含客户端回传的执行错误原文（不可信），
+ * 故剥同形定界串与控制字符后截断——面板拿到的是可定位短语，既不含密钥/token（判定链的 reason
+ * 与执行错误码本就不含实参值），也无法借控制字符伪造面板结构。空串一律不下发。
+ */
+function toolCardFailureReason(reason: string | undefined): string | undefined {
+  if (reason === undefined) return undefined;
+  const cleaned = stripUntrustedDelimiters(reason)
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    .trim();
+  return cleaned === '' ? undefined : truncateWithEllipsis(cleaned, TOOL_CARD_FAILURE_REASON_MAX);
+}
+
 /** L2 归属键（adr-014）：每回合以已验签 claims 构造，compose 据此单次读取并定格 overlay。 */
 function subjectOf(claims: IdentityClaims): UserConfigSubject {
   return { tenant: claims.tenant, hostUserId: claims.hostUserId };
@@ -1655,8 +1670,19 @@ export function createGateway(deps: GatewayDeps): Gateway {
       summary: tool.id,
       mode,
     });
-    const finish = (status: ToolCardStatus): void => {
-      broadcast(sessionId, { type: 'tool-card', sessionId, toolCallId, toolId: tool.id, status, mode });
+    // 失败归因随卡下发：面板不再只显示「失败」，用户能看到「为什么没做成」。归因取与回喂 agent
+    // 同一句（拒签理由 / 执行侧机械拒绝码 / 结果校验失败码），面板与对话对同一次失败口径一致。
+    const finish = (status: ToolCardStatus, failure?: string): void => {
+      const failureReason = status === 'failed' ? toolCardFailureReason(failure) : undefined;
+      broadcast(sessionId, {
+        type: 'tool-card',
+        sessionId,
+        toolCallId,
+        toolId: tool.id,
+        status,
+        mode,
+        ...(failureReason !== undefined ? { failureReason } : {}),
+      });
     };
     /**
      * 执行结局审计的在飞状态：一旦副作用可能已发生（指令已下发 / 服务端已发请求）即置 stopOutcome，
@@ -1685,7 +1711,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     };
     const stopped = async (): Promise<Observation> => {
       if (execAudit.stopOutcome !== null) recordExecution(execAudit.stopOutcome);
-      finish('failed');
+      finish('failed', 'user-stopped');
       return { toolCallId, ok: false, content: null, error: 'user-stopped' };
     };
 
@@ -1803,7 +1829,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       },
     }, pack, run ?? undefined, auditPageRef());
     if (decision.verdict === 'deny') {
-      finish('failed');
+      finish('failed', decision.reason ?? 'denied');
       return { toolCallId, ok: false, content: null, error: decision.reason ?? 'denied' };
     }
     // 内建导航恒为 hitl 档、无 auto 路径：decide 放行即任务级授权命中（toolgate 契约）。
@@ -1908,7 +1934,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
       if (cancelled()) return stopped();
       if (verdict === 'reject') {
         const rejectReason = hitlTimedOut ? HITL_TIMEOUT_ERROR : 'user-rejected';
-        finish('failed');
+        finish('failed', rejectReason);
         return { toolCallId, ok: false, content: null, error: rejectReason };
       }
       // 批准恢复期复核（adr-024 D3）：用户批准的是当时那个动作，不是一张长期通行证。挂起期间页面可能已
@@ -2019,7 +2045,7 @@ export function createGateway(deps: GatewayDeps): Gateway {
     }
     if (execAudit.stopOutcome !== null) execAudit.stopOutcome = execOutcome(observation);
     if (cancelled()) return stopped();
-    finish(observation.ok ? 'succeeded' : 'failed');
+    finish(observation.ok ? 'succeeded' : 'failed', observation.error);
     recordExecution(issueRejected ? 'issue-rejected' : execOutcome(observation));
     return taskGranted ? { ...observation, taskGranted: true } : observation;
   }
@@ -2580,6 +2606,11 @@ export function createGateway(deps: GatewayDeps): Gateway {
               refs: trustedElements.map((element) => element.ref),
               path: pathOf(report.url),
               origin: originOf(report.url),
+              // 来源页身份：这批 ref 只在产出它的那一页有意义，toolgate 据此比对状态表活跃页并下钉指令。
+              url: report.url,
+              ...(report.pageInstanceId !== undefined
+                ? { pageInstanceId: report.pageInstanceId }
+                : {}),
               elements: trustedElements,
               ...(report.evidence !== undefined ? { evidence: report.evidence } : {}),
             };
@@ -2590,6 +2621,10 @@ export function createGateway(deps: GatewayDeps): Gateway {
               refs: trustedElements.map((element) => element.ref),
               path: pathOf(report.url),
               origin: originOf(report.url),
+              url: report.url,
+              ...(report.pageInstanceId !== undefined
+                ? { pageInstanceId: report.pageInstanceId }
+                : {}),
               elements: trustedElements,
             });
           }

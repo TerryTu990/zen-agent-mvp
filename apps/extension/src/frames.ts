@@ -180,6 +180,8 @@ export interface ToolCardFrame {
   status: ToolCardStatus;
   summary?: string;
   mode?: 'client' | 'server';
+  /** 失败归因（仅 status='failed' 时下发）：服务端已脱敏的短语，纯展示不承载判定。 */
+  failureReason?: string;
 }
 
 /**

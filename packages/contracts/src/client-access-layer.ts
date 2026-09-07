@@ -211,6 +211,11 @@ export interface ToolCardFrame {
   summary?: string;
   /** UI 分组用调用模式（纯展示，不承载判定）：client 用户会话代执行 / server 服务端直调。 */
   mode?: 'client' | 'server';
+  /**
+   * 失败归因（仅 status='failed' 时下发）：与回喂 agent 同一句的已脱敏短语——拒签理由、执行侧机械拒绝码
+   * （如 context-mismatch）或结果校验失败码。纯展示不承载判定；MUST NOT 含密钥值、token 原文或栈细节（SEC-04）。
+   */
+  failureReason?: string;
 }
 
 /**
@@ -314,7 +319,8 @@ export interface DomExecRequest {
   kind: 'dom';
   steps: DomStep[];
   /**
-   * 副作用指令的机械执行围栏：服务端只钉可核对的维度（当前只有定向批次钉状态表目标页 URL），
+   * 副作用指令的机械执行围栏：服务端只钉可核对的维度——定向批次钉状态表目标页 URL，
+   * 缺省批次钉产出这批 ref 的快照页身份（优先 expectedPageInstanceId，客户端未报实例时退回 URL）。
    * 客户端逐字段等值比较、未钉维度不参与判定，不承担治理判定。
    */
   expectedPageUrl?: string;

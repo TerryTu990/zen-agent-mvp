@@ -678,6 +678,14 @@ describe('C3 client-access-layer M3 代执行 + HITL 帧', () => {
       toolId: 'order-list.cancel-order',
       status: 'failed',
     },
+    'tool-card failed 带失败归因': {
+      type: 'tool-card',
+      sessionId: 's-001',
+      toolCallId: 'tc-01',
+      toolId: 'order-list.cancel-order',
+      status: 'failed',
+      failureReason: 'context-mismatch',
+    },
   };
 
   it.each(Object.keys(validFrames))('合法 %s 帧通过校验', (label) => {
