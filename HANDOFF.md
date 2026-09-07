@@ -15,21 +15,28 @@
 本轮由 Terry 2026-09-07 的真实试用反馈驱动（审计会话 f4978c06 复盘见
 `docs/plans/2026-09-07-task-auth-and-ux-round.md` §1-§2），做了五项产品改动 + 一次 E2E 有效性改造，产物见 §4。
 
-## 二、验证现状（本机实跑，2026-09-07，分支合并态）
+## 二、验证现状（本机实跑，2026-09-08，`opt/remove-automation` 合并态 `24df066`）
 
 | 门 | 命令 | 结果 |
 |---|---|---|
 | 依赖 lint（U2） | `pnpm lint:deps` | 绿 |
 | 验证脚本路径自检 | `pnpm verify:paths` | 绿 |
 | 构建 | `pnpm -r build` | 绿（7 workspace） |
-| 单测 | `pnpm -r --workspace-concurrency=1 test` | **1759 例全绿**（93 文件；上轮基线 1462，本轮 +297） |
-| 评测 | `pnpm eval` | 105 组场景 × 3 跑全过；审计完整性 PASS（979 条事件）；报告 `evals/runs/2026-09-07-187b452-eval.md` |
-| 评测判据自检 | `node scripts/evals/run.mjs --check` | 绿（探针字面在位 + 105 条判据均可被证伪） |
-| 浏览器 E2E 家族（12 门） | `pnpm test:e2e:family` | **12 门全绿**（sidepanel/coldstart/nav-attach/task-grant/d3/m1/m2/m3/m5/explain-pack/user-config/automation），串行合计 3.7 分钟；报告 `.za/e2e/family-187b452-dirty.json`（dirty 仅因跑门时本文件正在改写） |
+| 单测 | `pnpm -r --workspace-concurrency=1 test` | **1711 例全绿**（91 文件；自动化下线退役了一批随能力消失的用例） |
+| 评测 | `pnpm eval` | 104 组场景 × 3 跑全过；审计完整性 PASS（954 条事件）；报告 `evals/runs/2026-09-08-24df066-eval.md` |
+| 评测判据自检 | `node scripts/evals/run.mjs --check` | 绿（探针字面 27 条在位 + 104 条判据均可被证伪） |
+| 浏览器 E2E 家族（11 门） | `pnpm test:e2e:family` | **9 门绿 / 2 门红**：绿 = sidepanel、coldstart、nav-attach、task-grant、d3、m1、m2、explain-pack、user-config；红 = m3、m5（成因见下「已知未绿」，非本轮引入）；报告 `.za/e2e/family-24df066-dirty.json` |
 
 家族 runner 落盘 `.za/e2e/family-<rev>[-dirty].json`（逐脚本退出码/耗时/git rev），各脚本证据在 `.za/e2e/e2e-evidence/<case>/result.json`。
 
 **已知未绿（如实记录）**：
+- `pnpm test:e2e:m3`：`d1 happy：应出现 tool-card 已完成状态` 断言失败。工具批次改为默认折叠后
+  （`conversation-hitl.ts` 的 `body.hidden = true`），`innerText` 不再返回被折叠的卡面文案，而断言仍按展开态取文本。
+  执行本体仍成立（`counts.cancel === 1`、卡片 `data-status="succeeded"`）。**在 `opt/remove-automation` 拉出点
+  `1cfced0` 上以同一消息复现**，非自动化下线引入；判据本身已失效，须由折叠改动的归属批次决定改断言还是改呈现。
+- `pnpm test:e2e:m5`：`组外标签页面板未被关闭（enabled=true）` 断言失败——组外标签页的 `chrome.sidePanel`
+  开关未被显式关掉。同样**在 `1cfced0` 上复现**，非自动化下线引入；这一条是行为判据，须先判定是面板接入改动的回归
+  还是判据过期。
 - `pnpm test:e2e:real`（真实 LLM）与 `test:e2e:real-site`（真实站点）**BLOCKED，未执行**：凭证在 `ZA-C-SEC-03` 读禁区，
   开发期不得装载。且 `run-real-llm.mjs` 只装载 host-demo 场景，与本轮 generic-web / 导航授权路径未对齐——
   锚点「Terry 提供凭证解除 BLOCKED 时」（计划文档 §7.3）。
