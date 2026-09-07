@@ -60,12 +60,12 @@ const STATUS_LABEL: Record<ToolStatus, string> = {
 const SUMMARY_ORDER: ToolStatus[] = ['running', 'succeeded', 'failed'];
 
 /**
- * 工具卡上的失败原因：服务端可选补发的展示字段，C3 契约镜像尚未登记它，故按未知字段容错读取——
+ * 工具卡上的失败原因：服务端已脱敏的展示字段，仅 failed 状态下发。
  * 非空字符串才呈现，缺席或类型不符一律只留状态与工具名，客户端不本地推断成因（U8）。
  */
-function detailOf(frame: ToolCardFrame): string | undefined {
-  const detail = (frame as ToolCardFrame & { detail?: unknown }).detail;
-  return typeof detail === 'string' && detail !== '' ? detail : undefined;
+function failureReasonOf(frame: ToolCardFrame): string | undefined {
+  const reason: unknown = frame.failureReason;
+  return typeof reason === 'string' && reason !== '' ? reason : undefined;
 }
 
 /** 面向用户的实参摘要；仅供 HITL 卡片呈现用户须知悉的将发生内容，不进 tool-card。 */
@@ -372,11 +372,11 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
       copy.className = 'za-toolcard-copy';
       copy.textContent = `${STATUS_LABEL[frame.status]}：${frame.summary ?? frame.toolId}`;
       main.append(copy);
-      const failureDetail = detailOf(frame);
-      if (failureDetail !== undefined) {
+      const failureReason = failureReasonOf(frame);
+      if (failureReason !== undefined) {
         const detail = document.createElement('span');
         detail.className = 'za-toolcard-detail';
-        detail.textContent = failureDetail;
+        detail.textContent = failureReason;
         main.append(detail);
       }
       card.append(state, main);

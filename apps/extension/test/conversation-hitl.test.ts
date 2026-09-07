@@ -9,10 +9,9 @@ function messagesEl(): HTMLElement {
   return el;
 }
 
-/** detail = 服务端可选补发的失败原因；C3 契约镜像尚未登记它，故在此按未知可选字段附加。 */
 function toolCard(
   status: ToolCardFrame['status'],
-  overrides: Partial<ToolCardFrame> & { detail?: string } = {},
+  overrides: Partial<ToolCardFrame> = {},
 ): ToolCardFrame {
   return {
     type: 'tool-card',
@@ -300,11 +299,11 @@ describe('工具批次折叠（默认收起 + 机械摘要 + 失败可见）', (
     expect(messages.querySelector('.za-toolgroup-summary')?.textContent).toBe('2 步已完成');
   });
 
-  it('失败原因（可选 detail 字段）：有则渲染成一行，缺席则只有状态与工具名', () => {
+  it('失败原因（可选 failureReason 字段）：有则渲染成一行，缺席则只有状态与工具名', () => {
     const messages = messagesEl();
     const ui = createConversationUi(messages);
 
-    ui.renderToolCard(toolCard('failed', { toolCallId: 'a', summary: '点击「搜索」', detail: 'ref 已失效，请重新取快照' }));
+    ui.renderToolCard(toolCard('failed', { toolCallId: 'a', summary: '点击「搜索」', failureReason: 'ref 已失效，请重新取快照' }));
     ui.renderToolCard(toolCard('failed', { toolCallId: 'b', summary: '读取正文' }));
 
     const cards = messages.querySelectorAll('[data-za-toolcard]');
