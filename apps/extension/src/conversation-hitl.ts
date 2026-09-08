@@ -179,8 +179,6 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
   // 闪烁光标的撤下时机：无 done 帧，以「最后一个 delta 后短暂静默」判定当下没在出字。
   // 它只管光标，不管封口——模型流中途的停顿不是回合结束。
   let cursorTimer: ReturnType<typeof setTimeout> | null = null;
-  // 本次用户发言以来已开的 assistant 气泡数；≥2 即为同一轮任务内的后续回合，需署名标号与分隔。
-  let assistantTurn = 0;
   // 同一 toolCallId 的状态迁移就地更新同一张卡片（连同它所属的组摘要），避免 running→succeeded 产生两张卡。
   const toolCards = new Map<string, { card: HTMLElement; group: ToolGroup }>();
   // 当前这批工具卡按调用模式归组；批次被文本/用户发言/确认卡打断即清空，下一批另起新组。
@@ -217,15 +215,14 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
     toolGroups.clear();
   };
 
-  /** 每条消息＝wrapper[data-role] > .za-who 署名 + .za-bub 气泡；turn ≥2 标出回合序号与分隔。 */
-  const appendMessage = (role: 'user' | 'assistant', turn = 1): HTMLElement => {
+  /** 每条消息＝wrapper[data-role] > .za-who 署名 + .za-bub 气泡。 */
+  const appendMessage = (role: 'user' | 'assistant'): HTMLElement => {
     const wrap = document.createElement('div');
     wrap.className = 'za-msg';
     wrap.dataset['role'] = role;
-    if (turn > 1) wrap.classList.add('za-msg-turn');
     const who = document.createElement('div');
     who.className = 'za-who';
-    who.textContent = turn > 1 ? `${WHO_LABEL[role]} · 回合 ${turn}` : WHO_LABEL[role];
+    who.textContent = WHO_LABEL[role];
     const bub = document.createElement('div');
     bub.className = 'za-bub';
     wrap.append(who, bub);
@@ -302,7 +299,6 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
     appendUserMessage(text) {
       closeAssistantTurn();
       closeToolBatch();
-      assistantTurn = 0;
       const bubble = appendMessage('user');
       bubble.textContent = text;
       scrollToEnd();
@@ -318,8 +314,7 @@ export function createConversationUi(messages: HTMLElement): ConversationUi {
     appendTextDelta(frame) {
       if (assistantBody === null) {
         closeToolBatch();
-        assistantTurn += 1;
-        assistantBub = appendMessage('assistant', assistantTurn);
+        assistantBub = appendMessage('assistant');
         assistantBody = document.createElement('div');
         assistantBody.className = 'za-md mdlite';
         assistantBub.append(assistantBody);

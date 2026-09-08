@@ -157,7 +157,6 @@ button { cursor: pointer; }
 .za-quick-action:disabled { opacity: .45; cursor: default; }
 
 /* 多回合分隔：同一轮任务里 agent 的第 2 个及之后的气泡各自成段，读者能看清回合边界。 */
-.za-msg-turn { margin-top: 2px; padding-top: 11px; border-top: 1px dashed var(--line); }
 
 /* 工具批次折叠：收起态只留 toggle 一行（状态图标 + 分组名 + 机械摘要）。 */
 .za-toolgroup-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: 9px; color: var(--ink-soft); background: transparent; font: 11px/1.5 var(--mono); text-align: left; }

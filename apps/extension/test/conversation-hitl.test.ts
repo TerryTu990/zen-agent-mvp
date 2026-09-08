@@ -147,7 +147,7 @@ describe('多回合叙述分段（回合边界不糊成一坨）', () => {
     ui.appendTextDelta({ type: 'text-delta', sessionId: 's1', delta: text });
   };
 
-  it('工具卡打断后的 delta 另起一个气泡，并带回合序号与分隔标记', () => {
+  it('工具卡打断后的 delta 另起一个气泡', () => {
     const messages = messagesEl();
     const ui = createConversationUi(messages);
 
@@ -159,9 +159,6 @@ describe('多回合叙述分段（回合边界不糊成一坨）', () => {
     expect(bubbles.length).toBe(2);
     expect(bubbles[0]?.querySelector('.za-bub')?.textContent).toBe('先说明一下执行计划');
     expect(bubbles[1]?.querySelector('.za-bub')?.textContent).toBe('点击已执行，我来查看新打开的页面内容');
-    expect(bubbles[0]?.classList.contains('za-msg-turn')).toBe(false);
-    expect(bubbles[1]?.classList.contains('za-msg-turn')).toBe(true);
-    expect(bubbles[1]?.querySelector('.za-who')?.textContent).toBe('Zen Agent · 回合 2');
   });
 
   it('HITL 卡打断后的 delta 另起一个气泡', async () => {
@@ -245,7 +242,7 @@ describe('多回合叙述分段（回合边界不糊成一坨）', () => {
     expect(bubbles[0]?.querySelector('b')?.textContent).toBe('要点');
   });
 
-  it('用户再次发言后回合序号归零（新一轮任务从「Zen Agent」重新计数）', () => {
+  it('回合气泡署名恒为「Zen Agent」，不带序号也不带分隔标记', () => {
     const messages = messagesEl();
     const ui = createConversationUi(messages);
 
@@ -255,12 +252,14 @@ describe('多回合叙述分段（回合边界不糊成一坨）', () => {
     ui.appendUserMessage('再问一个');
     delta(ui, 'c');
 
-    const bubbles = messages.querySelectorAll('.za-msg[data-role="assistant"] .za-who');
-    expect([...bubbles].map((node) => node.textContent)).toEqual([
+    const wraps = messages.querySelectorAll('.za-msg[data-role="assistant"]');
+    expect(wraps.length).toBe(3);
+    expect([...wraps].map((node) => node.querySelector('.za-who')?.textContent)).toEqual([
       'Zen Agent',
-      'Zen Agent · 回合 2',
+      'Zen Agent',
       'Zen Agent',
     ]);
+    expect([...wraps].some((node) => node.classList.contains('za-msg-turn'))).toBe(false);
   });
 });
 
