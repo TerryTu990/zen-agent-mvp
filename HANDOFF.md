@@ -95,6 +95,7 @@ adr-028（任务级一次授权）、adr-027 §4 补记（批准手势申请站�
 
 ## 七、下一步建议
 
-1. **已发布（2026-09-07）**：服务端 `zen-agent-server:dc04179` @ lingm2（release `dc04179-20260906T233819Z-59982`，发布当刻快照 2.2.0 与当时 `assets/` 逐文件一致，healthz/匿名激活冒烟通过，容器 healthy）；线上仍是 2.2.0，本仓 `assets/` 已推进到 **2.4.0**，两批未发布改动尚未上线；插件 `release/artifacts/zen-agent-extension-0.12.0.zip`（本机 gitignore 产物，已解压到同名目录供 Chrome 加载，生产地址已烤入）。回滚见 release skill。
-2. **真机验收**：Terry 在 0.12.0 上按计划文档 §7.1 复跑「帮我打开百度，查询 AI agent 新闻，打开最值得关注的一条并总结」；任何一项不符按 §7.2 定位是手势/接入时长/模型行为哪一类。
+1. **已发布（2026-09-08）**：服务端 `zen-agent-server:634d7d3` @ lingm2（release `634d7d3-20260908T023244Z-24726`，快照 **2.4.0**，容器 healthy，`https://agent.flash-api.com/healthz` 返回 `{"ok":true}`，匿名激活冒烟通过）；插件 `release/artifacts/zen-agent-extension-0.13.0.zip`（本机 gitignore 产物，已解压到同名目录供 Chrome 加载，生产地址已烤入）。上一版是服务端 `dc04179` / 快照 2.2.0 / 插件 0.12.0（release `dc04179-20260906T233819Z-59982`），回滚见 release skill。
+   **本次含 C3 破坏性变更**（执行偏好下线）：0.12.0 插件仍会发 `executionPreference`，新服务端按 `additionalProperties:false` 拒收，故插件必须同步升到 0.13.0 才能用。
+2. **真机验收**：Terry 在 0.13.0 上复跑「帮我打开百度，查询 AI agent 新闻，打开最值得关注的一条并总结」，重点看本轮四类改动：回合是否分段清晰、工具批次是否默认折叠可展开、组内连开多页时侧边栏是否保持、未接入页是否给出原因与手动接入按钮。F3 指引对真实模型的效力（`ec810dd7` 那类多轮自我强化误拒）只能在真机上观察。
 3. 上一轮遗留：r2 partial 两条（§6）；真实 LLM 门对齐（§6）。
