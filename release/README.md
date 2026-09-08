@@ -59,7 +59,7 @@ Chrome 的“加载已解压的扩展程序”不能选择 zip 文件，必须�
 
 当前生产扩展：
 
-- 版本取 `apps/extension/manifest.json` 的 `version`（当前 **0.12.0**），`release/build-extension.sh` 产出
+- 版本取 `apps/extension/manifest.json` 的 `version`（当前 **0.13.0**），`release/build-extension.sh` 产出
   `release/artifacts/zen-agent-extension-<version>.zip`；本机没有对应版本的 zip 就先跑一次打包。
 - 解压出可直接选择的目录（Chrome 只认目录，不认 zip）：
   `unzip -o release/artifacts/zen-agent-extension-<version>.zip -d release/artifacts/zen-agent-extension-<version>`
